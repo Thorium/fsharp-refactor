@@ -49,7 +49,100 @@ type WeakCryptoSuggestion =
 /// A dynamically built string reaching a process-execution sink — the
 /// command-injection shape SonarQube's agentic-workflow rules target,
 /// which matters doubly when the string carries LLM output.
-type ProcessSinkSuggestion = { Range: range; Sink: string }
+type ProcessSinkSuggestion =
+    {
+        Range: range
+        Sink: string
+        /// The editor's alternative: the same arguments as a LIST —
+        /// `Process.Start(file, [| "+x"; path |])`, or one
+        /// `psi.ArgumentList.Add` per argument — for a template that
+        /// splits into whole arguments. None when it does not.
+        Fix: (range * string * string) option
+    }
+
+/// A piece of one argument: literal text, or a hole's expression text.
+type private ArgumentPiece =
+    | Literal of string
+    | Hole of string
+
+/// Split an interpolated template into the arguments a shell would see:
+/// whitespace separates, a quote pair keeps its contents together and is
+/// dropped (`+x \"{path}\"` is two arguments, the second the path itself).
+/// None when a quote runs into a hole in a way this cannot follow.
+let private argumentsOf (source: ISourceText) (parts: SynInterpolatedStringPart list) =
+    let arguments = ResizeArray<ArgumentPiece list>()
+    let current = ResizeArray<ArgumentPiece>()
+    let literal = System.Text.StringBuilder()
+    let mutable quoted = false
+    let mutable sound = true
+
+    let flushLiteral () =
+        if literal.Length > 0 then
+            current.Add(Literal(literal.ToString()))
+            literal.Clear() |> ignore
+
+    let flushArgument () =
+        flushLiteral ()
+
+        if current.Count > 0 then
+            arguments.Add(List.ofSeq current)
+            current.Clear()
+
+    for part in parts do
+        match part with
+        | SynInterpolatedStringPart.String(text, _) ->
+            for c in text do
+                if c = '"' then
+                    quoted <- not quoted
+                elif System.Char.IsWhiteSpace c && not quoted then
+                    flushArgument ()
+                else
+                    literal.Append c |> ignore
+        | SynInterpolatedStringPart.FillExpr(expr, None) ->
+            flushLiteral ()
+            current.Add(Hole(textOfRange source expr.Range))
+        // a format specifier (`{n:N2}`) would be lost on the way to a bare
+        // hole: not worth following
+        | SynInterpolatedStringPart.FillExpr(_, Some _) -> sound <- false
+
+    flushArgument ()
+
+    if quoted then
+        sound <- false
+
+    if sound && arguments.Count > 0 then
+        Some(List.ofSeq arguments)
+    else
+        None
+
+/// One argument as F# source: a literal, a bare hole, or an interpolated
+/// string for a mix.
+let private argumentText (pieces: ArgumentPiece list) =
+    let escape (s: string) =
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
+    match pieces with
+    | [ Literal text ] -> "\"" + escape text + "\""
+    | [ Hole expr ] ->
+        if System.Text.RegularExpressions.Regex.IsMatch(expr, @"^[A-Za-z_][\w'.]*$") then
+            expr
+        else
+            $"({expr})"
+    | mixed ->
+        let body =
+            mixed
+            |> List.map (fun p ->
+                match p with
+                | Literal text -> escape(text).Replace("{", "{{").Replace("}", "}}")
+                | Hole expr -> "{" + expr + "}")
+            |> String.concat ""
+
+        "$\"" + body + "\""
+
+/// Executables that take a COMMAND LINE by design — the string is the
+/// program, not its arguments — where an argument list would change
+/// what runs.
+let private shells = set [ "cmd"; "cmd.exe"; "sh"; "bash"; "zsh" ]
 
 type SqlStringSuggestion =
     {
@@ -217,6 +310,61 @@ let find
         | SynExpr.Tuple(exprs = head :: _) -> head
         | single -> single
 
+    // RFC 6455 mandates SHA-1 for the WebSocket handshake: Sec-WebSocket-
+    // Accept is SHA-1 of the key and this GUID, and nothing else will do.
+    // A file spelling the GUID is a WebSocket server (Suave), and its SHA1
+    // is the protocol, not a choice
+    let webSocketHandshake =
+        lazy
+            (index.Exprs
+             |> Array.exists (fun (_, e) ->
+                 match e with
+                 | SynExpr.Const(SynConst.String(text = text), _) ->
+                     text.Equals("258EAFA5-E914-47DA-95CA-C5AB0DC85B11", System.StringComparison.OrdinalIgnoreCase)
+                 | _ -> false))
+
+    // SHA1 constructed in one arm of a match whose sibling arm constructs
+    // SHA256 or stronger: a format option the caller chose — the F#
+    // compiler's --checksumalgorithm — with the strong algorithm already
+    // on offer
+    let strongerSibling (path: SyntaxNode list) =
+        let strongHash (names: Ident list) =
+            names
+            |> List.exists (fun i ->
+                match i.idText with
+                | "SHA256"
+                | "SHA384"
+                | "SHA512" -> true
+                | _ -> false)
+
+        let constructsStrong (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                Range.rangeContainsRange r e.Range
+                && (match e with
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> strongHash ids
+                    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids))) -> strongHash ids
+                    | _ -> false))
+
+        let rec toMatch (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynMatchClause own :: SyntaxNode.SynExpr(SynExpr.Match(clauses = clauses)) :: _ ->
+                Some(own, clauses)
+            | SyntaxNode.SynMatchClause own :: SyntaxNode.SynExpr(SynExpr.MatchLambda(matchClauses = clauses)) :: _ ->
+                Some(own, clauses)
+            | SyntaxNode.SynMatchClause _ :: _
+            | [] -> None
+            | _ :: rest -> toMatch rest
+
+        match toMatch path with
+        | Some(own, clauses) ->
+            clauses
+            |> List.exists (fun sibling -> not (Range.equals sibling.Range own.Range) && constructsStrong sibling.Range)
+        | None -> false
+
+    let sha1Sanctioned (path: SyntaxNode list) =
+        webSocketHandshake.Value || strongerSibling path
+
     for path, e in index.Exprs do
         match e with
         // MD5.Create() / SHA1.Create() / DES.Create() ...
@@ -227,7 +375,9 @@ let find
             | _create :: ownerId :: _ ->
                 let owner = ownerId.idText
 
-                if weakHashes.Contains owner then
+                if owner = "SHA1" && sha1Sanctioned path then
+                    ()
+                elif weakHashes.Contains owner then
                     crypto.Add
                         { Range = e.Range
                           Kind = WeakKind.Hash owner
@@ -242,7 +392,9 @@ let find
         | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
             let name = (List.last ids).idText
 
-            if weakHashTypes.Contains name then
+            if name.StartsWith "SHA1" && sha1Sanctioned path then
+                ()
+            elif weakHashTypes.Contains name then
                 crypto.Add
                     { Range = e.Range
                       Kind = WeakKind.Hash name
@@ -270,7 +422,8 @@ let find
                     if argsOf |> List.exists isDynamicString then
                         processSinks.Add
                             { Range = e.Range
-                              Sink = "ProcessStartInfo" }
+                              Sink = "ProcessStartInfo"
+                              Fix = None }
                 | _ -> ()
         // SqlCommand(sql, ...) without `new`
         | SynExpr.App(isInfix = false; funcExpr = SingleIdent ctor; argExpr = arg) when
@@ -338,7 +491,36 @@ let find
                       AlgoRange = None }
             // psi.Arguments <- dynamic: the argument-injection sink;
             // FileName is any DTO's field and stays out
-            | "Arguments" when isDynamicString rhs -> processSinks.Add { Range = e.Range; Sink = "Arguments" }
+            | "Arguments" when isDynamicString rhs ->
+                // the alternative: one ArgumentList.Add per argument. The
+                // executable is not in view here, so a template carrying
+                // quotes — a command line for a shell, most likely — is left
+                let fix =
+                    match stripParens rhs with
+                    | SynExpr.InterpolatedString(contents = parts) when
+                        parts
+                        |> List.forall (fun p ->
+                            match p with
+                            | SynInterpolatedStringPart.String(text, _) -> not (text.Contains "\"")
+                            | _ -> true)
+                        ->
+                        argumentsOf source parts
+                        |> Option.map (fun args ->
+                            let receiver = ids |> List.take (ids.Length - 1) |> identText
+                            let indent = String.replicate e.Range.StartColumn " "
+
+                            let lines =
+                                args
+                                |> List.map (fun a -> $"{receiver}.ArgumentList.Add {argumentText a}")
+                                |> String.concat ("\n" + indent)
+
+                            e.Range, textOfRange source e.Range, lines)
+                    | _ -> None
+
+                processSinks.Add
+                    { Range = e.Range
+                      Sink = "Arguments"
+                      Fix = fix }
             | _ -> ()
         | SynExpr.DotSet(_, SynLongIdent(id = ids), rhs, _) when not ids.IsEmpty ->
             match (List.last ids).idText with
@@ -349,7 +531,11 @@ let find
                     { Range = e.Range
                       Kind = WeakKind.CertificateBypass
                       AlgoRange = None }
-            | "Arguments" when isDynamicString rhs -> processSinks.Add { Range = e.Range; Sink = "Arguments" }
+            | "Arguments" when isDynamicString rhs ->
+                processSinks.Add
+                    { Range = e.Range
+                      Sink = "Arguments"
+                      Fix = None }
             | _ -> ()
         // Process.Start with a dynamically built command — the
         // command-injection sink; distinctive by name, so no typed gate
@@ -364,9 +550,45 @@ let find
                 | single -> [ single ]
 
             if argsOf |> List.exists isDynamicString then
+                // the alternative: `Process.Start(file, [| ... |])` — for a
+                // fixed executable that is not a shell (a shell takes a
+                // command line by design, and a list would change what runs)
+                let fix =
+                    match argsOf with
+                    | [ file; (SynExpr.InterpolatedString(contents = parts) as template) ] when
+                        not (isDynamicString file)
+                        ->
+                        // a literal executable is known to be a shell or not; an
+                        // executable bound elsewhere is unknown, and a template
+                        // carrying quotes behind it reads like a shell's command
+                        // line — left alone
+                        let isShell, known =
+                            match stripParens file with
+                            | SynExpr.Const(SynConst.String(name, _, _), _) ->
+                                shells.Contains(System.IO.Path.GetFileName(name).ToLowerInvariant()), true
+                            | _ -> false, false
+
+                        let quoted =
+                            parts
+                            |> List.exists (fun p ->
+                                match p with
+                                | SynInterpolatedStringPart.String(text, _) -> text.Contains "\""
+                                | _ -> false)
+
+                        if isShell || (not known && quoted) then
+                            None
+                        else
+                            argumentsOf source parts
+                            |> Option.map (fun args ->
+                                template.Range,
+                                textOfRange source template.Range,
+                                "[| " + (args |> List.map argumentText |> String.concat "; ") + " |]")
+                    | _ -> None
+
                 processSinks.Add
                     { Range = e.Range
-                      Sink = "Process.Start" }
+                      Sink = "Process.Start"
+                      Fix = fix }
         // SecurityProtocolType.Ssl3 / SslProtocols.Tls11 and friends:
         // broken or deprecated on the wire. The modern default is to set
         // NOTHING and let the OS negotiate

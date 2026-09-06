@@ -23,16 +23,19 @@ let ``plain element accumulation becomes AddRange`` () =
         "acc.AddRange xs"
 
 [<Fact>]
-let ``projected accumulation becomes AddRange over Seq map`` () =
-    assertAddRange
-        "let f (acc: ResizeArray<int>) (xs: int list) =\n    for x in xs do\n        acc.Add(x * 2)"
-        "acc.AddRange(xs |> Seq.map (fun x -> x * 2))"
+let ``a projected element keeps its loop`` () =
+    // the Seq.map spelling allocates an enumerator and a closure, and
+    // AddRange still enumerates item by item: no gain over the loop
+    Assert.Empty(
+        addRangeIn "let f (acc: ResizeArray<int>) (xs: int list) =\n    for x in xs do\n        acc.Add(x * 2)"
+    )
 
 [<Fact>]
-let ``tuple loop pattern is parenthesized in the lambda`` () =
-    assertAddRange
-        "let f (acc: ResizeArray<int>) (ps: (int * int) list) =\n    for (a, b) in ps do\n        acc.Add(a + b)"
-        "acc.AddRange(ps |> Seq.map (fun (a, b) -> a + b))"
+let ``a projected tuple pattern keeps its loop too`` () =
+    Assert.Empty(
+        addRangeIn
+            "let f (acc: ResizeArray<int>) (ps: (int * int) list) =\n    for (a, b) in ps do\n        acc.Add(a + b)"
+    )
 
 [<Fact>]
 let ``property receiver keeps its path`` () =
@@ -114,3 +117,27 @@ let ``a receiver chosen per element keeps its loop`` () =
             "module Test\ntype Tile = { X: int }\nlet f (tiles: Tile list) =\n    let columns = List.init 4 (fun _ -> ResizeArray<Tile>())\n    for tile in tiles do columns[tile.X].Add tile\n    columns"
 
     Assert.Empty(AddRange.find tree sourceText checkResults)
+
+// ---- only the loop variable itself collapses (suave) ----
+
+[<Fact>]
+let ``a call result per element keeps its loop`` () =
+    // suave: `for f in xs do acc.Add(f())` came out as
+    // `acc.AddRange((List.rev xs) |> Seq.map (fun f -> f()))` — no gain,
+    // and doubly parenthesised
+    Assert.Empty(
+        addRangeIn
+            "let f (acc: ResizeArray<int>) (xs: (unit -> int) list) =\n    for f in List.rev xs do\n        acc.Add(f())"
+    )
+
+[<Fact>]
+let ``a parenthesised loop variable still collapses`` () =
+    assertAddRange
+        "let f (acc: ResizeArray<int>) (xs: int list) =\n    for x in xs do\n        acc.Add(x)"
+        "acc.AddRange xs"
+
+[<Fact>]
+let ``an already parenthesised source is not wrapped again`` () =
+    assertAddRange
+        "let f (acc: ResizeArray<int>) (xs: int list) =\n    for x in (List.rev xs) do\n        acc.Add x"
+        "acc.AddRange (List.rev xs)"

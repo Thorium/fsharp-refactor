@@ -55,19 +55,23 @@ let private objExprMemberBindings (e: SynExpr) : SynBinding list =
 /// from every index-based rule (found the hard way: FR0101 rewrote a loop
 /// whose index was plainly used as a value inside one of these).
 ///
-/// SynExpr.MatchBang has the same hole for its CLAUSES: guards and arm
-/// bodies alike are invisible to the walker, so every `let!` inside a
-/// `match!` arm escaped every index-based rule (found the hard way:
-/// FR0029 saw a 17-await match! task as having ONE await).
+/// SynExpr.MatchBang has the same hole for its SCRUTINEE and its CLAUSES:
+/// the awaited expression, guards and arm bodies alike are invisible to
+/// the walker, so every `let!` inside a `match!` arm escaped every
+/// index-based rule (found the hard way: FR0029 saw a 17-await match!
+/// task as having ONE await), and a call in `match! f x with` was
+/// invisible to every mention-based rule (FR0033 called a member that
+/// awaited an instance let function static).
 let private setChildren (e: SynExpr) : SynExpr list =
     match e with
     | SynExpr.Set(targetExpr = target; rhsExpr = rhs) -> [ target; rhs ]
-    | SynExpr.MatchBang(clauses = cs) ->
-        cs
-        |> List.collect (fun (SynMatchClause(whenExpr = w; resultExpr = r)) ->
-            match w with
-            | Some g -> [ g; r ]
-            | None -> [ r ])
+    | SynExpr.MatchBang(expr = scrutinee; clauses = cs) ->
+        scrutinee
+        :: (cs
+            |> List.collect (fun (SynMatchClause(whenExpr = w; resultExpr = r)) ->
+                match w with
+                | Some g -> [ g; r ]
+                | None -> [ r ]))
     | _ -> []
 
 /// Wrap bindings in a one-declaration synthetic file so the SDK walker can
@@ -377,3 +381,38 @@ let replay (collector: SyntaxCollectorBase) (tree: ParsedInput) : unit =
     if walksTypes then
         for path, synType in index.Types do
             collector.WalkType(path, synType)
+
+/// Namespaces whose `open` marks a test file.
+let private testFrameworkOpens =
+    set
+        [ "Xunit"
+          "NUnit.Framework"
+          "Expecto"
+          "Microsoft.VisualStudio.TestTools.UnitTesting"
+          "Fuchu"
+          "TUnit" ]
+
+/// A test attribute (`[<Test>]`, `[<Fact>]`, `[<TestCase ..>]`,
+/// `[<Property>]`, `[<TestMethod>]`) or an Expecto `testCase "..."`, for
+/// files that open the framework elsewhere.
+let private testMarker =
+    System.Text.RegularExpressions.Regex(
+        @"\[<\s*(Test|Fact|Theory|TestCase|Property|TestMethod)\b|\btest(Case|CaseAsync|Property|Task)\s+""",
+        System.Text.RegularExpressions.RegexOptions.Compiled
+    )
+
+/// Is this a test file — one that opens a test framework, or carries a
+/// test attribute or an Expecto test builder? The ONE answer every rule
+/// that treats tests differently reads (FR0055's swallowed catch-all is
+/// the observation there, FR0092's failure message is the assertion,
+/// FR0132's public fixture documents nothing): three rules once kept
+/// three copies of this, two of them narrower than the third.
+let isTestFile (index: Index) (source: ISourceText) =
+    index.Decls
+    |> Array.exists (fun (_, d) ->
+        match d with
+        | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
+            testFrameworkOpens.Contains(ids |> List.map (fun i -> i.idText) |> String.concat ".")
+        | _ -> false)
+    || seq { 0 .. source.GetLineCount() - 1 }
+       |> Seq.exists (fun l -> testMarker.IsMatch(source.GetLineString l))

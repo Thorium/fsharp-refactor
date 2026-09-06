@@ -206,7 +206,19 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
                   if d.Ident = "r" then
                       yield Path.GetFileName(d.Value.Replace('\\', '/')).ToLowerInvariant() ]
 
-        if loads.IsEmpty then
+        // a script whose OWN #load or #r names a file that is not there is
+        // stale or unbuilt, and every "not defined" it reports stems from
+        // that: fantomas's docs scripts `#r` an artifacts dll that was never
+        // built, and fsharp.formatting's Script.fsx loads a Library1.fs that
+        // no longer exists — the FS0039s are not a missing #load
+        let brokenDirective =
+            all
+            |> List.exists (fun d ->
+                (d.Ident = "load" || d.Ident = "r")
+                && not (d.Value.Contains ':' && not (Path.IsPathRooted d.Value))
+                && not (File.Exists(Path.GetFullPath(Path.Combine(scriptDir, d.Value.Replace('\\', '/'))))))
+
+        if loads.IsEmpty || brokenDirective then
             []
         else
             let loadedSet = loads |> List.map (fst >> normalize) |> Set.ofList
@@ -238,7 +250,12 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
                           |> List.tryPick (fun (fsproj, items) ->
                               items
                               |> List.tryFind (fun item ->
-                                  not (loadedSet.Contains(normalize item)) && declares name item)
+                                  // a signature file cannot be loaded on its own
+                                  // (FS0240: no corresponding implementation);
+                                  // fantomas's docs got `#load "EditorConfig.fsi"`
+                                  not (item.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
+                                  && not (loadedSet.Contains(normalize item))
+                                  && declares name item)
                               |> Option.map (fun item -> fsproj, items, item))
 
                       match candidate with

@@ -108,3 +108,46 @@ let ``error rewrapping a different value is not map`` () =
     // that changes the error type, so nothing should typecheck-break either way
     assertNoSuggestion
         "let f (r: Result<int, string>) (other: string) = match r with | Ok v -> Ok (v + 1) | Error _ -> Error other"
+
+[<Fact>]
+let ``a unit ok arm with a logging error arm keeps its match`` () =
+    // fantomas Daemon: a readable three-line match became a 190-character
+    // line carrying two closures, one of them `Result.map (fun _ -> ())`
+    assertNoSuggestion
+        "type FantomasLogLevel =\n    | Error\n    | Info\nlet log (level: FantomasLogLevel) (message: string) = ()\nlet f (result: Result<int, string>) =\n    match result with\n    | Ok _ -> ()\n    | Error error -> log FantomasLogLevel.Error $\"Failed: {error}\""
+
+[<Fact>]
+let ``a map lambda that would return unit is withheld`` () =
+    // typed: Console.WriteLine returns unit, so `Result.map (fun v ->
+    // Console.WriteLine v)` would map to Result<unit, _> only to throw it
+    // away (printfn would not do as the probe: its symbol returns a
+    // generic 'T that only the applied format makes unit)
+    assertNoSuggestion
+        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> System.Console.WriteLine v\n    | Error e -> System.Console.Error.WriteLine e"
+
+[<Fact>]
+let ``a rewrite past 100 columns is withheld`` () =
+    assertNoSuggestion
+        "let computeTheAdjustedValueForTheGivenResult (v: int) = v * 2\nlet f (someRatherLongResultName: Result<int, string>) =\n    match someRatherLongResultName with\n    | Ok v -> computeTheAdjustedValueForTheGivenResult v + computeTheAdjustedValueForTheGivenResult v\n    | Error _ -> 0"
+
+[<Fact>]
+let ``a tuple arm keeps its match`` () =
+    assertNoSuggestion
+        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v, true\n    | Error _ -> 0, false"
+
+[<Fact>]
+let ``a pipeline arm keeps its match`` () =
+    assertNoSuggestion
+        "let f (r: Result<int list, string>) =\n    match r with\n    | Ok v -> v |> List.map abs |> List.sum\n    | Error _ -> 0"
+
+[<Fact>]
+let ``a lambda arm keeps its match`` () =
+    assertNoSuggestion
+        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> fun x -> x + v\n    | Error _ -> fun x -> x"
+
+[<Fact>]
+let ``a multi-line match still rewrites when the line stays short`` () =
+    assertSingleSuggestion
+        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v * 2\n    | Error _ -> 0"
+        "Result.map + Result.defaultValue"
+        "r |> Result.map (fun v -> v * 2) |> Result.defaultValue 0"

@@ -1,7 +1,7 @@
 /// Refactoring: the Python `range(len(xs))` loop, in F# clothing.
 ///
-///     for i in 0 .. xs.Length - 1 do        for x in xs do
-///         process xs.[i]              →         process x
+///     for i in 0 .. xs.Length - 1 do        for item in xs do
+///         process xs.[i]              →         process item
 ///
 /// The index buys nothing when its every use is `xs.[i]`: iterating
 /// directly reads better, drops the per-access bounds arithmetic — and on
@@ -88,7 +88,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
     let suggestions = ResizeArray<Suggestion>()
 
-    for _, expr in index.Exprs do
+    for path, expr in index.Exprs do
         match expr with
         | SynExpr.ForEach(
             pat = SynPat.Named(ident = SynIdent(ident = i))
@@ -192,28 +192,51 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             if onlyIndexes && not disqualified then
                 let loopText = textOfRange source expr.Range
 
+                // the element is `item`, or `item2`, `item3`... when a name
+                // is already taken: mentioned inside the loop, or bound by
+                // anything on the path to it — a parameter, an outer loop,
+                // a let, a lambda, a match arm. Mibo's Spatial2DTests had
+                // `for x in 0 .. 4 do` around the loop, and the `x` chosen
+                // then shadowed it.
+                let enclosingNames =
+                    path
+                    |> List.collect (fun node ->
+                        match node with
+                        | SyntaxNode.SynBinding(SynBinding(headPat = p)) -> patNames p
+                        | SyntaxNode.SynMatchClause(SynMatchClause(pat = p)) -> patNames p
+                        | SyntaxNode.SynExpr e ->
+                            match e with
+                            | LetOrUseE lou ->
+                                lou.Bindings |> List.collect (fun (SynBinding(headPat = p)) -> patNames p)
+                            | SynExpr.ForEach(pat = p) -> patNames p
+                            | SynExpr.For(ident = id) -> [ id.idText ]
+                            | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.collect patNames
+                            | _ -> []
+                        | _ -> [])
+                    |> Set.ofList
+
+                let taken (name: string) =
+                    enclosingNames.Contains name || Regex.IsMatch(loopText, identifierPattern name)
+
                 let element =
-                    [ "x"; "item"; "element" ]
-                    |> List.tryFind (fun name -> not (Regex.IsMatch(loopText, identifierPattern name)))
+                    Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
+                    |> Seq.find (fun name -> not (taken name))
 
-                match element with
-                | Some element ->
-                    let headerRange =
-                        Range.mkRange expr.Range.FileName expr.Range.Start enumExpr.Range.End
+                let headerRange =
+                    Range.mkRange expr.Range.FileName expr.Range.Start enumExpr.Range.End
 
-                    let headerEdit =
-                        headerRange, textOfRange source headerRange, $"for {element} in {collText}"
+                let headerEdit =
+                    headerRange, textOfRange source headerRange, $"for {element} in {collText}"
 
-                    let useEdits =
-                        indexedUses
-                        |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
-                        |> Array.toList
+                let useEdits =
+                    indexedUses
+                    |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
+                    |> Array.toList
 
-                    suggestions.Add
-                        { Range = expr.Range
-                          CollectionText = collText
-                          Edits = headerEdit :: useEdits }
-                | None -> ()
+                suggestions.Add
+                    { Range = expr.Range
+                      CollectionText = collText
+                      Edits = headerEdit :: useEdits }
         | _ -> ()
 
     List.ofSeq suggestions

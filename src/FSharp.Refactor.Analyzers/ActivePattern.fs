@@ -244,10 +244,20 @@ let find
 
                                         let binder = if bodyReads then var.idText else "_"
 
+                                        // a blank line separates the new definition
+                                        // from the declaration it lands above — glued
+                                        // together, fantomas --check rejects the file.
+                                        // A guard under `#if` yields a definition under
+                                        // the same `#if`
+                                        let placed =
+                                            match conditionToKeep source clauseRange.StartLine insertAt.StartLine with
+                                            | Some condition -> $"#if {condition}\n{binding}\n#endif"
+                                            | None -> binding
+
                                         suggestions.Add
                                             { PatternName = patternName
                                               InsertRange = insertAt
-                                              InsertText = $"{binding}\n{indent}"
+                                              InsertText = $"{placed}\n\n{indent}"
                                               ClauseRange = clauseRange
                                               OriginalClauseText = textOfRange source clauseRange
                                               ClauseText = $"{patternName} {binder}" }

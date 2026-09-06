@@ -305,6 +305,11 @@ let find
                           if
                               (isFilePrivate || assemblyScope)
                               && not sitesInBody.IsEmpty
+                              // a body choreographed around a thread (a
+                              // signal, a Thread, Interlocked) continues on
+                              // the thread it waited on; task-returning it
+                              // would not — the same refusal as FR0142's
+                              && not (BlockingSites.threadBound source body)
                               && sitesInBody |> List.forall (fun s -> s.Receiver.IsSome)
                               // a blocking site under a lambda or inside a
                               // try/with survives the wrap unconverted

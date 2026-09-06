@@ -63,9 +63,56 @@ let private (|TypeofExpr|_|) (e: SynExpr) =
     | SynExpr.TypeApp(expr = IdentName "typeof"; typeArgs = [ t ]) -> ValueSome t.Range
     | _ -> ValueNone
 
+/// The receiver identifier of `<receiver>.GetType()` when the receiver is
+/// a bare name.
+let private getTypeReceiver (e: SynExpr) =
+    match e with
+    | SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ receiver; _ ]))) -> Some receiver.idText
+    | SynExpr.App(funcExpr = SynExpr.DotGet(expr = SynExpr.Ident receiver)) -> Some receiver.idText
+    | _ -> None
+
+let private lastSegment (typeText: string) =
+    typeText.Trim().Substring(typeText.Trim().LastIndexOf '.' + 1)
+
 /// Find fragile runtime type comparisons.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
+
+    // `| :? T as x when x.GetType() = typeof<T>` — the guard narrows a
+    // type test to EXACTLY T, excluding subtypes on purpose: the `:?` the
+    // note would offer is the very test it refines (FCS FileSystem.fs
+    // retries a locked file only on a plain IOException, never on
+    // FileNotFound or PathTooLong). Any clause with a `when` counts: the
+    // guard may sit deeper than the top-level comparison.
+    let exactTypeGuards =
+        let clausesOf (e: SynExpr) =
+            match e with
+            | SynExpr.Match(clauses = cs)
+            | SynExpr.MatchBang(clauses = cs)
+            | SynExpr.MatchLambda(matchClauses = cs)
+            | SynExpr.TryWith(withCases = cs) -> cs
+            | _ -> []
+
+        index.Exprs
+        |> Array.collect (fun (_, e) ->
+            clausesOf e
+            |> List.choose (fun (SynMatchClause(pat = p; whenExpr = w)) ->
+                match p, w with
+                | SynPat.As(
+                    lhsPat = SynPat.IsInst(pat = testedType); rhsPat = SynPat.Named(ident = SynIdent(ident = x))),
+                  Some guard -> Some(x.idText, lastSegment (textOfRange source testedType.Range), guard.Range)
+                | _ -> None)
+            |> Array.ofList)
+
+    let refinesTypeTest (r: range) (receiver: string option) (typeText: string) =
+        match receiver with
+        | Some x ->
+            exactTypeGuards
+            |> Array.exists (fun (bound, testedType, guardRange) ->
+                bound = x
+                && testedType = lastSegment typeText
+                && Range.rangeContainsRange guardRange r)
+        | None -> false
 
     [ for _, expr in index.Exprs do
           match expr with
@@ -77,13 +124,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     Kind = TypeCheckKind.NameComparison prop }
               | (GetTypeCall as getTypeSide), TypeofExpr typeRange
               | TypeofExpr typeRange, (GetTypeCall as getTypeSide) ->
-                  let receiverText =
-                      // strip the trailing `.GetType()` for the message
-                      let text = textOfRange source getTypeSide.Range
-                      let cut = text.LastIndexOf ".GetType"
-                      if cut > 0 then text.Substring(0, cut) else text
+                  let typeText = textOfRange source typeRange
 
-                  { Range = expr.Range
-                    Kind = TypeCheckKind.TypeofEquality(receiverText, textOfRange source typeRange) }
+                  if not (refinesTypeTest expr.Range (getTypeReceiver getTypeSide) typeText) then
+                      let receiverText =
+                          // strip the trailing `.GetType()` for the message
+                          let text = textOfRange source getTypeSide.Range
+                          let cut = text.LastIndexOf ".GetType"
+                          if cut > 0 then text.Substring(0, cut) else text
+
+                      { Range = expr.Range
+                        Kind = TypeCheckKind.TypeofEquality(receiverText, typeText) }
               | _ -> ()
           | _ -> () ]

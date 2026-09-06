@@ -34,6 +34,12 @@ type Suggestion =
 /// doc position cannot carry verbatim: `<` and `&` are XML syntax, and
 /// promoting `// true when a < b` unescaped draws FS3390 on every build.
 /// (Escaping would break the contains-the-original comment-loss proof.)
+///
+/// Beyond instructions, a trailing note must READ as a summary before it
+/// becomes one. suave's `// ^ Index is out of range`, `// -- node no.`
+/// and `// unused` were promoted verbatim: a Haskell-style marker, a
+/// single word, or a note too short to document anything is a margin
+/// annotation, and a doc line made of it is worse than none.
 let private excluded (text: string) =
     let body = (text.TrimStart '/').Trim()
 
@@ -44,6 +50,18 @@ let private excluded (text: string) =
     || body.StartsWith "HACK"
     || body.Contains '<'
     || body.Contains '&'
+    // a punctuation marker opens an annotation, not a sentence
+    || "^-|*!".Contains body.[0]
+    // a single word (`unused`, `todo`) or fewer than 12 characters
+    || not (body.Contains ' ')
+    || body.Length < 12
+
+/// A test file's public declarations are fixtures, not an API: the
+/// trailing note on `let emojiParty = "\U0001F389" // 🎉 PARTY POPPER`
+/// labels the fixture and documents nothing. The shared answer
+/// (AstIndex.isTestFile): a test framework's `open`, a test attribute,
+/// or an Expecto test builder.
+let private isTestFile = AstIndex.isTestFile
 
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
@@ -51,8 +69,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // plain line comments only — /// doc comments live in PreXmlDoc, and
     // (* *) blocks read as prose mid-line, not as a note about the decl
     let comments =
-        commentsWithText parseTree source
-        |> List.filter (fun (_, t) -> t.StartsWith "//" && not (t.StartsWith "///") && not (excluded t))
+        if isTestFile index source then
+            []
+        else
+            commentsWithText parseTree source
+            |> List.filter (fun (_, t) -> t.StartsWith "//" && not (t.StartsWith "///") && not (excluded t))
 
     // the promotion for one declaration header, if its line qualifies —
     // a union case's anchor sits after its `|`, which may open the line

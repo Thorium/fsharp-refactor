@@ -18,10 +18,15 @@ let ``an else holding a whole if flattens to elif`` () =
 
     match elseIfsIn source with
     | [ s ] ->
-        Assert.Equal("elif", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
-        Assert.Contains("elif y = 2 then", patched)
+
+        // the nested if's block moves left with it: then-body and else
+        // both sit at the outer if's depth
+        Assert.Equal(
+            "module Test\nlet f (x: int) (y: int) =\n    if x = 1 then\n        0\n    elif y = 2 then\n        1\n    else 2",
+            patched
+        )
     | other -> failwithf "Expected one elif suggestion, got %A" other
 
 [<Fact>]
@@ -259,19 +264,51 @@ let private guardNotesIn (source: string) =
     IfRestructure.findGuardOrderNotes tree sourceText
 
 [<Fact>]
-let ``a compound guard on the first arm before a wildcard is noted`` () =
+let ``a compound guard on the first arm before a failing wildcard is noted`` () =
     match
         guardNotesIn
-            "module Test\nlet f (v: int) (lo: int) (hi: int) =\n    match v with\n    | x when x >= lo && x <= hi -> \"base\"\n    | _ -> \"err\""
+            "module Test\nlet f (v: int) (lo: int) (hi: int) =\n    match v with\n    | x when x >= lo && x <= hi -> \"base\"\n    | _ -> failwith \"err\""
     with
     | [ n ] -> Assert.Equal("x", n.Variable)
     | other -> failwithf "Expected one guard-order note, got %A" other
 
 [<Fact>]
+let ``FR0115: None, Error and raise wildcards are error arms`` () =
+    let notes (arm: string) =
+        guardNotesIn
+            $"module Test\nlet f (v: int) (lo: int) (hi: int) =\n    match v with\n    | x when x >= lo && x <= hi -> Some x\n    | _ -> {arm}"
+
+    Assert.Single(notes "None") |> ignore
+
+    Assert.Single(notes "raise (System.ArgumentOutOfRangeException \"v\")")
+    |> ignore
+
+    Assert.Single(
+        guardNotesIn
+            "module Test\nlet f (v: int) (lo: int) (hi: int) =\n    match v with\n    | x when x >= lo && x <= hi -> Ok x\n    | _ -> Error \"out of range\""
+    )
+    |> ignore
+
+[<Fact>]
+let ``FR0115: a wildcard computing a value is an alternative, not an error arm`` () =
+    // FCS CheckFormatStrings: `| _ -> None, fmtPos` (a tuple carrying None
+    // is a result); fsdocs ProjectCracker: the wildcard probes further;
+    // the generated lexer: the wildcard is the next state
+    Assert.Empty(
+        guardNotesIn
+            "module Test\nlet f (v: int) (lo: int) (hi: int) =\n    match v with\n    | x when x >= lo && x <= hi -> Some x, 1\n    | _ -> None, 0"
+    )
+
+    Assert.Empty(
+        guardNotesIn
+            "module Test\nlet f (v: int) (lo: int) (hi: int) =\n    match v with\n    | x when x >= lo && x <= hi -> \"base\"\n    | _ -> \"err\""
+    )
+
+[<Fact>]
 let ``a simple guard is not noted`` () =
     Assert.Empty(
         guardNotesIn
-            "module Test\nlet f (v: int) (lo: int) =\n    match v with\n    | x when x >= lo -> \"base\"\n    | _ -> \"err\""
+            "module Test\nlet f (v: int) (lo: int) =\n    match v with\n    | x when x >= lo -> \"base\"\n    | _ -> failwith \"err\""
     )
 
 // ---- FR0116 rec group extraction ----
@@ -765,7 +802,9 @@ let ``a member that builds no record leaves without annotations`` () =
         + "let rec run (m: Model) (p: Picker) : int =\n    if m.Name = \"\" then 0 else (bump 1 p)\nand bump register p =\n    p.Index + register"
 
     match recGroupsTyped source with
-    | [ s ] -> Assert.StartsWith("let bump register p =", s.InsertText)
+    // `p.Index` on a bare parameter: alone, the label would resolve to the
+    // LAST record carrying it, so the header names the group's own type
+    | [ s ] -> Assert.StartsWith("let bump (register: int) (p: Picker) : int =", s.InsertText)
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -800,3 +839,114 @@ let ``a member testing the type of a bare parameter leaves with its header writt
 
     // without the typed tree there is nothing to write out: it stays
     Assert.Empty(recGroupsIn source)
+
+[<Fact>]
+let ``a member reading a shared record label off a bare parameter leaves with its header written out`` () =
+    // the F# compiler's Optimizer.fs: several records carry `Info` and
+    // `settings`; a member pulled out with bare parameters resolved the label
+    // to the wrong record ("Lookup on object of indeterminate type")
+    let source =
+        sharedLabels
+        + "let rec run (m: Model) (p: Picker) : int =\n    if m.Name = \"\" then 0 else (pending 1 m)\nand pending register m =\n    match m.Pending with\n    | Some v -> v + register\n    | None -> register"
+
+    match recGroupsTyped source with
+    | [ s ] ->
+        Assert.StartsWith("let pending (register: int) (m: Model) : int =", s.InsertText)
+        let patched = applyEdit source s.RemoveRange ""
+        let patched = applyEdit patched s.InsertRange s.InsertText
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``a member of a file with a signature leaves with its header written out`` () =
+    // the F# compiler's `and accFreeInTupInfo _opts unt acc`: alone, the
+    // parameters the body never constrains generalise, and the .fsi's
+    // concrete types then fail FS0034
+    let signature =
+        "module Test\ntype Opts = { Deep: bool }\nval walk: Opts -> int -> int list -> int list\nval keep: Opts -> int -> int list -> int list"
+
+    let implementation =
+        "module Test\ntype Opts = { Deep: bool }\nlet rec walk (opts: Opts) (n: int) (acc: int list) : int list =\n    if n = 0 then acc else walk opts (n - 1) (keep opts n acc)\nand keep _opts n acc = n :: acc"
+
+    let tree, sourceText, check, baseline, recheck =
+        parseAndCheckSigned signature implementation
+
+    Assert.Empty baseline
+
+    // FCS reports the generalisation against the signature — the pass
+    // check can rely on it
+    let bare =
+        "module Test\ntype Opts = { Deep: bool }\nlet keep _opts n acc = n :: acc\nlet rec walk (opts: Opts) (n: int) (acc: int list) : int list =\n    if n = 0 then acc else walk opts (n - 1) (keep opts n acc)"
+
+    Assert.Contains(recheck bare, fun e -> e.StartsWith "FS0034")
+
+    match RecGroup.find (Some check) tree sourceText with
+    | [ s ] ->
+        Assert.StartsWith("let keep (_opts: Opts) (n: int) (acc: int list) : int list =", s.InsertText)
+        let patched = applyEdit implementation s.RemoveRange ""
+        let patched = applyEdit patched s.InsertRange s.InsertText
+        Assert.Empty(recheck patched)
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``FR0111: the moved block's elif chain and else dedent with it`` () =
+    // fsharplint's AstInfo.fs, suave's Bytes.fs: the block kept its old
+    // depth and the trailing `else` landed deeper than its `elif`
+    let source =
+        "module Test\nlet f (x: int) (y: int) =\n    if x = 1 then\n        0\n    else\n        if y = 2 then\n            1\n        elif y = 3 then\n            2\n        else\n            3"
+
+    match elseIfsIn source with
+    | [ s ] ->
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+        Assert.Equal(
+            "module Test\nlet f (x: int) (y: int) =\n    if x = 1 then\n        0\n    elif y = 2 then\n        1\n    elif y = 3 then\n        2\n    else\n        3",
+            patched
+        )
+    | other -> failwithf "Expected one elif suggestion, got %A" other
+
+[<Fact>]
+let ``FR0111: an if on the else's own line is already flat and only the keyword changes`` () =
+    let source =
+        "module Test\nlet f (x: int) (y: int) =\n    if x = 1 then 0\n    else if y = 2 then 1\n    else 2"
+
+    match elseIfsIn source with
+    | [ s ] ->
+        let patched = applyEdit source s.Range s.ReplacementText
+
+        Assert.Equal(
+            "module Test\nlet f (x: int) (y: int) =\n    if x = 1 then 0\n    elif y = 2 then 1\n    else 2",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one elif suggestion, got %A" other
+
+[<Fact>]
+let ``a member leaves without the next member's doc comment`` () =
+    // the F# compiler's Optimizer.fs: five members moved out took the ///
+    // of the member after them along, leaving orphaned docs
+    let source =
+        "module Test\nlet rec run (n: int) : int = if n = 0 then 0 else helper n\n/// doc of helper\nand helper (n: int) : int = n - 1\n/// doc of last\nand last (n: int) : int = run n"
+
+    match recGroupsTyped source with
+    | [ s ] ->
+        Assert.Equal("helper", s.MemberName)
+        let patched = applyEdit source s.RemoveRange ""
+        let patched = applyEdit patched s.InsertRange s.InsertText
+        Assert.Contains("/// doc of last\nand last", patched)
+        Assert.Contains("/// doc of helper\nlet helper", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``a member whose name appears only in a string is not recursive`` () =
+    // the F# compiler kept `let rec` on fifteen extracted functions whose
+    // only "self-call" was a failwith message naming them
+    let source =
+        "module Test\nlet rec run (n: int) : int = if n = 0 then 0 else helper n\nand helper (n: int) : int = if n < 0 then failwith \"helper: negative\" else n - 1"
+
+    match recGroupsTyped source with
+    | [ s ] -> Assert.StartsWith("let helper", s.InsertText)
+    | other -> failwithf "Expected one extraction, got %A" other

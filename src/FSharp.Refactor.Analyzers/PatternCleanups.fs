@@ -37,16 +37,25 @@ type TupleInListSuggestion =
         Elements: int
     }
 
-let private resolvesToUnionCase (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =
+/// The field count of the union case the identifier names, None for
+/// anything else. The count matters: `Case(_)` on a case that takes NO
+/// data is accepted, but `Case _` is not ("Pattern discard is not allowed
+/// for union case that takes no data" — fsharplint's SynMemberKind
+/// matches), so a nullary case drops the wildcard altogether.
+let private unionCaseFields (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
     match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
-        | :? FSharpUnionCase -> true
-        | _ -> false
-    | None -> false
+        | :? FSharpUnionCase as uc ->
+            (try
+                Some uc.Fields.Count
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 None)
+        | _ -> None
+    | None -> None
 
 /// Find all three. Requires typed check results for the union-case gate.
 let find
@@ -83,16 +92,19 @@ let find
                         | _ -> false)
                 | SynPat.Wild _ -> true
                 | _ -> false)
-            && resolvesToUnionCase check source (List.last ids)
             ->
-            let caseEnd = (List.last ids).idRange.End
-            let editRange = Range.mkRange p.Range.FileName caseEnd p.Range.End
+            match unionCaseFields check source (List.last ids) with
+            | Some fields ->
+                let caseEnd = (List.last ids).idRange.End
+                let editRange = Range.mkRange p.Range.FileName caseEnd p.Range.End
 
-            wilds.Add
-                { Range = editRange
-                  OriginalText = textOfRange source editRange
-                  ReplacementText = " _"
-                  CaseName = (List.last ids).idText }
+                wilds.Add
+                    { Range = editRange
+                      OriginalText = textOfRange source editRange
+                      // a nullary case takes no wildcard at all
+                      ReplacementText = if fields = 0 then "" else " _"
+                      CaseName = (List.last ids).idText }
+            | None -> ()
         | _ -> ()
 
     // FR0089: [ 1, 2 ] — the whole literal is one tuple. Only ALL-NUMERIC
@@ -111,10 +123,100 @@ let find
         | SyntaxNode.SynExpr(SynExpr.App(flag = ExprAtomicFlag.Atomic; argExpr = arg)) :: _ -> arg.Range = e.Range
         | _ -> false
 
+    // A literal whose EXPECTED type is a tuple collection is the one-entry
+    // table it looks like: `Map.ofList [ k, v ]`, `dict [ 1, 1 ]`, a user
+    // function taking `(int * int) list`, or an annotation spelling the
+    // tuple out (Mibo: 37 such notes, every one a one-entry map). The
+    // literal's OWN type is always a tuple list, so the slot it fills —
+    // the resolved parameter, or the annotation — is what is asked.
+    let rec synTypeHasTuple (t: SynType) =
+        match t with
+        | SynType.Tuple _ -> true
+        | SynType.Paren(innerType = inner)
+        | SynType.Array(elementType = inner) -> synTypeHasTuple inner
+        | SynType.App(typeName = name; typeArgs = args) -> synTypeHasTuple name || args |> List.exists synTypeHasTuple
+        | _ -> false
+
+    let typeHasTuple (t: FSharpType) =
+        try
+            let t = OptionModule.stripAbbreviations t
+
+            t.IsTupleType
+            || t.IsStructTupleType
+            || t.GenericArguments
+               |> Seq.exists (fun a ->
+                   let a = OptionModule.stripAbbreviations a
+                   a.IsTupleType || a.IsStructTupleType)
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+
+    // the function head and how many arguments are already applied
+    // before the slot: `f a [..]` and `[..] |> f a` both fill position 1
+    let rec unwind (fn: SynExpr) (applied: int) =
+        match fn with
+        | SynExpr.App(isInfix = false; funcExpr = inner) -> unwind inner (applied + 1)
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.TypeApp(expr = inner) -> unwind inner applied
+        | SynExpr.Ident id -> Some(id, applied)
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids, applied)
+        | _ -> None
+
+    let parameterExpectsTuple (fn: SynExpr) (tupledIndex: int option) =
+        match unwind fn 0 with
+        | Some(head, position) ->
+            let r = head.idRange
+            let lineText = source.GetLineString(r.EndLine - 1)
+
+            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ head.idText ]) with
+            | Some symbolUse ->
+                match symbolUse.Symbol with
+                | :? FSharpMemberOrFunctionOrValue as mfv ->
+                    (try
+                        let groups = mfv.CurriedParameterGroups
+
+                        if position < groups.Count then
+                            let group = groups.[position]
+
+                            match tupledIndex with
+                            | Some i when i < group.Count -> typeHasTuple group.[i].Type
+                            | Some _ -> false
+                            | None -> group.Count = 1 && typeHasTuple group.[0].Type
+                        else
+                            false
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         false)
+                | _ -> false
+            | None -> false
+        | None -> false
+
+    let expectsTuples (path: SyntaxNode list) (e: SynExpr) =
+        let isE (x: SynExpr) = x.Range = e.Range
+
+        match path with
+        // f [ k, v ]  /  f (a, [ k, v ])  /  f ([ k, v ])
+        | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = fn; argExpr = arg)) :: _ when isE arg ->
+            parameterExpectsTuple fn None
+        | SyntaxNode.SynExpr(SynExpr.Paren(expr = inner)) :: SyntaxNode.SynExpr(SynExpr.App(
+            isInfix = false; funcExpr = fn)) :: _ when isE inner -> parameterExpectsTuple fn None
+        | SyntaxNode.SynExpr(SynExpr.Tuple(exprs = elems)) :: SyntaxNode.SynExpr(SynExpr.Paren _) :: SyntaxNode.SynExpr(SynExpr.App(
+            isInfix = false; funcExpr = fn)) :: _ -> parameterExpectsTuple fn (elems |> List.tryFindIndex isE)
+        // [ k, v ] |> f a
+        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = IdentName "op_PipeRight"; argExpr = arg)) :: SyntaxNode.SynExpr(SynExpr.App(
+            argExpr = fn)) :: _ when isE arg -> parameterExpectsTuple fn None
+        // ([ k, v ] : (int * int) list)  /  let xs: (int * int) list = [ k, v ]
+        | SyntaxNode.SynExpr(SynExpr.Typed(expr = inner; targetType = ty)) :: _ when isE inner -> synTypeHasTuple ty
+        | SyntaxNode.SynBinding(SynBinding(returnInfo = Some(SynBindingReturnInfo(typeName = ty)); expr = body)) :: _ when
+            isE body
+            ->
+            synTypeHasTuple ty
+        | _ -> false
+
     for path, e in index.Exprs do
         match e with
         | SynExpr.ArrayOrListComputed(expr = SynExpr.Tuple(isStruct = false; exprs = elems)) when
             not (inIndexPosition path e)
+            && not (expectsTuples path e)
             && elems.Length >= 2
             && elems
                |> List.forall (fun el ->

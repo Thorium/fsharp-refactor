@@ -285,6 +285,54 @@ let private callbackMayWrite (source: ISourceText) (path: SyntaxNode list) (sour
         | SynExpr.MatchLambda _ -> false
         | _ -> sourceName |> Option.exists mentions)
 
+/// Is the pipeline's source ALREADY the collection the conversion
+/// produces? Then the conversion is at most a copy, and moving the
+/// operation in front of it trades a tight Array/List pass for a lazy Seq
+/// walk: fsharplint's `identifier.idText.Split('|') |> Seq.toArray |>
+/// Array.filter ..` became `.. |> Seq.filter .. |> Seq.toArray`, a
+/// pessimisation on an input that was an array all along. The rule is
+/// syntactic, so the shapes are read off the text: an array/list literal
+/// of the target kind, a .NET method that returns an array (Split,
+/// ToArray, ToCharArray, GetFiles, GetDirectories) or a List (ToList),
+/// or the target module's own function feeding the conversion.
+let private alreadyMaterialised (targetModule: string) (sourceExpr: SynExpr) =
+    let arrayMethods =
+        set [ "Split"; "ToArray"; "ToCharArray"; "GetFiles"; "GetDirectories" ]
+
+    let listMethods = set [ "ToList" ]
+
+    let rec calleeName (e: SynExpr) =
+        match e with
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome (List.last ids).idText
+        | SynExpr.TypeApp(expr = inner) -> calleeName inner
+        | _ -> ValueNone
+
+    let producesTarget (e: SynExpr) =
+        match e with
+        | SynExpr.ArrayOrList(isArray = isArray)
+        | SynExpr.ArrayOrListComputed(isArray = isArray) -> (if isArray then "Array" else "List") = targetModule
+        | SynExpr.App(isInfix = false; funcExpr = callee) ->
+            let byMethod =
+                match calleeName callee with
+                | ValueSome name ->
+                    (targetModule = "Array" && arrayMethods.Contains name)
+                    || (targetModule = "List" && listMethods.Contains name)
+                | ValueNone -> false
+
+            let byModule =
+                match headModuleFunc e with
+                | ValueSome(m, _, _) -> m = targetModule
+                | ValueNone -> false
+
+            byMethod || byModule
+        | _ -> false
+
+    match stripParens sourceExpr with
+    // `xs |> Array.map f |> Seq.toArray |> ..`: the last stage decides
+    | PipeApp(_, lastStage) -> producesTarget (stripParens lastStage)
+    | e -> producesTarget e
+
 /// Find pipeline segments `conv |> Module.op args` that can be rewritten.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
@@ -325,6 +373,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 (movable || consuming)
                                 && opAllowedForModules opFunc sourceModule targetModule
                                 && safeUnderCallback
+                                // a source that already IS the target kind
+                                // gains nothing from a lazy detour — not
+                                // even for a consuming drop, where
+                                // `Seq.length` over the array would walk
+                                // what `Array.length` reads in O(1)
+                                && not (alreadyMaterialised targetModule sourceExpr)
                             then
                                 let argsText =
                                     textOfRange
@@ -337,7 +391,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     if consuming then
                                         rewrittenOp
                                     else
-                                        rewrittenOp + " |> " + textOfRange source convStage.Range
+                                        // the two stages keep the layout they had: a
+                                        // one-op-per-line pipeline stays that way
+                                        // (fsharp.formatting's fantomas check rejected
+                                        // the joined line), a one-liner stays one
+                                        let glue =
+                                            textOfRange
+                                                source
+                                                (Range.mkRange
+                                                    convStage.Range.FileName
+                                                    convStage.Range.End
+                                                    opStage.Range.Start)
+
+                                        let glue = if glue.Contains "|>" then glue else " |> "
+
+                                        rewrittenOp + glue + textOfRange source convStage.Range
 
                                 let fullRange =
                                     Range.mkRange convStage.Range.FileName convStage.Range.Start opStage.Range.End

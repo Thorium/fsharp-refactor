@@ -26,6 +26,22 @@ let ``Wait inside an async is flagged`` () =
     | other -> failwithf "Expected exactly one Wait site, got %A" other
 
 [<Fact>]
+let ``a wait in a thread-choreographed function gets no boundary note`` () =
+    // the body hands work to a thread and waits on a signal; "wrap it in
+    // task { }" is the advice FR0142 refuses for the same body
+    Assert.Empty(
+        blockingIn
+            "open System.Threading\nopen System.Threading.Tasks\nlet f () =\n    let signal = new ManualResetEventSlim(false)\n    let worker = Task.Run(fun () -> signal.Set())\n    signal.Wait()\n    worker.Wait()"
+    )
+
+    // the same wait without the choreography keeps its note
+    match
+        blockingIn "open System.Threading.Tasks\nlet g () =\n    let worker = Task.Run(fun () -> 1)\n    worker.Wait()"
+    with
+    | [ s ] -> Assert.Equal(SyncOverAsync.BlockKind.TaskWait, s.Kind)
+    | other -> failwithf "Expected exactly one boundary Wait site, got %A" other
+
+[<Fact>]
 let ``GetResult outside any CE is still an antipattern`` () =
     match blockingIn "let f (t: System.Threading.Tasks.Task<int>) = t.GetAwaiter().GetResult()" with
     | [ s ] ->
@@ -91,13 +107,13 @@ let ``sum accumulation becomes Seq sum`` () =
 let ``projected sum becomes sumBy`` () =
     assertFold
         "let f (xs: int list) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x * x\n    total"
-        "let total = xs |> List.sumBy (fun x -> x * x)"
+        "xs |> List.sumBy (fun x -> x * x)"
 
 [<Fact>]
 let ``general combine becomes a fold`` () =
     assertFold
         "let f (xs: int list) =\n    let mutable best = 1\n    for x in xs do\n        best <- max best (x % 7)\n    best"
-        "let best = xs |> List.fold (fun best x -> max best (x % 7)) 1"
+        "xs |> List.fold (fun best x -> max best (x % 7)) 1"
 
 [<Fact>]
 let ``reassignment after the loop keeps the mutable`` () =
@@ -307,6 +323,137 @@ let ``deliberately ignoring a specific exception is fine`` () =
             "module Test\nlet f (act: unit -> unit) =\n    try act ()\n    with :? System.OperationCanceledException -> ()"
     )
 
+[<Fact>]
+let ``a catch-all after a rethrown cancellation is not blind`` () =
+    // the compiler's NameResolution: `:? OperationCanceledException ->
+    // reraise ()` first, then `_ -> None`
+    Assert.Empty(
+        swallowedIn
+            "module Test\nlet f (act: unit -> int) =\n    try\n        Some(act ())\n    with\n    | :? System.OperationCanceledException -> reraise ()\n    | _ -> None"
+    )
+
+[<Fact>]
+let ``a catch-all followed by an unconditional failure converts the swallow into a failure`` () =
+    // DiagnosticsLogger's exiter: `try Environment.Exit n with _ -> ()`
+    // and then a failwith — the exception is replaced, not lost
+    Assert.Empty(
+        swallowedIn
+            "module Test\nlet exit (n: int) : int =\n    try\n        System.Environment.Exit n\n    with _ ->\n        ()\n\n    failwith \"exit did not exit\""
+    )
+
+[<Fact>]
+let ``a one-call teardown body is the best-effort release idiom`` () =
+    // Suave's `try acceptSocket.Shutdown ... with _ -> ()`, `try
+    // s.Dispose(); s <- null with _ -> ()`, `try File.Delete p with _ -> ()`
+    let teardownOf (source: string) =
+        match swallowedIn source with
+        | [ s ] -> s.Teardown
+        | other -> failwithf "Expected exactly one swallow note, got %A" other
+
+    Assert.True(teardownOf "module Test\nlet close (s: System.IO.Stream) =\n    try s.Dispose() with _ -> ()")
+
+    Assert.True(
+        teardownOf
+            "module Test\ntype T() =\n    let mutable s: System.IO.Stream = null\n    member _.Close() =\n        try\n            s.Dispose()\n            s <- null\n        with _ -> ()"
+    )
+
+    Assert.True(teardownOf "module Test\nlet cleanup (p: string) =\n    try System.IO.File.Delete p with ex -> ()")
+
+    // a call to anything else is a swallow around real work
+    Assert.False(teardownOf "module Test\nlet f (act: unit -> unit) =\n    try act () with _ -> ()")
+
+    Assert.False(
+        teardownOf
+            "module Test\nlet f (s: System.IO.Stream) (bytes: byte[]) =\n    try s.Write(bytes, 0, bytes.Length) with _ -> ()"
+    )
+
+[<Fact>]
+let ``a fallback that is a variable, a sentinel or a tuple carrying a default disguises the failure`` () =
+    // fsi: `with _ -> path`, `with _ -> (istate, Completed None)`; fsdocs:
+    // `with _ -> DateTime.MaxValue`, `with _ -> Int32.MaxValue`
+    let fallbackOf (source: string) =
+        match swallowedIn source with
+        | [ s ] -> s.FallbackText
+        | other -> failwithf "Expected exactly one swallow note, got %A" other
+
+    Assert.Equal(
+        Some "path",
+        fallbackOf
+            "module Test\nlet create (path: string) =\n    try\n        System.IO.Directory.CreateDirectory path |> ignore\n        path\n    with _ ->\n        path"
+    )
+
+    Assert.Equal(
+        Some "(state, Completed None)",
+        fallbackOf
+            "module Test\ntype Step =\n    | Completed of int option\nlet run (state: int) (f: int -> int * Step) =\n    try f state\n    with _ -> (state, Completed None)"
+    )
+
+    Assert.Equal(
+        Some "System.Int32.MaxValue",
+        fallbackOf "module Test\nlet index (s: string) =\n    try int32 s\n    with _ -> System.Int32.MaxValue"
+    )
+
+    Assert.Equal(
+        Some "System.DateTime.MaxValue",
+        fallbackOf
+            "module Test\nlet stamp (p: string) =\n    try\n        let fi = System.IO.FileInfo p\n        System.IO.File.GetLastWriteTime fi.FullName\n    with _ ->\n        System.DateTime.MaxValue"
+    )
+
+    // a tuple of plain names carries no default: it is a computed answer
+    Assert.Empty(
+        swallowedIn
+            "module Test\nlet run (state: int) (other: int) (f: int -> int * int) =\n    try f state\n    with _ -> (state, other)"
+    )
+
+[<Fact>]
+let ``a guard that never looks at the exception still swallows every one`` () =
+    // fsdocs: `with _ when watch -> ()`
+    match
+        swallowedIn
+            "module Test\nlet copy (watch: bool) (src: string) (dst: string) =\n    try System.IO.File.Copy(src, dst, true)\n    with _ when watch -> ()"
+    with
+    | [ s ] -> Assert.Equal("_ when watch", s.PatternText)
+    | other -> failwithf "Expected exactly one guarded swallow note, got %A" other
+
+    // a guard on the exception itself is a decision
+    Assert.Empty(
+        swallowedIn
+            "module Test\nlet copy (src: string) (dst: string) =\n    try System.IO.File.Copy(src, dst, true)\n    with ex when ex.Message.Contains \"locked\" -> ()"
+    )
+
+[<Fact>]
+let ``a try around a probe that answers for a missing path should go`` () =
+    // fsdocs: `try File.Exists p with _ -> false`, `try File.GetLastWriteTime
+    // p with _ -> DateTime.MaxValue`
+    let probeOf (source: string) =
+        match swallowedIn source with
+        | [ s ] -> s.Probe
+        | other -> failwithf "Expected exactly one swallow note, got %A" other
+
+    Assert.Equal(
+        Some "File.Exists",
+        probeOf "module Test\nlet has (p: string) =\n    try System.IO.File.Exists p\n    with _ -> false"
+    )
+
+    Assert.Equal(
+        Some "Directory.Exists",
+        probeOf
+            "module Test\nlet has (p: string) =\n    (try\n        System.IO.Directory.Exists(p)\n     with _ ->\n        false)"
+    )
+
+    Assert.Equal(
+        Some "File.GetLastWriteTime",
+        probeOf
+            "module Test\nlet stamp (p: string) =\n    try System.IO.File.GetLastWriteTime p\n    with _ -> System.DateTime.MaxValue"
+    )
+
+    // a body doing more than the probe is not a probe
+    Assert.Equal(
+        None,
+        probeOf
+            "module Test\nlet stamp (p: string) =\n    try\n        let fi = System.IO.FileInfo p\n        System.IO.File.GetLastWriteTime fi.FullName\n    with _ ->\n        System.DateTime.MaxValue"
+    )
+
 // ---- FR0054 RaiseInSpecialMember ----
 
 let private objectRulesIn (source: string) =
@@ -482,7 +629,7 @@ let ``a string accumulator becomes String.concat, not a quadratic fold`` () =
             "module Test\nlet joinAll (xs: string list) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + x\n    acc"
 
     match folds with
-    | [ s ] -> Assert.Equal("let acc = xs |> String.concat \"\"", s.ReplacementText)
+    | [ s ] -> Assert.Equal("xs |> String.concat \"\"", s.ReplacementText)
     | other -> failwithf "Expected exactly one string-concat fold, got %A" other
 
 [<Fact>]
@@ -492,7 +639,7 @@ let ``a projected string accumulator maps then concats`` () =
             "module Test\nlet render (xs: int list) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + string x\n    acc"
 
     match folds with
-    | [ s ] -> Assert.Equal("let acc = xs |> List.map (fun x -> string x) |> String.concat \"\"", s.ReplacementText)
+    | [ s ] -> Assert.Equal("xs |> List.map (fun x -> string x) |> String.concat \"\"", s.ReplacementText)
     | other -> failwithf "Expected exactly one mapped string concat, got %A" other
 
 [<Fact>]
@@ -502,7 +649,7 @@ let ``a non-empty seed prefixes the concatenation`` () =
             "module Test\nlet render (xs: string list) =\n    let mutable acc = \"head:\"\n    for x in xs do\n        acc <- acc + x\n    acc"
 
     match folds with
-    | [ s ] -> Assert.Equal("let acc = \"head:\" + (xs |> String.concat \"\")", s.ReplacementText)
+    | [ s ] -> Assert.Equal("\"head:\" + (xs |> String.concat \"\")", s.ReplacementText)
     | other -> failwithf "Expected exactly one seeded string concat, got %A" other
 
 [<Fact>]
@@ -583,7 +730,7 @@ let ``a plain seq source still sums with the Seq module`` () =
     // seq has nothing better than Seq.sum
     assertFold
         "let f (xs: int seq) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x\n    total"
-        "let total = xs |> Seq.sum"
+        "xs |> Seq.sum"
 
 [<Fact>]
 let ``quadratic string building in a while loop is noted`` () =
@@ -624,7 +771,7 @@ let ``a seq source materializes before String concat`` () =
     // 1000 pieces against 2.6µs/2KB once materialized
     assertFold
         "let render (xs: int seq) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + string x\n    acc"
-        "let acc = xs |> Seq.map (fun x -> string x) |> Seq.toArray |> String.concat \"\""
+        "xs |> Seq.map (fun x -> string x) |> Seq.toArray |> String.concat \"\""
 
 [<Fact>]
 let ``a pure let prefix folds into the exists lambda`` () =
@@ -1042,13 +1189,13 @@ let private applyTaskify (source: string) (s: Taskify.Suggestion) =
 [<Fact>]
 let ``a private boundary drain becomes a task and its caller awaits`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.FromResult x\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
 
     match taskifyIn source with
     | [ s ] ->
         Assert.Equal("fetch", s.Name)
         let patched = applyTaskify source s
-        Assert.Contains("    task {\n        let t = Task.FromResult x\n        return! t\n    }", patched)
+        Assert.Contains("    task {\n        let t = Task.Run(fun () -> x)\n        return! t\n    }", patched)
         Assert.Contains("let! s = fetch 1", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one taskify suggestion, got %A" other
@@ -1056,7 +1203,7 @@ let ``a private boundary drain becomes a task and its caller awaits`` () =
 [<Fact>]
 let ``an async caller bridges with Async.AwaitTask`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.FromResult x\n    t.GetAwaiter().GetResult()\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
+        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
 
     match taskifyIn source with
     | [ s ] ->
@@ -1068,7 +1215,7 @@ let ``an async caller bridges with Async.AwaitTask`` () =
 [<Fact>]
 let ``a return-position caller becomes return-bang`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.FromResult x\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    return fetch 3\n}"
+        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    return fetch 3\n}"
 
     match taskifyIn source with
     | [ s ] ->
@@ -1081,21 +1228,21 @@ let ``a return-position caller becomes return-bang`` () =
 let ``a public function is a wider refactor and stays`` () =
     Assert.Empty(
         taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet fetch (x: int) =\n    let t = Task.FromResult x\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+            "module Test\nopen System.Threading.Tasks\nlet fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
     )
 
 [<Fact>]
 let ``a caller outside any CE vetoes the rewrite`` () =
     Assert.Empty(
         taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.FromResult x\n    t.GetAwaiter().GetResult()\nlet consume () = fetch 1 + 1"
+            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = fetch 1 + 1"
     )
 
 [<Fact>]
 let ``a caller under a lambda inside the CE vetoes the rewrite`` () =
     Assert.Empty(
         taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.FromResult x\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let xs = [ 1; 2 ] |> List.map (fun i -> fetch i)\n    return xs\n}"
+            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let xs = [ 1; 2 ] |> List.map (fun i -> fetch i)\n    return xs\n}"
     )
 
 [<Fact>]
@@ -1108,7 +1255,7 @@ let ``a blocking site under a lambda in the body vetoes the rewrite`` () =
 [<Fact>]
 let ``an internal boundary drain taskifies across files under api-changes`` () =
     let sourceA =
-        "module A\nlet internal fetch (x: int) =\n    let t = System.Threading.Tasks.Task.FromResult x\n    t.GetAwaiter().GetResult()"
+        "module A\nlet internal fetch (x: int) =\n    let t = System.Threading.Tasks.Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()"
 
     let sourceB =
         "module B\nlet consume () = task {\n    let s = A.fetch 1\n    return s\n}"
@@ -1145,7 +1292,7 @@ let ``an internal boundary drain taskifies across files under api-changes`` () =
 [<Fact>]
 let ``an internal drain without api-changes stays a note`` () =
     let sourceA =
-        "module A\nlet internal fetch2 (x: int) =\n    let t = System.Threading.Tasks.Task.FromResult x\n    t.GetAwaiter().GetResult()"
+        "module A\nlet internal fetch2 (x: int) =\n    let t = System.Threading.Tasks.Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()"
 
     let sourceB =
         "module B\nlet consume () = task {\n    let s = A.fetch2 1\n    return s\n}"
@@ -1543,3 +1690,454 @@ let ``FR0049: a bounded Wait and a Result after WaitForExit outside a CE are the
 
     // an unbounded Wait outside a CE is still the boundary note
     Assert.NotEmpty(blockingIn "let stop (t: System.Threading.Tasks.Task) = t.Wait()")
+
+[<Fact>]
+let ``FR0055: the IO-only catch is offered for a body that is the IO call, not a block that mentions a path`` () =
+    // Kasino: a multi-line block computing a path, then calling native SDL —
+    // narrowing to IOException would let the native failures through
+    let block =
+        "module Test\nlet icon (dir: string) =\n    try\n        let p = System.IO.Path.Combine(dir, \"icon.png\")\n        let handle = System.Runtime.InteropServices.GCHandle.Alloc(p)\n        handle.Free()\n    with _ -> ()"
+
+    match swallowedIn block with
+    | [ s ] -> Assert.Empty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
+    | other -> failwithf "Expected one finding, got %A" other
+
+    let single =
+        "module Test\nlet firstFont (dir: string) =\n    try System.IO.Directory.GetFiles(dir, \"*.ttf\") |> Array.tryHead with _ -> None"
+
+    match swallowedIn single with
+    | [ s ] -> Assert.NotEmpty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
+    | other -> failwithf "Expected one finding, got %A" other
+
+
+[<Fact>]
+let ``FR0055: the log line lands above a fallback that already sits on its own line`` () =
+    // prismatic: `with _ ->` then `false` on the next line gained a blank
+    // line and an over-indented pair
+    let source =
+        "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet isActive (logger: ILogger) (pid: int) =\n    logger.LogError(null, \"started {Pid}\", [| box pid |])\n    try\n        pid > 0\n    with _ ->\n        false"
+
+    match swallowedIn source with
+    | [ s ] ->
+        let offer =
+            s.Offers |> List.find (fun o -> o.Label.StartsWith "Alternative: log it")
+
+        let patched =
+            offer.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Equal(
+            "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet isActive (logger: ILogger) (pid: int) =\n    logger.LogError(null, \"started {Pid}\", [| box pid |])\n    try\n        pid > 0\n    with ex ->\n        logger.LogError(ex, \"Exception: {Message} in method {Method} with parameter {pid}\", ex.Message, \"isActive\", pid)\n        false",
+            patched
+        )
+
+    | other -> failwithf "Expected one finding, got %A" other
+
+[<Fact>]
+let ``FR0055: a comment on the handler is the author's acknowledgement`` () =
+    Assert.Empty(
+        swallowedIn
+            "module Test\nlet f (g: unit -> unit) =\n    try g () with _ -> () // best effort: the icon is cosmetic"
+    )
+
+    Assert.Empty(
+        swallowedIn
+            "module Test\nlet f (g: unit -> int) =\n    try g ()\n    with _ ->\n        0 // the length is not important"
+    )
+
+    Assert.NotEmpty(swallowedIn "module Test\nlet f (g: unit -> int) =\n    try g () with _ -> 0")
+
+[<Fact>]
+let ``FR0055: the log line is offered only where its receiver is in scope`` () =
+    // Fuuga: a `logger` parameter of one function was written into catches
+    // of six functions that have none
+    let source =
+        "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet a (logger: ILogger) (id: int) =\n    logger.LogError(null, \"started {Id}\", [| box id |])\n    try id with _ -> 0\nlet b (x: int) =\n    try x with _ -> 0"
+
+    match swallowedIn source with
+    | [ inA; inB ] ->
+        Assert.NotEmpty(inA.Offers |> List.filter (fun o -> o.Label.StartsWith "Alternative: log it"))
+        Assert.Empty(inB.Offers |> List.filter (fun o -> o.Label.StartsWith "Alternative: log it"))
+    | other -> failwithf "Expected two findings, got %A" other
+
+[<Fact>]
+let ``FR0055: a multi-line body that reads a file and then parses it gets no IO-only catch`` () =
+    // FSharp.Azure.Quantum's loadMolFile: the parse after the read throws
+    // its own exceptions
+    let source =
+        "module Test\nlet loadMolFile (path: string) =\n    try\n        let content = System.IO.File.ReadAllText(path)\n        Some content.Length\n    with\n    | _ -> None"
+
+    match swallowedIn source with
+    | [ s ] -> Assert.Empty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
+    | other -> failwithf "Expected one finding, got %A" other
+
+// ---- FR0050 shape guards (Mibo, the compiler) ----
+
+[<Fact>]
+let ``FR0050: a fold followed by nothing but the accumulator collapses into the expression`` () =
+    // `let flags = .. |> Array.fold ..` was left with a bare `flags` line
+    // after it on Mibo and the compiler: binding and use are the expression
+    let source =
+        "let f (xs: int[]) =\n    let mutable flags = 0\n    for x in xs do\n        flags <- flags ||| x\n    flags"
+
+    match accumulationIn source with
+    | [ s ], _ ->
+        Assert.Equal("xs |> Array.fold (fun flags x -> flags ||| x) 0", s.ReplacementText)
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.Equal("let f (xs: int[]) =\n    xs |> Array.fold (fun flags x -> flags ||| x) 0", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one fold suggestion, got %A" other
+
+[<Fact>]
+let ``FR0050: an annotated mutable keeps its annotation on the folded binding`` () =
+    // Mibo's `let mutable sum: IAdaptiveValue<int> = ..` lost its annotation
+    let source =
+        "let f (xs: int list) =\n    let mutable total: int64 = 0L\n    for x in xs do\n        total <- total + int64 x\n    total"
+
+    match accumulationIn source with
+    | [ s ], _ ->
+        Assert.Equal("let total: int64 = xs |> List.fold (fun total x -> total + int64 x) 0L", s.ReplacementText)
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.EndsWith("\n    total", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one fold suggestion, got %A" other
+
+[<Fact>]
+let ``FR0050: a fold that would land past column 100 is withheld`` () =
+    let folds, _ =
+        accumulationIn
+            "let f (xs: int list) =\n    let mutable accumulatedRunningTotalOfEverything = 1\n    for element in xs do\n        accumulatedRunningTotalOfEverything <- max accumulatedRunningTotalOfEverything (element % 7)\n    accumulatedRunningTotalOfEverything * 2"
+
+    Assert.Empty folds
+
+// ---- FR0118 scheduling calls (suave's Tcp.fs) ----
+
+[<Fact>]
+let ``FR0118: Task.Run never gains the token`` () =
+    // with an already-cancelled token Task.Run never runs the delegate,
+    // so the socket bind and the cell completion inside it never happen
+    Assert.Empty(
+        cancellationIn
+            "open System\nopen System.Threading\nopen System.Threading.Tasks\nlet start (ct: CancellationToken) =\n    Task.Run(Func<Task>(fun () -> Task.CompletedTask))"
+    )
+
+[<Fact>]
+let ``FR0118: Task.Factory.StartNew never gains the token`` () =
+    Assert.Empty(
+        cancellationIn
+            "open System.Threading\nopen System.Threading.Tasks\nlet start (ct: CancellationToken) =\n    Task.Factory.StartNew(fun () -> 1)"
+    )
+
+[<Fact>]
+let ``FR0118: an explicit None on Task.Run is the author's choice`` () =
+    Assert.Empty(
+        cancellationIn
+            "open System\nopen System.Threading\nopen System.Threading.Tasks\nlet start (ct: CancellationToken) =\n    Task.Run(Func<Task>(fun () -> Task.CompletedTask), CancellationToken.None)"
+    )
+
+
+// ---- FR0119 AwaitableOverload: Dispose has no awaitable twin (fantomas EndToEndTests.fs) ----
+
+[<Fact>]
+let ``FR0119 a Dispose statement inside task is never offered DisposeAsync`` () =
+    // fantomas's EndToEndTests.fs: `File.Create(path).Dispose()` became
+    // `do! File.Create(path).DisposeAsync()` — a ValueTask twin with no
+    // work to await; Dispose stays Dispose
+    let source =
+        "open System.IO\nlet touch (path: string) = task {\n    File.Create(path).Dispose()\n    return 1\n}"
+
+    Assert.Empty(awaitableIn source)
+
+[<Fact>]
+let ``FR0119 a stream flush inside task still becomes do-bang FlushAsync`` () =
+    let source =
+        "open System.IO\nlet flush (stream: Stream) = task {\n    stream.Flush()\n    return 1\n}"
+
+    match awaitableIn source with
+    | [ s ] ->
+        let patched = applyAwaitable source s
+        Assert.Contains("do! stream.FlushAsync()", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one FlushAsync suggestion, got %A" other
+
+// ---- FR0049: tasks known complete, console blocking points, primitives ----
+
+[<Fact>]
+let ``FR0049: a Result read under its own completion probe never waits`` () =
+    // suave's ValueTask fast path: the read happens only when the task is
+    // already complete, the else branch awaits it
+    let fastPath =
+        "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) : ValueTask<int> =\n    if vt.IsCompletedSuccessfully then\n        ValueTask<int>(vt.Result + 1)\n    else\n        ValueTask<int>(task {\n            let! n = vt\n            return n + 1\n        })"
+
+    Assert.Empty(blockingIn fastPath)
+
+    // conjoined, negated, and inside a task { } the same way
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) (fast: bool) =\n    if fast && vt.IsCompleted then vt.Result else 0"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) =\n    if not vt.IsCompletedSuccessfully then 0 else vt.Result"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) = task {\n    if vt.IsCompletedSuccessfully then\n        let _ = vt.Result\n        return 1\n    else\n        let! _ = vt\n        return 2\n}"
+    )
+
+    // a probe on ANOTHER task proves nothing about this one
+    Assert.NotEmpty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet read (a: ValueTask<int>) (b: ValueTask<int>) =\n    if a.IsCompletedSuccessfully then b.Result else 0"
+    )
+
+[<Fact>]
+let ``FR0049: the antecedent of a ContinueWith continuation is complete by definition`` () =
+    // suave's ConnectionFacade and fantomas' LSPFantomasService: the lambda
+    // form; suave's AsyncExtensions and FCS's AsyncMemoize: a named function
+    // never a blocking note: only the AggregateException advice
+    let onlyAntecedentAdvice (source: string) =
+        Assert.All(blockingIn source, (fun s -> Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind)))
+
+    onlyAntecedentAdvice
+        "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith(fun (ante: Task<int>) -> ante.Result + 1)"
+
+    onlyAntecedentAdvice
+        "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) =\n    let routine (finished: Task<int>) =\n        if finished.IsFaulted then 0 else finished.Result\n    t.ContinueWith(routine, TaskScheduler.Default)"
+
+    // another task drained inside the continuation still blocks
+    Assert.NotEmpty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) (other: Task<int>) =\n    t.ContinueWith(fun (ante: Task<int>) -> other.Result + 1)"
+    )
+
+[<Fact>]
+let ``FR0049: a wait in the finally block of an async is named as such and gets no fix`` () =
+    // FCS's DiagnosticsLogger and BuildGraph: `do!` cannot appear in a
+    // finally block, so the bind the plain message asks for cannot compile
+    let source =
+        "module Test\nopen System.Threading.Tasks\nlet f (t: Task) (work: Async<int>) = async {\n    try\n        let! r = work\n        return r\n    finally\n        t.Wait()\n}"
+
+    match blockingIn source with
+    | [ s ] ->
+        Assert.Equal(Some "async", s.Builder)
+        Assert.True s.InFinally
+        Assert.Empty s.Fixes
+    | other -> failwithf "Expected exactly one finally-block site, got %A" other
+
+[<Fact>]
+let ``FR0049: the console's blocking point is not a boundary note`` () =
+    // suave's Http2Demo main, fantomas' DaemonCommand runner (exit code
+    // after the wait), and a script's top-level statements
+    Assert.Empty(
+        blockingIn
+            "module Program\nopen System.Threading.Tasks\n[<EntryPoint>]\nlet main argv =\n    let server = Task.Delay 10\n    server.Wait()\n    0"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Program\nopen System.Threading.Tasks\nlet runDaemon (closed: Task) : int =\n    closed.GetAwaiter().GetResult()\n    0"
+    )
+
+    // the test harness checks every source as Test.fsx: top-level
+    // statements, a for loop included, are the script's main
+    Assert.Empty(
+        blockingIn
+            "open System.Threading.Tasks\nlet run (n: int) = Task.Delay n\n(run 1).Wait()\nfor n in [ 1; 2 ] do\n    (run n).Wait()"
+    )
+
+    // a value-returning helper, a lambda inside main, and a member are
+    // boundaries of their own
+    Assert.NotEmpty(
+        blockingIn
+            "module Program\nopen System.Threading.Tasks\nlet wait (t: Task<int>) = t.GetAwaiter().GetResult()\n[<EntryPoint>]\nlet main argv = wait (Task.FromResult 1)"
+    )
+
+    Assert.NotEmpty(
+        blockingIn
+            "module Program\nopen System.Threading.Tasks\n[<EntryPoint>]\nlet main argv =\n    let handler = fun (t: Task) -> t.Wait()\n    handler (Task.Delay 1)\n    0"
+    )
+
+    Assert.NotEmpty(
+        blockingIn
+            "module Program\nopen System.Threading.Tasks\ntype Runner() =\n    member _.Run(t: Task) =\n        t.Wait()\n        0"
+    )
+
+[<Fact>]
+let ``FR0049: WaitAll with a timeout or a token outside a CE is the bounded idiom`` () =
+    // Mibo's benchmark: `while not (Task.WaitAll(tasks, 1)) do pump ()`
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet pump (tasks: Task[]) =\n    while not (Task.WaitAll(tasks, 1)) do\n        ()"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet pump (tasks: Task[]) (cts: System.Threading.CancellationTokenSource) =\n    Task.WaitAll(tasks, cts.Token)"
+    )
+
+    // two tasks params-style is the unbounded wait
+    Assert.NotEmpty(
+        blockingIn "module Test\nopen System.Threading.Tasks\nlet join (a: Task) (b: Task) =\n    Task.WaitAll(a, b)"
+    )
+
+[<Fact>]
+let ``FR0049: a task complete from birth is drained without a wait`` () =
+    // the test-fixture habit: `.Result` on a `Task.FromResult` stand-in
+    Assert.Empty(blockingIn "module Test\nopen System.Threading.Tasks\nlet v = (Task.FromResult 1).Result")
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet f () =\n    let t = Task.FromResult 1\n    t.Result + 1"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet fixture = Task.FromResult 1\nlet f () = task { return fixture.Result + 1 }"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet f () =\n    let t = ValueTask.FromResult 1\n    t.GetAwaiter().GetResult()"
+    )
+
+    // a task from anywhere else is not known complete
+    Assert.NotEmpty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet f (make: unit -> Task<int>) =\n    let t = make ()\n    t.Result"
+    )
+
+[<Fact>]
+let ``FR0049: a Result read after the receiver's own Wait drains what was waited for`` () =
+    // suave's Testing.send: `send.Wait(timeout, token)` is the bounded wait
+    // two lines above the `send.Result` that only reads the outcome
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet send (t: Task<int>) (timeout: System.TimeSpan) =\n    let completed = t.Wait timeout\n    if not completed then failwith \"timeout\"\n    t.Result"
+    )
+
+    // an unbounded Wait above keeps its own note; the read after it is quiet
+    match
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    t.Wait()\n    return t.Result\n}"
+    with
+    | [ s ] -> Assert.Equal(SyncOverAsync.BlockKind.TaskWait, s.Kind)
+    | other -> failwithf "Expected the Wait alone, got %A" other
+
+[<Fact>]
+let ``FR0049: a synchronisation primitive's wait inside a task is named and left to the author`` () =
+    // Mibo's tests: `doneSignal.Wait()` before `do! worker` in task { }
+    let source =
+        "module Test\nopen System.Threading\nopen System.Threading.Tasks\nlet f (doneSignal: ManualResetEventSlim) (worker: Task) = task {\n    doneSignal.Wait()\n    do! worker\n}"
+
+    match blockingIn source with
+    | [ s ] ->
+        Assert.Equal(SyncOverAsync.BlockKind.PrimitiveWait "ManualResetEventSlim.Wait()", s.Kind)
+        Assert.Equal(Some "task", s.Builder)
+        Assert.Empty s.Fixes
+    | other -> failwithf "Expected one primitive wait, got %A" other
+
+    match
+        blockingIn
+            "module Test\nopen System.Threading\nlet f (sem: SemaphoreSlim) (ev: ManualResetEvent) (th: Thread) = async {\n    sem.Wait()\n    ev.WaitOne() |> ignore\n    th.Join()\n    return 1\n}"
+        |> List.map (fun s -> s.Kind)
+    with
+    | [ SyncOverAsync.BlockKind.PrimitiveWait a
+        SyncOverAsync.BlockKind.PrimitiveWait b
+        SyncOverAsync.BlockKind.PrimitiveWait c ] ->
+        Assert.Equal("SemaphoreSlim.Wait()", a)
+        Assert.Equal("ManualResetEvent.WaitOne()", b)
+        Assert.Equal("Thread.Join()", c)
+    | other -> failwithf "Expected three primitive waits, got %A" other
+
+    // outside a CE the primitives are ordinary synchronous code
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading\nlet f (doneSignal: ManualResetEventSlim) (th: Thread) =\n    doneSignal.Wait()\n    th.Join()"
+    )
+
+[<Fact>]
+let ``a thread-choreographed private drain is not taskified`` () =
+    // the body waits on a signal and continues on that thread; task-returning
+    // it would not — the same refusal as FR0142's
+    let source =
+        "module Test\nopen System.Threading\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let signal = new ManualResetEventSlim(false)\n    let t = Task.Run(fun () -> signal.Set(); x)\n    signal.Wait()\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+
+    Assert.Empty(taskifyIn source)
+
+[<Fact>]
+let ``a thread-choreographed task body gets no async-overload rewrite`` () =
+    let source =
+        "open System.IO\nopen System.Threading\nlet head (reader: TextReader) = task {\n    let signal = new ManualResetEventSlim(false)\n    signal.Wait()\n    let line = reader.ReadLine()\n    return line\n}"
+
+    Assert.Empty(awaitableIn source)
+
+[<Fact>]
+let ``a wait inside a thread-choreographed task body is noted without a fix`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet f () = task {\n    let signal = new ManualResetEventSlim(false)\n    let t = Task.Run(fun () -> signal.Set())\n    signal.Wait()\n    t.Wait()\n    return 1\n}"
+
+    match
+        blockingIn source
+        |> List.filter (fun s -> s.Kind = SyncOverAsync.BlockKind.TaskWait)
+    with
+    | [ s ] ->
+        Assert.Equal(Some "task", s.Builder)
+        Assert.Empty s.Fixes
+    | other -> failwithf "Expected one noted TaskWait site, got %A" other
+
+[<Fact>]
+let ``FR0049: Result on a ContinueWith antecedent is noted for its AggregateException, never as blocking`` () =
+    let source =
+        "open System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith(fun (a: Task<int>) -> a.Result + 1)"
+
+    match blockingIn source with
+    | [ s ] ->
+        Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind)
+        Assert.Empty s.AlternativeFixes
+
+        // the continuation is a bind: the same task { let! } FR0049 writes
+        // everywhere, never a GetAwaiter().GetResult() — the spelling the
+        // rule exists to remove
+        match s.Fixes with
+        | [ (r, _, replacement) ] ->
+            Assert.Equal("task {\n        let! r = t\n        return r + 1\n    }", replacement)
+            let patched = applyEdit source r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected one bind edit, got %A" other
+    | other -> failwithf "Expected exactly one antecedent note, got %A" other
+
+    // without a task builder (FSharp.Core before 6) ContinueWith IS the
+    // bind: nothing is reported
+    let tree, sourceText, checkResults = parseAndCheck source
+    Assert.Empty(SyncOverAsync.findWith false tree sourceText checkResults)
+
+    // a continuation that handles the antecedent itself keeps the note and
+    // gets no rewrite; so does one handed a scheduler
+    let handled =
+        blockingIn
+            "open System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith(fun (a: Task<int>) -> if a.IsFaulted then 0 else a.Result + 1)"
+
+    Assert.All(handled, (fun s -> Assert.Empty s.Fixes))
+
+    let scheduled =
+        blockingIn
+            "open System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith((fun (a: Task<int>) -> a.Result + 1), TaskScheduler.Default)"
+
+    Assert.All(scheduled, (fun s -> Assert.Empty s.Fixes))
+
+[<Fact>]
+let ``FR0049: an antecedent read with no free binder name is noted without a rewrite`` () =
+    // every candidate binder is already a name in the body: the note stands,
+    // the rewrite steps aside (it must not raise out of the analyzer)
+    let source =
+        "open System.Threading.Tasks\nlet f (t: Task<int>) (r: int) (result: int) (aValue: int) =\n    t.ContinueWith(fun (a: Task<int>) -> a.Result + r + result + aValue)"
+
+    match blockingIn source with
+    | [ s ] ->
+        Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind)
+        Assert.Empty s.Fixes
+    | other -> failwithf "Expected exactly one antecedent note, got %A" other

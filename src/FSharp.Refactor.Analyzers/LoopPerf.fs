@@ -161,6 +161,9 @@ let loopBinders (path: SyntaxNode list) =
         | SyntaxNode.SynExpr(LetOrUseE lou) ->
             for SynBinding(headPat = p) in lou.Bindings do
                 binders.AddRange(patBoundNames p)
+        // so may a match arm's pattern: `| Item.AnonRecdField(_, tys, idx,
+        // _) -> tys[idx]` (FCS) binds a fresh `tys` per element
+        | SyntaxNode.SynMatchClause(SynMatchClause(pat = p)) -> binders.AddRange(patBoundNames p)
         | SyntaxNode.SynExpr(SynExpr.Lambda(parsedData = parsedData)) ->
             sawLambda <- true
 
@@ -183,21 +186,39 @@ let loopBinders (path: SyntaxNode list) =
         ValueNone
 
 /// Find per-iteration linear probes and expensive constructions.
-let find (parseTree: ParsedInput) (source: ISourceText) : ContainsSuggestion list * ConstructionSuggestion list =
+///
+/// `allowApiChanges`: the in-place conversion (`|> Set.ofList`) changes
+/// the binding's TYPE — `string list` becomes `Set<string>` — which is an
+/// API change on a public module value. Without the opt-in, only a
+/// private/internal binding converts in place; a public one gets the
+/// private HashSet companion beside it instead, which leaves its type
+/// alone (fsharplint's public `testMethodAttributes` list, in a NuGet
+/// library, was converted to a Set without `--api-changes`).
+let find
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : ContainsSuggestion list * ConstructionSuggestion list =
     let index = AstIndex.ofTree parseTree
     let constructions = ResizeArray<ConstructionSuggestion>()
 
     // module-level immutable single-name bindings: the startup-built
-    // collections a HashSet companion can shadow-probe
+    // collections a HashSet companion can shadow-probe; `confined` says
+    // whether the binding's type may change (its own modifier, an
+    // enclosing private/internal module, or the --api-changes opt-in)
     let moduleBindings =
-        [ for _, decl in index.Decls do
+        [ for path, decl in index.Decls do
               match decl with
               | SynModuleDecl.Let(
-                  isRecursive = false; bindings = [ SynBinding(isMutable = false; headPat = pat; expr = rhs) ]) ->
+                  isRecursive = false
+                  bindings = [ SynBinding(isMutable = false; accessibility = bindingAcc; headPat = pat; expr = rhs) ]) ->
                   match pat with
-                  | SynPat.Named(ident = SynIdent(ident = id))
-                  | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-                      yield id.idText, (id, decl.Range, rhs)
+                  | SynPat.Named(ident = SynIdent(ident = id); accessibility = patAcc)
+                  | SynPat.LongIdent(
+                      longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []; accessibility = patAcc) ->
+                      let confined = Visibility.isInScope allowApiChanges path [ bindingAcc; patAcc ]
+
+                      yield id.idText, (id, decl.Range, rhs, confined)
                   | _ -> ()
               | _ -> () ]
         |> List.distinctBy fst
@@ -266,7 +287,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : ContainsSuggestion lis
                       // probes of it convert together with one companion
                       let fix =
                           match moduleBindings.TryGetValue collText with
-                          | true, (moduleIdent, declRange, declRhs) when
+                          | true, (moduleIdent, declRange, declRhs, confined) when
                               collText = root.idText
                               && not (shadowed collText moduleIdent)
                               && not (reassigned collText)
@@ -333,7 +354,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) : ContainsSuggestion lis
 
                               if not isFirst then
                                   []
-                              elif setOfFunction.IsSome && not strayUse then
+                              // the in-place conversion changes the
+                              // binding's type: only where nothing outside
+                              // the assembly can see it (or --api-changes)
+                              elif setOfFunction.IsSome && not strayUse && confined then
                                   let convert =
                                       Range.mkRange declRange.FileName declRhs.Range.End declRhs.Range.End,
                                       "",
@@ -363,22 +387,42 @@ let find (parseTree: ParsedInput) (source: ISourceText) : ContainsSuggestion lis
                                               (Position.mkPos (declRange.EndLine + 1) 0)
                                               (Position.mkPos (declRange.EndLine + 1) 0)
 
-                                      let insert =
-                                          insertAt,
-                                          "",
-                                          $"{indent}let private {setName} = {hashSetSpelling}({collText})\n"
+                                      let binding = $"{indent}let private {setName} = {hashSetSpelling}({collText})\n"
 
-                                      let rewrites =
+                                      // the companion serves the probes: probes
+                                      // all under one `#if` get a companion
+                                      // under that same `#if`, probes under
+                                      // different conditions get none (a
+                                      // binding under one condition cannot
+                                      // serve the other)
+                                      let probeConditions =
                                           siblings
-                                          |> List.map (fun (_, _, r, itemExpr) ->
-                                              let itemText = textOfRange source itemExpr.Range
+                                          |> List.map (fun (_, _, r: range, _) -> conditionAt source r.StartLine)
+                                          |> List.distinct
 
-                                              let atomic = atomicIdent.IsMatch itemText
+                                      let insertText =
+                                          match probeConditions with
+                                          | [ Some c ] when conditionAt source insertAt.StartLine <> Some c ->
+                                              Some $"#if {c}\n{binding}#endif\n"
+                                          | [ _ ] -> Some binding
+                                          | _ -> None
 
-                                              let arg = if atomic then itemText else $"({itemText})"
-                                              r, textOfRange source r, $"{setName}.Contains {arg}")
+                                      match insertText with
+                                      | None -> []
+                                      | Some insertText ->
+                                          let insert = insertAt, "", insertText
 
-                                      insert :: rewrites
+                                          let rewrites =
+                                              siblings
+                                              |> List.map (fun (_, _, r, itemExpr) ->
+                                                  let itemText = textOfRange source itemExpr.Range
+
+                                                  let atomic = atomicIdent.IsMatch itemText
+
+                                                  let arg = if atomic then itemText else $"({itemText})"
+                                                  r, textOfRange source r, $"{setName}.Contains {arg}")
+
+                                          insert :: rewrites
                               else
                                   []
                           | _ -> []

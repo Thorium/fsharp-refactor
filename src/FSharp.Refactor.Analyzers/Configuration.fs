@@ -392,6 +392,9 @@ let private generatedMarkers =
 let private generatedAttributes =
     [ "[<GeneratedCode"; "[<CompilerGenerated"; "[<assembly: GeneratedCode" ]
 
+let private lineDirective =
+    Text.RegularExpressions.Regex(@"^#\s*\d+\s+""", Text.RegularExpressions.RegexOptions.Compiled)
+
 let private hasGeneratedHeader (path: string) =
     generatedHeaderCache.GetOrAdd(
         path,
@@ -409,6 +412,11 @@ let private hasGeneratedHeader (path: string) =
                    |> List.exists (fun line ->
                        generatedAttributes
                        |> List.exists (fun a -> line.Contains(a, StringComparison.OrdinalIgnoreCase)))
+                // a `# 3 "lex.fsl"` line directive is what fslex and fsyacc
+                // leave in their output (no auto-generated banner at all);
+                // fantomas's generated lexer carried 14 notes and every
+                // fix there is lost at the next build
+                || head |> List.exists (fun line -> lineDirective.IsMatch line)
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                 false
     )

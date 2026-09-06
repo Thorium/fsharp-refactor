@@ -101,14 +101,14 @@ let ``true-false becomes Option isSome`` () =
     assertSingleSuggestion
         "let f (x: int option) = match x with | Some _ -> true | None -> false"
         "Option.isSome"
-        "x |> Option.isSome"
+        "x.IsSome"
 
 [<Fact>]
 let ``false-true becomes Option isNone`` () =
     assertSingleSuggestion
         "let f (x: int option) = match x with | Some _ -> false | None -> true"
         "Option.isNone"
-        "x |> Option.isNone"
+        "x.IsNone"
 
 [<Fact>]
 let ``reversed clause order is recognized`` () =
@@ -204,3 +204,11 @@ let ``a match bound inside a comprehension is a value again`` () =
     with
     | [ _ ] -> ()
     | other -> failwithf "Expected exactly one suggestion for the bound match, got %A" other
+
+[<Fact>]
+let ``an isSome test on an unannotated parameter keeps the module form`` () =
+    // x's type is inferred from its later use; `x.IsSome` there is FS0072
+    assertSingleSuggestion
+        "let f x = let b = match x with | Some _ -> true | None -> false in if b then x |> Option.map ((+) 1) else None"
+        "Option.isSome"
+        "x |> Option.isSome"

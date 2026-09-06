@@ -129,3 +129,42 @@ let ``null without a comment is an ordinary value`` () =
 let ``defaultof without a comment is an ordinary value`` () =
     assertNoSuggestion
         "module Test\nlet single (xs: int list) =\n    match xs with\n    | [ x ] -> x + 1\n    | _ -> Unchecked.defaultof<int>"
+
+// --- commented-out code and option contracts (F# compiler ServiceInterfaceStubGenerator.fs) ---
+
+[<Fact>]
+let ``a commented-out debug print is not an unfinished-work note`` () =
+    // the F# compiler's ServiceInterfaceStubGenerator.fs:
+    //     | _ -> //debug "Unsupported case with %A and %A" t ts
+    //         None
+    // the "Unsupported" is a string the silenced print once carried
+    assertNoSuggestion (
+        dispatch "    | Jordan ->\n        //debug \"Unsupported case with %A and %A\" m m\n        None"
+    )
+
+[<Fact>]
+let ``a commented-out call spelled with parentheses is code too`` () =
+    assertNoSuggestion (dispatch "    | Jordan ->\n        // failwith(\"not implemented\")\n        None")
+
+[<Fact>]
+let ``None is the no-match result of a partial active pattern`` () =
+    assertNoSuggestion
+        "module Test\nlet f (x: int) = Some x\nlet (|Small|_|) (t: int) (ts: int list) =\n    match ts with\n    | [ x ] -> f (x + t)\n    | _ ->\n        // not supported yet\n        None"
+
+[<Fact>]
+let ``ValueNone inside a struct partial active pattern is its no-match result`` () =
+    assertNoSuggestion
+        "module Test\nlet f (x: int) = ValueSome x\n[<return: Struct>]\nlet (|Small|_|) (t: int) =\n    match t with\n    | 1 -> f t\n    | _ ->\n        // unsupported\n        ValueNone"
+
+[<Fact>]
+let ``None is the contract of a function declared to return an option`` () =
+    assertNoSuggestion
+        "module Test\ntype M = Gauss of int | Jordan\nlet f (x: int) = Some x\nlet solve m : int option =\n    match m with\n    | Gauss c -> f c\n    | Jordan ->\n        // not supported yet\n        None"
+
+[<Fact>]
+let ``a prose note above None in an inferred-option dispatch still fires`` () =
+    // the rule's own example shape: nothing DECLARES the option, and the
+    // comment is a sentence, not a silenced print
+    assertPatched
+        (dispatch "    | Jordan ->\n        // unsupported for now\n        None")
+        (dispatch "    | Jordan ->\n        // unsupported for now\n        raise (System.NotImplementedException())")

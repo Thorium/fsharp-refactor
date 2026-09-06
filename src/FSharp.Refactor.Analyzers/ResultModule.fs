@@ -18,9 +18,18 @@
 /// Clause order may be reversed. Safety rules mirror the Option analyzer:
 /// two guard-free clauses, single-line parts, Ok/Error must resolve to
 /// FSharp.Core's Result cases, and the file must have no type errors.
+///
+/// Readability rules: the rewrite is a single line, and it is withheld
+/// when that line would pass 100 columns, when an arm is not a single
+/// simple expression (a tuple, a lambda, a pipeline, applications nested
+/// in applications), or when the map lambda would return unit —
+/// `Result.map (fun _ -> ())` is never an improvement. Fantomas's Daemon
+/// had a readable three-line match turned into a 190-character line
+/// carrying two closures.
 module FSharp.Refactor.ResultModule
 
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
@@ -128,14 +137,137 @@ let private rewrite
             $"Result.map + {target}"
         )
 
+/// The longest line a rewrite may produce: past this the one-liner reads
+/// worse than the match it replaces.
+[<Literal>]
+let private MaxLineLength = 100
+
+/// An arm body that stays readable once it moves into a lambda: a value,
+/// a field, a call with plain arguments, an operator expression over
+/// those. A tuple, a lambda, a pipeline, or an application nested inside
+/// an application's argument read worse squeezed into
+/// `Result.map (fun v -> ...)` than they did on their own match line.
+let rec private isSimpleArm (depth: int) (e: SynExpr) : bool =
+    match e with
+    | SynExpr.Paren(expr = inner) -> isSimpleArm depth inner
+    | SynExpr.Ident _
+    | SynExpr.LongIdent _
+    | SynExpr.Const _
+    | SynExpr.Null _
+    | SynExpr.DotGet _
+    | SynExpr.DotIndexedGet _
+    | SynExpr.InterpolatedString _
+    | SynExpr.ArrayOrList _
+    | SynExpr.Record _
+    | SynExpr.TypeApp _ -> true
+    | PipeApp _ -> false
+    | SynExpr.App(
+        isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) ->
+        not (op.idText.StartsWith "op_Pipe" || op.idText.StartsWith "op_Compose")
+        && isSimpleArm depth lhs
+        && isSimpleArm depth rhs
+    | SynExpr.App(isInfix = false) ->
+        let rec spine (e: SynExpr) (args: SynExpr list) =
+            match e with
+            | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) -> spine f (a :: args)
+            | head -> head, args
+
+        let head, args = spine e []
+
+        let headOk =
+            match head with
+            | SynExpr.Ident _
+            | SynExpr.LongIdent _
+            | SynExpr.DotGet _
+            | SynExpr.TypeApp _ -> true
+            | _ -> false
+
+        // `f (g x)` is fine; `f (g (h x))` is a chain the match laid out better
+        depth < 2
+        && headOk
+        && args
+           |> List.forall (fun a ->
+               match a with
+               | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) -> es |> List.forall (isSimpleArm (depth + 1))
+               | _ -> isSimpleArm (depth + 1) a)
+    | _ -> false
+
+/// The line the match sits on, once the rewrite replaces it: what precedes
+/// the match on its first line, the replacement, what follows it on its
+/// last line.
+let private producedLineLength (source: ISourceText) (m: range) (replacement: string) =
+    let firstLine = source.GetLineString(m.StartLine - 1)
+    let lastLine = source.GetLineString(m.EndLine - 1)
+    let prefix = firstLine.Substring(0, min m.StartColumn firstLine.Length)
+
+    let suffix =
+        if m.EndColumn <= lastLine.Length then
+            lastLine.Substring m.EndColumn
+        else
+            ""
+
+    prefix.Length + replacement.Length + suffix.Length
+
+/// Would this body, as the map lambda's result, be unit? Syntactically
+/// `()`, or a call whose function the typed tree says returns unit —
+/// `log FantomasLogLevel.Error $"..."` on fantomas's Daemon. A partial
+/// application reads as unit-returning too, which withholds a rewrite
+/// that would have been legal; the safe direction.
+let private returnsUnit (check: FSharpCheckFileResults) (source: ISourceText) (body: SynExpr) =
+    let rec isUnit (t: FSharpType) =
+        try
+            if t.IsAbbreviation then
+                isUnit t.AbbreviatedType
+            else
+                t.HasTypeDefinition
+                && (t.TypeDefinition.TryFullName
+                    |> Option.exists (fun n -> n = "Microsoft.FSharp.Core.Unit" || n = "Microsoft.FSharp.Core.unit"))
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            false
+
+    let rec headIdent (e: SynExpr) =
+        match e with
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.TypeApp(expr = inner) -> headIdent inner
+        | SynExpr.App(isInfix = false; funcExpr = f) -> headIdent f
+        | SynExpr.Ident id -> Some id
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+        | _ -> None
+
+    match stripParens body with
+    | UnitConst -> true
+    | SynExpr.App _ as app ->
+        match headIdent app with
+        | Some id ->
+            (try
+                let r = id.idRange
+                let lineText = source.GetLineString(r.EndLine - 1)
+
+                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                | Some symbolUse ->
+                    match symbolUse.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as v when v.IsFunction || v.IsMember ->
+                        isUnit v.ReturnParameter.Type
+                    | _ -> false
+                | None -> false
+             with _ -> // fsharpanalyzer: ignore-line FR0055
+                 false)
+        | None -> false
+    | _ -> false
+
 /// A candidate found syntactically; the case idents still need resolving
 /// against the typed results before the suggestion is emitted.
 type private Candidate =
-    { MatchRange: range
-      OkIdent: Ident
-      ErrorIdent: Ident
-      Replacement: string
-      Target: string }
+    {
+        MatchRange: range
+        OkIdent: Ident
+        ErrorIdent: Ident
+        Replacement: string
+        Target: string
+        /// The body the rewrite's `Result.map` lambda would return, when it
+        /// has one: gated on the typed tree so a unit-typed map never fires.
+        MapBody: SynExpr option
+    }
 
 let private findCandidates (parseTree: ParsedInput) (source: ISourceText) : Candidate list =
     let candidates = ResizeArray<Candidate>()
@@ -169,6 +301,8 @@ let private findCandidates (parseTree: ParsedInput) (source: ISourceText) : Cand
                         && isSingleLine errorBody.Range
                         && isPlainBody okBody
                         && isPlainBody errorBody
+                        && isSimpleArm 0 okBody
+                        && isSimpleArm 0 errorBody
                         && not (OptionModule.capturesMutableLocal (AstIndex.ofTree parseTree) okBody.Range)
                         && not (OptionModule.capturesMutableLocal (AstIndex.ofTree parseTree) errorBody.Range)
                         && not (OptionModule.implicitYieldPosition path)
@@ -184,12 +318,22 @@ let private findCandidates (parseTree: ParsedInput) (source: ISourceText) : Cand
                                 else
                                     replacement
 
-                            candidates.Add
-                                { MatchRange = m
-                                  OkIdent = okIdent
-                                  ErrorIdent = errorIdent
-                                  Replacement = replacement
-                                  Target = target }
+                            // what the `Result.map` lambda returns: the
+                            // unwrapped `Ok` payload, or the whole ok arm
+                            // in the map + default combination
+                            let mapBody =
+                                if target = "Result.map" then caseApp "Ok" okBody
+                                elif target.StartsWith "Result.map + " then Some okBody
+                                else None
+
+                            if producedLineLength source m replacement <= MaxLineLength then
+                                candidates.Add
+                                    { MatchRange = m
+                                      OkIdent = okIdent
+                                      ErrorIdent = errorIdent
+                                      Replacement = replacement
+                                      Target = target
+                                      MapBody = mapBody }
                         | None -> ()
                     | _ -> ()
                 | _ -> () }
@@ -207,7 +351,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         |> List.filter (fun c ->
             not (spansDirective source c.MatchRange)
             && OptionModule.resolvesToCoreCase check source "Microsoft.FSharp.Core.Result<" c.OkIdent
-            && OptionModule.resolvesToCoreCase check source "Microsoft.FSharp.Core.Result<" c.ErrorIdent)
+            && OptionModule.resolvesToCoreCase check source "Microsoft.FSharp.Core.Result<" c.ErrorIdent
+            && not (c.MapBody |> Option.exists (returnsUnit check source)))
         |> List.map (fun c ->
             { Range = c.MatchRange
               OriginalText = textOfRange source c.MatchRange

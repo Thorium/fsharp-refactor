@@ -8,7 +8,7 @@ open FSharp.Refactor.Tests.Parsing
 
 let private loopPerfIn (source: string) =
     let tree, sourceText = parse source
-    LoopPerf.find tree sourceText
+    LoopPerf.find false tree sourceText
 
 [<Fact>]
 let ``contains inside a for loop is noted`` () =
@@ -118,6 +118,40 @@ let ``GetType equality with typeof is noted`` () =
     match suggestions with
     | [ s ] -> Assert.Equal(TypeChecks.TypeCheckKind.TypeofEquality("x", "string"), s.Kind)
     | other -> failwithf "Expected exactly one typeof-equality note, got %A" other
+
+[<Fact>]
+let ``FR0036: an exact-type guard refining a type test is intent`` () =
+    // FCS FileSystem.fs: `| :? IOException as err when retryLocked &&
+    // err.GetType() = typeof<IOException>` retries only on a PLAIN
+    // IOException — the `:?` the note would offer is the test being refined
+    Assert.Empty(
+        typeChecksIn
+            "module Test\nopen System.IO\nlet f (retryLocked: bool) (work: unit -> int) =\n    try\n        work ()\n    with\n    | :? IOException as err when retryLocked && err.GetType() = typeof<IOException> -> -1"
+    )
+
+[<Fact>]
+let ``FR0036: a guard against another type, or the comparison in the body, is still noted`` () =
+    // the guard only refines the test when it names the tested type
+    let otherType =
+        typeChecksIn
+            "module Test\nopen System.IO\nlet f (work: unit -> int) =\n    try\n        work ()\n    with\n    | :? IOException as err when err.GetType() = typeof<FileNotFoundException> -> -1"
+
+    let inBody =
+        typeChecksIn
+            "module Test\nopen System.IO\nlet f (work: unit -> int) =\n    try\n        work ()\n    with\n    | :? IOException as err -> if err.GetType() = typeof<IOException> then -1 else -2"
+
+    // fsi.fs: `.GetType().Name = \"OperationCanceledException\"` in a guard
+    // has a typed spelling and stays flagged
+    let byName =
+        typeChecksIn
+            "module Test\nopen System.Reflection\nlet f (work: unit -> int) =\n    try\n        work ()\n    with\n    | :? TargetInvocationException as e when e.InnerException.GetType().Name = \"OperationCanceledException\" -> -1"
+
+    Assert.Single otherType |> ignore
+    Assert.Single inBody |> ignore
+
+    match byName with
+    | [ s ] -> Assert.Equal(TypeChecks.TypeCheckKind.NameComparison "Name", s.Kind)
+    | other -> failwithf "Expected one name-comparison note, got %A" other
 
 [<Fact>]
 let ``comparing two GetType calls is fine`` () =

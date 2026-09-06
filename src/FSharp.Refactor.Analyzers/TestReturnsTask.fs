@@ -211,16 +211,12 @@ and private statementEdit
 /// A body holding a lock or a thread-bound handle across the work: after
 /// a bind the rest may run on another thread, and `Monitor.Exit` or
 /// `ReleaseMutex` from the wrong thread throws.
-let private threadBound (source: ISourceText) (body: SynExpr) =
-    let text = textOfRange source body.Range
-
-    [ "Monitor."
-      "Mutex"
-      "ReaderWriterLock"
-      "ThreadStatic"
-      "ThreadLocal"
-      "WaitOne" ]
-    |> List.exists text.Contains
+// thread choreography: a test that hands work to a thread and waits on a
+// signal continues on the SAME thread after the wait; `do!` resumes
+// wherever the test framework posts (Mibo's thread-affine adaptive graphs:
+// four tests failed, eleven turned flaky). The predicate lives in
+// BlockingSites, shared with FR0049's boundary note
+let private threadBound = BlockingSites.threadBound
 
 /// Does the body already run as a computation, or return a Task?
 let private alreadyComputation (body: SynExpr) =
@@ -233,9 +229,9 @@ let private alreadyComputation (body: SynExpr) =
 /// Apply edits to the body text (bottom-up), re-indent every line by four,
 /// and wrap in `task { ... } :> System.Threading.Task` at the body's own
 /// indentation.
-let private wrapBody (source: ISourceText) (body: SynExpr) (edits: Edit list) =
-    let bodyText = textOfRange source body.Range
-    let start = body.Range.Start
+let private wrapBody (source: ISourceText) (bodyRange: range) (edits: Edit list) =
+    let bodyText = textOfRange source bodyRange
+    let start = bodyRange.Start
 
     // an edit's position relative to the body text: line starts are read
     // off the body text itself (a `\r` before the break stays inside its
@@ -341,10 +337,25 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                   | Some id ->
                       let bodyIsUnit = returnsUnit check source id
 
+                      // a comment trailing the last expression belongs to
+                      // that line; left outside the replaced range it
+                      // resurfaced after `} :> Task` (Mibo's Tests.fs)
+                      let bodyRange =
+                          let lastLine = source.GetLineString(body.Range.EndLine - 1)
+                          let rest = lastLine.Substring(min body.Range.EndColumn lastLine.Length)
+
+                          if rest.TrimStart().StartsWith "//" then
+                              Range.mkRange
+                                  body.Range.FileName
+                                  body.Range.Start
+                                  (Position.mkPos body.Range.EndLine lastLine.Length)
+                          else
+                              body.Range
+
                       let suggestion replacement sites =
                           { Name = id.idText
-                            Range = body.Range
-                            OriginalText = textOfRange source body.Range
+                            Range = bodyRange
+                            OriginalText = textOfRange source bodyRange
                             ReplacementText = replacement
                             Sites = sites }
 
@@ -353,7 +364,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       // |> Async.RunSynchronously` — so the awaitable IS the
                       // test: no block, just the upcast
                       | Some b when not b.NoBind && (b.UnitResult || bodyIsUnit) ->
-                          yield suggestion $"{b.Awaitable} :> System.Threading.Tasks.Task" 1
+                          let trailing =
+                              (textOfRange source bodyRange).Substring((textOfRange source body.Range).Length)
+
+                          yield suggestion $"{b.Awaitable} :> System.Threading.Tasks.Task{trailing}" 1
                       | Some _ -> ()
                       | None ->
                           // re-indenting the body would also re-indent the
@@ -385,7 +399,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       edits |> List.filter (fun (_, t) -> t <> "let!" && t <> "match!") |> List.length
 
                                   yield
-                                      suggestion ((wrapBody source body edits).Substring(body.Range.StartColumn)) sites
+                                      suggestion
+                                          ((wrapBody source bodyRange edits).Substring(body.Range.StartColumn))
+                                          sites
                               | _ -> ()
                   | None -> ()
               | _ -> () ]

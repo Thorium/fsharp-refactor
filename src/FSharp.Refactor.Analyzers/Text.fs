@@ -521,3 +521,73 @@ let rec private patNamesLoop (acc: string list) (pending: SynPat list) =
         patNamesLoop acc next
 
 let patNames (p: SynPat) : string list = patNamesLoop [] [ p ]
+
+/// The `#if` condition a line sits under, innermost first: `Some "DEBUG"`
+/// inside `#if DEBUG ... #endif`, `Some "!(DEBUG)"` under its `#else`,
+/// None at top level.
+let conditionAt (source: ISourceText) (line: int) : string option =
+    let stack = System.Collections.Generic.Stack<string>()
+
+    for l in 0 .. min (line - 2) (source.GetLineCount() - 1) do
+        let text = source.GetLineString(l).Trim()
+
+        if text.StartsWith "#if" then
+            stack.Push(text.Substring(3).Trim())
+        elif text.StartsWith "#else" then
+            if stack.Count > 0 then
+                let c = stack.Pop()
+                stack.Push $"!({c})"
+        elif text.StartsWith "#endif" then
+            if stack.Count > 0 then
+                stack.Pop() |> ignore
+
+    if stack.Count = 0 then None else Some(stack.Peek())
+
+/// A line a rule moves or generates from `originLine` to `targetLine` keeps
+/// the `#if` it came from: the condition to wrap it in when the target sits
+/// under a different one (or none). A rule that lifts a line to module
+/// level must not free it from its condition, nor bind it to another — the
+/// F# compiler's `open FSComp` landed inside `#if !NO_TYPEPROVIDERS` and
+/// the Proto build stopped compiling.
+let conditionToKeep (source: ISourceText) (originLine: int) (targetLine: int) : string option =
+    match conditionAt source originLine with
+    | Some c when conditionAt source targetLine <> Some c -> Some c
+    | _ -> None
+
+/// Re-indent a block of source text so it starts at `target`, moving every
+/// continuation line by the same amount. `firstColumn` is the column the
+/// block's first line began at — the text itself no longer carries it,
+/// since a range's first line arrives already trimmed of its indentation.
+///
+/// None when the move cannot preserve the block: a continuation line with
+/// less leading space than a leftward shift would remove (its structure
+/// would collapse), or a line spanning string literal, whose content the
+/// re-indent would silently edit. The caller then leaves the code alone.
+///
+/// Three rules grew their own copy of this before it was extracted
+/// (FR0034's match layout, FR0044's try removal, FR0142's task wrap); they
+/// can migrate to it.
+let reindentBlock (target: int) (firstColumn: int) (text: string) : string option =
+    let lines = text.Replace("\r\n", "\n").Split '\n'
+
+    if lines.Length = 1 then
+        Some(System.String(' ', target) + lines.[0])
+    else
+        let shift = target - firstColumn
+        let continuation = lines |> Array.skip 1
+        let leading (l: string) = l.Length - l.TrimStart().Length
+
+        if
+            shift < 0
+            && continuation |> Array.exists (fun l -> l.Trim() <> "" && leading l < -shift)
+        then
+            None
+        else
+            let moved =
+                continuation
+                |> Array.map (fun l ->
+                    if l.Trim() = "" then ""
+                    elif shift >= 0 then System.String(' ', shift) + l
+                    else l.Substring(-shift))
+
+            Some(String.concat "\n" (Array.append [| System.String(' ', target) + lines.[0] |] moved))

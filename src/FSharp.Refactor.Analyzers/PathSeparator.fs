@@ -65,6 +65,22 @@ let private rootedLiteral =
 
 let private extensionLiteral = Regex(@"\.\w{1,5}$", RegexOptions.Compiled)
 
+/// A filesystem API in the function position of an operand: the only
+/// path evidence a CALL operand can give. `textOfPath (List.map fst path)`
+/// beside `getNameOfScopeRef scoref` builds the compiler's mangled
+/// compilation path, and "path" in a function's name is not a directory.
+let private fileApi =
+    Regex(
+        @"\b(Path|File|Directory|FileInfo|DirectoryInfo|Environment|AppContext|AppDomain|Assembly)\.|__SOURCE_DIRECTORY__|CurrentDirectory|BaseDirectory|GetEntryAssembly|GetExecutingAssembly|\.Location\b",
+        RegexOptions.Compiled
+    )
+
+let private bindsName (name: string) (SynBinding(headPat = p)) =
+    match p with
+    | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = name
+    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> id.idText = name
+    | _ -> false
+
 /// `./`, `../`, `../../` — relative-path notation, not a separator.
 let private dotSegments = Regex(@"^[/\\]?(\.{1,2}[/\\])+$", RegexOptions.Compiled)
 
@@ -107,6 +123,74 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                match node with
                | SyntaxNode.SynType _ -> true // a type-provider static arg
                | _ -> false)
+
+    // an identifier's right-hand side, one hop: the nearest enclosing
+    // `let x = ...` on the path, else a module-level `let x = ...` of this
+    // file — `gitHome + "/" + gitName + ".git"` is a URL because `gitHome`
+    // was bound to `"https://github.com/" + gitOwner` fifty lines up
+    // (every FAKE build script of a certain vintage)
+    let definitionOf (path: SyntaxNode list) (name: string) =
+        let ofBindings (bindings: SynBinding list) =
+            bindings
+            |> List.tryPick (fun b ->
+                if bindsName name b then
+                    let (SynBinding(expr = rhs)) = b
+                    Some rhs
+                else
+                    None)
+
+        let local =
+            path
+            |> List.tryPick (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(LetOrUseE lou) -> ofBindings lou.Bindings
+                | _ -> None)
+
+        match local with
+        | Some rhs -> Some rhs
+        | None ->
+            index.Decls
+            |> Array.tryPick (fun (_, decl) ->
+                match decl with
+                | SynModuleDecl.Let(bindings = bindings) -> ofBindings bindings
+                | _ -> None)
+
+    // a chain compared or searched for — `"content/" + n.file = page`
+    // (fsharplint's docs generator) — is a key, not a path to build
+    let isCompared (path: SyntaxNode list) =
+        let comparison (op: SynExpr) =
+            match op with
+            | SingleIdent id ->
+                (match id.idText with
+                 | "op_Equality"
+                 | "op_Inequality" -> true
+                 | _ -> false)
+            | _ -> false
+
+        let searched (f: SynExpr) =
+            match f with
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                (match (List.last ids).idText with
+                 | "Contains"
+                 | "ContainsKey"
+                 | "StartsWith"
+                 | "EndsWith"
+                 | "Equals" -> true
+                 | _ -> false)
+            | _ -> false
+
+        match path with
+        // the left operand: App(isInfix, op, chain)
+        | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op)) :: _ when comparison op -> true
+        // the right operand: App(App(isInfix, op, lhs), chain)
+        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = op))) :: _ when comparison op ->
+            true
+        // `set.Contains(chain)` / `s.Contains chain`
+        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = f)) :: _ when searched f -> true
+        | SyntaxNode.SynExpr(SynExpr.Paren _) :: SyntaxNode.SynExpr(SynExpr.App(funcExpr = f)) :: _ when searched f ->
+            true
+        | _ -> false
 
     [ for path, expr in index.Exprs do
           match expr with
@@ -165,6 +249,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                   // the file's own name says what kind of path it builds:
                   // JsonRuntime.fs joins JSON pointers, not directories
                   || urlSmell.IsMatch(System.IO.Path.GetFileName expr.Range.FileName)
+                  // a name bound one hop away to something URL-shaped
+                  || operands
+                     |> List.exists (fun o ->
+                         match o with
+                         | SynExpr.Ident id ->
+                             definitionOf path id.idText
+                             |> Option.exists (fun rhs ->
+                                 let rhsText = textOfRange source rhs.Range
+                                 rhsText.Contains "://" || urlSmell.IsMatch rhsText)
+                         | _ -> false)
 
               let hasNonLiteralPart =
                   operands
@@ -201,16 +295,29 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                   | SynExpr.Const(SynConst.String(text, _, _), _) :: _ -> text.StartsWith '/'
                   | _ -> false
 
+              // evidence is read per OPERAND: a name or property chain
+              // (`rootDir`, `fi.FullName`) by its spelling, a call only by
+              // the filesystem API it invokes — `textOfPath xs` names a
+              // function, not a directory
+              let operandEvidence (o: SynExpr) =
+                  match stripParens o with
+                  | SynExpr.Const(SynConst.SourceIdentifier _, _) -> true
+                  | SynExpr.Const _ -> false
+                  | SynExpr.App _
+                  | SynExpr.New _ -> fileApi.IsMatch(textOfRange source o.Range)
+                  | other -> pathSmell.IsMatch(textOfRange source other.Range)
+
               let hasPathEvidence (_separator: string) =
                   if opensWithSlashLiteral then
                       hasStrongEvidence
                   else
-                      pathSmell.IsMatch(textOfRange source expr.Range) || hasStrongEvidence
+                      operands |> List.exists operandEvidence || hasStrongEvidence
 
               match separators with
               | [ separator ] when
                   hasNonLiteralPart
                   && not smellsOfUrl
+                  && not (isCompared path)
                   && hasPathEvidence separator
                   && not (mustStayLiteral path expr.Range)
                   ->

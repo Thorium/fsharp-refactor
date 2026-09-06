@@ -21,6 +21,8 @@
 ///     no ValueTask overload
 ///   - never inside a lambda, a nested CE, a finally block or an
 ///     exception handler
+///   - never `Dispose` → `DisposeAsync`: a ValueTask twin with nothing
+///     to await behind it
 module FSharp.Refactor.AwaitableOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -117,6 +119,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         []
     else
         let index = AstIndex.ofTree parseTree
+
+        // bodies choreographed around a thread (a signal, a Thread,
+        // Interlocked): a bind there moves the continuation off the thread
+        // the code waited on — the same refusal as FR0142's and FR0049's
+        let threadBoundBodies =
+            index.Exprs
+            |> Array.collect (fun (path, _) ->
+                path
+                |> List.choose (fun node ->
+                    match node with
+                    | SyntaxNode.SynBinding(SynBinding(expr = body)) -> Some body
+                    | _ -> None)
+                |> Array.ofList)
+            |> Array.distinctBy (fun body -> body.Range)
+            |> Array.filter (BlockingSites.threadBound source)
+            |> Array.map (fun body -> body.Range)
 
         // task/async CE bodies with their builder, for scoping and for
         // picking the bind bridge
@@ -282,6 +300,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
               match expr with
               | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) when
                   not (methodId.idText.EndsWith "Async")
+                  // `Dispose` → `DisposeAsync` never pays: the twin returns
+                  // ValueTask (outside the Task/Task<T> gate the rule
+                  // documents) and there is nothing to await — fantomas's
+                  // EndToEndTests.fs had `File.Create(f).Dispose()` turned
+                  // into `do! File.Create(f).DisposeAsync()`
+                  && methodId.idText <> "Dispose"
                   ->
                   let tupled =
                       match args with
@@ -374,3 +398,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       | None -> ()
                   | _ -> ()
               | _ -> () ]
+        |> List.filter (fun s ->
+            not (
+                threadBoundBodies
+                |> Array.exists (fun body -> Range.rangeContainsRange body s.Range)
+            ))

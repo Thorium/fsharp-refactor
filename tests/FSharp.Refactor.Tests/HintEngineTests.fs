@@ -88,8 +88,10 @@ let ``not isEmpty of filter becomes exists`` () =
         "List.exists p xs"
 
 [<Fact>]
-let ``fold plus zero becomes sum`` () =
-    assertSingleSuggestion "module Test\nlet f (xs: int list) = List.fold (+) 0 xs" "List.sum xs"
+let ``fold plus zero stays a fold: sum adds checked`` () =
+    // Mibo's Tests.fs: `Array.fold (+) 0` wraps on overflow, `Array.sum`
+    // throws OverflowException — not the same program
+    assertNoSuggestion "module Test\nlet f (xs: int list) = List.fold (+) 0 xs"
 
 [<Fact>]
 let ``sum of map becomes sumBy`` () =
@@ -288,3 +290,91 @@ let ``a pipelined collect rewrite keeps the pipeline so the lambda sees its type
     assertSingleSuggestion
         "module Test\ntype Box = { Items: int list }\nlet f (xs: Box list) = xs |> Seq.map (fun x -> x.Items) |> Seq.concat"
         "xs |> Seq.collect (fun x -> x.Items)"
+
+[<Fact>]
+let ``De Morgan leaves function applications bare beside the operator`` () =
+    // sweep find: `not ((List.isEmpty instMembers) && (List.isEmpty statMembers))`
+    // — an application is atomic enough beside `||`, the brackets only
+    // made the rewrite harder to read than the code it replaced
+    assertSingleSuggestion
+        "module Test\nlet f (instMembers: int list) (statMembers: int list) =\n    not (List.isEmpty instMembers) && not (List.isEmpty statMembers)"
+        "not (List.isEmpty instMembers || List.isEmpty statMembers)"
+
+[<Fact>]
+let ``De Morgan leaves method calls bare beside the operator`` () =
+    assertSingleSuggestion
+        "module Test\nlet f (json: System.Collections.Generic.Dictionary<string, int>) =\n    not (json.ContainsKey \"Case\") && not (json.ContainsKey \"Fields\")"
+        "not (json.ContainsKey \"Case\" || json.ContainsKey \"Fields\")"
+
+[<Fact>]
+let ``De Morgan leaves a tupled call and a name bare beside the operator`` () =
+    assertSingleSuggestion
+        "module Test\nlet f (isOpItem: string * int list -> bool) (isFSharpList: string -> bool) nm items =\n    not (isOpItem (nm, items)) || not (isFSharpList nm)"
+        "not (isOpItem (nm, items) && isFSharpList nm)"
+
+[<Fact>]
+let ``De Morgan leaves a pipeline operand bare`` () =
+    // `|>` binds tighter than `||`
+    assertSingleSuggestion
+        "module Test\nlet f (xs: int list) (b: bool) = not (xs |> List.isEmpty) && not b"
+        "not (xs |> List.isEmpty || b)"
+
+[<Fact>]
+let ``De Morgan keeps parentheses around an operand of equal precedence`` () =
+    assertSingleSuggestion "module Test\nlet f (a: bool) b c = not (a || b) && not c" "not ((a || b) || c)"
+
+[<Fact>]
+let ``De Morgan keeps parentheses around a lower-precedence operand`` () =
+    assertSingleSuggestion "module Test\nlet f (a: bool) b c = not (a || b) || not c" "not ((a || b) && c)"
+
+[<Fact>]
+let ``De Morgan leaves a tighter-binding operand bare`` () =
+    // `&&` under `||` needs no brackets
+    assertSingleSuggestion "module Test\nlet f (a: bool) b c = not (a && b) && not c" "not (a && b || c)"
+
+[<Fact>]
+let ``De Morgan keeps parentheses around an if operand`` () =
+    assertSingleSuggestion
+        "module Test\nlet f (a: bool) b c = not (if a then b else c) && not c"
+        "not ((if a then b else c) || c)"
+
+let private assertTypedRewrite (source: string) (expected: string) =
+    match findIn source with
+    | [ s ] ->
+        Assert.Equal(expected, s.ReplacementText)
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
+
+[<Fact>]
+let ``De Morgan keeps pipelines bare: |> binds tighter than ||`` () =
+    assertTypedRewrite
+        "module Test\nlet f (xs: int list) (ys: int list) = not (xs |> List.isEmpty) && not (ys |> List.isEmpty)"
+        "not (xs |> List.isEmpty || ys |> List.isEmpty)"
+
+[<Fact>]
+let ``De Morgan keeps type tests bare`` () =
+    assertTypedRewrite
+        "module Test\nlet f (x: obj) (y: obj) = not (x :? string) && not (y :? string)"
+        "not (x :? string || y :? string)"
+
+[<Fact>]
+let ``De Morgan keeps comparisons and applications bare`` () =
+    assertTypedRewrite
+        "module Test\nlet f (g: int -> int) (h: int -> bool) (x: int) = not (g x = 1) && not (h x)"
+        "not (g x = 1 || h x)"
+
+[<Fact>]
+let ``De Morgan brackets an or under an or`` () =
+    // equal precedence keeps the grouping visible; the result still compiles
+    assertTypedRewrite "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (a || b) && not c" "not ((a || b) || c)"
+
+[<Fact>]
+let ``De Morgan brackets an or under an and`` () =
+    assertTypedRewrite "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (a || b) || not c" "not ((a || b) && c)"
+
+[<Fact>]
+let ``De Morgan brackets a lambda application and an if`` () =
+    assertTypedRewrite
+        "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (if a then b else c) && not ((fun z -> z) b)"
+        "not ((if a then b else c) || (fun z -> z) b)"

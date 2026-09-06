@@ -572,6 +572,70 @@ let private processTimeout = TimeSpan.FromMinutes 15.0
 let private runProcess (timeout: TimeSpan) (fileName: string) (arguments: string) =
     runProcessIn None timeout fileName arguments
 
+/// The files among `files` that git ignores, by full lower-cased path.
+/// A compilation includes what its project lists, and a project may list
+/// vendored or generated code that lives outside version control:
+/// fantomas compiles a git-ignored `.deps/<sha>/src/Compiler/**` and its
+/// fslex output under a git-ignored `generated/`. Editing those is churn
+/// nobody can commit, and their notes (70 of fantomas's 105) drown the
+/// ones on maintained code. Asked of git once per project over stdin —
+/// the file list is far too long for a command line. No git, no
+/// repository, or an error: nothing is ignored.
+let private gitIgnoredFiles (projectDir: string) (files: string[]) : Set<string> =
+    if files.Length = 0 then
+        Set.empty
+    else
+        try
+            let psi =
+                ProcessStartInfo(
+                    FileName = "git",
+                    // -z: NUL-separated in and out, so a Windows path
+                    // comes back verbatim rather than C-quoted
+                    Arguments = "check-ignore --stdin -z",
+                    WorkingDirectory = projectDir,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false
+                )
+
+            use p = Process.Start psi
+            let outText = Text.StringBuilder()
+
+            p.OutputDataReceived.Add(fun e ->
+                if not (isNull e.Data) then
+                    outText.AppendLine e.Data |> ignore)
+
+            p.ErrorDataReceived.Add(fun _ -> ())
+            p.BeginOutputReadLine()
+            p.BeginErrorReadLine()
+
+            for f in files do
+                p.StandardInput.Write(Path.GetFullPath f)
+                p.StandardInput.Write '\000'
+
+            p.StandardInput.Close()
+
+            if p.WaitForExit(30_000) then
+                p.WaitForExit()
+
+                // 0: some ignored (listed); 1: none; 128: not a repository
+                if p.ExitCode = 0 then
+                    outText.ToString().Split([| '\000'; '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
+                    |> Seq.map (fun l -> Path.GetFullPath(l.Trim()).ToLowerInvariant())
+                    |> Set.ofSeq
+                else
+                    Set.empty
+            else
+                (try
+                    p.Kill true
+                 with _ ->
+                     ()) // fsharpanalyzer: ignore-line FR0055
+
+                Set.empty
+        with _ -> // no git on this machine is not an error; fsharpanalyzer: ignore-line FR0055
+            Set.empty
+
 /// Where a project's builds run from, decided once per project.
 ///
 /// `dotnet` resolves global.json from its CURRENT directory upward, never
@@ -676,6 +740,71 @@ let private tfmRank (tfm: string) =
     elif t.StartsWith "netcoreapp" then 2, version
     elif t.StartsWith "net" && t.Contains '.' then 3, version
     else 1, version
+
+/// The frameworks a project lists, narrowest first. A plain
+/// `<TargetFrameworks>a;b</TargetFrameworks>` is read off the text. One
+/// under a Condition, or built from a property — the F# compiler's own
+/// FSharp.Core lists `netstandard2.0;netstandard2.1;$(FSharpCoreShippedNetTargetFramework)`
+/// behind `'$(Configuration)' != 'Proto'` — only MSBuild can evaluate, so
+/// the text says "multi-targeted" and MSBuild says which. Read off the text
+/// alone, that project looked single-targeted, its outer build was queried
+/// for compiler arguments, and the outer build of a multi-targeted project
+/// never runs CoreCompile: "no FscCommandLineArgs". Cached per project: the
+/// evaluation costs seconds.
+let private listedFrameworks =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
+
+let private targetFrameworksOf (projectPath: string) : string list =
+    listedFrameworks.GetOrAdd(
+        Path.GetFullPath projectPath,
+        fun path ->
+            let text =
+                try
+                    File.ReadAllText path
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException -> ""
+
+            // a moniker and nothing else: MSBuild's property output can carry
+            // a warning line, which must not become a framework name
+            let split (listed: string) =
+                listed.Split ';'
+                |> Array.map _.Trim()
+                |> Array.filter (fun tfm ->
+                    tfm <> ""
+                    && Text.RegularExpressions.Regex.IsMatch(tfm, @"^[A-Za-z][A-Za-z0-9.\-+]*$"))
+                |> Array.sortBy tfmRank
+                |> List.ofArray
+
+            let m =
+                Text.RegularExpressions.Regex.Match(text, "<TargetFrameworks>([^<]+)</TargetFrameworks>")
+
+            // a second, conditioned element (the compiler project adds
+            // net10.0 to netstandard2.0 outside official builds) makes the
+            // plain one only part of the answer
+            let conditioned =
+                Text.RegularExpressions.Regex.IsMatch(text, "<TargetFrameworks\\s+[^>]*Condition")
+
+            if m.Success && not conditioned && not (m.Groups.[1].Value.Contains "$(") then
+                split m.Groups.[1].Value
+            elif text.Contains "<TargetFrameworks" && text.Contains "Sdk=" then
+                let _, out, _ =
+                    runForProject
+                        path
+                        (TimeSpan.FromMinutes 2.)
+                        "dotnet"
+                        $"msbuild \"{path}\" --getProperty:TargetFrameworks"
+
+                // the value is the LAST line; anything before it is chatter
+                out.Split('\n')
+                |> Array.map _.Trim()
+                |> Array.filter (fun l -> l <> "")
+                |> Array.tryLast
+                |> Option.map split
+                |> Option.defaultValue []
+            else
+                []
+    )
 
 /// The project's fsc arguments, straight from MSBuild. SDK-style projects
 /// go through `dotnet`; old-style (net48-era) projects need Visual
@@ -785,6 +914,94 @@ let private parseOnlyArgs (projectPath: string) =
 let private preparedRoots =
     System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
+/// A repository that ships its own .NET — global.json's `sdk.paths` naming
+/// a directory beside it (the F# compiler's `.dotnet`, Arcade repositories
+/// in general) — builds only with that .NET on DOTNET_ROOT. MSBuild finds
+/// the SDK through global.json, but the compiler it then runs is an apphost
+/// that resolves its runtime through DOTNET_ROOT alone, and exits with the
+/// host's framework-missing code (0x80008096, "fsc.exe exited with code
+/// -2147450730") when the runtime lives only in that directory. The
+/// repository's own build script sets the variable; so does this, once per
+/// directory, for every process started from here.
+let private privateSdks =
+    System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+
+let private ensurePrivateSdk (projectPath: string) =
+    let rec findGlobalJson (dir: DirectoryInfo) =
+        if isNull dir then
+            None
+        else
+            let candidate = Path.Combine(dir.FullName, "global.json")
+
+            if File.Exists candidate then
+                Some candidate
+            else
+                findGlobalJson dir.Parent
+
+    let dotnetDirOf (globalJson: string) =
+        try
+            use doc = JsonDocument.Parse(File.ReadAllText globalJson)
+            let mutable sdk = Unchecked.defaultof<JsonElement>
+            let mutable paths = Unchecked.defaultof<JsonElement>
+
+            if
+                doc.RootElement.TryGetProperty("sdk", &sdk)
+                && sdk.TryGetProperty("paths", &paths)
+                && paths.ValueKind = JsonValueKind.Array
+            then
+                paths.EnumerateArray()
+                |> Seq.choose (fun p ->
+                    if p.ValueKind = JsonValueKind.String then
+                        Some(p.GetString())
+                    else
+                        None)
+                // "$host$" is the dotnet running this, not a directory
+                |> Seq.filter (fun p -> not (p.StartsWith "$"))
+                |> Seq.map (fun p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName globalJson, p)))
+                |> Seq.tryFind (fun dir ->
+                    File.Exists(Path.Combine(dir, "dotnet.exe"))
+                    || File.Exists(Path.Combine(dir, "dotnet")))
+            else
+                None
+        with
+        | :? JsonException
+        | :? IOException
+        | :? UnauthorizedAccessException -> None
+
+    match
+        findGlobalJson (DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath projectPath)))
+        |> Option.bind dotnetDirOf
+    with
+    | Some dir ->
+        privateSdks.GetOrAdd(
+            dir,
+            fun _ ->
+                let current = Environment.GetEnvironmentVariable "DOTNET_ROOT"
+
+                let already =
+                    not (String.IsNullOrEmpty current)
+                    && String.Equals(
+                        Path.GetFullPath(current).TrimEnd(Path.DirectorySeparatorChar),
+                        dir.TrimEnd(Path.DirectorySeparatorChar),
+                        StringComparison.OrdinalIgnoreCase
+                    )
+
+                if not already then
+                    Environment.SetEnvironmentVariable("DOTNET_ROOT", dir)
+
+                    Environment.SetEnvironmentVariable(
+                        "PATH",
+                        dir + string Path.PathSeparator + Environment.GetEnvironmentVariable "PATH"
+                    )
+
+                    printfn
+                        $"  global.json points at the repository's own .NET in {dir}: builds run with it on DOTNET_ROOT"
+
+                true
+        )
+        |> ignore
+    | None -> ()
+
 let private ensureRestorable (projectPath: string) =
     let rec findRoot (dir: DirectoryInfo) =
         if isNull dir then
@@ -795,44 +1012,78 @@ let private ensureRestorable (projectPath: string) =
             findRoot dir.Parent
 
     match findRoot (DirectoryInfo(Path.GetDirectoryName projectPath)) with
-    | Some root when not (File.Exists(Path.Combine(root, ".paket", "Paket.Restore.targets"))) ->
+    | Some root ->
         preparedRoots.GetOrAdd(
             root,
             fun _ ->
-                let sdkCode, sdkOut, sdkErr =
-                    runProcessIn (Some root) (TimeSpan.FromMinutes 1.) "dotnet" "--version"
+                let modernTargets =
+                    File.Exists(Path.Combine(root, ".paket", "Paket.Restore.targets"))
 
-                if sdkCode <> 0 && sdkPinUnsatisfied sdkOut sdkErr then
-                    printfn
-                        $"  paket.dependencies without .paket/Paket.Restore.targets in {root}, and its global.json pins an SDK not installed here: after installing it, run `dotnet tool restore` and `dotnet paket restore` there"
-                else
-                    printfn
-                        $"  paket.dependencies without .paket/Paket.Restore.targets in {root} — running the restores the repository documents"
+                let manifest = File.Exists(Path.Combine(root, ".config", "dotnet-tools.json"))
+                let bootstrapper = Path.Combine(root, ".paket", "paket.bootstrapper.exe")
+                let legacyExe = Path.Combine(root, ".paket", "paket.exe")
+                // the pre-tool layout (Chessie, FsXaml, FSharp.CloudAgent): the
+                // bootstrapper downloads paket.exe beside itself, and the
+                // projects' paket.targets then call that exe. Judged by that
+                // legacy targets file, not by the modern one's absence: a
+                // restore by a newer paket leaves Paket.Restore.targets behind
+                // while the projects still call the exe
+                let legacy =
+                    File.Exists bootstrapper
+                    && (File.Exists(Path.Combine(root, ".paket", "paket.targets")) || not modernTargets)
 
-                    let steps =
-                        [ if File.Exists(Path.Combine(root, ".config", "dotnet-tools.json")) then
-                              "tool restore"
-                          "paket restore" ]
+                // (executable, arguments, what to call it) in order
+                let steps =
+                    [
+                      // the local-tool manifest is what makes `dotnet paket`
+                      // exist — needed even when Paket.Restore.targets is in
+                      // place (suave: every project's restore failed without it)
+                      if manifest then
+                          "dotnet", "tool restore", "dotnet tool restore"
+                      if legacy then
+                          if not (File.Exists legacyExe) then
+                              bootstrapper, "", ".paket/paket.bootstrapper.exe"
 
-                    for step in steps do
-                        let code, out, err =
-                            runProcessIn (Some root) (TimeSpan.FromMinutes 10.) "dotnet" step
+                          legacyExe, "restore", ".paket/paket.exe restore"
+                      elif not modernTargets then
+                          "dotnet", "paket restore", "dotnet paket restore" ]
 
-                        if code <> 0 then
-                            let text = (err + out).Trim()
-                            eprintfn $"  (dotnet {step} failed: {text.Substring(0, min 300 text.Length)})"
-                        else
-                            printfn $"  dotnet {step}: done"
+                if not steps.IsEmpty then
+                    let sdkCode, sdkOut, sdkErr =
+                        runProcessIn (Some root) (TimeSpan.FromMinutes 1.) "dotnet" "--version"
+
+                    if sdkCode <> 0 && sdkPinUnsatisfied sdkOut sdkErr then
+                        printfn
+                            $"  paket.dependencies in {root}, and its global.json pins an SDK not installed here: after installing it, run `dotnet tool restore` and `dotnet paket restore` there"
+                    else
+                        printfn $"  paket.dependencies in {root} — running the restores the repository documents"
+
+                        for exe, args, label in steps do
+                            // a Windows executable needs mono elsewhere
+                            let exe, args =
+                                if exe.EndsWith ".exe" && not (OperatingSystem.IsWindows()) then
+                                    "mono", $"\"{exe}\" {args}"
+                                else
+                                    exe, args
+
+                            let code, out, err = runProcessIn (Some root) (TimeSpan.FromMinutes 10.) exe args
+
+                            if code <> 0 then
+                                let text = (err + out).Trim()
+                                eprintfn $"  ({label} failed: {text.Substring(0, min 300 text.Length)})"
+                            else
+                                printfn $"  {label}: done"
 
                 true
         )
         |> ignore
-    | _ -> ()
+    | None -> ()
 
 let private fscArgs (chosenFramework: string) (projectPath: string) =
     // msbuild runs from the project's own directory (its global.json), so a
     // path given relative to the caller's directory must become absolute
     let projectPath = Path.GetFullPath projectPath
+    ensurePrivateSdk projectPath
     ensureRestorable projectPath
 
     let projectText =
@@ -876,19 +1127,10 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         // is invisible to the narrowest analysis — it is not in the parse tree
         // at all — so reaching it means asking for that framework by name.
         let targetFramework =
-            let m =
-                Text.RegularExpressions.Regex.Match(projectText, "<TargetFrameworks>([^<]+)</TargetFrameworks>")
-
             if chosenFramework <> "" then
                 Some chosenFramework
-            elif m.Success then
-                m.Groups.[1].Value.Split ';'
-                |> Array.map _.Trim()
-                |> Array.filter (fun tfm -> tfm <> "")
-                |> Array.sortBy tfmRank
-                |> Array.tryHead
             else
-                None
+                targetFrameworksOf projectPath |> List.tryHead
 
         let tfmArg =
             match targetFramework with
@@ -942,6 +1184,11 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         let buildExit, buildOut, buildErr =
             if restoreExit <> 0 then
                 restoreExit, restoreOut, restoreErr
+            // a verification switch: analyse a tree whose build is known to
+            // fail (studying what the typecheck sees of that failure), on
+            // the outputs already on disk
+            elif Environment.GetEnvironmentVariable "FSREF_SKIP_BUILD" = "1" then
+                0, "", ""
             else
                 run $"msbuild \"{projectPath}\" -t:Build{tfmArg}"
 
@@ -971,6 +1218,15 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
             let exit, stdout, stderr =
                 run
                     $"msbuild \"{projectPath}\" -t:Rebuild -p:BuildProjectReferences=false -p:ProvideCommandLineArgs=true -p:SkipCompilerExecution=true --getItem:FscCommandLineArgs --getProperty:DotnetFscCompilerPath{tfmArg}"
+
+            // that Rebuild CLEANED the project's outputs and, compilation
+            // skipped, wrote none back. An SDK-style sibling rebuilds this
+            // project through its project reference; an old-style one
+            // references the dll by path (FsXaml's demos:
+            // `..\..\bin\FsXaml.Wpf.TypeProvider\...dll`) and finds nothing.
+            // Build once more, so the outputs are there for whoever needs them
+            if not isSdkStyle then
+                run $"msbuild \"{projectPath}\" -t:Build{tfmArg}" |> ignore
 
             try
                 use doc = JsonDocument.Parse stdout
@@ -1094,7 +1350,11 @@ let parseOnlySafeAnalyzers =
           "LoopPerf"
           "MatchBang"
           "MatchToIf"
-          "MethodCallParens"
+          // MethodCallParens (FR0094) is syntactic, but not for here: on a
+          // receiver the compilation cannot type, `x.Add(p)` and `x.Add p`
+          // fail with DIFFERENT error sets, and the count-based regression
+          // check reads that as a break (fsharplint's docs scripts, three
+          // rollbacks for a matter of taste)
           "MiscRules"
           "ObjectRules"
           "PathSeparator"
@@ -1229,6 +1489,42 @@ let private projectErrors (checker: FSharpChecker) (options: FSharpProjectOption
 
 let private errorCount (checker: FSharpChecker) (options: FSharpProjectOptions) = (projectErrors checker options).Length
 
+/// The project's errors, plus each named file checked on its own. The
+/// project check is not the whole truth: on the F# compiler, whose every
+/// implementation file has a signature, a member pulled out of a `let rec`
+/// group generalised a parameter and the signature's concrete type failed
+/// FS0034 in fsc — while ParseAndCheckProject reported nothing, and only a
+/// per-file check of that file did. A pass that touched a file checks that
+/// file the second way too.
+let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOptions) (files: string list) =
+    let project = projectErrors checker options
+
+    let perFile =
+        files
+        |> List.toArray
+        |> Array.collect (fun path ->
+            try
+                let text = FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText path)
+
+                let _, answer =
+                    checker.ParseAndCheckFileInProject(path, 0, text, options)
+                    |> Async.RunSynchronously
+
+                match answer with
+                | FSharpCheckFileAnswer.Succeeded results ->
+                    results.Diagnostics
+                    |> Array.filter (fun d ->
+                        d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+                        && (not parseOnlyRun || d.Subcategory = "parse"))
+                | FSharpCheckFileAnswer.Aborted -> [||]
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> [||])
+
+    Array.append project perFile
+    |> Array.distinctBy (fun d ->
+        Path.GetFullPath(d.FileName).ToLowerInvariant(), d.StartLine, d.StartColumn, d.ErrorNumber)
+
 /// Apply grouped edits, bottom-up per file, skipping any fix overlapping
 /// one already taken; the original text is verified before each splice.
 /// A rule's kind, padded so the file paths after it line up. "correctness"
@@ -1260,6 +1556,13 @@ type private AppliedFile =
 /// identical content — would almost certainly have broken identically.
 let private fixKey (code: string) (file: string) (f: Fix) =
     code, Path.GetFullPath file, f.FromText, f.ToText
+
+/// Files a verification put back for refusing another project or
+/// framework, for the rest of the run: the next framework round would
+/// otherwise apply the same fixes again and bisect again (the F#
+/// compiler's sformat.fs, twice in one run).
+let private putBackFiles =
+    System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
 /// Returns the number of fixes applied and the files they changed.
 /// `suppressed` holds fixes rolled back by an earlier pass's verification;
@@ -1352,6 +1655,7 @@ let private applyEditGroups
                 members
                 |> List.forall (fun (_, code, f) ->
                     not (suppressed.Contains(fixKey code file f))
+                    && not (putBackFiles.Contains(Path.GetFullPath file))
                     && not (overlaps f.FromRange)
                     && (f.ToText.Replace("\r", "") = f.FromText.Replace("\r", "") || (viable f).IsSome))
                 && members
@@ -3114,8 +3418,14 @@ let private runPass
     // every project that includes it is where multi-project runs go to die
     // partitioned rather than filtered: the skipped names are worth keeping,
     // since a short list says more than a count
+    let gitIgnored =
+        gitIgnoredFiles (Path.GetDirectoryName options.ProjectFileName) named
+
     let ignoredFiles, filesToSweep =
-        named |> Array.partition Configuration.isIgnoredPath
+        named
+        |> Array.partition (fun f ->
+            Configuration.isIgnoredPath f
+            || gitIgnored.Contains(Path.GetFullPath(f).ToLowerInvariant()))
 
     // files an earlier compilation of this RUN already swept under the
     // same conditional-compilation defines: same defines, same parse tree,
@@ -3134,9 +3444,9 @@ let private runPass
         if ignoredFiles.Length < 9 then
             let names = ignoredFiles |> Array.map Path.GetFileName |> String.concat ", "
 
-            Out.skip $"  ({ignoredFiles.Length} ignored-path file(s) skipped: {names})"
+            Out.skip $"  ({ignoredFiles.Length} ignored-path or git-ignored file(s) skipped: {names})"
         else
-            Out.skip $"  ({ignoredFiles.Length} ignored-path file(s) skipped)"
+            Out.skip $"  ({ignoredFiles.Length} ignored-path or git-ignored file(s) skipped)"
 
     if alreadySwept.Length > 0 then
         printfn $"  ({alreadySwept.Length} shared file(s) already swept in an earlier compilation)"
@@ -3653,36 +3963,13 @@ let private optionsFor (checker: FSharpChecker) (parseOnly: bool) (chosenFramewo
 let private isMultiTargeted (target: Target) =
     match target with
     | Target.Script _ -> false
-    | Target.Project(project, _) ->
-        try
-            (File.ReadAllText project).Contains "<TargetFrameworks>"
-        with
-        | :? IOException
-        | :? UnauthorizedAccessException -> false
+    | Target.Project(project, _) -> not (targetFrameworksOf project).IsEmpty
 
 /// Every framework a project targets, narrowest first.
 let private frameworksOf (target: Target) =
     match target with
     | Target.Script _ -> []
-    | Target.Project(project, _) ->
-        let text =
-            try
-                File.ReadAllText project
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException -> ""
-
-        let m =
-            Text.RegularExpressions.Regex.Match(text, "<TargetFrameworks>([^<]+)</TargetFrameworks>")
-
-        if m.Success then
-            m.Groups.[1].Value.Split ';'
-            |> Array.map _.Trim()
-            |> Array.filter (fun tfm -> tfm <> "")
-            |> Array.sortBy tfmRank
-            |> List.ofArray
-        else
-            []
+    | Target.Project(project, _) -> targetFrameworksOf project
 
 /// Build every framework, so a fix that suits the one we analyzed but not
 /// the others cannot pass as success.
@@ -3901,14 +4188,19 @@ let private verifyPass
     // clean baseline, then an SQLProvider SSL error mid-run, then a pass
     // rolled back for errors it never caused. A second check costs one
     // project typecheck, only on the failing path.
+    // the files this pass changed are checked one by one as well: see
+    // projectErrorsWith
+    let recount () =
+        projectErrorsWith checker options (changedFiles |> List.map (fun cf -> cf.Path))
+
     let errors =
-        let first = projectErrors checker options
+        let first = recount ()
 
         if first.Length <= baselineErrors then
             first
         else
             checker.InvalidateConfiguration options
-            let second = projectErrors checker options
+            let second = recount ()
 
             if second.Length <= baselineErrors then
                 Out.dim
@@ -3947,7 +4239,7 @@ let private verifyPass
             if not named.IsEmpty then
                 writeBack named
 
-                if (projectErrors checker options).Length <= baselineErrors then
+                if (recount ()).Length <= baselineErrors then
                     // the pass IS to blame — but usually one fix is, and a
                     // whole-file rollback would take every innocent fix in
                     // the file down with it (a batch of 36 lost 30 good
@@ -3981,7 +4273,7 @@ let private verifyPass
                                 writeSource cf.Path (reapplySubset cf.Before (cf.Fixes |> List.except culprits))
 
                             checker.InvalidateConfiguration options
-                            (projectErrors checker options).Length <= baselineErrors
+                            (recount ()).Length <= baselineErrors
 
                     if salvaged then
                         let kept =
@@ -4080,7 +4372,7 @@ let private verifyPass
                 // identical-content fix in the same file was silently dropped
                 writeBack changedFiles
 
-                if (projectErrors checker options).Length <= baselineErrors then
+                if (recount ()).Length <= baselineErrors then
                     suppressAll changedFiles
                     changedFiles
                 else
@@ -4257,30 +4549,47 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 | Target.Script _ -> true
                 | Target.Project _ -> false)
 
+        // FSharp.Core ITSELF (`--compiling-fslib`) is checked by the compiler
+        // it is written for, and no other: an older FCS meets intrinsics it
+        // does not know ("did not contain the val
+        // 'ValLinkagePartialKey(.ctor)'" on the F# repository's own
+        // FSharp.Core). Not refused either: the syntactic rules still apply
+        let degradedCore =
+            baselineErrors > 0
+            && not opts.ParseOnly
+            && options.OtherOptions |> Array.exists (fun o -> o.StartsWith "--compiling-fslib")
+
+        let degraded = degradedScript || degradedCore
+
         let analyzers =
-            if degradedScript then
-                // the syntactic rules, plus the one rule whose input IS the
-                // broken compilation: ScriptLoads reads the FS0039s and
-                // offers the #load or #r that would resolve them
+            if degraded then
+                // the syntactic rules, plus (for a script) the one rule whose
+                // input IS the broken compilation: ScriptLoads reads the
+                // FS0039s and offers the #load or #r that would resolve them
                 analyzers
                 |> List.filter (fun m ->
                     let name = analyzerName m
 
                     parseOnlySafeAnalyzers.Contains name
-                    || name = "ScriptLoads"
-                    || name = "ScriptReferences"
-                    // a record expression's missing fields: a compile
-                    // error is its input too
-                    || name = "RecordFields")
+                    || degradedScript
+                       && (name = "ScriptLoads"
+                           || name = "ScriptReferences"
+                           // a record expression's missing fields: a compile
+                           // error is its input too
+                           || name = "RecordFields"))
             else
                 analyzers
 
-        if (opts.ParseOnly || degradedScript) && baselineErrors > 0 then
+        if (opts.ParseOnly || degraded) && baselineErrors > 0 then
             // expected: nothing was resolved. The count still serves as the
             // end-of-run regression baseline — a fix that breaks the parse
             // RAISES it and is put back
-            printfn
-                $"  ({baselineErrors} unresolved-reference error(s) ignored; syntactic rules only ({analyzers.Length}))"
+            if degradedCore then
+                printfn
+                    $"  (FSharp.Core itself, --compiling-fslib: only its own compiler can typecheck it; syntactic rules only ({analyzers.Length}))"
+            else
+                printfn
+                    $"  ({baselineErrors} unresolved-reference error(s) ignored; syntactic rules only ({analyzers.Length}))"
 
             // the first few, so "does not typecheck" has a reason next to
             // it: a #load list missing a file, a reference to a dll not
@@ -4291,7 +4600,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             if baselineErrors > 3 then
                 Out.dim $"    ... and {baselineErrors - 3} more"
 
-        if baselineErrors > 0 && not opts.ParseOnly && not degradedScript then
+        if baselineErrors > 0 && not opts.ParseOnly && not degraded then
             Out.bad $"The project has {baselineErrors} error(s) before any fix; fix those first:"
 
             if showHeader && not opts.DryRun then
@@ -4510,7 +4819,16 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 eprintfn $"{report output}"
                                 1
 
+                            // a verification switch: a failure that needs the
+                            // fixes in place to be studied (the F# compiler's
+                            // FSharp.Core failing only with the compiler
+                            // project's fixes applied) is kept, not undone
+                            let keepOnFailure = Environment.GetEnvironmentVariable "FSREF_KEEP_ON_FAILURE" = "1"
+
                             match buildAllFrameworks project with
+                            | Error _ when keepOnFailure ->
+                                keepFixes
+                                    "FSREF_KEEP_ON_FAILURE: a target framework fails with this run's fixes (and without them); kept for inspection:"
                             // Still broken without the fixes — but "still
                             // broken" is not "not our fault". Comparing the
                             // errors themselves separates the two: one that
@@ -4549,14 +4867,153 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
                                     markSwept options
                                     0
-                                | Error again ->
-                                    let restored = restoreSnapshot snapshot
-
+                                | Error again when keepOnFailure ->
                                     eprintfn
-                                        $"Applying broke a target framework this run did not analyze, so the {restored} file(s) it changed were put back:"
+                                        "FSREF_KEEP_ON_FAILURE: a target framework fails with this run's fixes and builds without them; the fixes are kept for inspection:"
 
                                     eprintfn $"{report again}"
                                     1
+                                | Error again ->
+                                    // ONE file's fixes can be the whole trouble — the
+                                    // F# compiler's sformat.fs is also a source of
+                                    // FSharp.Core, compiled there before printf.fs,
+                                    // where an interpolated string has no
+                                    // PrintfFormat yet — and putting all 199 changed
+                                    // files back for it throws away every other fix.
+                                    // Bisect instead: revert halves of the changed
+                                    // files until the build passes, keep the rest
+                                    let changed =
+                                        currentTexts
+                                        |> List.filter (fun (path, text) ->
+                                            match Map.tryFind path snapshot with
+                                            | Some original -> original <> text
+                                            | None -> false)
+                                        |> List.map fst
+
+                                    let fixedText = Map.ofList currentTexts
+                                    let mutable builds = 0
+                                    let maxBuilds = 12
+
+                                    // the tree with exactly these files put back
+                                    let passesReverting (reverted: Set<string>) =
+                                        builds <- builds + 1
+
+                                        for path in changed do
+                                            writeSource
+                                                path
+                                                (if reverted.Contains path then
+                                                     Map.find path snapshot
+                                                 else
+                                                     Map.find path fixedText)
+
+                                        match buildAllFrameworks project with
+                                        | Ok() -> true
+                                        | Error _ -> false
+
+                                    // a signature and its implementation move as ONE:
+                                    // split across halves, both halves fail (the
+                                    // compiler repository, where every .fs has its
+                                    // .fsi) and the bisection learns nothing
+                                    let units =
+                                        changed
+                                        |> List.groupBy (fun path ->
+                                            Path.ChangeExtension(path, null).ToLowerInvariant())
+                                        |> List.map snd
+
+                                    let filesOf (us: string list list) = us |> List.concat |> Set.ofList
+
+                                    // with `context` and `suspects` all put back the
+                                    // build passes; find the suspects that matter
+                                    let rec culprits (context: Set<string>) (suspects: string list list) =
+                                        if suspects.Length <= 1 || builds >= maxBuilds then
+                                            suspects
+                                        else
+                                            let h1, h2 = List.splitAt (suspects.Length / 2) suspects
+
+                                            if passesReverting (Set.union context (filesOf h1)) then
+                                                culprits context h1
+                                            elif passesReverting (Set.union context (filesOf h2)) then
+                                                culprits context h2
+                                            else
+                                                culprits (Set.union context (filesOf h2)) h1
+                                                @ culprits (Set.union context (filesOf h1)) h2
+
+                                    // the errors name the project that refused
+                                    // (`[...\FSharp.Core.fsproj::TargetFramework=...]`);
+                                    // when it is ANOTHER project, the changed files it
+                                    // compiles itself are the first suspects — one
+                                    // build, before any bisection
+                                    let compiledElsewhere =
+                                        let canonical (p: string) = Path.GetFullPath(p).ToLowerInvariant()
+
+                                        again
+                                        |> Array.choose (fun line ->
+                                            let m =
+                                                Text.RegularExpressions.Regex.Match(
+                                                    line,
+                                                    @"\[([^\[\]]+\.fsproj)(?:::|\])"
+                                                )
+
+                                            if m.Success then
+                                                Some(canonical m.Groups.[1].Value)
+                                            else
+                                                None)
+                                        |> Array.distinct
+                                        |> Array.filter (fun p -> p <> canonical project)
+                                        |> Array.collect (fun otherProject ->
+                                            try
+                                                let dir = Path.GetDirectoryName otherProject
+
+                                                Text.RegularExpressions.Regex.Matches(
+                                                    File.ReadAllText otherProject,
+                                                    "Include=\"([^\"]+\\.fsi?)\""
+                                                )
+                                                |> Seq.map (fun m -> canonical (Path.Combine(dir, m.Groups.[1].Value)))
+                                                |> Array.ofSeq
+                                            with
+                                            | :? IOException
+                                            | :? UnauthorizedAccessException -> [||])
+                                        |> Set.ofArray
+
+                                    let shared =
+                                        changed
+                                        |> List.filter (fun path ->
+                                            compiledElsewhere.Contains(Path.GetFullPath(path).ToLowerInvariant()))
+
+                                    printfn
+                                        $"  bisecting the {changed.Length} changed file(s) for the ones the other framework refuses (a build per step)..."
+
+                                    // (found, already confirmed by a passing build)
+                                    let found, confirmed =
+                                        if not shared.IsEmpty && passesReverting (set shared) then
+                                            printfn
+                                                $"  ({shared.Length} of them are compiled by the refusing project itself, and putting those back is enough)"
+
+                                            shared, true
+                                        else
+                                            culprits Set.empty units |> List.concat, false
+
+                                    if
+                                        found.Length < changed.Length
+                                        && (confirmed || (builds < maxBuilds && passesReverting (set found)))
+                                    then
+                                        eprintfn
+                                            $"Applying broke a target framework this run did not analyze; the fixes in {found.Length} file(s) were put back and the other {changed.Length - found.Length} kept:"
+
+                                        for path in found do
+                                            putBackFiles.Add(Path.GetFullPath path) |> ignore
+                                            eprintfn $"  {path}"
+
+                                        eprintfn $"{report again}"
+                                        1
+                                    else
+                                        let restored = restoreSnapshot snapshot
+
+                                        eprintfn
+                                            $"Applying broke a target framework this run did not analyze, so the {restored} file(s) it changed were put back:"
+
+                                        eprintfn $"{report again}"
+                                        1
                     | Target.Script _ ->
                         printfn "done; project still checks clean"
                         markSwept options

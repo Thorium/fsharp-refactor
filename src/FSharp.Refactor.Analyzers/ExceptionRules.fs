@@ -88,10 +88,40 @@ let find (parseTree: ParsedInput) (source: ISourceText) : FinallySuggestion list
                     finallies.Add { Range = site }
         | _ -> ()
 
+    // a match whose sibling arms raise three or more DISTINCT exception
+    // types is a dispatch table — FCS's `SimulateException` fault injection
+    // raises OutOfMemory, AccessViolation, IndexOutOfRange and a dozen
+    // others one per arm, by request; the reserved ones are the point
+    let dispatchTableArms =
+        let clausesOf (e: SynExpr) =
+            match e with
+            | SynExpr.Match(clauses = cs)
+            | SynExpr.MatchBang(clauses = cs)
+            | SynExpr.MatchLambda(matchClauses = cs) -> cs
+            | _ -> []
+
+        index.Exprs
+        |> Array.collect (fun (_, e) ->
+            let arms =
+                clausesOf e
+                |> List.choose (fun (SynMatchClause(resultExpr = arm)) ->
+                    match stripParens arm with
+                    | RaisedTypeName name -> Some(arm.Range, name)
+                    | _ -> None)
+
+            if (arms |> List.map snd |> List.distinct |> List.length) >= 3 then
+                arms |> List.map fst |> Array.ofList
+            else
+                [||])
+
+    let inDispatchTable (r: range) =
+        dispatchTableArms |> Array.exists (fun arm -> Range.rangeContainsRange arm r)
+
     // FR0064: reserved exception constructions
     for _, e in index.Exprs do
         match e with
-        | RaisedTypeName name when reservedExceptions.Contains name -> reserved.Add { Range = e.Range; TypeName = name }
+        | RaisedTypeName name when reservedExceptions.Contains name && not (inDispatchTable e.Range) ->
+            reserved.Add { Range = e.Range; TypeName = name }
         | _ -> ()
 
     List.ofSeq finallies, List.ofSeq reserved

@@ -165,12 +165,33 @@ let find
     for _, decl in index.Decls do
         match decl with
         | SynModuleDecl.Types(typeDefns = defns) ->
-            for SynTypeDefn(typeRepr = repr) in defns do
+            for SynTypeDefn(typeInfo = SynComponentInfo(attributes = typeAttrs); typeRepr = repr) in defns do
                 match repr with
-                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Enum(cases = cases)) ->
-                    let seen = System.Collections.Generic.Dictionary<string, string>()
+                // a [<Flags>] enum names bits, and one bit under two
+                // names is how such tables are written (FCS's
+                // ilnativeres.fs mirrors winnt.h: `MemProtected = 16384u |
+                // NoDeferSpecExc = 16384u`) — not a slip
+                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Enum(cases = cases)) when
+                    not (hasAttributeNamed "Flags" typeAttrs)
+                    ->
+                    let seen = System.Collections.Generic.Dictionary<string, string * int>()
 
-                    for SynEnumCase(ident = SynIdent(ident = caseId); valueExpr = valueExpr) in cases do
+                    // `Default = 0 | Text = 0`: a zero alias declared right
+                    // beside its twin is a deliberate synonym (FCS's public
+                    // FSharpTokenColorKind), not the copy-paste slip that
+                    // lands far from the value it duplicates
+                    let declaredAlias
+                        (key: string)
+                        (originalName: string)
+                        (originalIndex: int)
+                        (i: int)
+                        (name: string)
+                        =
+                        key = "0"
+                        && originalIndex = i - 1
+                        && [ originalName; name ] |> List.exists (fun n -> n = "Default" || n = "None")
+
+                    for i, SynEnumCase(ident = SynIdent(ident = caseId); valueExpr = valueExpr) in List.indexed cases do
                         // every integral spelling keys the same way: `16`,
                         // `0x10` and `16u` are one value (FCS's vendored
                         // ilnativeres.fs aliases its flags with `u` suffixes)
@@ -190,12 +211,13 @@ let find
                         match key with
                         | Some k ->
                             match seen.TryGetValue k with
-                            | true, original ->
-                                enums.Add
-                                    { Range = caseId.idRange
-                                      CaseName = caseId.idText
-                                      OriginalName = original }
-                            | _ -> seen.[k] <- caseId.idText
+                            | true, (original, originalIndex) ->
+                                if not (declaredAlias k original originalIndex i caseId.idText) then
+                                    enums.Add
+                                        { Range = caseId.idRange
+                                          CaseName = caseId.idText
+                                          OriginalName = original }
+                            | _ -> seen.[k] <- (caseId.idText, i)
                         | None -> ()
                 | _ -> ()
         | _ -> ()

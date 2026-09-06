@@ -123,6 +123,37 @@ let private shadowedAt (path: SyntaxNode list) (at: range) =
         | _ -> [])
     |> Set.ofList
 
+/// The lambda's own parentheses, when it has them and dropping them is
+/// safe: a bare identifier needs none, and `Array.init this.Count (id)`,
+/// `ListReduceNode(list, (id), reduction)` — nine sites on Mibo — read as
+/// a leftover. `f (id)` and `f id` are the same application; the one
+/// place the parentheses still do work is when they touch a neighbouring
+/// token (`List.map(fun x -> x)` would fuse into `List.mapid`), so a
+/// glued character on either side keeps them.
+let private droppableParens (source: ISourceText) (path: SyntaxNode list) (lambda: SynExpr) =
+    match path with
+    | SyntaxNode.SynExpr(SynExpr.Paren(expr = inner; range = pr)) :: _ when Range.equals inner.Range lambda.Range ->
+        let glued (c: char) =
+            Char.IsLetterOrDigit c || "_'.()[]{}".Contains c
+
+        let startLine = source.GetLineString(pr.StartLine - 1)
+        let endLine = source.GetLineString(pr.EndLine - 1)
+
+        let before =
+            if pr.StartColumn = 0 then
+                ' '
+            else
+                startLine.[pr.StartColumn - 1]
+
+        let after =
+            if pr.EndColumn >= endLine.Length then
+                ' '
+            else
+                endLine.[pr.EndColumn]
+
+        if glued before || glued after then None else Some pr
+    | _ -> None
+
 /// Find lambdas that are just `id`, `fst` or `snd`.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
@@ -143,9 +174,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                     match builtin with
                     | Some replacement when not ((shadowedAt path expr.Range).Contains replacement) ->
+                        // the edit covers the lambda's parentheses too:
+                        // the replacement is a bare identifier
+                        let range =
+                            match droppableParens source path expr with
+                            | Some parenRange -> parenRange
+                            | None -> expr.Range
+
                         suggestions.Add
-                            { Range = expr.Range
-                              OriginalText = textOfRange source expr.Range
+                            { Range = range
+                              OriginalText = textOfRange source range
                               ReplacementText = replacement }
                     | _ -> ()
                 | _ -> () }

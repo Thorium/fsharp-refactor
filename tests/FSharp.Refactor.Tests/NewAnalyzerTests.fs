@@ -338,3 +338,222 @@ let ``a shape-changing fix beside a signature file fires only on private declara
         Assert.NotEmpty(StructDu.find false loneTree loneText)
     finally
         System.IO.Directory.Delete(dir, true)
+
+// ---- FR0017: ValueTask discarded, interface members ----
+
+[<Fact>]
+let ``FR0017: an interface member returning Async discarded with ignore is flagged`` () =
+    // FSharp.CloudAgent's `messageStream.AbandonMessage token |> ignore`
+    let source =
+        "module Test\ntype IStream =\n    abstract AbandonMessage: System.Guid -> Async<unit>\nlet f (stream: IStream) (token: System.Guid) =\n    stream.AbandonMessage token |> ignore"
+
+    match discardedAsyncIn source with
+    | [ s ] ->
+        Assert.Equal("AbandonMessage", s.Name)
+        Assert.False s.IsValueTask
+    | other -> failwithf "Expected one discarded Async, got %A" other
+
+[<Fact>]
+let ``FR0017: a ValueTask discarded with ignore loses its outcome`` () =
+    let source =
+        "module Test\nopen System.Threading.Tasks\ntype ITransport =\n    abstract shutdown: unit -> ValueTask\nlet f (t: ITransport) =\n    t.shutdown() |> ignore"
+
+    match discardedAsyncIn source with
+    | [ s ] ->
+        Assert.Equal("shutdown", s.Name)
+        Assert.True s.IsValueTask
+    | other -> failwithf "Expected one discarded ValueTask, got %A" other
+
+    match discardedAsyncIn "module Test\nopen System.Threading.Tasks\nlet f (vt: ValueTask<int>) = ignore vt" with
+    | [ s ] -> Assert.True s.IsValueTask
+    | other -> failwithf "Expected one discarded ValueTask value, got %A" other
+
+    // a Task is hot and observable through its own machinery: not this rule
+    Assert.Empty(discardedAsyncIn "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) = t |> ignore")
+
+    // a unit-returning shutdown is nothing to discard
+    Assert.Empty(
+        discardedAsyncIn
+            "module Test\ntype ITransport =\n    abstract shutdown: unit -> unit\nlet f (t: ITransport) = t.shutdown() |> ignore"
+    )
+
+[<Fact>]
+let ``a regex hoisted from under an #if lands under the same #if`` () =
+    let source =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n#if !FOO\n    for x in xs do\n        if Regex.IsMatch(x, \"^a+$\") then printfn \"%s\" x\n#endif"
+
+    match
+        regexIn source
+        |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.HoistFromLoop)
+    with
+    | [ s ] ->
+        let inserted =
+            s.Edits
+            |> List.pick (fun (_, original, text) -> if original = "" then Some text else None)
+
+        Assert.StartsWith("#if !FOO\nlet private ", inserted)
+        Assert.Contains("\n#endif\n", inserted)
+    | other -> failwithf "Expected one hoist suggestion, got %A" other
+
+// ---- FR0149 UnhandledStart ----
+
+let private unhandledStartsIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    AsyncIgnore.findUnhandledStart tree sourceText checkResults
+
+[<Fact>]
+let ``FR0149: a started computation with no handler is flagged`` () =
+    // CloudAgent's listener: one throw from the loop body ends it silently
+    match
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    async {\n        while true do\n            let! _ = work ()\n            ()\n    }\n    |> Async.Start"
+    with
+    | [ s ] -> Assert.Equal("Async.Start", s.Starter)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a body wrapped in try-with is handled`` () =
+    Assert.Empty(
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    async {\n        try\n            let! _ = work ()\n            ()\n        with ex -> printfn \"%s\" ex.Message\n    }\n    |> Async.Start"
+    )
+
+[<Fact>]
+let ``FR0149: Async Catch counts only once both Choice arms consume it`` () =
+    // producing the Choice is not handling it
+    let source (tail: string) =
+        "let work () = async { return 1 }\nlet run () =\n    async {\n        let! outcome = work () |> Async.Catch\n"
+        + tail
+        + "\n    }\n    |> Async.Start"
+
+    Assert.Empty(
+        unhandledStartsIn (
+            source
+                "        match outcome with\n        | Choice1Of2 _ -> ()\n        | Choice2Of2 ex -> printfn \"%s\" ex.Message"
+        )
+    )
+
+    Assert.NotEmpty(unhandledStartsIn (source "        ignore outcome"))
+
+[<Fact>]
+let ``FR0149: a one-hop binding in the same file is read`` () =
+    match
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    let listener =\n        async {\n            let! _ = work ()\n            ()\n        }\n\n    Async.Start listener"
+    with
+    | [ s ] -> Assert.Equal("Async.Start", s.Starter)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a computation this file cannot see stays quiet`` () =
+    Assert.Empty(unhandledStartsIn "let run (comp: Async<unit>) = Async.Start comp")
+
+[<Fact>]
+let ``FR0149: StartImmediate is the same shape and the token form is read`` () =
+    match
+        unhandledStartsIn
+            "open System.Threading\nlet work () = async { return 1 }\nlet run (token: CancellationToken) =\n    Async.StartImmediate(\n        async {\n            let! _ = work ()\n            ()\n        },\n        token\n    )"
+    with
+    | [ s ] -> Assert.Equal("Async.StartImmediate", s.Starter)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a looping body says where the handler goes`` () =
+    // CloudAgent's listener polls forever: a handler around the whole
+    // computation still ends it on the first failure
+    match
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    async {\n        while true do\n            let! _ = work ()\n            ()\n    }\n    |> Async.Start"
+    with
+    | [ s ] -> Assert.True(s.LoopsInBody)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a straight-line body has no such choice`` () =
+    match
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    async {\n        let! _ = work ()\n        ()\n    }\n    |> Async.Start"
+    with
+    | [ s ] -> Assert.False(s.LoopsInBody)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a try around the start is called out as not covering it`` () =
+    // measured in fsi: `try async { failwith "y" } |> Async.Start with _ -> ()`
+    // terminates the process — the handler is on this thread, the work is not
+    match
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    try\n        async {\n            let! _ = work ()\n            ()\n        }\n        |> Async.Start\n    with ex -> printfn \"%s\" ex.Message"
+    with
+    | [ s ] -> Assert.True(s.WrappedInTry)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a start with no try around it says nothing about one`` () =
+    match
+        unhandledStartsIn
+            "let work () = async { return 1 }\nlet run () =\n    async {\n        let! _ = work ()\n        ()\n    }\n    |> Async.Start"
+    with
+    | [ s ] -> Assert.False(s.WrappedInTry)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a try wrapping only the start moves its handler inside`` () =
+    let source =
+        "let work () = async { return 1 }\nlet run () =\n    try\n        async {\n            let! _ = work ()\n            ()\n        }\n        |> Async.Start\n    with e ->\n        printfn \"%s\" e.Message"
+
+    match unhandledStartsIn source with
+    | [ s ] ->
+        match s.TryFix with
+        | Some(r, _, replacement) ->
+            let patched = applyEdit source r replacement
+
+            Assert.Contains(
+                "    async {\n        try\n            let! _ = work ()\n            ()\n        with e ->\n            printfn \"%s\" e.Message\n    }\n    |> Async.Start",
+                patched
+            )
+
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the move-the-handler-inside fix"
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: several handler clauses travel verbatim`` () =
+    // the Async.Catch spelling could not carry a typed clause or a guard;
+    // moving the try keeps every clause as written
+    let source =
+        "open System\nlet work () = async { return 1 }\nlet run () =\n    try\n        async {\n            let! _ = work ()\n            ()\n        }\n        |> Async.Start\n    with\n    | :? OperationCanceledException -> ()\n    | e when e.Message = \"x\" -> printfn \"x\"\n    | e -> printfn \"%s\" e.Message"
+
+    match unhandledStartsIn source with
+    | [ s ] ->
+        match s.TryFix with
+        | Some(r, _, replacement) ->
+            let patched = applyEdit source r replacement
+            Assert.Contains(":? OperationCanceledException", patched)
+            Assert.Contains("e when e.Message = \"x\"", patched)
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the move-the-handler-inside fix"
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a try holding more than the start offers no move`` () =
+    // the handler may have been meant for the other statement, so the
+    // rule will not decide that for the author
+    let source =
+        "let work () = async { return 1 }\nlet setup () = ()\nlet run () =\n    try\n        setup ()\n\n        async {\n            let! _ = work ()\n            ()\n        }\n        |> Async.Start\n    with e ->\n        printfn \"%s\" e.Message"
+
+    match unhandledStartsIn source with
+    | [ s ] ->
+        Assert.True(s.WrappedInTry)
+        Assert.True(s.TryFix.IsNone, "a try holding other statements is not the author's handler for this start alone")
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0149: a start carrying a cancellation token keeps its argument`` () =
+    // the tupled form would lose the token in the rewrite, so no fix
+    let source =
+        "open System.Threading\nlet work () = async { return 1 }\nlet run (token: CancellationToken) =\n    try\n        Async.Start(\n            async {\n                let! _ = work ()\n                ()\n            },\n            token\n        )\n    with e ->\n        printfn \"%s\" e.Message"
+
+    match unhandledStartsIn source with
+    | [ s ] -> Assert.True(s.TryFix.IsNone)
+    | other -> failwithf "Expected exactly one unhandled-start note, got %A" other

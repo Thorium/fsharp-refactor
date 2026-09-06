@@ -301,6 +301,23 @@ let ``a GeneratedCode attribute is recognised`` () =
         File.Delete path
 
 [<Fact>]
+let ``an fslex line directive marks the file generated`` () =
+    // fslex and fsyacc output carries no banner, only `# 3 "lex.fsl"`
+    // directives pointing back at the grammar
+    let path =
+        Path.Combine(Path.GetTempPath(), $"fsref-gen-{Path.GetRandomFileName()}.fs")
+
+    File.WriteAllText(
+        path,
+        "module internal Lexer\n\nopen System\n# 3 \"..\\..\\src\\Compiler\\lex.fsl\"\nlet token (lexbuf: int) = lexbuf\n"
+    )
+
+    try
+        Assert.True(Configuration.isGeneratedFile path)
+    finally
+        File.Delete path
+
+[<Fact>]
 let ``ordinary source is not mistaken for generated`` () =
     let path =
         Path.Combine(Path.GetTempPath(), $"fsref-gen-{Path.GetRandomFileName()}.fs")

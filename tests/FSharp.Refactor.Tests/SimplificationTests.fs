@@ -96,22 +96,22 @@ let ``length compared with nonzero is not touched`` () =
 [<Fact>]
 let ``equals None becomes Option isNone`` () =
     let src = "let f (x: int option) = x = None"
-    assertCheckedSuggestion (findChecked src) src "x |> Option.isNone"
+    assertCheckedSuggestion (findChecked src) src "x.IsNone"
 
 [<Fact>]
 let ``not-equals None becomes Option isSome`` () =
     let src = "let f (x: int option) = x <> None"
-    assertCheckedSuggestion (findChecked src) src "x |> Option.isSome"
+    assertCheckedSuggestion (findChecked src) src "x.IsSome"
 
 [<Fact>]
 let ``None on the left is recognized`` () =
     let src = "let f (x: int option) = None = x"
-    assertCheckedSuggestion (findChecked src) src "x |> Option.isNone"
+    assertCheckedSuggestion (findChecked src) src "x.IsNone"
 
 [<Fact>]
 let ``equals ValueNone becomes ValueOption isNone`` () =
     let src = "let f (x: int voption) = x = ValueNone"
-    assertCheckedSuggestion (findChecked src) src "x |> ValueOption.isNone"
+    assertCheckedSuggestion (findChecked src) src "x.IsNone"
 
 [<Fact>]
 let ``shadowed None case is not rewritten`` () =
@@ -140,3 +140,63 @@ let ``a shadowed collection module does not get isEmpty`` () =
 let ``the genuine List.length still simplifies under the typed gate`` () =
     let src = "let f (xs: int list) = List.length xs = 0"
     assertCheckedSuggestion (findChecked src) src "List.isEmpty xs"
+
+[<Fact>]
+let ``a None comparison whose branch reads the payload is a match in disguise`` () =
+    // `isSome` + `.Value` is the spelling to avoid; FR0034 binds the payload
+    Assert.Empty(findChecked "let f (x: int option) = if x <> None then x.Value + 1 else 0")
+    Assert.Empty(findChecked "let f (x: int option) = if x = None then 0 else Option.get x")
+
+    Assert.Empty(
+        findChecked
+            "let f (x: int option) =\n    if x <> None then\n        let y = x.Value\n        y + 1\n    else\n        0"
+    )
+
+[<Fact>]
+let ``a None comparison whose branches never read the payload still simplifies`` () =
+    let src = "let f (x: int option) = if x <> None then 1 else 0"
+    assertCheckedSuggestion (findChecked src) src "x.IsSome"
+
+[<Fact>]
+let ``a None comparison on an unannotated parameter keeps the module form`` () =
+    // x's type is inferred from its later use; `x.IsSome` there is FS0072
+    let src =
+        "let f x = let b = x <> None in if b then x |> Option.map ((+) 1) else None"
+
+    assertCheckedSuggestion (findChecked src) src "x |> Option.isSome"
+
+[<Fact>]
+let ``Option isSome on a settled receiver becomes the property`` () =
+    let src = "let f (x: int option) = Option.isSome x"
+    assertCheckedSuggestion (findChecked src) src "x.IsSome"
+
+[<Fact>]
+let ``piped Option isNone becomes the property`` () =
+    let src = "let f (x: int voption) = x |> ValueOption.isNone"
+    assertCheckedSuggestion (findChecked src) src "x.IsNone"
+
+[<Fact>]
+let ``a dotted receiver takes the property when its root is settled`` () =
+    let src = "type R = { Age: int option }\nlet f (r: R) = Option.isSome r.Age"
+    assertCheckedSuggestion (findChecked src) src "r.Age.IsSome"
+
+[<Fact>]
+let ``Option isSome on a lambda parameter stays`` () =
+    Assert.Empty(findChecked "let f (xs: int option list) = xs |> List.filter (fun x -> Option.isSome x)")
+
+[<Fact>]
+let ``a let-bound local is settled by its right-hand side`` () =
+    let src =
+        "let f (n: int) =\n    let x = if n > 0 then Some n else None\n    Option.isNone x"
+
+    assertCheckedSuggestion (findChecked src) src "x.IsNone"
+
+[<Fact>]
+let ``a user module named Option is not FSharp.Core's`` () =
+    Assert.Empty(
+        findChecked "module Option =\n    let isSome (x: int option) = true\nlet f (x: int option) = Option.isSome x"
+    )
+
+[<Fact>]
+let ``Option isSome whose branch reads the payload is left to FR0034`` () =
+    Assert.Empty(findChecked "let f (x: int option) = if Option.isSome x then x.Value else 0")

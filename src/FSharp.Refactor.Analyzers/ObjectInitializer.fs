@@ -212,13 +212,29 @@ let private hasParenthesisedArguments (e: SynExpr) =
 /// properties spliced onto one line made a 380-character line on the
 /// sample this rule was written for — correct, compiling, and unreadable.
 [<Literal>]
-let private WrapColumn = 110
+let private WrapColumn = 100
+
+/// The named-property layouts: the whole call on the construction's line,
+/// or — when that line would run past WrapColumn — the fantomas shape,
+/// whose text starts right after the binding's `=`:
+///
+///     let psi =
+///         ProcessStartInfo(
+///             FileName = "dotnet",
+///             Arguments = args
+///         )
+///
+/// The hanging form (`let psi = ProcessStartInfo(` with the properties
+/// under the open paren, the `)` dangling) is what `fantomas --check`
+/// rejected on the compiler's ShadowPass.fs.
+type private Layout =
+    | OneLine of string
+    | Wrapped of string
 
 /// Splice the named properties into the constructor call's argument list.
-/// `T()` has a unit argument to replace; `T(a)` gets them appended. The
-/// call is laid out across lines when it would otherwise be too long,
-/// indented against the construction's own column.
-let private withNamedArgs (ctorText: string) (startColumn: int) (args: string list) =
+/// `T()` has a unit argument to replace; `T(a)` gets them appended.
+/// `letColumn` is the column of the `let` whose binding the call is.
+let private withNamedArgs (ctorText: string) (startColumn: int) (letColumn: int) (args: string list) =
     let trimmed = ctorText.TrimEnd()
 
     /// Index of the `(` matching the final `)`, or -1. Text matching is not
@@ -262,10 +278,10 @@ let private withNamedArgs (ctorText: string) (startColumn: int) (args: string li
     let oneLine = splice (String.concat ", " args)
 
     if startColumn + oneLine.Length <= WrapColumn then
-        oneLine
+        OneLine oneLine
     else
-        let inner = System.String(' ', startColumn + 4)
-        let closing = System.String(' ', startColumn)
+        let callIndent = System.String(' ', letColumn + 4)
+        let inner = System.String(' ', letColumn + 8)
 
         let body = args |> List.map (fun a -> inner + a) |> String.concat ",\n"
 
@@ -274,7 +290,19 @@ let private withNamedArgs (ctorText: string) (startColumn: int) (args: string li
             elif argsAreEmpty then trimmed.Substring(0, openIndex) + "("
             else trimmed.Substring(0, trimmed.Length - 1) + ","
 
-        head + "\n" + body + "\n" + closing + ")"
+        Wrapped("\n" + callIndent + head + "\n" + body + "\n" + callIndent + ")")
+
+/// A named property's value: parenthesised unless atomic. `=` in a named
+/// property binds tighter than a cast, so `Connection = con :?> SqlConnection`
+/// parses as `(Connection = con) :?> SqlConnection` — an equality against an
+/// undefined `Connection`, which is exactly the error SQLProvider reported.
+/// `null` and literals — `-1` included — are atoms here and never gain the
+/// parentheses the original did not have.
+let private valueText (source: ISourceText) (rhs: SynExpr) =
+    match rhs with
+    | SynExpr.Null _
+    | SynExpr.Const _ -> textOfRange source rhs.Range
+    | _ -> argumentText source rhs
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
@@ -286,7 +314,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
               match expr with
               | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
                   match lou.Bindings with
-                  | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = name)); expr = ctor) ] when
+                  | [ SynBinding(
+                          headPat = SynPat.Named(ident = SynIdent(ident = name)); expr = ctor; trivia = bindingTrivia) ] when
                       isSingleLine ctor.Range
                       && hasParenthesisedArguments ctor
                       && not (hasAnnotatedArgument ctor)
@@ -319,16 +348,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       then
                           let last = sets |> List.last |> snd
 
-                          let region = Range.mkRange ctor.Range.FileName ctor.Range.Start last.Range.End
-
-                          // the VALUE is parenthesised unless atomic. `=` in a
-                          // named property binds tighter than a cast, so
-                          // `Connection = con :?> SqlConnection` parses as
-                          // `(Connection = con) :?> SqlConnection` — an
-                          // equality against an undefined `Connection`, which
-                          // is exactly the error SQLProvider reported
-                          let args =
-                              sets |> List.map (fun (p, rhs) -> $"{p.idText} = {argumentText source rhs}")
+                          let args = sets |> List.map (fun (p, rhs) -> $"{p.idText} = {valueText source rhs}")
 
                           // a greedy last argument — `T(fun _ -> false)` — would
                           // swallow the named properties appended after it
@@ -370,9 +390,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   before + "(" + textOfRange source e.Range + ")" + after
                               | _ -> textOfRange source ctor.Range
 
+                          // the wrapped layout starts on the binding's `=`
+                          // line and needs the `let` column; the region then
+                          // runs from just after the `=` (the space before
+                          // the call goes with it)
+                          let letColumn = expr.Range.StartColumn
+
+                          let ctorRegion = Range.mkRange ctor.Range.FileName ctor.Range.Start last.Range.End
+
+                          let region, replacement =
+                              match
+                                  withNamedArgs ctorText ctor.Range.StartColumn letColumn args,
+                                  bindingTrivia.EqualsRange
+                              with
+                              | OneLine text, _ -> ctorRegion, text
+                              | Wrapped text, Some equals ->
+                                  Range.mkRange ctor.Range.FileName equals.End last.Range.End, text
+                              // no `=` to hang from (never for a let; kept total)
+                              | Wrapped text, None -> ctorRegion, text.TrimStart()
+
                           { Range = region
                             OriginalText = textOfRange source region
-                            ReplacementText = withNamedArgs ctorText ctor.Range.StartColumn args
+                            ReplacementText = replacement
                             Count = sets.Length }
                   | _ -> ()
               | _ -> () ]

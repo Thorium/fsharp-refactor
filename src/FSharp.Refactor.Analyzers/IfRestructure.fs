@@ -55,6 +55,16 @@ let private conditionText (source: ISourceText) (cond: SynExpr) =
 let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
+    // a string literal spanning lines keeps its columns: dedenting the
+    // block it sits in would rewrite the string
+    let multiLineLiterals =
+        index.Exprs
+        |> Array.choose (fun (_, e) ->
+            match e with
+            | SynExpr.Const(SynConst.String _, _)
+            | SynExpr.InterpolatedString _ when not (isSingleLine e.Range) -> Some e.Range
+            | _ -> None)
+
     [ for _, expr in index.Exprs do
           match expr with
           | SynExpr.IfThenElse(elseExpr = Some(SynExpr.IfThenElse(trivia = innerTrivia) as innerIf); trivia = trivia) ->
@@ -71,11 +81,55 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
 
                       between.Trim() = "")
                   ->
-                  let replaceRange = Range.mkRange elseKw.FileName elseKw.Start ifKw.End
+                  // the nested if's block — its then-body, elif chain and
+                  // else — sat one level deeper than the `else` that owned
+                  // it; under `elif` that level is gone, so every line of
+                  // the block moves left by the difference (fsharplint's
+                  // AstInfo.fs, suave's Bytes.fs kept the old depth and a
+                  // trailing `else` deeper than its `elif`). An `if` on the
+                  // `else`'s own line is already laid out for the flat form.
+                  let dedent =
+                      if ifKw.StartLine > elseKw.StartLine then
+                          ifKw.StartColumn - elseKw.StartColumn
+                      else
+                          0
 
-                  { Range = replaceRange
-                    OriginalText = textOfRange source replaceRange
-                    ReplacementText = "elif" }
+                  let tail =
+                      textOfRange source (Range.mkRange ifKw.FileName ifKw.End innerIf.Range.End)
+
+                  let lines = tail.Split '\n'
+
+                  let movable =
+                      dedent > 0
+                      && lines
+                         |> Array.skip 1
+                         |> Array.forall (fun l ->
+                             l.Trim() = "" || (l.Length >= dedent && l.Substring(0, dedent).Trim() = ""))
+                      && not (
+                          multiLineLiterals
+                          |> Array.exists (fun r -> Range.rangeContainsRange innerIf.Range r)
+                      )
+
+                  if movable then
+                      let replaceRange = Range.mkRange elseKw.FileName elseKw.Start innerIf.Range.End
+
+                      let moved =
+                          lines
+                          |> Array.mapi (fun i l ->
+                              if i = 0 then l
+                              elif l.Length >= dedent then l.Substring dedent
+                              else l.TrimStart())
+                          |> String.concat "\n"
+
+                      { Range = replaceRange
+                        OriginalText = textOfRange source replaceRange
+                        ReplacementText = "elif" + moved }
+                  else
+                      let replaceRange = Range.mkRange elseKw.FileName elseKw.Start ifKw.End
+
+                      { Range = replaceRange
+                        OriginalText = textOfRange source replaceRange
+                        ReplacementText = "elif" }
               | _ -> ()
           | _ -> () ]
 
@@ -281,11 +335,53 @@ let findPyramidFlips
 
 type GuardOrderNote = { Range: range; Variable: string }
 
+/// The wildcard arm is an ERROR arm: it raises, fails, or returns a
+/// None/Error-shaped failure. Only then is the guarded arm ahead of it
+/// the base case the note talks about — a wildcard computing a value
+/// (`| _ -> None, fmtPos` in FCS's CheckFormatStrings, a fallback probe
+/// in fsdocs' ProjectCracker, a lexer state's next state) is an
+/// ordinary alternative, and there is nothing to invert.
+let private isFailureArm (arm: SynExpr) =
+    let failing =
+        set
+            [ "raise"
+              "failwith"
+              "failwithf"
+              "invalidArg"
+              "invalidOp"
+              "nullArg"
+              "reraise"
+              "exit" ]
+
+    let rec head (e: SynExpr) =
+        match e with
+        | SynExpr.App(funcExpr = f) -> head f
+        | SynExpr.TypeApp(expr = inner)
+        | SynExpr.Paren(expr = inner) -> head inner
+        | SynExpr.Ident id -> Some id.idText
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some (List.last ids).idText
+        | _ -> None
+
+    let rec last (e: SynExpr) =
+        match e with
+        | SynExpr.Sequential(expr2 = e2) -> last e2
+        | SynExpr.Paren(expr = inner) -> last inner
+        | _ -> e
+
+    match last arm with
+    | SynExpr.Ident id -> id.idText = "None" || id.idText = "ValueNone"
+    | SynExpr.App _ as app ->
+        match head app with
+        | Some name -> failing.Contains name || name = "Error"
+        | None -> false
+    | _ -> false
+
 /// `match v with | x when a && b -> base | _ -> err`: the base case hides
 /// first behind a compound guard, and every new error condition must be
 /// threaded into it. Inverting — error guards first, base case as the
 /// final wildcard — reads top-down and extends by appending. Advice only:
-/// which case is "the base" is intent.
+/// which case is "the base" is intent — so the wildcard must visibly be
+/// the error arm (see isFailureArm).
 let findGuardOrderNotes (parseTree: ParsedInput) (source: ISourceText) : GuardOrderNote list =
     let index = AstIndex.ofTree parseTree
 
@@ -293,18 +389,19 @@ let findGuardOrderNotes (parseTree: ParsedInput) (source: ISourceText) : GuardOr
           match expr with
           | SynExpr.Match(
               clauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
-                          SynMatchClause(pat = SynPat.Wild _) ])
+                          SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ])
           | SynExpr.MatchBang(
               clauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
-                          SynMatchClause(pat = SynPat.Wild _) ])
+                          SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ])
           | SynExpr.MatchLambda(
               matchClauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
-                               SynMatchClause(pat = SynPat.Wild _) ]) ->
+                               SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ]) ->
               match stripParens guard with
               | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
                   op.idText = "op_BooleanAnd"
                   && textOfRange source lhs.Range |> fun t -> t.Contains v.idText
                   && textOfRange source rhs.Range |> fun t -> t.Contains v.idText
+                  && isFailureArm errArm
                   ->
                   { Range = expr.Range
                     Variable = v.idText }

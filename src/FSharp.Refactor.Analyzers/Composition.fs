@@ -12,8 +12,9 @@
 ///   - single unannotated parameter, at least two composed stages
 ///   - no stage may mention the parameter (checked conservatively on the
 ///     stage's source text, so shadowing tricks never produce a wrong rewrite)
-///   - stages must be single-line; stages that are not plain applications are
-///     parenthesized in the output
+///   - the lambda and its stages must be single-line, and the line the
+///     composition lands on must stay within 100 columns; stages that are
+///     not plain applications are parenthesized in the output
 ///
 /// Known caveat: a stage that is a partial application (`x |> h y`) is
 /// evaluated per invocation in the lambda but once at construction in the
@@ -38,6 +39,11 @@ type Suggestion =
         OriginalText: string
         ReplacementText: string
     }
+
+/// The longest line a composition may produce; a longer one, and the
+/// multi-line lambda it came from, read better than the rewrite.
+[<Literal>]
+let private MaxLineLength = 100
 
 /// A stage that can be written bare between `>>`s: an identifier or a plain
 /// (non-infix) curried application of one, e.g. `f`, `List.map`, `List.map f`.
@@ -157,6 +163,44 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let suggestions = ResizeArray<Suggestion>()
 
+        // a lambda handed to an [<InlineIfLambda>] parameter is inlined at
+        // the call; a composition in its place is a closure the callee can
+        // no longer inline (Mibo's filterA and section, in a library built
+        // around zero allocations)
+        let rec headOf (e: SynExpr) =
+            match e with
+            | SynExpr.App(funcExpr = f) -> headOf f
+            | SynExpr.TypeApp(expr = inner) -> headOf inner
+            | SynExpr.Ident id -> Some id
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+            | _ -> None
+
+        let calleeTakesInlineLambda (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynExpr(SynExpr.Paren _) :: SyntaxNode.SynExpr(SynExpr.App(funcExpr = f)) :: _ ->
+                match headOf f with
+                | Some id ->
+                    let r = id.idRange
+                    let lineText = source.GetLineString(r.EndLine - 1)
+
+                    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                    | Some symbolUse ->
+                        match symbolUse.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as v ->
+                            (try
+                                v.CurriedParameterGroups
+                                |> Seq.concat
+                                |> Seq.exists (fun p ->
+                                    p.Attributes
+                                    |> Seq.exists (fun a -> a.AttributeType.DisplayName = "InlineIfLambdaAttribute"))
+                             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                 false)
+                        | _ -> false
+                    | None -> false
+                | None -> false
+            | _ -> false
+
         let collector =
             { new SyntaxCollectorBase() with
                 override _.WalkExpr(path, expr) =
@@ -180,6 +224,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             match stages with
                             | Some stages when
                                 List.length stages >= 2
+                                // a lambda the author laid out over several
+                                // lines was laid out that way to be read;
+                                // folded into one composition it came out as
+                                // a 170-column line on fantomas's Context.fs
+                                && isSingleLine expr.Range
+                                && not (calleeTakesInlineLambda path)
                                 && stages |> List.forall (fun s -> isSingleLine s.Range)
                                 && stages |> List.forall (isOperatorStage source >> not)
                                 && stages |> List.forall (isMemberStage check source >> not)
@@ -189,10 +239,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 ->
                                 let replacement = stages |> List.map (stageText source) |> String.concat " >> "
 
-                                suggestions.Add
-                                    { Range = expr.Range
-                                      OriginalText = textOfRange source expr.Range
-                                      ReplacementText = replacement }
+                                // the lambda's line, with the composition in
+                                // its place — past 100 columns the rewrite
+                                // is no longer the readability it exists for
+                                let producedLineLength =
+                                    (source.GetLineString(expr.Range.StartLine - 1)).Length
+                                    - (expr.Range.EndColumn - expr.Range.StartColumn)
+                                    + replacement.Length
+
+                                if producedLineLength <= MaxLineLength then
+                                    suggestions.Add
+                                        { Range = expr.Range
+                                          OriginalText = textOfRange source expr.Range
+                                          ReplacementText = replacement }
                             | _ -> ()
                     | _ -> () }
 

@@ -233,9 +233,10 @@ let ``a tiny tail after a binding whose bangs sit in a nested CE is not wrapped`
 
     let tailEdits =
         adviceIn source
-        |> editsOfKind (function
-            | TaskStateMachine.AdviceKind.ExtractTail _ -> true
-            | _ -> false)
+        |> List.collect (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.ExtractTail _ -> s.Edits
+            | _ -> [])
 
     Assert.Empty tailEdits
 
@@ -248,9 +249,10 @@ let ``a tail that is already one wrapped thunk is never re-wrapped`` () =
 
     let tailEdits =
         adviceIn source
-        |> editsOfKind (function
-            | TaskStateMachine.AdviceKind.ExtractTail _ -> true
-            | _ -> false)
+        |> List.collect (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.ExtractTail _ -> s.Edits
+            | _ -> [])
 
     Assert.Empty tailEdits
 
@@ -483,7 +485,10 @@ let ``an early-return tail extracts as a task-returning local function`` () =
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
-let ``awaiting match arms split into nested tasks`` () =
+let ``awaiting match arms stay advice without a fix`` () =
+    // the documented split is the if/else body; the per-arm `return!
+    // task { .. }` wrap once nested a machine into every awaiting arm of
+    // suave's HttpOutput.fs, a shape the doc never promised
     let source =
         "module Test\nlet f (cond: bool) =\n    task {\n        match cond with\n        | true ->\n"
         + (awaits 8).Replace("    let!", "            let!")
@@ -491,19 +496,15 @@ let ``awaiting match arms split into nested tasks`` () =
         + (awaits 8).Replace("    let!", "            let!").Replace("x", "y")
         + "\n            return y2\n    }"
 
-    let edits =
+    match
         adviceIn source
-        |> editsOfKind (function
-            | TaskStateMachine.AdviceKind.SplitBranches -> true
-            | _ -> false)
-
-    Assert.NotEmpty edits
-    let patched = applyEdits source edits
-    Assert.Contains("return! task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        |> List.filter (fun s -> s.Kind = TaskStateMachine.AdviceKind.SplitBranches)
+    with
+    | [ s ] -> Assert.Empty s.Edits
+    | other -> failwithf "Expected one split advice, got %A" other
 
 [<Fact>]
-let ``awaiting match-bang arms split without moving the bind`` () =
+let ``awaiting match-bang arms stay advice without a fix`` () =
     let source =
         "module Test\nlet g () = System.Threading.Tasks.Task.FromResult true\nlet f () =\n    task {\n        match! g () with\n        | true ->\n"
         + (awaits 8).Replace("    let!", "            let!")
@@ -511,22 +512,12 @@ let ``awaiting match-bang arms split without moving the bind`` () =
         + (awaits 8).Replace("    let!", "            let!").Replace("x", "y")
         + "\n            return y2\n    }"
 
-    let edits =
-        match
-            adviceIn source
-            |> List.tryPick (fun s ->
-                match s.Kind with
-                | TaskStateMachine.AdviceKind.SplitBranches -> Some s.Edits
-                | _ -> None)
-        with
-        | Some e -> e
-        | None -> failwithf "no SplitBranches advice; got %A" (adviceIn source)
-
-    Assert.NotEmpty edits
-    let patched = applyEdits source edits
-    Assert.Contains("match! g () with", patched)
-    Assert.Contains("return! task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    match
+        adviceIn source
+        |> List.filter (fun s -> s.Kind = TaskStateMachine.AdviceKind.SplitBranches)
+    with
+    | [ s ] -> Assert.Empty s.Edits
+    | other -> failwithf "Expected one split advice, got %A" other
 
 [<Fact>]
 let ``a match arm reading a foreign mutable keeps the note`` () =
@@ -620,3 +611,118 @@ let ``an async tail with a use keeps CE syntax as well`` () =
         let patched = applyEdits source edits
         Assert.Contains("let runTail () = async {", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+// ---- a hand-tuned hot path is not restructured (suave's HttpOutput.fs) ----
+
+[<Fact>]
+let ``a hot-path comment inside the binding keeps every move advice-only`` () =
+    let source =
+        "module Test\nlet f (cond: bool) =\n    // hot path: hand-tuned to avoid allocation\n    task {\n        if cond then\n"
+        + (awaits 4).Replace("    let!", "            let!")
+        + "\n            return x1\n        else\n"
+        + (awaits 4).Replace("    let!", "            let!")
+        + "\n            return x2\n    }"
+
+    let suggestions = adviceIn source
+    Assert.NotEmpty suggestions
+
+    for s in suggestions do
+        Assert.Empty s.Edits
+
+[<Fact>]
+let ``a perf comment outside the binding does not withhold the split`` () =
+    let source =
+        "module Test\n// perf notes for the module\nlet f (cond: bool) =\n    task {\n        if cond then\n"
+        + (awaits 4).Replace("    let!", "            let!")
+        + "\n            return x1\n        else\n"
+        + (awaits 4).Replace("    let!", "            let!")
+        + "\n            return x2\n    }"
+
+    let edits =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.SplitBranches -> true
+            | _ -> false)
+
+    Assert.NotEmpty edits
+
+// ---- FR0029: the tail is the statement suffix after the last await ----
+
+let private tailsIn (source: string) =
+    adviceIn source
+    |> List.filter (fun s ->
+        match s.Kind with
+        | TaskStateMachine.AdviceKind.ExtractTail _ -> true
+        | _ -> false)
+
+[<Fact>]
+let ``FR0029: exception handlers and a finally block after the last await are not a tail`` () =
+    // suave's Combinators: `with ex -> raise ex` + `finally fs.Dispose()`
+    // + an Error arm followed the last `do!` — six lines of handlers, no
+    // business logic to extract
+    let source =
+        "module Test\nlet f (fs: System.IO.Stream) (ok: bool) = task {\n"
+        + awaits 8
+        + "\n    if ok then\n        try\n            try\n                do! System.Threading.Tasks.Task.Delay 1\n            with ex ->\n                raise ex\n        finally\n            fs.Dispose()\n    else\n        failwith \"error\"\n}"
+
+    Assert.Empty(tailsIn source)
+
+[<Fact>]
+let ``FR0029: a multi-line return-bang is an await, not lines that follow one`` () =
+    // suave's Proxy: `return! (...) ctx` spanning five lines inside a `with`
+    // handler counted as a non-awaiting tail from its own first line
+    let source =
+        "module Test\nlet handle (ctx: int) : System.Threading.Tasks.Task<int> = task { return ctx }\nlet f (ctx: int) = task {\n"
+        + awaits 8
+        + "\n    try\n        return x1\n    with _ ->\n        return!\n            (\n                handle\n            ) ctx\n}"
+
+    Assert.Empty(tailsIn source)
+
+[<Fact>]
+let ``FR0029: a loop body that re-awaits is not a tail and the note sits on the first statement`` () =
+    // suave's ConnectionHealthChecker: the last await is inside a `while`,
+    // so every following line runs again before the next await
+    let looping =
+        "module Test\nlet f (log: string -> unit) = task {\n"
+        + awaits 8
+        + "\n    let mutable go = true\n    while go do\n        do! System.Threading.Tasks.Task.Delay 1\n        log \"a\"\n        log \"b\"\n        log \"c\"\n        log \"d\"\n        go <- false\n}"
+
+    Assert.Empty(tailsIn looping)
+
+    // a real tail is anchored on its first statement, not on the blank
+    // line after the await
+    let source =
+        "module Test\nlet f () = task {\n"
+        + awaits 8
+        + "\n\n    let b = x1 + 1\n    let c = b * 2\n    let d = c - 3\n    let e = d + x2\n    return e\n}"
+
+    match tailsIn source with
+    | [ s ] ->
+        Assert.Equal(TaskStateMachine.AdviceKind.ExtractTail 5, s.Kind)
+
+        Assert.Equal(
+            source.Split('\n')
+            |> Array.findIndex (fun l -> l.Contains "let b = x1 + 1")
+            |> (+) 1,
+            s.Range.StartLine
+        )
+
+        Assert.Equal(4, s.Range.StartColumn)
+    | other -> failwithf "Expected one tail advice, got %A" other
+
+[<Fact>]
+let ``FR0029: a tail inside the arm that holds the last await is advice only`` () =
+    // suave's ConnectionFacade: the last `let!` sits in a match arm and a
+    // 20-line record construction follows it there — counted, anchored on
+    // the first statement, but not wrapped
+    let source =
+        "module Test\nlet f (ok: bool) = task {\n"
+        + awaits 8
+        + "\n    match ok with\n    | false -> return 0\n    | true ->\n        let! y = System.Threading.Tasks.Task.FromResult 5\n        let b = y + 1\n        let c = b * 2\n        let d = c - 3\n        let e = d + x2\n        return e\n}"
+
+    match tailsIn source with
+    | [ s ] ->
+        Assert.Equal(TaskStateMachine.AdviceKind.ExtractTail 5, s.Kind)
+        Assert.Empty s.Edits
+        Assert.Equal(8, s.Range.StartColumn)
+    | other -> failwithf "Expected one tail advice, got %A" other

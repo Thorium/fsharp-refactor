@@ -270,3 +270,35 @@ let ``a construction without parentheses stands down`` () =
         "module Test\ntype Wrap(name: string) =\n    member val Id = 0L with get, set\nlet f () =\n    let w = Wrap \"x\"\n    w.Id <- 1L\n    w"
 
     Assert.Empty(objInitIn source)
+
+[<Fact>]
+let ``a call past 100 columns takes the fantomas layout under the let`` () =
+    // the compiler's ShadowPass.fs: properties hanging under the open
+    // paren with a dangling `)` failed fantomas --check, and `null` had
+    // gained parentheses the original never had
+    let source =
+        "module Test\ntype ProcessStartInformation() =\n    member val FileName = \"\" with get, set\n    member val Arguments = \"\" with get, set\n    member val WorkingDirectory: string = null with get, set\n    member val RedirectStandardOutput = false with get, set\nlet f (arguments: string) =\n    let psi = ProcessStartInformation()\n    psi.FileName <- \"dotnet\"\n    psi.Arguments <- arguments\n    psi.WorkingDirectory <- null\n    psi.RedirectStandardOutput <- true\n    psi"
+
+    match objInitIn source with
+    | [ s ] ->
+        Assert.Equal(
+            "\n        ProcessStartInformation(\n            FileName = \"dotnet\",\n            Arguments = arguments,\n            WorkingDirectory = null,\n            RedirectStandardOutput = true\n        )",
+            s.ReplacementText
+        )
+
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.Contains("    let psi =\n        ProcessStartInformation(\n", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``a short call with a null and a negative literal stays on one line, unparenthesised`` () =
+    let source =
+        "module Test\ntype Cfg() =\n    member val Name: string = null with get, set\n    member val Depth = 0 with get, set\nlet f () =\n    let c = Cfg()\n    c.Name <- null\n    c.Depth <- -1\n    c"
+
+    match objInitIn source with
+    | [ s ] ->
+        Assert.Equal("Cfg(Name = null, Depth = -1)", s.ReplacementText)
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one suggestion, got %A" other

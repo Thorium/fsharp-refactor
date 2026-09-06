@@ -35,6 +35,15 @@ type Suggestion =
         /// ordinal char overload — (literal range, original, char literal).
         /// The CLI never applies it; ordinal-versus-culture is intent.
         OrdinalOffer: (range * string * string) option
+        /// Where the project's NARROWEST target has no char overload —
+        /// `Contains(char)` arrived in netstandard2.1 — the portable
+        /// rewrite instead: `s.Contains "x"` → `s.IndexOf 'x' >= 0`.
+        /// `IndexOf(char)` exists on every framework and is ordinal, as
+        /// `Contains(string)` already is, so the two forms agree. Offered
+        /// for `Contains` alone: the culture-sensitive methods would
+        /// change meaning, which is the author's call, not a portability
+        /// fix. Editor-offered, like OrdinalOffer.
+        PortableOffer: (range * string * string) option
         MethodName: string
     }
 
@@ -198,12 +207,36 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               else
                                   literalRange, Some(charLiteral c)
 
+                          // the receiver, for the portable IndexOf form
+                          let receiverText =
+                              match funcExpr with
+                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                                  let prefix = ids |> List.take (ids.Length - 1)
+
+                                  Some(
+                                      textOfRange
+                                          source
+                                          (Range.mkRange
+                                              expr.Range.FileName
+                                              (List.head prefix).idRange.Start
+                                              (List.last prefix).idRange.End)
+                                  )
+                              | SynExpr.DotGet(expr = recv) -> Some(textOfRange source recv.Range)
+                              | _ -> None
+
                           { Range = range
                             OriginalText = textOfRange source range
                             ReplacementText = replacement
                             OrdinalOffer =
                               if cultureSensitive then
                                   Some(literalRange, textOfRange source literalRange, charLiteral c)
+                              else
+                                  None
+                            PortableOffer =
+                              if methodId.idText = "Contains" && isSingleLine expr.Range then
+                                  receiverText
+                                  |> Option.map (fun r ->
+                                      expr.Range, textOfRange source expr.Range, $"{r}.IndexOf {charLiteral c} >= 0")
                               else
                                   None
                             MethodName = methodId.idText }
@@ -214,6 +247,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             OriginalText = textOfRange source arg.Range
                             ReplacementText = Some $"({charLiteral c})"
                             OrdinalOffer = None
+                            PortableOffer = None
                             MethodName = methodId.idText }
                       | _ -> ()
                   | _ -> ()

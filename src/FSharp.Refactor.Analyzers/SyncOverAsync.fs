@@ -45,6 +45,23 @@ type BlockKind =
     | AwaiterGetResult
     | RunSynchronously
     | ThreadSleep
+    /// A synchronisation primitive's blocking wait inside a CE —
+    /// `ManualResetEventSlim.Wait()`, `SemaphoreSlim.Wait()`,
+    /// `WaitHandle.WaitOne()`, `Barrier.SignalAndWait()`, `Thread.Join()`,
+    /// `Monitor.Wait(o)` — named as `Type.Method()` for the message. Not
+    /// task-typed, so no bind exists; outside a CE it is ordinary
+    /// synchronous code and never reported.
+    | PrimitiveWait of string
+    /// `.Result` read on the antecedent inside its own `ContinueWith`
+    /// continuation: complete by definition, so nothing blocks — but a
+    /// FAULTED antecedent throws its exception wrapped in an
+    /// AggregateException there (the compiler's AsyncMemoize stored the
+    /// wrapper and rethrew it to every awaiter). The continuation is a
+    /// bind: the plain shape becomes `task { let! r = t; return ... }`,
+    /// which gets the exception itself; only where a task builder exists
+    /// (FSharp.Core 6+, not Fable) — before that ContinueWith IS the bind
+    /// and the read is not reported.
+    | AntecedentResult
 
 type Suggestion =
     {
@@ -73,6 +90,11 @@ type Suggestion =
         /// computation (a callback, a Func), where the builder's bind
         /// cannot reach it — the lambda's signature is the sync boundary.
         InLambda: bool
+        /// For a CE site: the call sits in a `finally` block of the
+        /// computation, where no `let!`/`do!` may appear at all — the
+        /// wait has to move out of the handler before it can become a
+        /// bind, so the note names that and offers nothing.
+        InFinally: bool
     }
 
 let private ceBuilders = set [ "async"; "task"; "backgroundTask" ]
@@ -270,12 +292,75 @@ let private syncSiblingFix
             []
     | _ -> []
 
+/// The completion probes a `.Result` read is legitimately guarded by: the
+/// ValueTask synchronous fast path (`if vt.IsCompletedSuccessfully then
+/// vt.Result else task { let! r = vt ... }`) never blocks.
+let private completionTestNames = set [ "IsCompleted"; "IsCompletedSuccessfully" ]
+
+/// Blocking waits on synchronisation primitives, by method name and the
+/// entity that declares the method (`WaitOne` lives on WaitHandle, so
+/// every event, mutex and semaphore resolves there).
+let private primitiveWaits =
+    Map
+        [ "Wait",
+          set
+              [ "System.Threading.ManualResetEventSlim"
+                "System.Threading.SemaphoreSlim"
+                "System.Threading.CountdownEvent"
+                "System.Threading.Monitor" ]
+          "WaitOne", set [ "System.Threading.WaitHandle" ]
+          "SignalAndWait", set [ "System.Threading.Barrier" ]
+          "Join", set [ "System.Threading.Thread" ] ]
+
+[<return: Struct>]
+let private (|BoolAnd|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_BooleanAnd"; argExpr = l); argExpr = r) ->
+        ValueSome(l, r)
+    | _ -> ValueNone
+
+[<return: Struct>]
+let private (|BoolOr|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_BooleanOr"; argExpr = l); argExpr = r) ->
+        ValueSome(l, r)
+    | _ -> ValueNone
+
+/// The value a binding body ends in.
+[<TailCall>]
+let rec private terminalOf (e: SynExpr) =
+    match e with
+    | LetOrUseE lou -> terminalOf lou.Body
+    | SynExpr.Sequential(expr2 = b) -> terminalOf b
+    | SynExpr.Typed(expr = inner)
+    | SynExpr.Paren(expr = inner) -> terminalOf inner
+    | t -> t
+
+/// A binding that defines a function or member, as opposed to a value.
+let private isFunctionBinding (SynBinding(headPat = pat)) =
+    match pat with
+    | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _))
+    | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs _) -> true
+    | _ -> false
+
 /// Find blocking calls inside async/task CEs. Requires typed check results.
-let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
+/// `taskAvailable`: FSharp.Core 6 or newer on a non-Fable target, where a
+/// `task { }` can be written; without it a ContinueWith reading its
+/// antecedent's `.Result` is not reported at all — there ContinueWith IS
+/// the bind (very old F# has no task builder).
+let findWith
+    (taskAvailable: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    : Suggestion list =
     if OptionModule.hasErrors check then
         []
     else
         let index = AstIndex.ofTree parseTree
+
+        let isScript =
+            parseTree.FileName.EndsWith(".fsx", System.StringComparison.OrdinalIgnoreCase)
 
         // every async/task CE body, for innermost-attribution
         let ces =
@@ -342,6 +427,228 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let inNoBindZone (r: range) =
             noBindRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
 
+        let finallyRanges =
+            index.Exprs
+            |> Array.choose (fun (_, e) ->
+                match e with
+                | SynExpr.TryFinally(finallyExpr = f) -> Some f.Range
+                | _ -> None)
+
+        let inFinally (r: range) =
+            finallyRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
+
+        // the receiver a site drains: `t` of `t.Result`, `t.Wait()` and
+        // `t.GetAwaiter().GetResult()`, in either parse shape
+        let siteReceiverRange (kind: BlockKind) (e: SynExpr) : range voption =
+            match kind, e with
+            | BlockKind.AwaiterGetResult, SynExpr.App(funcExpr = SynExpr.DotGet(expr = AwaiterReceiverRange recvRange)) ->
+                ValueSome recvRange
+            | BlockKind.TaskResult, SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                ValueSome(prefixRangeOf e ids)
+            | BlockKind.TaskResult, SynExpr.DotGet(expr = recv) -> ValueSome recv.Range
+            | BlockKind.TaskWait, SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
+                ids.Length >= 2 && (List.last ids).idText = "Wait"
+                ->
+                ValueSome(prefixRangeOf e ids)
+            | BlockKind.TaskWait,
+              SynExpr.App(funcExpr = SynExpr.DotGet(expr = recv; longDotId = SynLongIdent(id = [ w ]))) when
+                w.idText = "Wait"
+                ->
+                ValueSome recv.Range
+            | _ -> ValueNone
+
+        // the receivers a condition proves complete — in its then branch,
+        // and in its else branch: `vt.IsCompletedSuccessfully`, conjoined
+        // with anything, or negated
+        let rec completionTests (cond: SynExpr) : string list * string list =
+            match stripParens cond with
+            | BoolAnd(l, r) ->
+                let tl, _ = completionTests l
+                let tr, _ = completionTests r
+                tl @ tr, []
+            | BoolOr(l, r) ->
+                let _, el = completionTests l
+                let _, er = completionTests r
+                [], el @ er
+            | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
+                let t, e = completionTests inner
+                e, t
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) as e when
+                ids.Length >= 2 && completionTestNames.Contains (List.last ids).idText
+                ->
+                [ textOfRange source (prefixRangeOf e ids) ], []
+            | SynExpr.DotGet(expr = recv; longDotId = SynLongIdent(id = [ p ])) when
+                completionTestNames.Contains p.idText
+                ->
+                [ textOfRange source recv.Range ], []
+            | _ -> [], []
+
+        let underCompletionTest (path: SyntaxNode list) (recvText: string) (r: range) =
+            path
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenExpr; elseExpr = elseExpr)) ->
+                    let thenTests, elseTests = completionTests cond
+
+                    (Range.rangeContainsRange thenExpr.Range r && List.contains recvText thenTests)
+                    || (elseExpr |> Option.exists (fun e -> Range.rangeContainsRange e.Range r)
+                        && List.contains recvText elseTests)
+                | _ -> false)
+
+        // a task complete from birth: `Task.FromResult x`, `Task.CompletedTask`,
+        // `ValueTask.FromResult x` and their exception/cancellation siblings
+        // — a test fixture's stand-in, drained without a wait
+        let completedByConstruction (e: SynExpr) =
+            let factory (ids: Ident list) =
+                ids.Length >= 2
+                && (let m = List.last ids
+
+                    (m.idText = "FromResult"
+                     || m.idText = "FromException"
+                     || m.idText = "FromCanceled"
+                     || m.idText = "CompletedTask")
+                    && (enclosingEntityOf check source m) |> taskFamily)
+
+            match stripParens e with
+            | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
+                factory ids
+            | SynExpr.App(
+                isInfix = false
+                funcExpr = SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)))) -> factory ids
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> factory ids
+            | _ -> false
+
+        // `let t = Task.FromResult 1` in scope of the site — a local let
+        // whose body holds it, or a module-level value
+        let boundToCompleted (recvText: string) (r: range) =
+            let namedCompleted (b: SynBinding) =
+                match b with
+                | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs) ->
+                    id.idText = recvText && completedByConstruction rhs
+                | _ -> false
+
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                match e with
+                | LetOrUseE lou when not lou.IsBang ->
+                    Range.rangeContainsRange lou.Range r
+                    && lou.Bindings |> List.exists namedCompleted
+                | _ -> false)
+            || index.Decls
+               |> Array.exists (fun (_, d) ->
+                   match d with
+                   | SynModuleDecl.Let(bindings = bindings) -> bindings |> List.exists namedCompleted
+                   | _ -> false)
+
+        // the parameter each `.ContinueWith(...)` continuation receives — a
+        // lambda's, or a named function's — and the range it is in scope:
+        // the antecedent is complete by definition when the continuation
+        // runs, so draining it never waits
+        let antecedentScopes: (string list * range) list =
+            let namedFunction (name: string) =
+                let ofBindings (bindings: SynBinding list) =
+                    bindings
+                    |> List.choose (fun b ->
+                        match b with
+                        | SynBinding(
+                            headPat = SynPat.LongIdent(
+                                longDotId = SynLongIdent(id = [ f ]); argPats = SynArgPats.Pats [ p ])) when
+                            f.idText = name
+                            ->
+                            Some(patNames p, b.RangeOfBindingWithRhs)
+                        | _ -> None)
+
+                [ for _, e in index.Exprs do
+                      match e with
+                      | LetOrUseE lou when not lou.IsBang -> yield! ofBindings lou.Bindings
+                      | _ -> ()
+                  for _, d in index.Decls do
+                      match d with
+                      | SynModuleDecl.Let(bindings = bindings) -> yield! ofBindings bindings
+                      | _ -> () ]
+
+            [ for _, e in index.Exprs do
+                  match e with
+                  | SynExpr.App(isInfix = false; funcExpr = CallIdent cw; argExpr = arg) when
+                      cw.idText = "ContinueWith" && (enclosingEntityOf check source cw) |> taskFamily
+                      ->
+                      let continuation =
+                          match stripParens arg with
+                          | SynExpr.Tuple(exprs = first :: _) -> stripParens first
+                          | a -> a
+
+                      match continuation with
+                      | SynExpr.Lambda(parsedData = Some(pats, _)) as l ->
+                          yield (pats |> List.collect patNames, l.Range)
+                      | SynExpr.Ident f -> yield! namedFunction f.idText
+                      | _ -> ()
+                  | _ -> () ]
+
+        let isAntecedent (recvText: string) (r: range) =
+            antecedentScopes
+            |> List.exists (fun (names, scope) -> List.contains recvText names && Range.rangeContainsRange scope r)
+
+        // the console's blocking point: a wait on the spine of an
+        // `[<EntryPoint>]` main, of a command runner that ends in an exit
+        // code, or at the top level of a script — the one place synchronous
+        // code has to meet the asynchronous world, and no `task { }` can
+        // wrap it. Anything behind a lambda or a nested function is a
+        // boundary of its own
+        let consoleBlockingPoint (path: SyntaxNode list) =
+            let rec walk (nodes: SyntaxNode list) =
+                match nodes with
+                | [] -> isScript
+                | SyntaxNode.SynExpr(SynExpr.Lambda _ | SynExpr.MatchLambda _ | SynExpr.ObjExpr _ | SynExpr.ComputationExpr _) :: _ ->
+                    false
+                | SyntaxNode.SynBinding(SynBinding(valData = SynValData(memberFlags = Some _))) :: _ -> false
+                | SyntaxNode.SynBinding(SynBinding(attributes = attrs; expr = body) as b) :: rest ->
+                    if hasAttributeNamed "EntryPoint" attrs then
+                        true
+                    elif isFunctionBinding b then
+                        match terminalOf body with
+                        | SynExpr.Const(SynConst.Int32 _, _) -> true
+                        | _ -> false
+                    else
+                        walk rest
+                | SyntaxNode.SynMemberDefn _ :: _
+                | SyntaxNode.SynTypeDefn _ :: _ -> false
+                | _ :: rest -> walk rest
+
+            walk path
+
+        // a wait in a function choreographed around a thread (a signal,
+        // a Thread, Interlocked): "wrap it in task { }" is the advice
+        // FR0142 refuses for the same body, and the note must not give
+        // it either — Mibo's thread-affine tests earned 40 boundary notes
+        // the moment FR0142 correctly left them alone
+        let threadBoundScope (path: SyntaxNode list) =
+            path
+            |> List.rev
+            |> List.tryPick (fun node ->
+                match node with
+                | SyntaxNode.SynBinding(SynBinding(expr = body)) -> Some body
+                | _ -> None)
+            |> Option.exists (BlockingSites.threadBound source)
+
+        // `Task.WaitAll(tasks, timeout)` / `(tasks, token)`: the final
+        // argument is proven not a task, so the pair is not params-style
+        let isTaskLike (t: FSharpType) =
+            BlockingSites.isTaskType t
+            || (try
+                    t.HasTypeDefinition
+                    && t.TypeDefinition.IsArrayType
+                    && BlockingSites.isTaskType t.GenericArguments.[0]
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    false)
+
+        let provablyNotTask (e: SynExpr) =
+            match stripParens e with
+            | SynExpr.Const _ -> true
+            | e ->
+                BlockingSites.receiverIdent e
+                |> Option.bind (BlockingSites.valueTypeOf check source)
+                |> Option.exists (fun t -> not (isTaskLike t))
+
         [ for path, expr in index.Exprs do
               let blocking =
                   match expr with
@@ -369,6 +676,43 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       && (enclosingEntityOf check source id).Contains "Awaiter"
                       ->
                       Some(BlockKind.AwaiterGetResult, None, Some id)
+                  // a synchronisation primitive's wait: `signal.Wait()`,
+                  // `handle.WaitOne()`, `barrier.SignalAndWait()`,
+                  // `thread.Join()`, `Monitor.Wait o` — the declaring
+                  // entity names it for the message
+                  | SynExpr.App(isInfix = false; funcExpr = CallIdent id & funcExpr) when
+                      primitiveWaits.ContainsKey id.idText
+                      ->
+                      let entity = enclosingEntityOf check source id
+
+                      if primitiveWaits.[id.idText].Contains entity then
+                          // the receiver's own type where it resolves
+                          // (`ManualResetEvent`, not the `WaitHandle` that
+                          // declares WaitOne); the declaring entity for a
+                          // static `Monitor.Wait`
+                          let receiverType =
+                              (match funcExpr with
+                               | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                                   Some ids.[ids.Length - 2]
+                               | SynExpr.DotGet(expr = recv) -> BlockingSites.receiverIdent recv
+                               | _ -> None)
+                              |> Option.bind (BlockingSites.valueTypeOf check source)
+                              |> Option.bind (fun t ->
+                                  try
+                                      if t.HasTypeDefinition then
+                                          Some t.TypeDefinition.DisplayName
+                                      else
+                                          None
+                                  with _ -> // fsharpanalyzer: ignore-line FR0055
+                                      None)
+
+                          let shortName =
+                              receiverType
+                              |> Option.defaultValue (entity.Substring(entity.LastIndexOf '.' + 1))
+
+                          Some(BlockKind.PrimitiveWait $"{shortName}.{id.idText}()", None, Some id)
+                      else
+                          None
                   | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
                       pathEndsWith "Async" "RunSynchronously" ids
                       && (fullNameOf check source (List.last ids)).StartsWith "Microsoft.FSharp.Control"
@@ -393,39 +737,221 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       (match arg with
                        | UnitConst -> false
                        | _ -> true)
+                  | SynExpr.App(isInfix = false; funcExpr = CallIdent id; argExpr = arg) when
+                      id.idText = "WaitAll" || id.idText = "WaitAny"
+                      ->
+                      (match stripParens arg with
+                       | SynExpr.Tuple(exprs = es) when es.Length >= 2 -> provablyNotTask (List.last es)
+                       | _ -> false)
                   | _ -> false
 
-              let afterWaitForExit () =
-                  let bindingRange =
-                      path
-                      |> List.tryPick (fun node ->
-                          match node with
-                          | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
-                          | _ -> None)
+              let bindingRange =
+                  path
+                  |> List.tryPick (fun node ->
+                      match node with
+                      | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                      | _ -> None)
 
+              let earlierInBody (e: SynExpr) =
                   match bindingRange with
-                  | Some r ->
-                      index.Exprs
-                      |> Array.exists (fun (_, e) ->
-                          match e with
-                          | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                              not ids.IsEmpty && (List.last ids).idText = "WaitForExit"
-                              ->
-                              Range.rangeContainsRange r e.Range && e.Range.StartLine < expr.Range.StartLine
-                          | _ -> false)
+                  | Some r -> Range.rangeContainsRange r e.Range && e.Range.StartLine < expr.Range.StartLine
                   | None -> false
+
+              let afterWaitForExit () =
+                  index.Exprs
+                  |> Array.exists (fun (_, e) ->
+                      match e with
+                      | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                          not ids.IsEmpty && (List.last ids).idText = "WaitForExit"
+                          ->
+                          earlierInBody e
+                      | _ -> false)
+
+              // `t.Wait(timeout)` above, then `t.Result`: the wait already
+              // happened — the read drains, and the earlier line carries
+              // whatever note the wait itself deserves
+              let afterOwnWait (recvText: string) =
+                  index.Exprs
+                  |> Array.exists (fun (_, e) ->
+                      match e with
+                      | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
+                          ids.Length >= 2 && (List.last ids).idText = "Wait"
+                          ->
+                          earlierInBody e && textOfRange source (prefixRangeOf e ids) = recvText
+                      | SynExpr.App(
+                          isInfix = false; funcExpr = SynExpr.DotGet(expr = recv; longDotId = SynLongIdent(id = [ w ]))) when
+                          w.idText = "Wait"
+                          ->
+                          earlierInBody e && textOfRange source recv.Range = recvText
+                      | _ -> false)
 
               match blocking with
               | Some(kind, sleepArg, blockIdent) ->
+                  let receiverRange = siteReceiverRange kind expr
+
+                  // the task behind the site is complete before it is
+                  // drained: under its own completion probe, complete from
+                  // birth, the antecedent of a continuation, or already
+                  // waited for above
+                  let knownComplete =
+                      match receiverRange with
+                      | ValueSome r ->
+                          let recvText = textOfRange source r
+
+                          underCompletionTest path recvText expr.Range
+                          || completedByConstruction (
+                              match expr with
+                              | SynExpr.DotGet(expr = recv) -> recv
+                              | SynExpr.App(funcExpr = SynExpr.DotGet(expr = AwaiterReceiver recv)) -> recv
+                              | _ -> expr
+                          )
+                          || boundToCompleted recvText expr.Range
+                          || isAntecedent recvText expr.Range
+                          || (kind <> BlockKind.TaskWait && afterOwnWait recvText)
+                      | ValueNone -> false
+
                   let idiomatic =
                       (kind = BlockKind.TaskWait && boundedWait)
                       || (kind = BlockKind.TaskResult && afterWaitForExit ())
+                      || knownComplete
+
+                  let boundaryKind =
+                      match kind with
+                      | BlockKind.ThreadSleep
+                      | BlockKind.RunSynchronously
+                      | BlockKind.PrimitiveWait _ -> false
+                      | _ -> true
+
+                  // `.Result` on the antecedent inside its own continuation:
+                  // complete, so nothing blocks, but a fault arrives wrapped
+                  // in AggregateException. The continuation IS a bind: the
+                  // same `task { let! }` FR0049 writes everywhere else gets
+                  // the value, the exception itself, and no ContinueWith
+                  let antecedentRead =
+                      match kind, receiverRange with
+                      | BlockKind.TaskResult, ValueSome r -> isAntecedent (textOfRange source r) expr.Range
+                      | _ -> false
 
                   match innermostCe expr.Range with
+                  // without a task builder (FSharp.Core before 6, Fable)
+                  // ContinueWith IS the bind, and the read stays quiet
+                  | _ when antecedentRead && taskAvailable ->
+                      let antecedentName =
+                          match receiverRange with
+                          | ValueSome r -> textOfRange source r
+                          | ValueNone -> ""
+
+                      // the plain shape only: `t.ContinueWith(fun a -> body)`
+                      // — one lambda, no scheduler or options, a single-line
+                      // body whose every use of the antecedent is `a.Result`
+                      // (a body that tests IsFaulted or Status handles the
+                      // antecedent itself), the call closing its line, and a
+                      // continuation returning a value (a `Task` from an
+                      // Action continuation has no `task { return }` twin)
+                      let continueWithFix =
+                          index.Exprs
+                          |> Array.tryPick (fun (_, e) ->
+                              match e with
+                              | SynExpr.App(isInfix = false; funcExpr = (CallIdent cw as callee); argExpr = arg) when
+                                  cw.idText = "ContinueWith"
+                                  && Range.rangeContainsRange e.Range expr.Range
+                                  && isSingleLine e.Range
+                                  ->
+                                  let recv =
+                                      match callee with
+                                      | SynExpr.DotGet(expr = recv) -> Some(textOfRange source recv.Range)
+                                      | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                                          Some(textOfRange source (prefixRangeOf callee ids))
+                                      | _ -> None
+
+                                  let returnsValue =
+                                      (fullNameOf check source cw).Length > 0
+                                      && (match
+                                              check.GetSymbolUseAtLocation(
+                                                  cw.idRange.EndLine,
+                                                  cw.idRange.EndColumn,
+                                                  source.GetLineString(cw.idRange.EndLine - 1),
+                                                  [ cw.idText ]
+                                              )
+                                          with
+                                          | Some su ->
+                                              match su.Symbol with
+                                              | :? FSharpMemberOrFunctionOrValue as m ->
+                                                  (try
+                                                      let t = m.ReturnParameter.Type.StripAbbreviations()
+                                                      t.HasTypeDefinition && t.GenericArguments.Count = 1
+                                                   with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                                       false)
+                                              | _ -> false
+                                          | None -> false)
+
+                                  let lineText = source.GetLineString(e.Range.StartLine - 1)
+                                  let closesLine = lineText.Substring(e.Range.EndColumn).Trim() = ""
+
+                                  let lineIndent =
+                                      lineText.Substring(0, lineText.Length - lineText.TrimStart().Length)
+
+                                  match stripParens arg, recv with
+                                  | SynExpr.Lambda(parsedData = Some([ p ], body)), Some recvText when
+                                      returnsValue && closesLine && isSingleLine body.Range
+                                      ->
+                                      let bodyText = textOfRange source body.Range
+
+                                      let mentions = Regex.Matches(bodyText, identifierPattern antecedentName).Count
+
+                                      let reads =
+                                          Regex
+                                              .Matches(bodyText, identifierPattern antecedentName + @"\.Result\b")
+                                              .Count
+
+                                      // a name the body does not already use;
+                                      // no candidate free, no rewrite
+                                      let binder =
+                                          if
+                                              patNames p = [ antecedentName ]
+                                              && mentions > 0
+                                              && mentions = reads
+                                              && not (spansDirective source e.Range)
+                                          then
+                                              [ "r"; "result"; antecedentName + "Value" ]
+                                              |> List.tryFind (fun b ->
+                                                  not (Regex.IsMatch(bodyText, identifierPattern b)))
+                                          else
+                                              None
+
+                                      match binder with
+                                      | Some binder ->
+                                          let bound =
+                                              Regex.Replace(
+                                                  bodyText,
+                                                  identifierPattern antecedentName + @"\.Result\b",
+                                                  binder
+                                              )
+
+                                          let inner = lineIndent + "    "
+
+                                          Some(
+                                              e.Range,
+                                              textOfRange source e.Range,
+                                              $"task {{\n{inner}let! {binder} = {recvText}\n{inner}return {bound}\n{lineIndent}}}"
+                                          )
+                                      | None -> None
+                                  | _ -> None
+                              | _ -> None)
+
+                      { Range = expr.Range
+                        Kind = BlockKind.AntecedentResult
+                        Builder = None
+                        Fixes = Option.toList continueWithFix
+                        AlternativeFixes = []
+                        Receiver = ValueNone
+                        InLambda = false
+                        InFinally = false }
                   | None when
-                      kind <> BlockKind.ThreadSleep
-                      && kind <> BlockKind.RunSynchronously
+                      boundaryKind
                       && not idiomatic
+                      && not (consoleBlockingPoint path)
+                      && not (threadBoundScope path)
                       ->
                       // sync-over-async at a boundary: an antipattern even
                       // outside CEs — either the caller becomes async (wrap
@@ -458,8 +984,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         Fixes = []
                         AlternativeFixes = alternatives
                         Receiver = receiver
-                        InLambda = false }
-                  | Some(builder, ceRange) ->
+                        InLambda = false
+                        InFinally = false }
+                  | Some(builder, ceRange) when not knownComplete ->
                       let taskBuilder = builder = "task" || builder = "backgroundTask"
 
                       // the plain `let` whose entire RHS is `target`
@@ -679,9 +1206,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       { Range = expr.Range
                         Kind = kind
                         Builder = Some builder
-                        Fixes = fixes
+                        // inside a thread-choreographed body a bind moves the
+                        // continuation off the thread the wait was keeping
+                        // it on: the site is still noted, the fix withheld
+                        Fixes = (if threadBoundScope path then [] else fixes)
                         AlternativeFixes = []
                         Receiver = ValueNone
-                        InLambda = insideLambdaWithin ceRange expr.Range }
-                  | None -> ()
+                        InLambda = insideLambdaWithin ceRange expr.Range
+                        InFinally = inFinally expr.Range }
+                  | _ -> ()
               | None -> () ]
+
+/// The modern-target form of `findWith`: tests and the taskify fix, which
+/// only runs where a `task { }` can be written anyway.
+let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
+    findWith true parseTree source check

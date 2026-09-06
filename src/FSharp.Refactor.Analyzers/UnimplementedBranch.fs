@@ -39,6 +39,7 @@
 module FSharp.Refactor.UnimplementedBranch
 
 open System
+open System.Text.RegularExpressions
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.SyntaxTrivia
 open FSharp.Compiler.Text
@@ -68,9 +69,31 @@ let private stubPhrases =
       "todo: implement"
       "fixme: implement" ]
 
+/// Commented-OUT code is not a note about the branch. The F# compiler's
+/// ServiceInterfaceStubGenerator.fs had
+///
+///     | _ -> //debug "Unsupported case with %A and %A" t ts
+///         None
+///
+/// — a silenced trace line whose "Unsupported" is a string the print once
+/// carried, above a `None` that IS the partial pattern's no-match result.
+/// A comment that opens with an identifier applied to a string literal or
+/// to a parenthesised argument, or that carries a format hole or a print
+/// call, reads as code.
+let private codeMarkers = [ "%a"; "printf"; "debug" ]
+
+let private looksLikeCode (comment: string) =
+    let body =
+        comment.Trim().TrimStart('/').TrimStart('(').TrimStart('*').TrimEnd(')').TrimEnd('*').Trim()
+
+    let lower = body.ToLowerInvariant()
+
+    codeMarkers |> List.exists lower.Contains
+    || Regex.IsMatch(body, @"^[A-Za-z_][\w.]*(\s*""|\()")
+
 let private saysUnfinished (comment: string) =
     let text = comment.ToLowerInvariant()
-    stubPhrases |> List.exists text.Contains
+    stubPhrases |> List.exists text.Contains && not (looksLikeCode comment)
 
 /// Values that stand in for a result. All of them are ordinary values that
 /// only a comment turns into evidence — `null` and `Unchecked.defaultof`
@@ -140,7 +163,59 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
     let comments = lazy (commentsOf parseTree source)
 
-    let consider (clauses: SynMatchClause list) =
+    // `None`/`ValueNone` is the LEGITIMATE no-match result of a partial
+    // active pattern `(|X|_|)` and of a function declared to return an
+    // option — whatever a comment above it says, replacing it with a raise
+    // turns "did not match" into a crash. The F# compiler's
+    // ServiceInterfaceStubGenerator.fs lost exactly that arm of a partial
+    // pattern. Syntactic only: a declared `: 'T option`/`voption` return
+    // (or the active-pattern name) is the evidence; inferred option
+    // returns stay eligible — that is the rule's own example shape.
+    let optionByContract (path: SyntaxNode list) (matchRange: range) =
+        let optionType = Regex(@"\b(option|voption|Option|ValueOption)\b")
+
+        path
+        |> List.choose (fun node ->
+            match node with
+            | SyntaxNode.SynBinding(SynBinding(headPat = headPat; returnInfo = returnInfo) as b) when
+                Range.rangeContainsRange b.RangeOfBindingWithRhs matchRange
+                ->
+                Some(b.RangeOfBindingWithRhs, headPat, returnInfo)
+            | _ -> None)
+        // the innermost enclosing binding is the one whose result this is
+        |> List.sortBy (fun (r, _, _) -> r.EndLine - r.StartLine, r.EndColumn - r.StartColumn)
+        |> List.tryHead
+        |> Option.map (fun (_, headPat, returnInfo) ->
+            let headName =
+                match headPat with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> (List.last ids).idText
+                | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText
+                | _ -> ""
+
+            let partialActivePattern = headName.StartsWith "|" && headName.EndsWith "|_|"
+
+            let declaredOption =
+                match returnInfo, headPat with
+                | Some(SynBindingReturnInfo(typeName = t)), _ -> optionType.IsMatch(textOfRange source t.Range)
+                | None, SynPat.Typed(targetType = t) -> optionType.IsMatch(textOfRange source t.Range)
+                | _ -> false
+
+            partialActivePattern || declaredOption)
+        |> Option.defaultValue false
+
+    let isNone (e: SynExpr) =
+        match e with
+        | SynExpr.Ident id -> id.idText = "None" || id.idText = "ValueNone"
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+            (match (List.last ids).idText with
+             | "None"
+             | "ValueNone" -> true
+             | _ -> false)
+        | _ -> false
+
+    let consider (path: SyntaxNode list) (matchRange: range) (clauses: SynMatchClause list) =
+        let noneIsContract = lazy (optionByContract path matchRange)
+
         // a lookup table of constants is data, not a stub: only accuse a
         // branch whose siblings are actually computing something
         let siblingsCompute =
@@ -157,7 +232,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         if siblingsCompute then
             for SynMatchClause(resultExpr = body; trivia = trivia) in clauses do
                 match isPlaceholder body, trivia.ArrowRange with
-                | true, Some arrow ->
+                | true, Some arrow when not (isNone body && noneIsContract.Value) ->
                     if accusedBy comments.Value arrow body.Range then
                         suggestions.Add
                             { Range = body.Range
@@ -167,11 +242,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                  $"raise ({prefix}NotImplementedException())") }
                 | _ -> ()
 
-    for _, expr in index.Exprs do
+    for path, expr in index.Exprs do
         match expr with
         | SynExpr.Match(clauses = clauses)
         | SynExpr.MatchBang(clauses = clauses)
-        | SynExpr.MatchLambda(matchClauses = clauses) -> consider clauses
+        | SynExpr.MatchLambda(matchClauses = clauses) -> consider path expr.Range clauses
         | _ -> ()
 
     List.ofSeq suggestions

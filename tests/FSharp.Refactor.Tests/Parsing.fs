@@ -208,3 +208,59 @@ let parseAndCheckSecond (sourceA: string) (sourceB: string) : ParsedInput * ISou
     match answerB with
     | FSharpCheckFileAnswer.Succeeded c -> parseResultsB.ParseTree, sourceTextB, c
     | FSharpCheckFileAnswer.Aborted -> failwith $"second-file typecheck aborted for:\n{sourceB}"
+
+/// Typecheck a REAL signature + implementation pair (`M.fsi`, `M.fs`) in a
+/// temp directory: the harness for rules whose fixes must stay within a
+/// signature's types. Returns the implementation's parse tree, source and
+/// check results, and a recheck of a patched implementation returning the
+/// project's error messages.
+let parseAndCheckSigned (signature: string) (implementation: string) =
+    let dir =
+        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
+
+    System.IO.Directory.CreateDirectory dir |> ignore
+    let pathSig = System.IO.Path.Combine(dir, "M.fsi")
+    let pathImpl = System.IO.Path.Combine(dir, "M.fs")
+    System.IO.File.WriteAllText(pathSig, signature)
+    System.IO.File.WriteAllText(pathImpl, implementation)
+
+    let probeOptions, _ =
+        checker.GetProjectOptionsFromScript(
+            System.IO.Path.Combine(dir, "probe.fsx"),
+            SourceText.ofString "",
+            assumeDotNetFramework = false
+        )
+        |> Async.RunSynchronously
+
+    let options =
+        { probeOptions with
+            ProjectFileName = System.IO.Path.Combine(dir, "Signed.fsproj")
+            SourceFiles = [| pathSig; pathImpl |] }
+
+    let projectErrors (results: FSharpCheckProjectResults) =
+        results.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        |> Array.map (fun d -> $"FS{d.ErrorNumber:D4} {d.Message}")
+
+    let baseline =
+        checker.ParseAndCheckProject options |> Async.RunSynchronously |> projectErrors
+
+    let sourceText = SourceText.ofString implementation
+
+    let parseResults, answer =
+        checker.ParseAndCheckFileInProject(pathImpl, 0, sourceText, options)
+        |> Async.RunSynchronously
+
+    let check =
+        match answer with
+        | FSharpCheckFileAnswer.Succeeded c -> c
+        | FSharpCheckFileAnswer.Aborted -> failwith "signed typecheck aborted"
+
+    let recheck (patched: string) =
+        System.IO.File.WriteAllText(pathImpl, patched)
+
+        checker.ParseAndCheckProject { options with Stamp = Some 1L }
+        |> Async.RunSynchronously
+        |> projectErrors
+
+    parseResults.ParseTree, sourceText, check, baseline, recheck

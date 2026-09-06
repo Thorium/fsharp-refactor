@@ -204,12 +204,20 @@ let find
                     | _ -> false)
                 ->
                 match lou.Bindings, lou.Body with
-                | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = acc)); expr = init) ],
+                | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = acc)); returnInfo = retInfo; expr = init) ],
                   SynExpr.Sequential(
                       expr1 = SynExpr.ForEach(pat = pat; enumExpr = src; bodyExpr = loopBody) as forEach; expr2 = rest) ->
                     let loopBody =
                         match loopBody with
                         | SynExpr.Do(expr = inner) -> inner
+                        | other -> other
+
+                    // an annotated `let mutable acc: T = init` carries the
+                    // annotation as return info AND wraps init in a Typed
+                    // node; the fold reads the bare initializer
+                    let init =
+                        match init with
+                        | SynExpr.Typed(expr = inner) -> inner
                         | other -> other
 
                     match loopBody with
@@ -295,14 +303,52 @@ let find
                                     else
                                         $"{srcText} |> {m}.fold (fun {acc.idText} {patText} -> {body}) {atomicText source init}"
 
-                            // cover the whole `let mutable` binding + loop
-                            let editRange = Range.mkRange expr.Range.FileName expr.Range.Start forEach.Range.End
+                            // `let mutable sum: IAdaptiveValue<int> = ..`
+                            // carries its annotation as the binding's
+                            // return info; the folded binding keeps it
+                            // (Mibo lost one and inferred something else)
+                            let annotation =
+                                match retInfo with
+                                | Some(SynBindingReturnInfo(typeName = t)) when isSingleLine t.Range ->
+                                    Some(textOfRange source t.Range)
+                                | _ -> None
 
-                            if not (spansDirective source editRange) then
+                            // when the loop is followed by nothing but the
+                            // accumulator itself — `let flags = .. |>
+                            // Array.fold ..` with a bare `flags` line after
+                            // it, the shape left on Mibo and the compiler —
+                            // the fold expression IS the result: binding
+                            // and trailing use collapse into it. An
+                            // annotated binding keeps its `let`, since the
+                            // annotation may be what makes it typecheck
+                            let trailingUseOnly =
+                                annotation.IsNone
+                                && (match rest with
+                                    | SynExpr.Ident r -> r.idText = acc.idText
+                                    | _ -> false)
+
+                            let editRange, replacement =
+                                if trailingUseOnly then
+                                    Range.mkRange expr.Range.FileName expr.Range.Start rest.Range.End, replacementBody
+                                else
+                                    let annotated =
+                                        match annotation with
+                                        | Some t -> $"{acc.idText}: {t}"
+                                        | None -> acc.idText
+
+                                    Range.mkRange expr.Range.FileName expr.Range.Start forEach.Range.End,
+                                    $"let {annotated} = {replacementBody}"
+
+                            // a fold that lands as a 150-character line is
+                            // not the cleanup it claims to be
+                            if
+                                not (spansDirective source editRange)
+                                && expr.Range.StartColumn + replacement.Length <= 100
+                            then
                                 folds.Add
                                     { Range = editRange
                                       OriginalText = textOfRange source editRange
-                                      ReplacementText = $"let {acc.idText} = {replacementBody}" }
+                                      ReplacementText = replacement }
                         | _ -> ()
                     | _ -> ()
                 | _ -> ()

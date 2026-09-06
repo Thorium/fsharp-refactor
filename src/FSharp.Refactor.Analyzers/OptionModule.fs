@@ -6,8 +6,8 @@
 ///     match x with | Some v -> v          | None -> None   →  x |> Option.flatten
 ///     match x with | Some v -> Some v     | None -> None   →  x
 ///     match x with | Some v -> v          | None -> d      →  x |> Option.defaultValue d
-///     match x with | Some _ -> true       | None -> false  →  x |> Option.isSome
-///     match x with | Some _ -> false      | None -> true   →  x |> Option.isNone
+///     match x with | Some _ -> true       | None -> false  →  x.IsSome (x |> Option.isSome on an unannotated parameter)
+///     match x with | Some _ -> false      | None -> true   →  x.IsNone
 ///     match x with | Some v -> f v        | None -> ()     →  x |> Option.iter (fun v -> f v)
 ///     match x with | Some v -> g v        | None -> d      →  x |> Option.map (fun v -> g v) |> Option.defaultValue d
 ///
@@ -135,11 +135,15 @@ let implicitYieldPosition (path: SyntaxNode list) =
 /// A candidate found syntactically; the case idents still need to be resolved
 /// against the typed results before the suggestion is emitted.
 type private Candidate =
-    { MatchRange: range
-      SomeIdent: Ident
-      NoneIdent: Ident
-      Replacement: string
-      Target: string }
+    {
+        MatchRange: range
+        SomeIdent: Ident
+        NoneIdent: Ident
+        Replacement: string
+        Target: string
+        /// The matched expression, for the property spelling of a test.
+        Scrutinee: SynExpr
+    }
 
 /// Decide the rewrite for a wrapper match, given the normalized parts.
 let private rewrite
@@ -306,7 +310,8 @@ let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source
                                   SomeIdent = someIdent
                                   NoneIdent = noneIdent
                                   Replacement = replacement
-                                  Target = target }
+                                  Target = target
+                                  Scrutinee = scrutinee }
                         | None -> ()
                     | _ -> ()
                 | _ -> () }
@@ -330,7 +335,13 @@ let (|FcsSymbolFailure|_|) (e: exn) =
 /// definition. Shared by every typed rule that compares type names.
 [<TailCall>]
 let rec stripAbbreviations (t: FSharpType) =
-    if t.HasTypeDefinition && t.TypeDefinition.IsFSharpAbbreviation then
+    // the INSTANCE's abbreviated type keeps the type arguments:
+    // `('Key * 'T) list` is `List<'Key * 'T>`, whereas the definition's
+    // AbbreviatedType is the bare `List<'T>` of `type 'T list = List<'T>`,
+    // which lost FR0089 every tuple it was looking for
+    if t.IsAbbreviation then
+        stripAbbreviations t.AbbreviatedType
+    elif t.HasTypeDefinition && t.TypeDefinition.IsFSharpAbbreviation then
         stripAbbreviations t.TypeDefinition.AbbreviatedType
     else
         t
@@ -396,6 +407,96 @@ let hasErrors (check: FSharpCheckFileResults) =
 /// Find all wrapper matches for one config (Option or ValueOption) that can
 /// be rewritten with module functions. Requires typed check results; emits
 /// nothing when the file has type errors.
+/// A receiver `.IsSome` can hang off: a name or a dotted path, with its
+/// root ident (whose declaration decides whether the type is settled).
+[<return: Struct>]
+let (|ReceiverPath|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.Ident root -> ValueSome(root, root.idText)
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = (root :: _ as ids))) -> ValueSome(root, identText ids)
+    | _ -> ValueNone
+
+/// The declaration positions of every UNANNOTATED parameter in the file:
+/// function and member arguments, lambda parameters. Their types are
+/// inferred from their uses, which may come after the expression at hand.
+let unannotatedParameters (index: AstIndex.Index) : Set<int * int> =
+    let names = System.Collections.Generic.HashSet<int * int>()
+
+    let rec collect (p: SynPat) =
+        match p with
+        | SynPat.Typed _ -> ()
+        | SynPat.Named(ident = SynIdent(ident = id)) ->
+            names.Add((id.idRange.StartLine, id.idRange.StartColumn)) |> ignore
+        | SynPat.As(lhsPat = l; rhsPat = r) ->
+            collect l
+            collect r
+        | SynPat.Paren(pat = inner)
+        | SynPat.Attrib(pat = inner) -> collect inner
+        | SynPat.Tuple(elementPats = ps)
+        | SynPat.Ands(pats = ps)
+        | SynPat.ArrayOrList(elementPats = ps) -> List.iter collect ps
+        | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> List.iter collect ps
+        | _ -> ()
+
+    let ofBinding (SynBinding(headPat = headPat)) =
+        match headPat with
+        | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> List.iter collect ps
+        | _ -> ()
+
+    let rec ofMembers (members: SynMemberDefns) =
+        for m in members do
+            match m with
+            | SynMemberDefn.Member(memberDefn = b) -> ofBinding b
+            | SynMemberDefn.LetBindings(bindings = bs) -> List.iter ofBinding bs
+            | SynMemberDefn.Interface(members = Some ms) -> ofMembers ms
+            | SynMemberDefn.GetSetMember(memberDefnForGet = g; memberDefnForSet = s) ->
+                Option.iter ofBinding g
+                Option.iter ofBinding s
+            | _ -> ()
+
+    for _, decl in index.Decls do
+        match decl with
+        | SynModuleDecl.Let(bindings = bs) -> List.iter ofBinding bs
+        | SynModuleDecl.Types(typeDefns = defns) ->
+            for SynTypeDefn(typeRepr = repr; members = extra) in defns do
+                match repr with
+                | SynTypeDefnRepr.ObjectModel(members = ms) -> ofMembers ms
+                | _ -> ()
+
+                ofMembers extra
+        | _ -> ()
+
+    for _, e in index.Exprs do
+        match e with
+        | LetOrUseE lou -> List.iter ofBinding lou.Bindings
+        | SynExpr.Lambda(parsedData = Some(pats, _)) -> List.iter collect pats
+        | SynExpr.ObjExpr(bindings = bs; members = ms) ->
+            List.iter ofBinding bs
+            ofMembers ms
+        | _ -> ()
+
+    Set.ofSeq names
+
+/// Is the root's type settled where it is read — declared anywhere but as
+/// an unannotated parameter of this file?
+let receiverSettled (check: FSharpCheckFileResults) (source: ISourceText) (unannotated: Set<int * int>) (root: Ident) =
+    let r = root.idRange
+    let lineText = source.GetLineString(r.EndLine - 1)
+
+    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ root.idText ]) with
+    | Some symbolUse ->
+        match symbolUse.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as v ->
+            (try
+                let d = v.DeclarationLocation
+
+                d.FileName <> r.FileName
+                || not (unannotated.Contains((d.StartLine, d.StartColumn)))
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 false)
+        | _ -> false
+    | None -> false
+
 let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) =
     if hasErrors check then
         []
@@ -406,9 +507,23 @@ let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText)
             && resolvesToCoreCase check source cfg.CoreFullNamePrefix c.SomeIdent
             && resolvesToCoreCase check source cfg.CoreFullNamePrefix c.NoneIdent)
         |> List.map (fun c ->
+            // an isSome/isNone test reads as the property where the
+            // receiver's type is settled — the spelling FR0010 produces,
+            // so the two rules agree on what a test looks like
+            let replacement =
+                if c.Target.EndsWith ".isSome" || c.Target.EndsWith ".isNone" then
+                    match c.Scrutinee with
+                    | ReceiverPath(root, text) when
+                        receiverSettled check source (unannotatedParameters (AstIndex.ofTree parseTree)) root
+                        ->
+                        text + (if c.Target.EndsWith ".isSome" then ".IsSome" else ".IsNone")
+                    | _ -> c.Replacement
+                else
+                    c.Replacement
+
             { Range = c.MatchRange
               OriginalText = textOfRange source c.MatchRange
-              ReplacementText = c.Replacement
+              ReplacementText = replacement
               Target = c.Target })
 
 /// Find Option and ValueOption matches that can be rewritten.

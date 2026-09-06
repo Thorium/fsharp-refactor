@@ -20,6 +20,9 @@
 ///     arguments. `x |> f args` counts, pipes being inlined.
 ///   - single non-mutual bindings only: `and`-groups need whole-group
 ///     analysis, so they stay untouched.
+///   - no byref/inref/outref parameter and no self-call passing `&x`: the
+///     compiler's tail-call checker refuses those (FS3569), so the
+///     attribute would create the warning it exists to prevent.
 ///   - the attribute exists from FSharp.Core 8 on — a typed gate on the
 ///     referenced FSharp.Core version keeps the editor fix sound where
 ///     the CLI's verify build could not catch a missing type.
@@ -61,6 +64,27 @@ let rec private spine (args: SynExpr list) (e: SynExpr) =
     | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) -> spine (a :: args) f
     | head -> head, args
 
+/// A parameter typed `byref<_>`, `inref<_>` or `outref<_>` (any spelling:
+/// prefix, postfix, qualified). The compiler's own tail-call checker
+/// refuses a recursive call that passes a byref along, so [<TailCall>] on
+/// such a function manufactures the very FS3569 it is meant to guard
+/// against — the F# compiler's TaggedCollections.fs `tryGetValue ... (v:
+/// byref<'Value>)` was attributed that way. Read from the source text so
+/// no type-syntax shape slips past.
+let private byrefPattern = Regex(@"\b(byref|inref|outref)\b")
+
+let private hasByrefParameter (source: ISourceText) (pats: SynPat list) =
+    pats |> List.exists (fun p -> byrefPattern.IsMatch(textOfRange source p.Range))
+
+/// An argument spelled `&x` — the address-of the self-call hands over.
+[<TailCall>]
+let rec private passesAddress (arg: SynExpr) =
+    match arg with
+    | SynExpr.AddressOf _ -> true
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.Typed(expr = inner) -> passesAddress inner
+    | _ -> false
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if not (coreHasAttribute check) then
         []
@@ -76,7 +100,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       isInline = false
                       headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ fid ]); argPats = SynArgPats.Pats pats)
                       expr = body
-                      trivia = trivia) when not pats.IsEmpty ->
+                      trivia = trivia) when not pats.IsEmpty && not (hasByrefParameter source pats) ->
                       let namePattern = identifierPattern fid.idText
 
                       let mentionFree (r: range) =
@@ -105,6 +129,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       isTail
                                       && args.Length = arity
                                       && args |> List.forall (fun a -> mentionFree a.Range)
+                                      // a self-call handing over an address
+                                      // (`f key t &v`) is one the compiler's own
+                                      // tail-call checker refuses (FS3569)
+                                      && not (args |> List.exists passesAddress)
                                   then
                                       selfCalls <- selfCalls + 1
                                       true

@@ -96,6 +96,20 @@ let find
     (check: FSharpCheckFileResults)
     : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+    let index = AstIndex.ofTree parseTree
+
+    // an explicit or first-class invocation in this file — `(|P|_|) x`,
+    // `List.choose (|P|_|)` — sees the option the pattern returns: the F#
+    // compiler's Spreads.fs calls its module-level (|NestedUpdate|_|) from a
+    // local pattern of the same name and matches the result against Some.
+    // The representation change would reach it, so the pattern stays
+    let invokedAsFunction (name: string) =
+        index.Exprs
+        |> Array.exists (fun (_, e) ->
+            match e with
+            | SynExpr.Ident id -> id.idText = name
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> not ids.IsEmpty && (List.last ids).idText = name
+            | _ -> false)
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -113,6 +127,7 @@ let find
                     // `let private (|P|_|)` parses its modifier onto the
                     // pattern, not the binding — check both
                     && Visibility.isInScope allowApiChanges path [ bindingAccess; patAccess ]
+                    && not (invokedAsFunction nameIdent.idText)
                     ->
                     let results = ResizeArray<range * string>()
 

@@ -141,3 +141,46 @@ let ``IsNone chains inside a query expression stay untouched`` () =
 [<Fact>]
 let ``IsSome conditionals inside a quotation stay untouched`` () =
     Assert.Empty(optionMatchIn "let f (y: int option) =\n    <@ if y.IsSome then y.Value + 1 else 0 @>")
+
+[<Fact>]
+let ``a None comparison is the same test as IsSome`` () =
+    assertOptionMatch
+        "let f (x: int option) = if x <> None then x.Value + 1 else 0"
+        "match x with | Some v -> v + 1 | None -> 0"
+
+[<Fact>]
+let ``an equals-None comparison swaps the arms`` () =
+    assertOptionMatch "let f (x: int option) = if None = x then 0 else x.Value" "match x with | Some v -> v | None -> 0"
+
+[<Fact>]
+let ``multi-line branches become a match laid out over lines`` () =
+    assertOptionMatch
+        "let f (x: int option) =\n    if x <> None then\n        let y = x.Value + 1\n        y * 2\n    else\n        0"
+        "match x with\n    | Some v ->\n        let y = v + 1\n        y * 2\n    | None ->\n        0"
+
+[<Fact>]
+let ``an else-less multi-line unit branch gains a unit None arm`` () =
+    assertOptionMatch
+        "let f (x: int option) =\n    if x.IsSome then\n        printfn \"%d\" x.Value\n        printfn \"done\""
+        "match x with\n    | Some v ->\n        printfn \"%d\" v\n        printfn \"done\"\n    | None ->\n        ()"
+
+[<Fact>]
+let ``one-line branches of a multi-line if fold to a one-line match`` () =
+    assertOptionMatch
+        "let f (x: int option) =\n    if x.IsSome then x.Value + 1\n    else\n        0"
+        "match x with | Some v -> v + 1 | None -> 0"
+
+[<Fact>]
+let ``multi-line branches under an if that does not open its line stay`` () =
+    // the match's clauses would sit under a `let`, not under the `if`
+    Assert.Empty(
+        optionMatchIn
+            "let f (x: int option) =\n    let r = if x.IsSome then\n                let y = x.Value\n                y + 1\n            else\n                0\n    r"
+    )
+
+[<Fact>]
+let ``a multi-line string inside a branch is never re-indented`` () =
+    Assert.Empty(
+        optionMatchIn
+            "let f (x: string option) =\n    if x.IsSome then\n        let s = \"\"\"a\n  b\"\"\"\n        s + x.Value\n    else\n        \"\""
+    )

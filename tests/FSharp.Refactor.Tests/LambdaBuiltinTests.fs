@@ -85,3 +85,37 @@ let ``a parameter named fst shadows`` () =
 let ``a match-bound snd shadows`` () =
     assertNoSuggestion
         "module Test\nlet g o =\n    match o with\n    | Some snd -> List.map (fun (a, b) -> b) [ snd ]\n    | None -> []"
+
+// ---- the lambda's parentheses go with it (Mibo) ----
+
+[<Fact>]
+let ``a parenthesised lambda argument drops its parentheses with the lambda`` () =
+    // Mibo: `Array.init this.Count (fun v -> v)` became `Array.init this.Count (id)`
+    let source = "module Test\nlet m (n: int) = Array.init n (fun v -> v)"
+
+    match findIn source with
+    | [ s ] ->
+        Assert.Equal("(fun v -> v)", s.OriginalText)
+        Assert.Equal("module Test\nlet m (n: int) = Array.init n id", applyEdit source s.Range s.ReplacementText)
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``a parenthesised lambda inside a tuple drops its parentheses too`` () =
+    // Mibo: `ListReduceNode(list, (fun v -> v), reduction)` kept `(id)`
+    let source =
+        "module Test\nlet m (f: int list * (int -> int) * int -> int) (xs: int list) = f (xs, (fun v -> v), 1)"
+
+    match findIn source with
+    | [ s ] -> Assert.Contains("f (xs, id, 1)", applyEdit source s.Range s.ReplacementText)
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``a lambda glued to its callee keeps its parentheses`` () =
+    // `List.map(fun x -> x)` would fuse into `List.mapid`
+    let source = "module Test\nlet m = List.map(fun x -> x) []"
+
+    match findIn source with
+    | [ s ] ->
+        Assert.Equal("fun x -> x", s.OriginalText)
+        Assert.Contains("List.map(id) []", applyEdit source s.Range s.ReplacementText)
+    | other -> failwithf "Expected exactly one suggestion, got %A" other

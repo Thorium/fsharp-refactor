@@ -46,20 +46,27 @@ let private identPath (e: SynExpr) =
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some(ids |> List.map (fun i -> i.idText))
     | _ -> None
 
+/// A flattened field: its dotted path, its value, and the line its name
+/// was written on — the line structure of the original is kept.
+type private Leaf =
+    { Path: string
+      Value: SynExpr
+      Line: int }
+
 /// Flatten record fields into (dotted-path, value-expr) leaves, walking
 /// nested copy-and-updates whose source matches `basePath` + the field
 /// path. Returns None when any part is not flattenable.
 [<TailCall>]
 let rec private flattenLoop
     (basePath: string list)
-    (acc: (string * SynExpr) list)
+    (acc: Leaf list)
     (pending: (string list * SynExprRecordField) list)
-    : (string * SynExpr) list option =
+    : Leaf list option =
     match pending with
     | [] -> Some(List.rev acc)
     | (prefix, field) :: rest ->
         match field with
-        | SynExprRecordField(fieldName = (SynLongIdent(id = fieldIds), _); expr = Some value) ->
+        | SynExprRecordField(fieldName = (SynLongIdent(id = fieldIds), _); expr = Some value) when not fieldIds.IsEmpty ->
             let fieldPath = prefix @ (fieldIds |> List.map (fun i -> i.idText))
 
             match value with
@@ -67,7 +74,13 @@ let rec private flattenLoop
                 identPath innerBase = Some(basePath @ fieldPath) && not innerFields.IsEmpty
                 ->
                 flattenLoop basePath acc ((innerFields |> List.map (fun f -> fieldPath, f)) @ rest)
-            | _ when isSingleLine value.Range -> flattenLoop basePath ((String.concat "." fieldPath, value) :: acc) rest
+            | _ when isSingleLine value.Range ->
+                let leaf =
+                    { Path = String.concat "." fieldPath
+                      Value = value
+                      Line = (List.head fieldIds).idRange.StartLine }
+
+                flattenLoop basePath (leaf :: acc) rest
             | _ -> None
         | _ -> None
 
@@ -195,7 +208,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           // not match — a genuine cross-record copy, no gain
                           | Some leaves when
                               not leaves.IsEmpty
-                              && leaves |> List.exists (fun (p, _) -> p.Contains '.')
+                              && leaves |> List.exists (fun leaf -> leaf.Path.Contains '.')
                               // collision gate: the path head must not name
                               // a type, module or namespace
                               && (let head = (List.head fieldIds).idText
@@ -208,16 +221,33 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                               let editRange = Range.mkRange value.Range.FileName fieldStart value.Range.End
 
+                              // the original's line structure survives: a
+                              // field that started a new line starts one
+                              // here too, at the outer field's column, and
+                              // fields that shared a line still do. Joining
+                              // everything with `; ` made a 170-column line
+                              // of suave's Stream.fs — correct, and rejected
+                              // by fantomas --check.
+                              let indent = System.String(' ', fieldStart.Column)
+
                               let replacement =
                                   leaves
-                                  |> List.map (fun (path, v) -> $"{path} = {textOfRange source v.Range}")
-                                  |> String.concat "; "
+                                  |> List.mapi (fun i leaf ->
+                                      let text = $"{leaf.Path} = {textOfRange source leaf.Value.Range}"
+
+                                      if i = 0 then
+                                          text
+                                      elif leaf.Line > leaves.[i - 1].Line then
+                                          "\n" + indent + text
+                                      else
+                                          "; " + text)
+                                  |> String.concat ""
 
                               if not (spansDirective source editRange) then
                                   { Range = editRange
                                     OriginalText = textOfRange source editRange
                                     ReplacementText = replacement
-                                    Path = leaves |> List.map fst |> String.concat ", " }
+                                    Path = leaves |> List.map (fun leaf -> leaf.Path) |> String.concat ", " }
                           | _ -> ()
                       | _ -> ()
               | None -> ()

@@ -3,13 +3,24 @@
 ///
 ///     if c then true else false        →  c
 ///     if c then false else true        →  not c
-///     x = None      /  None = x        →  x |> Option.isNone      (typed-gated)
-///     x <> None                        →  x |> Option.isSome
-///     x = ValueNone                    →  x |> ValueOption.isNone
+///     x = None      /  None = x        →  x.IsNone                (typed-gated)
+///     x <> None                        →  x.IsSome
+///     x = ValueNone                    →  x.IsNone
+///     Option.isSome x / x |> Option.isSome  →  x.IsSome
 ///     List.length xs = 0               →  List.isEmpty xs
 ///     xs |> Seq.length = 0             →  xs |> Seq.isEmpty
 ///     Array.length xs > 0              →  not (Array.isEmpty xs)
 ///     Set.count s = 0                  →  Set.isEmpty s
+///
+/// The property reads directly where the module function is a call; the
+/// receiver must be a name (or dotted path) whose type the checker has
+/// settled when it reaches the expression. An UNANNOTATED parameter's type
+/// is inferred from its uses, which may come later — there `x.IsSome` is
+/// FS0072 "lookup on object of indeterminate type" while `Option.isSome x`
+/// infers fine — so a None comparison on such a receiver keeps the module
+/// form (`x |> Option.isSome`) and a module call on it stays. A test whose
+/// branch then reads the payload (`x.Value`, `Option.get x`) is a match in
+/// disguise and is left to FR0034.
 ///
 /// The emptiness rewrite is also a performance fix for Seq: `Seq.length`
 /// forces the whole sequence, `Seq.isEmpty` looks at one element.
@@ -33,6 +44,8 @@ type SimplificationKind =
     | BooleanIdentity
     /// `x = None`, `x <> ValueNone`, ...
     | OptionComparison
+    /// `Option.isSome x`, `x |> ValueOption.isNone`, ... → the property
+    | OptionProperty
     /// `List.length xs = 0`, `xs |> Seq.length > 0`, ...
     | Emptiness
 
@@ -90,10 +103,37 @@ let private (|InfixOpIdent|_|) (e: SynExpr) =
     | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op)) -> ValueSome op
     | _ -> ValueNone
 
+/// `Option.isSome` / `Option.isNone` (and the ValueOption pair): the
+/// function ident and whether it is the Some test.
+[<return: Struct>]
+let private (|OptionTestFunc|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when
+        (m.idText = "Option" || m.idText = "ValueOption")
+        && (f.idText = "isSome" || f.idText = "isNone")
+        ->
+        ValueSome(f, f.idText = "isSome")
+    | _ -> ValueNone
+
+/// Is this `isSome`/`isNone` FSharp.Core's, not a user module named Option?
+let private isCoreOptionTest (check: FSharpCheckFileResults) (source: ISourceText) (f: Ident) =
+    let r = f.idRange
+    let lineText = source.GetLineString(r.EndLine - 1)
+
+    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ f.idText ]) with
+    | Some symbolUse ->
+        let name = OptionModule.fullNameOf symbolUse.Symbol
+        name.StartsWith "Microsoft.FSharp.Core." && name.Contains "Option"
+    | None -> false
+
 /// Find simplifiable expressions. `check` enables the typed None-comparison
 /// rules; without it only the parse-only rules run.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults option) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+
+    // consulted only when an option test is found
+    let unannotated =
+        lazy (OptionModule.unannotatedParameters (AstIndex.ofTree parseTree))
 
     let add (range: range) (replacement: string) kind =
         suggestions.Add
@@ -122,7 +162,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         if gate && isSingleLine other.Range then
             let fn = if op = "op_Equality" then "isNone" else "isSome"
-            add range (sprintf "%s |> %s.%s" (atomicText source other) m fn) SimplificationKind.OptionComparison
+
+            // the property where the receiver's type is settled; the
+            // module function keeps inference going where it is not
+            match other with
+            | OptionModule.ReceiverPath(root, text) when
+                check
+                |> Option.exists (fun c -> OptionModule.receiverSettled c source unannotated.Value root)
+                ->
+                let property = if op = "op_Equality" then "IsNone" else "IsSome"
+                add range $"{text}.{property}" SimplificationKind.OptionComparison
+            | _ -> add range (sprintf "%s |> %s.%s" (atomicText source other) m fn) SimplificationKind.OptionComparison
 
     let emptiness (range: range) (negated: bool) (m: string) (fIdent: Ident) (arg: SynExpr) (piped: bool) =
         // shadowing gate: `Seq.length` must be FSharp.Core's, not a user
@@ -153,9 +203,35 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
             add range replacement SimplificationKind.Emptiness
 
+    // a test whose branch then reads the payload (`x.Value`, `Option.get
+    // x`) is a match in disguise: FR0034 binds the payload, and `IsSome`
+    // beside `.Value` is the spelling to avoid, not the one to produce
+    let payloadRead (path: SyntaxNode list) (test: SynExpr) (receiver: SynExpr) =
+        let x =
+            System.Text.RegularExpressions.Regex.Escape(textOfRange source receiver.Range)
+
+        let reads (r: range) =
+            System.Text.RegularExpressions.Regex.IsMatch(
+                textOfRange source r,
+                $@"{x}\.Value\b|(Option|ValueOption)\.get\s+\(?\s*{x}\b|{x}\s*\|>\s*(Option|ValueOption)\.get\b"
+            )
+
+        path
+        |> List.exists (fun node ->
+            match node with
+            | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = cond) as ifExpr) when
+                Range.rangeContainsRange cond.Range test.Range
+                ->
+                reads ifExpr.Range
+            | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent o)) as chain) when
+                o.idText = "op_BooleanAnd" || o.idText = "op_BooleanOr"
+                ->
+                reads chain.Range
+            | _ -> false)
+
     let collector =
         { new SyntaxCollectorBase() with
-            override _.WalkExpr(_path, expr) =
+            override _.WalkExpr(path, expr) =
                 match expr with
                 // if c then true else false / if c then false else true
                 // trivia.IsElif guard: an elif node's range starts at the elif
@@ -179,7 +255,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | InfixApp(("op_Equality" | "op_Inequality") as op, NoneCaseIdent(ident, m, prefix), other)
                 | InfixApp(("op_Equality" | "op_Inequality") as op, other, NoneCaseIdent(ident, m, prefix)) ->
                     match expr with
-                    | InfixOpIdent opIdent -> noneComparison expr.Range op opIdent other ident m prefix
+                    | InfixOpIdent opIdent when not (payloadRead path expr other) ->
+                        noneComparison expr.Range op opIdent other ident m prefix
+                    | _ -> ()
+                // Option.isSome x / x |> Option.isNone → the property
+                | SynExpr.App(isInfix = false; funcExpr = OptionTestFunc(f, isSome); argExpr = receiver)
+                | PipeApp(receiver, OptionTestFunc(f, isSome)) ->
+                    match check, receiver with
+                    | Some c, OptionModule.ReceiverPath(root, text) when
+                        isCoreOptionTest c source f
+                        && OptionModule.receiverSettled c source unannotated.Value root
+                        && not (payloadRead path expr receiver)
+                        ->
+                        let property = if isSome then "IsSome" else "IsNone"
+                        add expr.Range $"{text}.{property}" SimplificationKind.OptionProperty
                     | _ -> ()
                 // length/count compared with zero
                 | InfixApp("op_Equality", LengthOf(m, f, arg, piped), ZeroConst)

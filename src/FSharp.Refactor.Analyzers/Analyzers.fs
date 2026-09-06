@@ -955,7 +955,9 @@ let private simplificationMessages (parseTree: ParsedInput) (source: ISourceText
             | Simplification.SimplificationKind.BooleanIdentity ->
                 "This if-expression just returns the condition and can be simplified."
             | Simplification.SimplificationKind.OptionComparison ->
-                "Comparing against None can be written with the isNone/isSome function."
+                "Comparing against None is the IsNone/IsSome test spelled as an equality."
+            | Simplification.SimplificationKind.OptionProperty ->
+                "Option.isSome/isNone on a name is the IsSome/IsNone property spelled as a call; the property reads directly."
             | Simplification.SimplificationKind.Emptiness ->
                 "Comparing length against zero can be written with isEmpty (and avoids forcing a full sequence)."
 
@@ -1353,22 +1355,73 @@ let private discardedAsyncMessages (parseTree: ParsedInput) (source: ISourceText
     |> List.map (fun s ->
         hint
             "FR0017"
-            (sprintf
-                "'%s' is an Async computation: ignore discards it without running it. Bind it inside the computation — let! _ = %s (do! when it returns unit) — or Async.Start it to fire and forget."
-                s.Name
-                s.Name)
+            (if s.IsValueTask then
+                 sprintf
+                     "'%s' returns a ValueTask: ignore drops its outcome — a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it (let! _ = / do! inside task { }) or call .AsTask() and hand the task to whoever waits."
+                     s.Name
+             else
+                 sprintf
+                     "'%s' is an Async computation: ignore discards it without running it. Bind it inside the computation — let! _ = %s (do! when it returns unit) — or Async.Start it to fire and forget."
+                     s.Name
+                     s.Name)
             s.Range
             [])
+
+// ---- FR0149 UnhandledStart ----
+
+let private unhandledStartMessages
+    (fileName: string)
+    (offerMove: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    =
+    if not (Configuration.isRuleEnabled fileName "FR0149" "AsyncIgnore") then
+        []
+    else
+        AsyncIgnore.findUnhandledStart parseTree source checkResults
+        |> List.map (fun s ->
+            hint
+                "FR0149"
+                (sprintf
+                    "%s hands this computation to the thread pool with nobody to observe a failure: an exception in it is UNHANDLED on a pool thread, which terminates the process rather than stopping the work quietly. %s Handle it in the body — a try/with, or Async.Catch bound and matched on both Choice1Of2 and Choice2Of2 (producing the Choice is not handling it).%s"
+                    s.Starter
+                    (if s.Starter = "Async.Start" then
+                         "A try/with around this call catches nothing: the work never runs on this thread."
+                     else
+                         "Async.StartImmediate runs on this thread only until the first await; past it the pool has the failure and a try/with around this call can no longer reach it.")
+                    ((if s.WrappedInTry then
+                          (if s.TryFix.IsSome then
+                               " The try/with around this call does not cover it either — that handler is on this thread, the work is not; it wraps this start and nothing else, so it moves inside the computation as it stands."
+                           else
+                               " The try/with around this call does not cover it either — that handler is on this thread, the work is not.")
+                      else
+                          "")
+                     + (if s.LoopsInBody then
+                            " The body loops, so where the handler goes decides the behaviour: around the whole computation it still stops on the first failure, INSIDE the loop it keeps running — which of the two is wanted is yours to choose, and why no fix is offered."
+                        else
+                            "")))
+                s.Range
+                // the one repair this rule can make: the author's own
+                // handler, moved where it fires. Editor-offered — it
+                // restructures the expression, and the handler then runs
+                // on the pool thread rather than the calling one
+                (match s.TryFix with
+                 | Some(r, original, replacement) when offerMove -> [ fix r original replacement ]
+                 | _ -> []))
 
 [<EditorAnalyzer("AsyncIgnore", "Flag Async computations discarded with ignore", HelpBase)>]
 let asyncIgnoreEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0017" "AsyncIgnore" (fun () ->
-        whenChecked ctx (discardedAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+        whenChecked ctx (fun check ->
+            discardedAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText check
+            @ unhandledStartMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText check))
 
 [<CliAnalyzer("AsyncIgnore", "Flag Async computations discarded with ignore", HelpBase)>]
 let asyncIgnoreCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0017" "AsyncIgnore" (fun () ->
-        discardedAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+        discardedAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+        @ unhandledStartMessages ctx.FileName false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0018 DictTryAdd ----
 
@@ -1539,14 +1592,18 @@ let autoPropertyCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private closureCaptureMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
     ClosureCapture.find parseTree source checkResults
     |> List.map (fun s ->
-        hint
-            "FR0027"
-            (sprintf
-                "This handler captures '%s', so the %s subscription keeps the whole object alive until the handler is removed. If the object is large, bind the needed values to locals before the lambda, or keep and dispose the subscription."
-                s.CapturedName
-                s.SinkName)
-            s.Range
-            [])
+        let message =
+            match s.Publisher with
+            // AppDomain.CurrentDomain.*, Console.*: the publisher lives as
+            // long as the process, so the object does too — the real leak
+            | ClosureCapture.PublisherKind.ProcessWide ->
+                $"This handler captures '{s.CapturedName}', and the {s.SinkName} subscription hangs it on a process-wide publisher: the whole object stays alive until the process exits, or until the handler is removed. Bind the needed values to locals before the lambda, or keep and dispose the subscription."
+            // a publisher handed in from elsewhere: a leak only if it
+            // outlives the subscriber
+            | ClosureCapture.PublisherKind.External ->
+                $"This handler captures '{s.CapturedName}', so the {s.SinkName} subscription keeps the whole object alive as long as the publisher lives — a leak when the publisher outlives it. If the object is large, bind the needed values to locals before the lambda, or keep and dispose the subscription."
+
+        hint "FR0027" message s.Range [])
 
 [<EditorAnalyzer("ClosureCapture", "Note this-capturing handlers given to event/observable sinks", HelpBase)>]
 let closureCaptureEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -1700,11 +1757,28 @@ let private objectDesignMessages
     let undisposedEnabled =
         Configuration.isRuleEnabled fileName "FR0047" "UndisposedField"
 
+    let disposeWithoutInterfaceEnabled =
+        Configuration.isRuleEnabled fileName "FR0148" "DisposeWithoutInterface"
+
+    let disposeWithoutInterfaceMessages =
+        if disposeWithoutInterfaceEnabled then
+            ObjectDesign.disposeWithoutInterface parseTree source checkResults
+            |> List.map (fun s ->
+                hint
+                    "FR0148"
+                    (sprintf
+                        "Type '%s' exposes a public Dispose() but does not implement IDisposable; nothing can `use` it, and only a caller that knows the member releases what it holds — implement IDisposable and let Dispose be its member."
+                        s.TypeName)
+                    s.Range
+                    [])
+        else
+            []
+
     if not (disposableEnabled || staticEnabled || undisposedEnabled) then
-        []
+        disposeWithoutInterfaceMessages
     else
         let disposables, statics, undisposedFields =
-            ObjectDesign.find parseTree source checkResults
+            ObjectDesign.find (Visibility.apiChangesAllowed ()) parseTree source checkResults
 
         let disposableMessages =
             if disposableEnabled then
@@ -1715,10 +1789,19 @@ let private objectDesignMessages
                     // form, no Dispose(bool) ceremony
                     hint
                         "FR0032"
-                        (sprintf
-                            "Type '%s' creates disposable '%s' but does not implement IDisposable; the resource has no owner to dispose it."
-                            s.TypeName
-                            s.FieldName)
+                        (match s.DisposableBase with
+                         | Some baseName ->
+                             sprintf
+                                 "Type '%s' creates disposable '%s' that its disposable base '%s' never sees; override Dispose(disposing) (or re-implement IDisposable over the base's) and dispose '%s' there."
+                                 s.TypeName
+                                 s.FieldName
+                                 baseName
+                                 s.FieldName
+                         | None ->
+                             sprintf
+                                 "Type '%s' creates disposable '%s' but does not implement IDisposable; the resource has no owner to dispose it."
+                                 s.TypeName
+                                 s.FieldName)
                         s.Range
                         (match s.Fix with
                          | Some(r, original, replacement) when offerFixes -> [ fix r original replacement ]
@@ -1746,10 +1829,17 @@ let private objectDesignMessages
                 |> List.map (fun s ->
                     hint
                         "FR0047"
-                        (sprintf
-                            "Type '%s' is IDisposable but its Dispose never touches disposable field '%s'; the resource leaks despite the pattern."
-                            s.TypeName
-                            s.FieldName)
+                        (if s.MentionedOnly then
+                             sprintf
+                                 "Type '%s' is IDisposable and its Dispose uses field '%s' without disposing it — cancelling or closing a handle is not releasing it; add '%s.Dispose()'."
+                                 s.TypeName
+                                 s.FieldName
+                                 s.FieldName
+                         else
+                             sprintf
+                                 "Type '%s' is IDisposable but its Dispose never touches disposable field '%s'; the resource leaks despite the pattern."
+                                 s.TypeName
+                                 s.FieldName)
                         s.Range
                         (match s.Fix with
                          | Some(r, original, replacement) when offerFixes -> [ fix r original replacement ]
@@ -1757,7 +1847,10 @@ let private objectDesignMessages
             else
                 []
 
-        disposableMessages @ staticMessages @ undisposedMessages
+        disposableMessages
+        @ staticMessages
+        @ undisposedMessages
+        @ disposeWithoutInterfaceMessages
 
 [<EditorAnalyzer("ObjectDesign", "Disposable fields without IDisposable; could-be-static members", HelpBase)>]
 let objectDesignEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -1813,7 +1906,8 @@ let private loopPerfMessages (fileName: string) (parseTree: ParsedInput) (source
     if not (containsEnabled || constructionEnabled) then
         []
     else
-        let contains, constructions = LoopPerf.find parseTree source
+        let contains, constructions =
+            LoopPerf.find (Visibility.apiChangesAllowed ()) parseTree source
 
         let containsMessages =
             if containsEnabled then
@@ -1929,10 +2023,19 @@ let private charOverloadMessages
                 hint
                     "FR0038"
                     (sprintf
-                        "%s has a char overload for a single character on the newer frameworks this project targets; it skips the string-comparison setup, but the narrowest target lacks it, so the rewrite needs an #if guard of your own."
-                        s.MethodName)
+                        "%s has a char overload for a single character on the newer frameworks this project targets; it skips the string-comparison setup, but the narrowest target lacks it.%s"
+                        s.MethodName
+                        (match s.PortableOffer with
+                         | Some _ ->
+                             " The portable form compiles everywhere: IndexOf takes a char on every framework and is ordinal, as Contains(string) already is."
+                         | None -> " The rewrite needs an #if guard of your own."))
                     s.Range
-                    []
+                    // the portable rewrite restates the call, so it is the
+                    // author's to take in the editor — a sweep does not
+                    // reshape working code for a portability nicety
+                    (match s.PortableOffer with
+                     | Some(r, original, replacement) when offerOrdinal -> [ fix r original replacement ]
+                     | _ -> [])
             else
                 hint
                     "FR0038"
@@ -2152,13 +2255,23 @@ let typedHolesCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private reraiseMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
     Reraise.find parseTree source checkResults
     |> List.map (fun s ->
-        hint
-            "FR0044"
-            (sprintf
-                "raise %s resets the exception's stack trace; reraise () rethrows it with the original trace intact."
-                s.ExceptionName)
-            s.Range
-            [ fix s.Range s.OriginalText "reraise ()" ])
+        match s.Removal with
+        | Some(r, original, replacement) ->
+            hint
+                "FR0044"
+                (sprintf
+                    "raise %s resets the exception's stack trace, and reraise () is not allowed inside a computation expression; this handler only rethrows, so the try/with goes and an unmatched exception propagates with its trace intact."
+                    s.ExceptionName)
+                s.Range
+                [ fix r original replacement ]
+        | None ->
+            hint
+                "FR0044"
+                (sprintf
+                    "raise %s resets the exception's stack trace; reraise () rethrows it with the original trace intact."
+                    s.ExceptionName)
+                s.Range
+                [ fix s.Range s.OriginalText "reraise ()" ])
 
 [<EditorAnalyzer("Reraise", "Rethrow with reraise () to preserve the stack trace", HelpBase)>]
 let reraiseEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -2266,12 +2379,15 @@ let private syncOverAsyncMessages
     (source: ISourceText)
     (fileName: string)
     (offerSyncSwap: bool)
+    (taskAvailable: bool)
     checkResults
     : Message list =
-    SyncOverAsync.find parseTree source checkResults
+    SyncOverAsync.findWith taskAvailable parseTree source checkResults
     |> List.collect (fun s ->
         let message =
             match s.Kind, s.Builder with
+            | SyncOverAsync.BlockKind.AntecedentResult, _ ->
+                ".Result on a continuation's antecedent does not block, but a faulted antecedent throws its exception wrapped in an AggregateException there; the continuation is a bind — task { let! r = t ... } gets the value, the exception itself, and no ContinueWith."
             | kind, None ->
                 let what =
                     match kind with
@@ -2280,6 +2396,8 @@ let private syncOverAsyncMessages
                     | SyncOverAsync.BlockKind.AwaiterGetResult -> "GetAwaiter().GetResult()"
                     | SyncOverAsync.BlockKind.RunSynchronously -> "Async.RunSynchronously"
                     | SyncOverAsync.BlockKind.ThreadSleep -> "Thread.Sleep"
+                    | SyncOverAsync.BlockKind.PrimitiveWait name -> name
+                    | SyncOverAsync.BlockKind.AntecedentResult -> ".Result"
 
                 sprintf
                     "%s is sync-over-async: either make this code async (wrap it in task { } and let!/do!) or call the synchronous API version."
@@ -2292,8 +2410,25 @@ let private syncOverAsyncMessages
                     | SyncOverAsync.BlockKind.AwaiterGetResult -> "GetAwaiter().GetResult() blocks the thread"
                     | SyncOverAsync.BlockKind.RunSynchronously -> "Async.RunSynchronously blocks the thread"
                     | SyncOverAsync.BlockKind.ThreadSleep -> "Thread.Sleep blocks the thread"
+                    | SyncOverAsync.BlockKind.PrimitiveWait name -> $"{name} blocks the thread"
+                    | SyncOverAsync.BlockKind.AntecedentResult -> ".Result"
 
-                if s.InLambda then
+                match s.Kind with
+                | SyncOverAsync.BlockKind.PrimitiveWait _ ->
+                    // no task to bind: the work the primitive signals is
+                    // what the computation should await
+                    sprintf
+                        "%s inside %s { }; await the work it waits for instead (the task or a TaskCompletionSource that completes it, SemaphoreSlim.WaitAsync) — sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
+                        what
+                        builder
+                | _ when s.InFinally ->
+                    // no let!/do! may appear in a finally block: the wait
+                    // has to leave the handler before it can become a bind
+                    sprintf
+                        "%s inside the finally block of %s { }, where no let!/do! can appear; move the wait out of the handler (record the outcome in the body, await after the try) — sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
+                        what
+                        builder
+                | _ when s.InLambda ->
                     // the builder's bind cannot reach into a lambda: the
                     // callback's own signature is where the blocking is
                     // decided
@@ -2302,7 +2437,7 @@ let private syncOverAsyncMessages
                         what
                         builder
                         builder
-                else
+                | _ ->
                     sprintf
                         "%s inside %s { }; bind with let!/do! instead — sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
                         what
@@ -2324,7 +2459,11 @@ let private syncOverAsyncMessages
           if swapAllowed && not s.AlternativeFixes.IsEmpty then
               hint
                   "FR0049"
-                  "Alternative: call the synchronous sibling API instead — this walks the code away from async, a waypoint at best."
+                  (match s.Kind with
+                   | SyncOverAsync.BlockKind.AntecedentResult ->
+                       "Read the antecedent with GetAwaiter().GetResult(): a fault then arrives as the exception itself, not wrapped in an AggregateException — an observable change for a caller that catches the wrapper."
+                   | _ ->
+                       "Alternative: call the synchronous sibling API instead — this walks the code away from async, a waypoint at best.")
                   s.Range
                   (asFixes s.AlternativeFixes) ])
 
@@ -2345,18 +2484,36 @@ let private taskifyMessages (parseTree: ParsedInput) (source: ISourceText) check
 let syncOverAsyncEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0049" "SyncOverAsync" (fun () ->
         whenChecked ctx (fun check ->
-            syncOverAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.FileName true check
-            @ taskifyMessages ctx.ParseFileResults.ParseTree ctx.SourceText check None))
+            // the antecedent bind and the taskify fix both write `task { }`:
+            // FSharp.Core 6+ on a non-Fable target only
+            let taskAvailable = canReturnTask ctx.ProjectOptions
+
+            syncOverAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.FileName true taskAvailable check
+            @ (if taskAvailable then
+                   taskifyMessages ctx.ParseFileResults.ParseTree ctx.SourceText check None
+               else
+                   [])))
 
 [<CliAnalyzer("SyncOverAsync", "Blocking waits inside async/task expressions", HelpBase)>]
 let syncOverAsyncCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0049" "SyncOverAsync" (fun () ->
-        syncOverAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.FileName false ctx.CheckFileResults
-        @ taskifyMessages
+        let taskAvailable = canReturnTask ctx.ProjectOptions
+
+        syncOverAsyncMessages
             ctx.ParseFileResults.ParseTree
             ctx.SourceText
+            ctx.FileName
+            false
+            taskAvailable
             ctx.CheckFileResults
-            (Some ctx.CheckProjectResults))
+        @ (if taskAvailable then
+               taskifyMessages
+                   ctx.ParseFileResults.ParseTree
+                   ctx.SourceText
+                   ctx.CheckFileResults
+                   (Some ctx.CheckProjectResults)
+           else
+               []))
 
 // ---- FR0050 / FR0051 Accumulation ----
 
@@ -2492,12 +2649,25 @@ let private swallowedExceptionMessages
     : Message list =
     SwallowedException.find parseTree source check
     |> List.collect (fun s ->
+        let clause = s.FallbackText |> Option.defaultValue "()"
+
         let message =
-            s.FallbackText
-            |> Option.map (fun fallback ->
-                $"'with %s{s.PatternText} -> %s{fallback}' swallows every exception and disguises the failure as a legitimate result; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line.")
-            |> Option.defaultWith (fun () ->
-                $"'with %s{s.PatternText} -> ()' silently swallows every exception, including cancellation and programming errors; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line.")
+            match s.Probe with
+            // a probe answers for a missing path instead of throwing: the
+            // try adds nothing but a hidden failure, so the advice is to
+            // delete it, not to guard a value
+            | Some probe when probe.EndsWith "Exists" ->
+                $"'with %s{s.PatternText} -> %s{clause}' swallows every exception around %s{probe}, which already answers false for a missing path and throws only for a malformed one or a permissions failure, which the catch then hides; delete the try and let the probe answer."
+            | Some probe ->
+                $"'with %s{s.PatternText} -> %s{clause}' swallows every exception around %s{probe}, which does not throw for a missing path (it answers 1601-01-01) and throws only for a malformed one or a permissions failure, which the fallback then hides; delete the try, and check File.Exists first if a missing file needs the fallback."
+            | None when s.Teardown ->
+                $"'with %s{s.PatternText} -> ()' around a teardown call is the best-effort release idiom, and still hides an ObjectDisposedException that says the release ran twice; narrow the catch to what a release throws — IOException, SocketException, ObjectDisposedException — and let the rest surface."
+            | None ->
+                match s.FallbackText with
+                | Some fallback ->
+                    $"'with %s{s.PatternText} -> %s{fallback}' swallows every exception and disguises the failure as a legitimate result; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line."
+                | None ->
+                    $"'with %s{s.PatternText} -> ()' silently swallows every exception, including cancellation and programming errors; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line."
 
         // each offer is its own message: an editor applies every fix of
         // one message together
@@ -2740,12 +2910,23 @@ let private securityRulesMessages
         let processMessages =
             if processEnabled then
                 processSinks
-                |> List.map (fun s ->
-                    hint
-                        "FR0126"
-                        $"A dynamically built string reaches {s.Sink} — the command/argument-injection sink, and doubly so when the string carries LLM or agent output; pass a fixed executable with an argument LIST (ProcessStartInfo.ArgumentList) instead."
-                        s.Range
-                        [])
+                |> List.collect (fun s ->
+                    [ hint
+                          "FR0126"
+                          $"A dynamically built string reaches {s.Sink} — the command/argument-injection sink, and doubly so when the string carries LLM or agent output; pass a fixed executable with an argument LIST (ProcessStartInfo.ArgumentList) instead."
+                          s.Range
+                          []
+                      // the list form needs .NET Core 3 or later, and a shell's
+                      // command line is not a list of arguments: an editor
+                      // action, with the person looking at the executable
+                      match s.Fix with
+                      | Some(r, original, replacement) when offerAlternatives ->
+                          hint
+                              "FR0126"
+                              "Alternative: pass the arguments as a list — each reaches the process whole, quoting and all (a hole that already carries several arguments becomes one; split it)."
+                              s.Range
+                              [ fix r original replacement ]
+                      | _ -> () ])
             else
                 []
 
@@ -2758,17 +2939,20 @@ let private securityRulesMessages
                     // API-shaped change — so this is an EDITOR action, never
                     // CLI-applied
                     match s.Kind, s.AlgoRange with
-                    | SecurityRules.WeakKind.Hash "SHA1", Some algo when offerAlternatives ->
+                    // MD5 too: its checksum uses (an ETag, a pid-file name) swap
+                    // just as well — the person picking the offer knows what
+                    // the hash feeds
+                    | SecurityRules.WeakKind.Hash(("SHA1" | "MD5") as weak), Some algo when offerAlternatives ->
                         [ hint
                               "FR0065"
                               "Alternative: switch to SHA256 (mind persisted hashes and interop — the output size changes)."
                               s.Range
-                              [ fix algo "SHA1" "SHA256" ]
+                              [ fix algo weak "SHA256" ]
                           hint
                               "FR0065"
                               "Alternative: switch to SHA512 (mind persisted hashes and interop — the output size changes)."
                               s.Range
-                              [ fix algo "SHA1" "SHA512" ] ]
+                              [ fix algo weak "SHA512" ] ]
                     // flags-OR is idempotent, so the swap is safe even in a
                     // `Tls ||| Tls12` chain — but dropping a legacy protocol
                     // can still surprise an ancient endpoint, so it stays an
@@ -3798,12 +3982,7 @@ let private useBindingMessages (parseTree: ParsedInput) (source: ISourceText) ch
             |> weigh
         | None ->
 
-            let escape =
-                match s.Destination with
-                | Some destination when s.DestinationInspected ->
-                    $"it is handed to '%s{destination}' in this file, which does not dispose it"
-                | Some destination -> $"it is handed to '%s{destination}', which may or may not take ownership"
-                | None -> "it also escapes this scope (passed, stored, or captured)"
+            let escape = UseBinding.describeEscape s
 
             hint
                 "FR0075"
@@ -3812,15 +3991,49 @@ let private useBindingMessages (parseTree: ParsedInput) (source: ISourceText) ch
                 []
             |> weigh)
 
+// ---- FR0150 EscapingUse ----
+
+let private escapingUseMessages
+    (fileName: string)
+    (offerMove: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    if not (Configuration.isRuleEnabled fileName "FR0150" "UseBinding") then
+        []
+    else
+        UseBinding.findEscapingUse parseTree source checkResults
+        |> List.map (fun s ->
+            hint
+                "FR0150"
+                (sprintf
+                    "'%s' is disposed when this scope returns, but the %s { } the scope hands back reads it afterwards — the first read past the return throws ObjectDisposedException. The computation owns it: move the `use` inside the %s { }, where it is disposed when the work finishes."
+                    s.Name
+                    s.Builder
+                    s.Builder)
+                s.Range
+                // moving the construction inside the computation delays it
+                // to when the work runs: a timing change the author signs
+                // off in the editor, not one a sweep makes
+                (if offerMove then
+                     s.Edits
+                     |> List.map (fun (r, original, replacement) -> fix r original replacement)
+                 else
+                     []))
+
 [<EditorAnalyzer("UseBinding", "Locally constructed disposables become use-bindings", HelpBase)>]
 let useBindingEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0075" "UseBinding" (fun () ->
-        whenChecked ctx (useBindingMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+        whenChecked ctx (fun check ->
+            useBindingMessages ctx.ParseFileResults.ParseTree ctx.SourceText check
+            @ escapingUseMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText check))
 
 [<CliAnalyzer("UseBinding", "Locally constructed disposables become use-bindings", HelpBase)>]
 let useBindingCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0075" "UseBinding" (fun () ->
-        useBindingMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+        useBindingMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+        @ escapingUseMessages ctx.FileName false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0076 MapIgnore ----
 
@@ -3868,7 +4081,11 @@ let private failwithContextMessages (parseTree: ParsedInput) (source: ISourceTex
             $"This failure message is a constant: every occurrence in the log reads the same. Interpolating %s{s.FunctionName}'s arguments says which call produced it — check the values are safe to log first, and that no test asserts on the text."
             s.Range
             (if applies then
-                 [ fix s.Range s.OriginalText s.ReplacementText ]
+                 [ fix s.Range s.OriginalText s.ReplacementText
+                   // `let f = function ... | _ -> failwith`: the wildcard
+                   // arm is named in the same fix
+                   for r, original, replacement in Option.toList s.PatternEdit do
+                       fix r original replacement ]
              else
                  []))
 
@@ -4338,9 +4555,15 @@ let private listIndexingMessages (parseTree: ParsedInput) (source: ISourceText) 
     |> List.map (fun s ->
         hint
             "FR0102"
-            (sprintf
-                "Indexing the F# list '%s' is O(i) per access — inside a loop that is quadratic. Iterate it directly, or convert once with List.toArray if random access is needed."
-                s.CollectionText)
+            (match s.Kind with
+             | ListIndexing.AccessKind.Index ->
+                 sprintf
+                     "Indexing the F# list '%s' is O(i) per access — inside a loop that is quadratic. Iterate it directly, or convert once with List.toArray if random access is needed."
+                     s.CollectionText
+             | ListIndexing.AccessKind.Length ->
+                 sprintf
+                     "Reading the F# list '%s''s length walks the whole list — inside a loop that is quadratic. Bind the length once outside the loop, or convert once with List.toArray."
+                     s.CollectionText)
             s.Range
             [])
 
@@ -4496,9 +4719,10 @@ let private qualifiedNamesMessages
     QualifiedNames.find uses deepUses parseTree source checkResults
     |> List.map (fun s ->
         let message =
-            if s.Edits.IsEmpty then
-                $"'{s.Namespace}' is spelled out {s.Uses} time(s) in this file, but an `open {s.Namespace}` would clash with a name this file already uses, defines or has in scope from another open for something else; left as it is."
-            else
+            match s.Reason with
+            | Some reason ->
+                $"'{s.Namespace}' is spelled out {s.Uses} time(s) in this file, but an `open {s.Namespace}` cannot go in: {reason}; left as it is."
+            | None ->
                 $"'{s.Namespace}' is spelled out {s.Uses} time(s) in this file; one `open {s.Namespace}` after the existing opens shortens every use."
 
         hint

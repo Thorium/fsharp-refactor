@@ -90,12 +90,46 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
     let suggestions = ResizeArray<Suggestion>()
 
+    // a member of an object expression is a member too, and its parameters
+    // are as much a method's shape as a class member's — its path carries
+    // no SynMemberDefn, so it is found by range (FSharp.CloudAgent's and
+    // Mibo's `{ new I with member _.M(x) = ... }` lost their parens)
+    let inObjectExpression (r: range) =
+        index.Exprs
+        |> Array.exists (fun (_, e) ->
+            match e with
+            | SynExpr.ObjExpr _ -> Range.rangeContainsRange e.Range r
+            | _ -> false)
+
     for path, pat in index.Pats do
         match pat with
         | SynPat.Paren(pat = inner) when isSingleLine pat.Range ->
+            // `Case(_)` is accepted for a case that takes NO data and `Case _`
+            // is not ("Pattern discard is not allowed for union case that
+            // takes no data" — fsharplint's SynMemberKind matches); without
+            // types the arity is unknown, so the typed FR0088 owns that shape
+            let wildcardOfCase =
+                match inner with
+                | SynPat.Wild _ ->
+                    index.Pats
+                    |> Array.exists (fun (_, q) ->
+                        match q with
+                        // a union case, by its capital; `let f (_) = ...` is a
+                        // function head and keeps losing its parens
+                        | SynPat.LongIdent(longDotId = SynLongIdent(id = ids); argPats = SynArgPats.Pats [ arg ]) when
+                            not ids.IsEmpty
+                            && (let name = (List.last ids).idText in name.Length > 0 && Char.IsUpper name.[0])
+                            ->
+                            Range.equals arg.Range pat.Range
+                        | _ -> false)
+                | _ -> false
+
             let redundant =
                 isWholeClausePattern path inner
-                || (isAtom source inner && not (inMemberParameters path))
+                || (isAtom source inner
+                    && not (inMemberParameters path)
+                    && not (inObjectExpression pat.Range)
+                    && not wildcardOfCase)
 
             if redundant then
                 // The parens were also keeping this pattern apart from its
@@ -117,8 +151,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     else
                         None
 
+                // punctuation that closes or separates needs no space either:
+                // `| Some tok , nstate ->` was left by a space before the comma
                 let separates (c: char option) =
-                    c |> Option.exists (Char.IsWhiteSpace >> not)
+                    c
+                    |> Option.exists (fun c -> not (Char.IsWhiteSpace c) && not (",;)]}".Contains c))
 
                 let lead = if separates charBefore then " " else ""
                 let trail = if separates charAfter then " " else ""

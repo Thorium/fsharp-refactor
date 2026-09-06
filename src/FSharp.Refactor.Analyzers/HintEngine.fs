@@ -6,7 +6,7 @@
 /// subexpression, and everything else must match literally:
 ///
 ///     not (a = b) ===> a <> b
-///     List.fold (+) 0 x ===> List.sum x
+///     List.sum (List.map f x) ===> List.sumBy f x
 ///     x = null ===> isNull x
 ///
 /// Both sides are parsed with the F# compiler itself, so operator and literal
@@ -69,6 +69,12 @@ type Hint =
             /// Metavariable occurrences in the right side: name and its
             /// character span within RhsText, in descending position order.
             RhsVarSpans: (string * int * int) list
+            /// The occurrences (by span start) that sit as operands of a
+            /// boolean `&&` or `||` on the right side, with that operator's
+            /// text. An operand is bracketed by precedence, not like an
+            /// argument: `not ((List.isEmpty a) && (List.isEmpty b))` is
+            /// what the De Morgan rules produced before this distinction.
+            RhsBoolOperandSpans: Map<int, string>
             /// Metavariables that must bind pure atoms because the right side
             /// drops or duplicates them.
             PureOnlyVars: Set<string>
@@ -282,6 +288,32 @@ let parseRule (rule: string) : Hint option =
                     |> List.map (fun (v, r) -> v, r.StartColumn - ParsePrefix.Length, r.EndColumn - ParsePrefix.Length)
                     |> List.sortByDescending (fun (_, s, _) -> s)
 
+                // `a || b` is App(App(op, a), b) with the inner application
+                // marked infix; a metavariable on either side is an operand
+                let boolOperandSpans =
+                    let acc = Dictionary<int, string>()
+
+                    let rec walk (e: SynExpr) =
+                        match e with
+                        | SynExpr.Paren(expr = inner) -> walk inner
+                        | SynExpr.App(
+                            isInfix = false
+                            funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = lhs)
+                            argExpr = rhs) when op.idText = "op_BooleanAnd" || op.idText = "op_BooleanOr" ->
+                            let opText = if op.idText = "op_BooleanAnd" then "&&" else "||"
+
+                            for side in [ lhs; rhs ] do
+                                match side with
+                                | MetaVar _ -> acc.[side.Range.StartColumn - ParsePrefix.Length] <- opText
+                                | _ -> walk side
+                        | SynExpr.App(funcExpr = f; argExpr = a) ->
+                            walk f
+                            walk a
+                        | _ -> ()
+
+                    walk rhs
+                    acc |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+
                 let boolTyped =
                     match lhs with
                     | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = a); argExpr = b) when
@@ -364,6 +396,7 @@ let parseRule (rule: string) : Hint option =
                       Lhs = lhs
                       RhsText = rhsText
                       RhsVarSpans = spans
+                      RhsBoolOperandSpans = boolOperandSpans
                       PureOnlyVars = pureOnly
                       BoolTypedVars = boolTyped
                       NotFloatVars = notFloat
@@ -439,9 +472,9 @@ let defaultRules =
       "false <> a ===> a"
       "true && x ===> x"
       "false || x ===> x"
-      "List.fold (+) 0 x ===> List.sum x"
-      "Array.fold (+) 0 x ===> Array.sum x"
-      "Seq.fold (+) 0 x ===> Seq.sum x"
+      // `fold (+) 0` -> `sum` is NOT here: the fold adds unchecked and
+      // wraps, `sum` adds checked and throws OverflowException (Mibo's
+      // Tests.fs; verified in fsi on [| Int32.MaxValue; 1 |])
       "List.sum (List.map f x) ===> List.sumBy f x"
       "Array.sum (Array.map f x) ===> Array.sumBy f x"
       "Seq.sum (Seq.map f x) ===> Seq.sumBy f x"
@@ -653,6 +686,58 @@ let private maybeNamedArgument (path: SyntaxNode list) (e: SynExpr) =
 
     isEquality && insideCallArguments path
 
+/// The text of a bound expression placed as an operand of `&&` or `||` —
+/// where the De Morgan rules put each matched side. An ARGUMENT is
+/// bracketed unless atomic; an OPERAND needs brackets only where the
+/// grammar or the reader does: an infix expression of lower or equal
+/// precedence, a lambda, a match, an if, a tuple. A function application,
+/// a method call, a dotted access and a name all stand bare beside `&&`
+/// and `||` — the sweep found `not ((List.isEmpty a) && (List.isEmpty b))`
+/// and `not ((json.ContainsKey "Case") && (json.ContainsKey "Fields"))`,
+/// which read worse than the code they replaced.
+let private boolOperandText (source: ISourceText) (op: string) (bound: SynExpr) =
+    let inner = stripParens bound
+    let text = textOfRange source inner.Range
+
+    let infixOperator (e: SynExpr) =
+        match e with
+        | SynExpr.App(isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = opExpr)) ->
+            Some((textOfRange source opExpr.Range).Trim())
+        | _ -> None
+
+    // `&&` binds tighter than `||`: an `&&` operand under `||` stands bare,
+    // an `||` operand under `&&` keeps its brackets, and equal precedence
+    // keeps them too so the grouping stays visible
+    let lowOrEqualPrecedence (opText: string) =
+        match opText with
+        | "||"
+        | "or"
+        | ":=" -> true
+        | "&&"
+        | "&" -> op = "&&"
+        | _ -> false
+
+    let bare =
+        isSafeInline inner
+        && (match inner with
+            | SynExpr.Ident _
+            | SynExpr.LongIdent _
+            | SynExpr.Const _
+            | SynExpr.DotGet _
+            | SynExpr.DotIndexedGet _
+            | SynExpr.TypeApp _
+            | SynExpr.Record _
+            | SynExpr.AnonRecd _
+            | SynExpr.ArrayOrList _
+            | SynExpr.ArrayOrListComputed _
+            | SynExpr.InterpolatedString _
+            | SynExpr.Null _
+            | SynExpr.TypeTest _ -> true
+            | SynExpr.App _ -> infixOperator inner |> Option.forall (lowOrEqualPrecedence >> not)
+            | _ -> false)
+
+    if bare then text else $"({text})"
+
 let find
     (extraRules: string list)
     (parseTree: ParsedInput)
@@ -742,7 +827,12 @@ let find
                         spans
                         |> List.fold
                             (fun (text: string) (v, s, e) ->
-                                text.Substring(0, s) + argumentText source bindings.[v] + text.Substring e)
+                                let inserted =
+                                    match hint.RhsBoolOperandSpans.TryFind s with
+                                    | Some op -> boolOperandText source op bindings.[v]
+                                    | None -> argumentText source bindings.[v]
+
+                                text.Substring(0, s) + inserted + text.Substring e)
                             template
 
                     // the innermost head of a pipeline: the `xs` of

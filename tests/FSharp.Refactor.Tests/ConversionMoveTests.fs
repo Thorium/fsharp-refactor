@@ -90,7 +90,7 @@ let ``mid-pipeline segment is rewritten in place`` () =
 let ``multi-line pipeline is rewritten and collapses two stages`` () =
     assertPatched
         "module Test\nlet f g xs =\n    xs\n    |> Seq.toList\n    |> List.map g"
-        "module Test\nlet f g xs =\n    xs\n    |> Seq.map g |> Seq.toList"
+        "module Test\nlet f g xs =\n    xs\n    |> Seq.map g\n    |> Seq.toList"
 
 [<Fact>]
 let ``lambda argument text is preserved verbatim`` () =
@@ -238,3 +238,37 @@ let ``a callback handed the collection itself keeps the conversion`` () =
     // collection being walked
     assertNoSuggestion
         "module Test\nlet register (xs: ResizeArray<int>) (x: int) = xs.Add x\nlet f () =\n    let es = ResizeArray<int>()\n    es |> Seq.toList |> List.iter (register es)"
+
+// ---- a source that is already the target kind (fsharplint) ----
+
+[<Fact>]
+let ``an array-returning method feeding toArray is already an array`` () =
+    // fsharplint: `identifier.idText.Split('|') |> Seq.toArray |> Array.filter ..`
+    // became a lazy Seq.filter over an input that was an array all along
+    assertNoSuggestion
+        "module Test\nlet f (s: string) = s.Split('|') |> Seq.toArray |> Array.filter (fun p -> p <> \"\")"
+
+[<Fact>]
+let ``an array literal feeding toArray is already an array`` () =
+    assertNoSuggestion "module Test\nlet f g = [| 1; 2; 3 |] |> Seq.toArray |> Array.map g"
+
+[<Fact>]
+let ``the target module's own output feeding the conversion is already materialised`` () =
+    assertNoSuggestion
+        "module Test\nlet f g (xs: int[]) = xs |> Array.map g |> Seq.toArray |> Array.filter (fun x -> x > 0)"
+
+[<Fact>]
+let ``a list literal feeding toList is already a list`` () =
+    assertNoSuggestion "module Test\nlet f g = [ 1; 2; 3 ] |> Seq.toList |> List.map g"
+
+[<Fact>]
+let ``a consuming operation over an array-returning method keeps the array`` () =
+    // dropping the copy would leave `Seq.length` walking what
+    // `Array.length` reads in O(1)
+    assertNoSuggestion "module Test\nlet f (s: string) = s.Split(',') |> Seq.toArray |> Array.length"
+
+[<Fact>]
+let ``a plain identifier source still moves past the operation`` () =
+    assertPatched
+        "module Test\nlet f g (xs: seq<int>) = xs |> Seq.toArray |> Array.filter g"
+        "module Test\nlet f g (xs: seq<int>) = xs |> Seq.filter g |> Seq.toArray"

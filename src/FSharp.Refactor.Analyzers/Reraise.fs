@@ -32,6 +32,12 @@ type Suggestion =
         OriginalText: string
         /// The exception identifier, for the message.
         ExceptionName: string
+        /// Inside a computation expression, where `reraise ()` is not
+        /// allowed: a `try ... with ex -> raise ex` whose only arm
+        /// rethrows guards nothing — the edit replaces the whole try/with
+        /// with its body, and an unmatched exception then propagates with
+        /// its trace intact. None for the ordinary `reraise ()` rewrite.
+        Removal: (range * string * string) option
     }
 
 /// Find `raise ex` sites in with-handlers. Requires typed check results.
@@ -83,8 +89,85 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | _ -> None)
             |> Option.defaultValue false
 
+        // a string literal spanning lines inside the try would be
+        // re-indented with the body
+        let multiLineStringIn (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                match e with
+                | SynExpr.Const(SynConst.String _, sr)
+                | SynExpr.InterpolatedString(range = sr) -> sr.StartLine <> sr.EndLine && Range.rangeContainsRange r sr
+                | _ -> false)
+
+        // the try's body, laid out where the try stood: its first line
+        // takes the try's place, its continuation lines move by the same
+        // amount (which they must have room for when it is negative)
+        let bodyInPlace (tryExpr: SynExpr) (body: SynExpr) =
+            let text = textOfRange source body.Range
+
+            if isSingleLine tryExpr.Range then
+                Some text
+            elif multiLineStringIn tryExpr.Range then
+                None
+            else
+                let shift = tryExpr.Range.StartColumn - body.Range.StartColumn
+                let lines = text.Split '\n'
+                let continuation = lines |> Array.skip 1
+                let leading (l: string) = l.Length - l.TrimStart().Length
+
+                if
+                    shift < 0
+                    && continuation |> Array.exists (fun l -> l.Trim() <> "" && leading l < -shift)
+                then
+                    None
+                else
+                    let moved =
+                        continuation
+                        |> Array.map (fun l ->
+                            if l.Trim() = "" then ""
+                            elif shift >= 0 then System.String(' ', shift) + l
+                            else l.Substring(-shift))
+
+                    Some(String.concat "\n" (Array.append [| lines.[0] |] moved))
+
         [ for path, expr in index.Exprs do
               match expr with
+              // inside a computation expression `reraise ()` is FS0413,
+              // and a handler that only rethrows guards nothing: the
+              // try/with goes, and the exception propagates with its
+              // trace intact (suave's Combinators.fs, twice)
+              | SynExpr.TryWith(
+                  tryExpr = body
+                  withCases = [ SynMatchClause(
+                                    pat = SynPat.Named(ident = SynIdent(ident = exId))
+                                    whenExpr = None
+                                    resultExpr = handler) ]) when
+                  inComputationExpr path
+                  // `raise ex` where the computation returns unit, `return
+                  // raise ex` / `return! raise ex` where it returns a value
+                  && (let rethrow (e: SynExpr) =
+                          match stripParens e with
+                          | SynExpr.App(isInfix = false; funcExpr = SingleIdent raiseId; argExpr = raised) ->
+                              raiseId.idText = "raise"
+                              && (match stripParens raised with
+                                  | SynExpr.Ident r -> r.idText = exId.idText
+                                  | _ -> false)
+                              && OptionModule.resolvesToCoreOperator check source raiseId
+                          | _ -> false
+
+                      match handler with
+                      | SynExpr.YieldOrReturn(expr = inner)
+                      | SynExpr.YieldOrReturnFrom(expr = inner) -> rethrow inner
+                      | e -> rethrow e)
+                  && not (spansDirective source expr.Range)
+                  ->
+                  match bodyInPlace expr body with
+                  | Some replacement ->
+                      { Range = expr.Range
+                        OriginalText = textOfRange source expr.Range
+                        ExceptionName = exId.idText
+                        Removal = Some(expr.Range, textOfRange source expr.Range, replacement) }
+                  | None -> ()
               | SynExpr.TryWith(withCases = clauses) when not (inComputationExpr path) ->
                   for SynMatchClause(pat = pat; resultExpr = handler) in clauses do
                       let exNames = patBoundNames pat |> Set.ofList
@@ -107,7 +190,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       ->
                                       { Range = e.Range
                                         OriginalText = textOfRange source e.Range
-                                        ExceptionName = exId.idText }
+                                        ExceptionName = exId.idText
+                                        Removal = None }
                                   | _ -> ()
                               | _ -> ()
               | _ -> () ]

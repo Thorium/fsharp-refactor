@@ -126,7 +126,7 @@ let ``locking on a dedicated object is fine`` () =
 
 let private designIn (source: string) =
     let tree, sourceText, checkResults = parseAndCheck source
-    ObjectDesign.find tree sourceText checkResults
+    ObjectDesign.find true tree sourceText checkResults
 
 [<Fact>]
 let ``disposable field missing from Dispose is noted`` () =
@@ -356,3 +356,150 @@ let ``FR0046: a lock in a nested module gets its lock object in that module, ind
 
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one weak-lock finding, got %A" other
+
+// ---- FR0126: the argument-list alternative ----
+
+let private processSinksIn (source: string) =
+    let tree, sourceText = parse source
+    let _, _, sinks = SecurityRules.find tree sourceText
+    sinks
+
+[<Fact>]
+let ``FR0126: a Process.Start template splits into an argument list, a shell's command line does not`` () =
+    // prismatic: `chmod +x "path"` and a cmd.exe command line
+    let source =
+        "module Test\nopen System.Diagnostics\nlet make (target: string) (cmd: string) =\n    Process.Start(\"chmod\", $\"+x \\\"{target}\\\"\") |> ignore\n    Process.Start(\"cmd.exe\", $\"/c \\\"{cmd}\\\"\") |> ignore"
+
+    match processSinksIn source with
+    | [ chmod; shell ] ->
+        match chmod.Fix with
+        | Some(_, original, replacement) ->
+            Assert.Equal("$\"+x \\\"{target}\\\"\"", original)
+            Assert.Equal("[| \"+x\"; target |]", replacement)
+        | None -> failwith "expected the list alternative for chmod"
+
+        Assert.Equal(None, shell.Fix)
+    | other -> failwithf "Expected two sinks, got %A" other
+
+[<Fact>]
+let ``FR0126: an Arguments template becomes one ArgumentList.Add per argument, quoted templates are left`` () =
+    let source =
+        "module Test\nopen System.Diagnostics\nlet run (script: string) (command: string) (inner: string) =\n    let psi = ProcessStartInfo()\n    psi.Arguments <- $\"-ExecutionPolicy Bypass -File {script}.ps1 {command}\"\n    psi.Arguments <- $\"/s /c \\\"{inner}\\\"\"\n    psi"
+
+    match processSinksIn source with
+    | [ plain; quoted ] ->
+        match plain.Fix with
+        | Some(_, _, replacement) ->
+            Assert.Equal(
+                "psi.ArgumentList.Add \"-ExecutionPolicy\"\n    psi.ArgumentList.Add \"Bypass\"\n    psi.ArgumentList.Add \"-File\"\n    psi.ArgumentList.Add $\"{script}.ps1\"\n    psi.ArgumentList.Add command",
+                replacement
+            )
+        | None -> failwith "expected the list alternative"
+
+        Assert.Equal(None, quoted.Fix)
+    | other -> failwithf "Expected two sinks, got %A" other
+
+[<Fact>]
+let ``FR0044: a rethrow-only handler inside a task goes with its try`` () =
+    // reraise () is FS0413 inside a computation expression; the handler
+    // guards nothing, so the try/with is removed and the body stays
+    let source =
+        "open System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    try\n        let! x = t\n        return x + 1\n    with ex -> return raise ex\n}"
+
+    match reraiseIn source with
+    | [ s ] ->
+        match s.Removal with
+        | Some(r, _, replacement) ->
+            Assert.Equal("let! x = t\n    return x + 1", replacement)
+            let patched = applyEdit source r replacement
+            Assert.Contains("task {\n    let! x = t\n    return x + 1\n}", patched.Replace("\r", ""))
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the removal edit"
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0044: a handler that logs before rethrowing inside a task stays`` () =
+    Assert.Empty(
+        reraiseIn
+            "open System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    try\n        let! x = t\n        return x + 1\n    with ex ->\n        printfn \"%s\" ex.Message\n        return raise ex\n}"
+    )
+
+[<Fact>]
+let ``FR0047: a Dispose that only cancels the field never releases it`` () =
+    // fantomas' LSPFantomasService and CloudAgent's connection factory both
+    // cancel the token source and leave the handle
+    let _, _, undisposed =
+        designIn
+            "open System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface System.IDisposable with\n        member _.Dispose() = cts.Cancel()"
+
+    match undisposed with
+    | [ s ] ->
+        Assert.Equal("cts", s.FieldName)
+        Assert.True(s.MentionedOnly, "the field is touched, so the message must say which half is missing")
+    | other -> failwithf "Expected one undisposed-field note, got %A" other
+
+[<Fact>]
+let ``FR0047: cancel followed by dispose is complete`` () =
+    let _, _, undisposed =
+        designIn
+            "open System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface System.IDisposable with\n        member _.Dispose() =\n            cts.Cancel()\n            cts.Dispose()"
+
+    Assert.Empty undisposed
+
+[<Fact>]
+let ``FR0047: an upcast Dispose on the field counts as releasing it`` () =
+    let _, _, undisposed =
+        designIn
+            "open System\nopen System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() =\n            cts.Cancel()\n            (cts :> IDisposable).Dispose()"
+
+    Assert.Empty undisposed
+
+[<Fact>]
+let ``FR0047: a file that opens Rx is left alone`` () =
+    // Rx hands out disposables whose Dispose is an unsubscribe and composes
+    // them on purpose; "not disposed here" is the design there
+    let _, _, undisposed =
+        designIn
+            "open System.Reactive.Disposables\nopen System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface System.IDisposable with\n        member _.Dispose() = cts.Cancel()"
+
+    Assert.Empty undisposed
+
+[<Fact>]
+let ``FR0047: a Dispose handing off to its base is not second-guessed`` () =
+    let _, _, undisposed =
+        designIn
+            "open System.Threading\nopen System.IO\ntype Service() =\n    inherit MemoryStream()\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n    override _.Dispose(disposing: bool) =\n        cts.Cancel()\n        base.Dispose(disposing)"
+
+    Assert.Empty undisposed
+
+[<Fact>]
+let ``FR0047: a field handed to a helper is that helper's to release`` () =
+    // the loosened rule claimed 'add cts.Dispose()' here, which would
+    // dispose it twice: `cleanup cts` releases it one hop away
+    let _, _, undisposed =
+        designIn
+            "open System\nopen System.Threading\ntype ViaHelper() =\n    let cts = new CancellationTokenSource()\n    let cleanup (c: CancellationTokenSource) = c.Dispose()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() = cleanup cts"
+
+    Assert.Empty undisposed
+
+[<Fact>]
+let ``FR0047: a field added to something in Dispose is handed off too`` () =
+    let _, _, undisposed =
+        designIn
+            "open System\nopen System.Threading\ntype ViaAdd() =\n    let cts = new CancellationTokenSource()\n    let owned = ResizeArray<IDisposable>()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() = owned.Add cts"
+
+    Assert.Empty undisposed
+
+[<Fact>]
+let ``FR0047: being the receiver is not being handed off`` () =
+    // cts.Token.Register(...) reads the field and disposes only the
+    // registration: the token source itself is still never released
+    let _, _, undisposed =
+        designIn
+            "open System\nopen System.Threading\ntype ViaRegister() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() =\n            let reg = cts.Token.Register(fun () -> ())\n            reg.Dispose()"
+
+    match undisposed with
+    | [ s ] ->
+        Assert.Equal("cts", s.FieldName)
+        Assert.True s.MentionedOnly
+    | other -> failwithf "Expected the cancel-without-dispose note, got %A" other

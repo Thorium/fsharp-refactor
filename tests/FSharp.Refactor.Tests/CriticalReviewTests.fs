@@ -40,7 +40,7 @@ let ``FR0035: a per-iteration collection is not loop-invariant`` () : unit =
         parse
             "module Test\nlet f (xs: int list) =\n    for x in xs do\n        let ys = [ x; x + 1 ]\n        if List.contains x ys then printfn \"%d\" x"
 
-    let contains, _ = LoopPerf.find tree sourceText
+    let contains, _ = LoopPerf.find false tree sourceText
     Assert.Empty contains
 
 [<Fact>]
@@ -232,3 +232,14 @@ let ``FR0008: an active pattern's tuple input is not curried`` () : unit =
 
     let tree, sourceText, check = parseAndCheck source
     Assert.Empty(TupleParams.find tree sourceText check)
+
+[<Fact>]
+let ``FR0011: an active pattern the file also calls as a function keeps its option`` () : unit =
+    // the F# compiler's Spreads.fs: a local (|NestedUpdate|_|) calls the
+    // module-level one and matches its result against Some — a struct
+    // return would reach that call
+    let source =
+        "let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet evens (xs: int list) = List.choose (|Even|_|) xs\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+
+    let tree, sourceText, check = parseAndCheck source
+    Assert.Empty(StructActivePattern.find false tree sourceText check)

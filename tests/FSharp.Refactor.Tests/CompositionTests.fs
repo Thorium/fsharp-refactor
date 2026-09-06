@@ -112,3 +112,39 @@ let ``a parenthesised negation argument is left as a lambda`` () =
     // composed to `- >> UpdateTime`, which does not parse
     assertNoSuggestion
         "module Test\ntype T = UpdateTime of int64\nlet f (xs: int64 list) = List.map (fun updates -> UpdateTime (-updates)) xs"
+
+[<Fact>]
+let ``a lambda laid out over several lines is left as it is`` () =
+    // fantomas Context.fs: a readable five-line lambda became a 170-column
+    // composition
+    assertNoSuggestion
+        "module Test\nlet firstRangePerLine (xs: int list) = xs\nlet createAbsoluteAndOffsetOverridesBasedOnFirst (xs: int list) = xs\nlet f (groups: int list list) =\n    groups\n    |> List.collect (fun ranges ->\n        ranges\n        |> List.map (fun r -> r + 1)\n        |> firstRangePerLine\n        |> createAbsoluteAndOffsetOverridesBasedOnFirst)"
+
+[<Fact>]
+let ``a composition that would pass 100 columns is left as a lambda`` () =
+    assertNoSuggestion
+        "module Test\nlet firstRangePerLine (xs: int list) = xs\nlet createAbsoluteAndOffsetOverridesBasedOnFirst (xs: int list) = xs\nlet f (groups: int list list) =\n    groups |> List.collect (fun ranges -> ranges |> List.map (fun r -> r + 1) |> firstRangePerLine |> createAbsoluteAndOffsetOverridesBasedOnFirst)"
+
+[<Fact>]
+let ``a composition that stays within 100 columns still fires`` () =
+    assertSingleSuggestion
+        "module Test\nlet firstRangePerLine (xs: int list) = xs\nlet f (groups: int list list) =\n    groups |> List.collect (fun ranges -> ranges |> List.map (fun r -> r + 1) |> firstRangePerLine)"
+        "List.map (fun r -> r + 1) >> firstRangePerLine"
+
+[<Fact>]
+let ``a lambda handed to an InlineIfLambda parameter is not composed`` () =
+    // Mibo's filterA and section: the callee inlines the lambda; a
+    // composition in its place is a closure it can no longer inline
+    let tree, sourceText, check =
+        parseAndCheck
+            "module Test\nlet inline apply ([<InlineIfLambda>] f: int -> int) (x: int) = f x\nlet g (a: int -> int) (b: int -> int) = apply (fun v -> b (a v)) 1"
+
+    Assert.Empty(Composition.find tree sourceText check)
+
+[<Fact>]
+let ``a lambda handed to an ordinary parameter is still composed`` () =
+    let tree, sourceText, check =
+        parseAndCheck
+            "module Test\nlet apply (f: int -> int) (x: int) = f x\nlet g (a: int -> int) (b: int -> int) = apply (fun v -> b (a v)) 1"
+
+    Assert.NotEmpty(Composition.find tree sourceText check)

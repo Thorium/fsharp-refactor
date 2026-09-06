@@ -182,7 +182,7 @@ let ``a disposable passed on bare gets advice only`` () =
     with
     | [ s ] ->
         Assert.Equal(None, s.Fix)
-        Assert.Equal(Some "sink", s.Destination)
+        Assert.Equal(Some(UseBinding.Destination.Function("sink", false)), s.Destination)
     | other -> failwithf "Expected exactly one advisory, got %A" other
 
 [<Fact>]
@@ -193,7 +193,7 @@ let ``a disposable piped to a function names the function`` () =
     with
     | [ s ] ->
         Assert.Equal(None, s.Fix)
-        Assert.Equal(Some "sink", s.Destination)
+        Assert.Equal(Some(UseBinding.Destination.Function("sink", false)), s.Destination)
     | other -> failwithf "Expected exactly one advisory, got %A" other
 
 [<Fact>]
@@ -457,6 +457,53 @@ let ``a scheme literal is not a file path`` () =
 let ``plain text concatenation is not a path`` () =
     Assert.Empty(pathsIn "module Test\nlet f (a: string) (b: string) = a + \", \" + b")
 
+[<Fact>]
+let ``a name bound one hop away to a url makes the join a url`` () =
+    // every FAKE build script of a certain vintage: `gitHome + "/" +
+    // gitName + ".git"` with `gitHome = "https://github.com/" + gitOwner`
+    // fifty lines up (FsXaml, Chessie, FSharp.CloudAgent, ComposableQuery)
+    Assert.Empty(
+        pathsIn
+            "module Test\nlet gitOwner = \"fsprojects\"\nlet gitHome = \"https://github.com/\" + gitOwner\nlet gitName = \"FsXaml\"\nlet clone () = gitHome + \"/\" + gitName + \".git\""
+    )
+
+    // a local binding is read the same way
+    Assert.Empty(
+        pathsIn
+            "module Test\nlet clone (owner: string) (name: string) =\n    let home = \"https://github.com/\" + owner\n    home + \"/\" + name + \".git\""
+    )
+
+    // ... and a directory bound one hop away still joins a path
+    match pathsIn "module Test\nlet root = \"C:\\\\builds\"\nlet f (name: string) = root + \"/\" + name + \".txt\"" with
+    | [ _ ] -> ()
+    | other -> failwithf "Expected one path note, got %A" other
+
+[<Fact>]
+let ``a join compared or searched for is a key, not a path to build`` () =
+    // fsharplint's docs generator: `"content/" + n.file = page`
+    Assert.Empty(pathsIn "module Test\nlet f (file: string) (page: string) = \"content/\" + file = page")
+    Assert.Empty(pathsIn "module Test\nlet f (dir: string) (file: string) (page: string) = page <> dir + \"/\" + file")
+
+    Assert.Empty(
+        pathsIn
+            "module Test\nlet f (keys: System.Collections.Generic.HashSet<string>) (dir: string) (file: string) = keys.Contains(dir + \"/\" + file)"
+    )
+
+[<Fact>]
+let ``a call operand is path evidence only through the file system API it invokes`` () =
+    // the compiler's TypedTree: `getNameOfScopeRef scoref + "/" +
+    // textOfPath (List.map fst path)` builds a mangled compilation path;
+    // "path" in a function's name is not a directory
+    Assert.Empty(
+        pathsIn
+            "module Test\nlet textOfPath (xs: string list) = String.concat \".\" xs\nlet nameOf (x: int) = string x\nlet mangled (x: int) (path: (string * int) list) = nameOf x + \"/\" + textOfPath (List.map fst path)"
+    )
+
+    // a call INTO the file system is evidence
+    match pathsIn "module Test\nlet f (name: string) = System.IO.Path.GetTempPath() + \"/\" + name" with
+    | [ _ ] -> ()
+    | other -> failwithf "Expected one path note, got %A" other
+
 // ---- FR0082-FR0086 RedundantSyntax ----
 
 let private syntaxIn (source: string) =
@@ -583,12 +630,41 @@ let ``a partially bound case keeps its fields`` () =
     Assert.Empty wilds
 
 [<Fact>]
-let ``a tuple filling a list literal is noted`` () =
-    let _, _, tuples = cleanupsIn "module Test\nlet xs: (int * int) list = [ 1, 2 ]"
+let ``a tuple filling an unannotated list literal is noted`` () =
+    let _, _, tuples = cleanupsIn "module Test\nlet xs = [ 1, 2 ]"
 
     match tuples with
     | [ s ] -> Assert.Equal(2, s.Elements)
     | other -> failwithf "Expected exactly one tuple-in-list note, got %A" other
+
+[<Fact>]
+let ``FR0089: an annotation spelling the tuple out says the tuple is meant`` () =
+    // Mibo: `let expectedInitial: Map<int, int> = Map.ofList [ 2, 25 ]` and
+    // plain `(int * int) list` annotations — the slot asks for tuples
+    let _, _, byBinding = cleanupsIn "module Test\nlet xs: (int * int) list = [ 1, 2 ]"
+    let _, _, byExpr = cleanupsIn "module Test\nlet xs = ([ 1, 2 ] : (int * int) list)"
+    Assert.Empty byBinding
+    Assert.Empty byExpr
+
+[<Fact>]
+let ``FR0089: a one-entry map is the tuple list Map.ofList asks for`` () =
+    // Mibo: `Map.ofList [ k, v ]`, `[ 1, 1 ] |> Map.ofSeq`, `dict [ 1, 1 ]`,
+    // `Assert.Equal<Map<int, int>>(Map.ofList [ 0, 0 ], m)`
+    let _, _, tuples =
+        cleanupsIn
+            "module Test\nlet a = Map.ofList [ 3, 6 ]\nlet b = [ 1, 1 ] |> Map.ofSeq\nlet c = dict [ 1, 1 ]\nlet d = Map.ofList [ 0, Map.ofList [ 1, 3 ] ]\nlet chunksOf (ranges: (int * int) list) = ranges.Length\nlet e = chunksOf [ 0, 2 ]\nlet f (k: int) (pairs: (int * int) list) = k + pairs.Length\nlet g = f 1 [ 2, 3 ]\nlet h = [ 4, 5 ] |> f 1"
+
+    Assert.Empty tuples
+
+[<Fact>]
+let ``FR0089: a tupled method argument asks its own parameter`` () =
+    let _, _, tuples =
+        cleanupsIn
+            "module Test\ntype T =\n    static member Take(n: int, pairs: (int * int) list) = n + pairs.Length\n    static member Loose(n: int, xs: 'a list) = n + xs.Length\nlet a = T.Take(1, [ 2, 3 ])\nlet b = T.Loose(1, [ 2, 3 ])"
+
+    match tuples with
+    | [ s ] -> Assert.Equal(6, s.Range.StartLine)
+    | other -> failwithf "Expected only the generic-parameter note, got %A" other
 
 [<Fact>]
 let ``a semicolon list is fine`` () =
@@ -676,8 +752,8 @@ let private assertFailwithContext (source: string) (expectedPatched: string) =
 [<Fact>]
 let ``static failwith message gains the enclosing arguments`` () =
     assertFailwithContext
-        "module Test\nlet mymethod x =\n    failwith \"Error\""
-        "module Test\nlet mymethod x =\n    failwith $\"Error, calling mymethod with x: {x}\""
+        "module Test\nlet mymethod (x: int) =\n    failwith \"Error\""
+        "module Test\nlet mymethod (x: int) =\n    failwith $\"Error, calling mymethod with x: {x}\""
 
 [<Fact>]
 let ``every parameter is reported in order`` () =
@@ -688,8 +764,8 @@ let ``every parameter is reported in order`` () =
 [<Fact>]
 let ``the innermost enclosing function wins`` () =
     assertFailwithContext
-        "module Test\nlet outer a =\n    let inner b =\n        failwith \"Bad\"\n    inner a"
-        "module Test\nlet outer a =\n    let inner b =\n        failwith $\"Bad, calling inner with b: {b}\"\n    inner a"
+        "module Test\nlet outer (a: int) =\n    let inner (b: int) =\n        failwith \"Bad\"\n    inner a"
+        "module Test\nlet outer (a: int) =\n    let inner (b: int) =\n        failwith $\"Bad, calling inner with b: {b}\"\n    inner a"
 
 [<Fact>]
 let ``an already interpolated message is left to its author`` () =
@@ -697,7 +773,7 @@ let ``an already interpolated message is left to its author`` () =
 
 [<Fact>]
 let ``a message already naming a parameter is left alone`` () =
-    Assert.Empty(failwithContextIn "module Test\nlet mymethod count =\n    failwith \"count must be positive\"")
+    Assert.Empty(failwithContextIn "module Test\nlet mymethod (count: int) =\n    failwith \"count must be positive\"")
 
 [<Fact>]
 let ``a parameterless function has nothing to report`` () =
@@ -709,21 +785,168 @@ let ``a top-level failwith outside any function is left alone`` () =
 
 [<Fact>]
 let ``braces would need escaping so the message is left alone`` () =
-    Assert.Empty(failwithContextIn "module Test\nlet mymethod x =\n    failwith \"Bad {shape}\"")
+    Assert.Empty(failwithContextIn "module Test\nlet mymethod (x: int) =\n    failwith \"Bad {shape}\"")
 
 [<Fact>]
 let ``a percent sign would change meaning when interpolated`` () =
-    Assert.Empty(failwithContextIn "module Test\nlet mymethod x =\n    failwith \"Over 100% used\"")
+    Assert.Empty(failwithContextIn "module Test\nlet mymethod (x: int) =\n    failwith \"Over 100% used\"")
 
 [<Fact>]
 let ``a shadowed failwith is not ours to rewrite`` () =
     Assert.Empty(
-        failwithContextIn "module Test\nlet failwith (s: string) = ()\nlet mymethod x =\n    failwith \"Error\""
+        failwithContextIn "module Test\nlet failwith (s: string) = ()\nlet mymethod (x: int) =\n    failwith \"Error\""
     )
 
 [<Fact>]
 let ``wildcard parameters carry nothing to report`` () =
     Assert.Empty(failwithContextIn "module Test\nlet mymethod _ =\n    failwith \"Error\"")
+
+[<Fact>]
+let ``a parameter whose type prints nothing useful is not quoted`` () =
+    // a byte array prints "System.Byte[]", a generic 'a whatever it is
+    // bound to, a stream its type name (ilread's sigptr readers, Suave's
+    // acceptor): with no parameter worth quoting there is no note
+    Assert.Empty(failwithContextIn "module Test\nlet decode (bytes: byte[]) =\n    failwith \"Error\"")
+    Assert.Empty(failwithContextIn "module Test\nlet decode x =\n    failwith \"Error\"")
+
+    Assert.Empty(
+        failwithContextIn "module Test\nlet decode (s: System.IO.Stream) (f: int -> int) =\n    failwith \"Error\""
+    )
+
+    // ... and a mixed list quotes only the printing ones
+    assertFailwithContext
+        "module Test\nlet decode (bytes: byte[]) (offset: int) =\n    failwith \"Error\""
+        "module Test\nlet decode (bytes: byte[]) (offset: int) =\n    failwith $\"Error, calling decode with offset: {offset}\""
+
+[<Fact>]
+let ``a fieldless union, an enum, an option and a small record print usefully`` () =
+    assertFailwithContext
+        "module Test\ntype Mode =\n    | Fast\n    | Slow\ntype Point = { X: int; Y: int }\nlet run (mode: Mode) (at: Point option) =\n    failwith \"Error\""
+        "module Test\ntype Mode =\n    | Fast\n    | Slow\ntype Point = { X: int; Y: int }\nlet run (mode: Mode) (at: Point option) =\n    failwith $\"Error, calling run with mode: {mode}, at: {at}\""
+
+    // a union WITH fields prints its payload's type names
+    Assert.Empty(
+        failwithContextIn
+            "module Test\ntype Shape =\n    | Circle of System.IO.Stream\n    | Square of byte[]\nlet run (shape: Shape) =\n    failwith \"Error\""
+    )
+
+[<Fact>]
+let ``an invariant message explains itself without arguments`` () =
+    // "unreachable - linear let" (the compiler), "varargs NYI" (ilread),
+    // "not possible" (fantomas), "invalid case." (Suave): the branch was
+    // never meant to run, and no argument says why it did
+    for message in
+        [ "unreachable - linear let"
+          "varargs NYI"
+          "not possible"
+          "impossible"
+          "invalid case."
+          "Suave.Web.split: invalid case"
+          "not implemented"
+          "internal error; should not have successfully decrypted data"
+          "invalid state" ] do
+        Assert.Empty(failwithContextIn $"module Test\nlet run (n: int) =\n    failwith \"{message}\"")
+
+[<Fact>]
+let ``a message that is the function's own name is fslex's fallthrough`` () =
+    Assert.Empty(failwithContextIn "module Test\nlet rule (n: int) =\n    failwith \"rule\"")
+
+[<Fact>]
+let ``secrets in scope are not for the log`` () =
+    // Suave's Authentication.parseData throws on freshly decrypted session
+    // data; interpolating the blob would log it. The function, a
+    // parameter, or an enclosing module or type can carry the smell
+    Assert.Empty(failwithContextIn "module Test\nlet decryptSession (blob: string) =\n    failwith \"Error\"")
+    Assert.Empty(failwithContextIn "module Test\nlet parse (token: string) =\n    failwith \"Error\"")
+    Assert.Empty(failwithContextIn "module Test\nlet parse (apiKey: string) =\n    failwith \"Error\"")
+
+    Assert.Empty(
+        failwithContextIn
+            "namespace Test\nmodule Authentication =\n    let parseData (blob: string) =\n        failwith \"Error\""
+    )
+
+    Assert.Empty(
+        failwithContextIn
+            "module Test\ntype CredentialStore() =\n    member _.Parse(blob: string) =\n        let inner (line: string) = failwith \"Error\"\n        inner blob"
+    )
+
+    // an author and a tokenizer are not secrets
+    assertFailwithContext
+        "namespace Test\nmodule Tokenizer =\n    let author (name: string) =\n        failwith \"Error\""
+        "namespace Test\nmodule Tokenizer =\n    let author (name: string) =\n        failwith $\"Error, calling author with name: {name}\""
+
+[<Fact>]
+let ``a test file's failwith is an assertion the runner already describes`` () =
+    Assert.Empty(
+        failwithContextIn
+            "module Test\nopen Xunit\nlet expectOk (name: string) =\n    failwith \"HSTS missing\"\n[<Fact>]\nlet ``a test`` () = expectOk \"x\""
+    )
+
+[<Fact>]
+let ``a message thrown twice is not a message read back`` () =
+    // Hpack's `failwith "Index overrun."` twice in one function: two throws
+    // sharing a text are not one reading the other, both get the note
+    let twoThrows =
+        failwithContextIn
+            "module Test\nlet entry (idx: int) =\n    if idx <= 0 then failwith \"Index overrun.\"\n    elif idx < 10 then idx\n    else failwith \"Index overrun.\""
+
+    Assert.Equal(2, twoThrows.Length)
+
+    // ... while the same text spelled anywhere ELSE is somebody reading it
+    Assert.Empty(
+        failwithContextIn
+            "module Test\nlet expected = \"Index overrun.\"\nlet entry (idx: int) =\n    if idx <= 0 then failwith \"Index overrun.\"\n    else idx"
+    )
+
+[<Fact>]
+let ``a parameter is mentioned as a word, not as letters`` () =
+    // ParsePynb's `x` is not mentioned by "no text property"; fsi's `ty`
+    // is not mentioned by "open generic type"
+    assertFailwithContext
+        "module Test\nlet read (x: string) =\n    failwith \"no text property\""
+        "module Test\nlet read (x: string) =\n    failwith $\"no text property, calling read with x: {x}\""
+
+[<Fact>]
+let ``a tuple parameter is left out, the named ones stay`` () =
+    // Suave's `writeResource name (conn: Connection, _)`: the tuple carries
+    // no name to quote, and used to disqualify the whole function
+    assertFailwithContext
+        "module Test\nlet write (name: string) (conn: int, _) =\n    failwith \"error\""
+        "module Test\nlet write (name: string) (conn: int, _) =\n    failwith $\"error, calling write with name: {name}\""
+
+[<Fact>]
+let ``a function's wildcard arm is named so its argument can be quoted`` () =
+    // Suave's `toOpcode = function ... | _ -> failwith "Invalid opcode."`:
+    // the one argument has no name, so the arm that throws gets one
+    let source =
+        "module Test\ntype Opcode =\n    | Text\n    | Binary\nlet toOpcode = function\n    | 0uy -> Text\n    | 1uy -> Binary\n    | _ -> failwith \"Invalid opcode.\""
+
+    match failwithContextIn source with
+    | [ s ] ->
+        let edits =
+            (s.Range, s.OriginalText, s.ReplacementText) :: Option.toList s.PatternEdit
+
+        let patched = applyAll source edits
+
+        Assert.Equal(
+            "module Test\ntype Opcode =\n    | Text\n    | Binary\nlet toOpcode = function\n    | 0uy -> Text\n    | 1uy -> Binary\n    | value -> failwith $\"Invalid opcode., calling toOpcode with value: {value}\"",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one function-arm hint, got %A" other
+
+    // a `function` over a type that prints nothing stays quiet, and so does
+    // a throw under a NESTED match, whose wildcard is not the argument
+    Assert.Empty(
+        failwithContextIn
+            "module Test\nlet decode = function\n    | Some(bytes: byte[]) -> bytes.Length\n    | None -> failwith \"Error\""
+    )
+
+    Assert.Empty(
+        failwithContextIn
+            "module Test\nlet decode = function\n    | (n: int) when n > 0 ->\n        match n % 2 with\n        | 0 -> n\n        | _ -> failwith \"Error\"\n    | _ -> 0"
+    )
 
 [<Fact>]
 let ``a File factory result leaks like a bare constructor`` () =
@@ -786,9 +1009,10 @@ let ``a genuine single-tuple list still fires`` () =
 [<Fact>]
 let ``a spaced list ARGUMENT is still a literal, not an index`` () =
     // `f [ 1, 2 ]` with a space is a real argument (NonAtomic) — the trap
-    // is just as real there, so the index gate must not swallow it
+    // is just as real there, so the index gate must not swallow it; the
+    // parameter is generic, so the slot asks for no tuple either
     let _, _, tuples =
-        cleanupsIn "module Test\nlet f (xs: (int * int) list) = xs.Length\nlet n = f [ 1, 2 ]"
+        cleanupsIn "module Test\nlet f (xs: 'a list) = xs.Length\nlet n = f [ 1, 2 ]"
 
     match tuples with
     | [ s ] -> Assert.Equal(2, s.Elements)
@@ -1044,7 +1268,54 @@ let ``FR0147: a namespace whose open would clash with a name the file defines is
     | [ s ] ->
         Assert.Equal("System.IO", s.Namespace)
         Assert.Empty s.Edits
+        Assert.Equal(Some "this file defines 'File' itself", s.Reason)
     | other -> failwithf "Expected one clash note, got %A" other
+
+[<Fact>]
+let ``FR0147: a clash note names the clashing identifier and where it comes from`` () =
+    // "would clash with a name this file already uses" left the reader to
+    // find the name; the note says which and whence
+    let fromAnotherOpen =
+        "module Test\nopen System.Timers\nlet a (t: System.Threading.Timer) = t.Dispose()\nlet b (t: System.Threading.Timer) = t.Dispose()\nlet c (t: System.Threading.Timer) = t.Dispose()"
+
+    match qualifiedIn fromAnotherOpen with
+    | [ s ] ->
+        Assert.Empty s.Edits
+        Assert.Equal(Some "'Timer' (open System.Timers) already comes from another open of this file", s.Reason)
+    | other -> failwithf "Expected one clash note, got %A" other
+
+    // the compiler's CheckExpressions: `FSComp.SR.x` 384 times, and `SR`
+    // already in scope from `Internal.Utilities` — the note names SR and
+    // the open that brings it
+    let lib =
+        "namespace Internal.Utilities\nmodule SR =\n    let a () = 1\nnamespace FSComp\nmodule SR =\n    let b () = 2"
+
+    let user =
+        "module Test\nopen Internal.Utilities\nlet x () = FSComp.SR.b () + FSComp.SR.b () + FSComp.SR.b () + SR.a ()"
+
+    let tree, sourceText, checkResults = parseAndCheckSecond lib user
+
+    match QualifiedNames.find 3 2 tree sourceText checkResults with
+    | [ s ] ->
+        Assert.Equal("FSComp", s.Namespace)
+        Assert.Empty s.Edits
+
+        match s.Reason with
+        | Some reason ->
+            Assert.Contains("'SR'", reason)
+            Assert.Contains("Internal.Utilities", reason)
+        | None -> failwith "Expected the clash reason"
+    | other -> failwithf "Expected one clash note, got %A" other
+
+    // an offered open carries no reason
+    match
+        qualifiedIn
+            "module Test\nlet a = System.Threading.Tasks.Task.FromResult 1\nlet b = System.Threading.Tasks.Task.FromResult 2\nlet c = System.Threading.Tasks.Task.FromResult 3"
+    with
+    | [ s ] ->
+        Assert.NotEmpty s.Edits
+        Assert.Equal(None, s.Reason)
+    | other -> failwithf "Expected one qualified-names fix, got %A" other
 
 [<Fact>]
 let ``FR0147: the default thresholds are six uses, or four for a deep namespace`` () =
@@ -1154,8 +1425,8 @@ let ``a disposable handed to a same-file function that keeps it names the leak``
     with
     | [ s ] ->
         Assert.Equal(None, s.Fix)
-        Assert.Equal(Some "consume", s.Destination)
-        Assert.True s.DestinationInspected
+        Assert.Equal(Some(UseBinding.Destination.Function("consume", true)), s.Destination)
+        Assert.Contains("in this file, which does not dispose it", UseBinding.describeEscape s)
     | other -> failwithf "Expected exactly one advisory, got %A" other
 
 [<Fact>]
@@ -1250,9 +1521,7 @@ let ``a disposable handed to one of two same-named functions is not followed`` (
         useBindingsIn
             "module Test\nopen System.IO\nmodule A =\n    let consume (s: Stream) =\n        use s = s\n        s.ReadByte()\nmodule B =\n    let consume (s: Stream) = s.ReadByte()\nopen B\nlet read (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    consume stream"
     with
-    | [ s ] ->
-        Assert.Equal(Some "consume", s.Destination)
-        Assert.False s.DestinationInspected
+    | [ s ] -> Assert.Equal(Some(UseBinding.Destination.Function("consume", false)), s.Destination)
     | other -> failwithf "Expected exactly one advisory, got %A" other
 
 [<Fact>]
@@ -1490,3 +1759,646 @@ let ``FR0140: a lambda argument is parenthesised before the named properties`` (
         let patched = applyEdit source s.Range s.ReplacementText
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one construction rewrite, got %A" other
+
+[<Fact>]
+let ``FR0147: a shortening that lands on an FSharp.Core name is withheld`` () =
+    // the F# compiler's zmap.fs: `Tagged.Map<_, _>.FromList` under an
+    // `open Internal.Utilities.Collections.Tagged` — shortened to
+    // `Map<_, _>` it reaches FSharp.Core's Map, which has no FromList
+    // (`Tagged.Map<_, _>` is an ABBREVIATION of the three-parameter type; a
+    // real type of the name would shadow FSharp.Core's and shorten fine)
+    let lib =
+        "namespace Tagged\ntype Map<'K, 'V, 'Tag> =\n    { Items: ('K * 'V) list }\n    static member FromList(tag: 'Tag, xs: ('K * 'V) list) : Map<'K, 'V, 'Tag> =\n        ignore tag\n        { Items = xs }\ntype Map<'K, 'V> = Map<'K, 'V, int>"
+
+    let user =
+        "module Example\nopen Tagged\nlet a = Tagged.Map<int, int>.FromList(0, [ 1, 2 ])\nlet b = Tagged.Map<int, int>.FromList(0, [])\nlet c = Tagged.Map<int, int>.FromList(0, [ 3, 4 ])"
+
+    // the shapes must typecheck, or the rule's error gate would make the
+    // assertion vacuous
+    let _, _, checkResults = parseAndCheckSecond lib user
+
+    Assert.Empty(
+        checkResults.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    )
+
+    Assert.Empty(qualifiedInSecond lib user)
+
+[<Fact>]
+let ``FR0147: a child namespace of an opened namespace is a name in scope`` () =
+    // the F# compiler's DiagnosticsLogger.fs: `FSharp.Compiler.Diagnostics.Metrics.Meter`
+    // (a module value) shortened to `Metrics.Meter` under `open System.Diagnostics`
+    // reached System.Diagnostics.Metrics.Meter, the type
+    let lib =
+        "namespace Diag.Metrics\ntype Meter(name: string) =\n    member _.Name = name\nnamespace Own\nmodule Metrics =\n    let Meter = \"m\""
+
+    let user =
+        "module Example\nopen Own\nopen Diag\nlet a = Own.Metrics.Meter\nlet b = Own.Metrics.Meter + \"x\"\nlet c = Own.Metrics.Meter + \"y\""
+
+    let _, _, checkResults = parseAndCheckSecond lib user
+
+    Assert.Empty(
+        checkResults.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    )
+
+    Assert.Empty(qualifiedInSecond lib user)
+
+[<Fact>]
+let ``FR0088: a nullary case drops its wildcard altogether, a case with data keeps one`` () =
+    // fsharplint's SynMemberKind matches: `Constructor(_)` is accepted for a
+    // case that takes no data, `Constructor _` is not
+    let _, wilds, _ =
+        cleanupsIn
+            "type K =\n    | Ctor\n    | Mem of int\nlet f k =\n    match k with\n    | Ctor(_) -> 0\n    | Mem(_) -> 1"
+
+    match wilds |> List.sortBy (fun s -> s.Range.StartLine) with
+    | [ ctor; mem ] ->
+        Assert.Equal("", ctor.ReplacementText)
+        Assert.Equal(" _", mem.ReplacementText)
+    | other -> failwithf "Expected two wildcard cleanups, got %A" other
+
+[<Fact>]
+let ``FR0147: an open that would capture a bare union-case construction is withheld`` () =
+    // fsharplint's TestHintParser: `Byte('x'B)` is its own Constant case
+    // until `open System` makes it the System.Byte constructor
+    let lib = "namespace Lint\ntype Constant =\n    | Byte of byte\n    | Str of string"
+
+    let user =
+        "module Example\nopen Lint\nlet a = Byte(1uy)\nlet x = System.Math.Abs 1\nlet y = System.Math.Max(1, 2)\nlet z = System.Math.Min(1, 2)"
+
+    let _, _, checkResults = parseAndCheckSecond lib user
+
+    Assert.Empty(
+        checkResults.Diagnostics
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    )
+
+    for s in qualifiedInSecond lib user do
+        Assert.Empty s.Edits
+
+[<Fact>]
+let ``FR0075: a disposable a local function's task uses after the scope is advice, not a use`` () =
+    // suave's ConnectionHealthChecker: the CancellationTokenSource lived on
+    // in a returned task's loop, and `use` disposed it before the loop ran
+    let source =
+        "module Test\nopen System.Threading\nopen System.Threading.Tasks\nlet start () =\n    let cts = new CancellationTokenSource()\n    let loop () = task { do! Task.Delay(1, cts.Token) }\n    loop ()"
+
+    match useBindingsIn source with
+    | [ s ] -> Assert.Equal(None, s.Fix)
+    | other -> failwithf "Expected one advisory finding, got %A" other
+
+[<Fact>]
+let ``FR0075: a disposable used only inside its own scope's task still gets use`` () =
+    let source =
+        "module Test\nopen System.Threading\nopen System.Threading.Tasks\nlet run () =\n    task {\n        let cts = new CancellationTokenSource()\n        do! Task.Delay(1, cts.Token)\n        return 1\n    }"
+
+    match useBindingsIn source with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+[<Fact>]
+let ``FR0075: a stream wrapper over a caller's stream is not the scope's to dispose`` () =
+    // the F# compiler's ilnativeres.fs: `use resWriter = new BinaryWriter(resStream)`
+    // closed the caller's stream at the end of an append
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nlet append (resStream: System.IO.Stream) (data: byte[]) =\n    let w = new System.IO.BinaryWriter(resStream)\n    w.Write data"
+    )
+
+[<Fact>]
+let ``FR0075: a reader over a path still gets use`` () =
+    match
+        useBindingsIn
+            "module Test\nlet read (path: string) =\n    let r = new System.IO.StreamReader(path)\n    let s = r.ReadToEnd()\n    s.Length"
+    with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+
+// ---- FR0080 TabIndentation: block comments and strings (fantomas GettingStarted.fsx) ----
+
+[<Fact>]
+let ``FR0080 a tab inside a literate block comment is prose, not indentation`` () =
+    // fantomas's docs/docs/end-users/GettingStarted.fsx keeps a tab-indented
+    // shell transcript inside `(** ... *)`; the compiler never sees FS1161 there
+    let source =
+        "(**\n# Getting started\n\tdotnet new tool-manifest\n\tdotnet tool install fantomas\n*)\nlet f x =\n\tx + 1"
+
+    match tabsIn source with
+    | [ s ] ->
+        match s.Edits with
+        | [ (r, _, replacement) ] ->
+            Assert.Equal(7, r.StartLine)
+            Assert.Equal("    ", replacement)
+        | other -> failwithf "Expected the one code line only, got %A" other
+    | other -> failwithf "Expected exactly one tab note, got %A" other
+
+[<Fact>]
+let ``FR0080 a file whose only tabs sit in a block comment is left alone`` () =
+    Assert.Empty(tabsIn "module Test\n(*\n\ttabbed prose\n\t(* nested *)\n\tstill prose\n*)\nlet x = 1")
+
+[<Fact>]
+let ``FR0080 a tab inside a plain string spanning lines is content`` () =
+    let source = "module Test\nlet s = \"first\n\tsecond\"\nlet f x =\n\tx + 1"
+
+    match tabsIn source with
+    | [ s ] ->
+        match s.Edits with
+        | [ (r, _, _) ] -> Assert.Equal(5, r.StartLine)
+        | other -> failwithf "Expected the one code line only, got %A" other
+    | other -> failwithf "Expected exactly one tab note, got %A" other
+
+[<Fact>]
+let ``FR0080 a quote inside a line comment does not open a string`` () =
+    let source = "module Test\n// it's a \"note\nlet f x =\n\tx + 1"
+
+    match tabsIn source with
+    | [ s ] -> Assert.Equal(1, s.Edits.Length)
+    | other -> failwithf "Expected exactly one tab note, got %A" other
+
+[<Fact>]
+let ``FR0080 tabs after the block comment closes are still indentation`` () =
+    let source = "(* header *)\nlet f x =\n\tlet y = x + 1\n\ty"
+
+    match tabsIn source with
+    | [ s ] -> Assert.Equal(2, s.Edits.Length)
+    | other -> failwithf "Expected exactly one tab note, got %A" other
+
+
+// ---- FR0073 MatchBang: blank lines around the removed let! ----
+
+[<Fact>]
+let ``a blank line between the let! and its match goes with the binding`` () =
+    // fantomas EndToEndTests: `backgroundTask {` opened with an empty line
+    // where the `let!` had been
+    assertMatchBang
+        "module Test\nlet fetch () = async { return Some 1 }\nlet run () =\n    async {\n        let! x = fetch ()\n\n        match x with\n        | Some v -> return v\n        | None -> return 0\n    }"
+        "module Test\nlet fetch () = async { return Some 1 }\nlet run () =\n    async {\n        match! fetch () with\n        | Some v -> return v\n        | None -> return 0\n    }"
+
+[<Fact>]
+let ``a let! between two blank lines leaves a single one`` () =
+    // fsharplint TestApi.fs: two consecutive blank lines above the match!
+    assertMatchBang
+        "module Test\nlet fetch () = async { return Some 1 }\nlet run () =\n    async {\n        let y = 1\n\n        let! x = fetch ()\n\n        match x with\n        | Some v -> return v + y\n        | None -> return y\n    }"
+        "module Test\nlet fetch () = async { return Some 1 }\nlet run () =\n    async {\n        let y = 1\n\n        match! fetch () with\n        | Some v -> return v + y\n        | None -> return y\n    }"
+
+
+[<Fact>]
+let ``FR0074: a multi-line inner record keeps one field per line`` () =
+    // suave's Stream.fs: the flattened fields were joined into one
+    // 170-column line; each field that started a line still does, at the
+    // outer field's column
+    assertFlattened
+        "module Test\ntype Inner = { Y: int; Z: int }\ntype Outer = { X: Inner; N: int }\nlet f (r: Outer) (v: int) =\n    { r with\n        X =\n            { r.X with\n                Y = v\n                Z = v + 1 }\n        N = 2 }"
+        "X.Y = v\n        X.Z = v + 1"
+
+[<Fact>]
+let ``FR0074: fields aligned after the copy source stay aligned`` () =
+    assertFlattened
+        "module Test\ntype Inner = { Y: int; Z: int }\ntype Outer = { X: Inner; N: int }\nlet f (r: Outer) (v: int) =\n    { r with X = { r.X with Y = v\n                            Z = v + 1 } }"
+        "X.Y = v\n             X.Z = v + 1"
+
+[<Fact>]
+let ``FR0147: uses under one #if get their open under the same condition`` () =
+    // the F# compiler's TypedTreeOps.ExprOps.fs: a namespace needed only
+    // under a condition must not become a dependency of every build
+    let source =
+        "module Test\nopen System\n#if !FOO\nlet a = System.Text.Encoding.UTF8\nlet b = System.Text.Encoding.ASCII\nlet c = System.Text.Encoding.Unicode\n#endif"
+
+    match qualifiedIn source with
+    | [ s ] ->
+        let opens = s.Edits |> List.filter (fun (_, _, r) -> r.StartsWith "open")
+
+        match opens with
+        | [ (r, _, text) ] ->
+            Assert.Equal("open System.Text\n", text)
+            Assert.Equal(4, r.StartLine)
+        | other -> failwithf "Expected one open inside the #if, got %A" other
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0147: an open under #if is no anchor for unconditional uses`` () =
+    let source =
+        "module Test\nopen System\n#if !FOO\nopen System.Collections.Generic\n#endif\nlet a = System.Text.Encoding.UTF8\nlet b = System.Text.Encoding.ASCII\nlet c = System.Text.Encoding.Unicode"
+
+    match qualifiedIn source with
+    | [ s ] ->
+        match s.Edits |> List.filter (fun (_, _, r) -> r.StartsWith "open") with
+        | [ (r, _, _) ] -> Assert.Equal(3, r.StartLine)
+        | other -> failwithf "Expected the open right after `open System`, got %A" other
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0147: an assignment target is a spelling too`` () =
+    // fsharp.formatting's `System.Diagnostics.Trace.AutoFlush <- true` kept
+    // its prefix while the reads beside it lost theirs
+    let source =
+        "module Test\nopen System.Diagnostics\nlet f () =\n    System.Diagnostics.Trace.AutoFlush <- true\n    System.Diagnostics.Trace.AutoFlush <- false\n    System.Diagnostics.Trace.Flush()"
+
+    match qualifiedIn source with
+    | [ s ] -> Assert.Equal(3, s.Edits |> List.filter (fun (_, _, r) -> r = "") |> List.length)
+    | other -> failwithf "Expected one suggestion with three shortenings, got %A" other
+
+[<Fact>]
+let ``FR0147: a name an enclosing namespace provides is not introduced`` () =
+    // the F# compiler: every file under FSharp.Compiler sees its SR module;
+    // `open FSComp` to spell `SR.x` made SR mean two modules
+    let lib =
+        "namespace Outer\nmodule SR =\n    let x = 1\nnamespace Lib2\nmodule SR =\n    let y = 2"
+
+    let user =
+        "namespace Outer.Inner\nmodule M =\n    let a = Lib2.SR.y\n    let b = Lib2.SR.y + 1\n    let c = Lib2.SR.y + 2"
+
+    for s in qualifiedInSecond lib user do
+        Assert.Empty s.Edits
+
+// ---- FR0075: ownership transfers through containers, stores, closes and no-op disposables ----
+
+[<Fact>]
+let ``FR0075: a disposable returned inside a tuple is the caller's`` () =
+    // suave's Proxy.fs test upstream returns `(port, cts)` after a loop
+    // closure captured the cts; ilwritepdb returns its MemoryStream in a
+    // 5-tuple after handing it to WriteContentTo
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private fill (s: Stream) = s.WriteByte 1uy\nlet make (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    fill stream\n    (stream.Length, stream)"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable returned through upcasts inside a tuple is the caller's`` () =
+    // Mibo's ASet.mapUse: `(node :> IDisposable, node :> aset<'B>)`
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System\nopen System.IO\nlet make (path: string) : IDisposable * Stream =\n    let stream = new FileStream(path, FileMode.Open)\n    (stream :> IDisposable, stream :> Stream)"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable stored into a returned record is the caller's`` () =
+    // Mibo's Primitive3D.upload: the VertexBuffer goes into a PrimitiveMesh
+    // record whose Dispose disposes it
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\ntype Mesh = { Data: FileStream; Count: int }\nlet load (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    stream.ReadByte() |> ignore\n    { Data = stream; Count = 1 }"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable returned from a computation expression in a tuple is the caller's`` () =
+    // the F# compiler's CompilerImports: `return tcGlobals, frameworkTcImports`
+    // 140 lines after `new TcImports(...)`
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private register (s: Stream) = ()\nlet load (path: string) =\n    async {\n        let stream = new FileStream(path, FileMode.Open)\n        register stream\n        return 1, stream\n    }"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable rebound under its own name through an upcast and returned is the caller's`` () =
+    // ilread.fs: `let ilModuleReader = ilModuleReader :> ILModuleReader`
+    // before caching and returning it
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private stash (s: Stream) = ()\nlet load (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let stream = stream :> Stream\n    stash stream\n    stream"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable handed on and then returned is the caller's`` () =
+    // Activity.fs: `ActivitySource.AddActivityListener(l); l` — the return
+    // decides the owner whatever else the scope did with the value
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private register (s: Stream) = ()\nlet load (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    register stream\n    stream"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable returned from a match arm after a copy is the caller's`` () =
+    // FsXaml's Utilities: `resStream.CopyTo ms; ms.Position <- 0L; ms`
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet load (path: string) =\n    use src = File.OpenRead path\n    match src with\n    | null -> failwith \"missing\"\n    | _ ->\n        let ms = new MemoryStream()\n        src.CopyTo ms\n        ms.Position <- 0L\n        ms"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable returned inside a union case is the caller's`` () =
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet tryOpen (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    stream.ReadByte() |> ignore\n    Some stream"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable stored into a field of the enclosing type belongs to the type`` () =
+    // Mibo's ForwardPipeline/Renderer2D: `billboardEffect <- ValueSome e`,
+    // Runtime.fs: `audioServiceOpt <- ValueSome audio` — FR0032/FR0047 judge
+    // the type's Dispose; this scope is not the owner
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\ntype Holder() =\n    let mutable effect: FileStream voption = ValueNone\n    member _.Load(path: string) =\n        let e = new FileStream(path, FileMode.Open)\n        effect <- ValueSome e\n    member _.Loaded = effect.IsSome"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable stored into a property belongs to the holder`` () =
+    // Mibo's ShadowPass: `res.Raster <- sr` on a resources object
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\ntype Res() =\n    member val Raster: FileStream = null with get, set\nlet ensure (res: Res) (path: string) =\n    if isNull res.Raster then\n        let sr = new FileStream(path, FileMode.Open)\n        res.Raster <- sr"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable stored into a collection belongs to the collection's holder`` () =
+    // suave's Tcp.fs fills a socket array (`listenSockets.[i] <- s`) it stops
+    // one by one later; Mibo's RenderTargetPool adds to an `inUse` list
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet openAll (paths: string[]) =\n    let streams = Array.zeroCreate<FileStream> paths.Length\n    for i in 0 .. paths.Length - 1 do\n        let s = new FileStream(paths.[i], FileMode.Open)\n        streams.[i] <- s\n        s.ReadByte() |> ignore\n    streams"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\ntype Pool() =\n    let inUse = ResizeArray<FileStream>()\n    member _.Acquire(path: string) =\n        let s = new FileStream(path, FileMode.Open)\n        inUse.Add s\n        s.ReadByte()"
+    )
+
+[<Fact>]
+let ``FR0075: a disposable stored into a module-level ref cell belongs to the module`` () =
+    // suave's RateLimit: `cleanupTimer := Some timer`
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private current: FileStream option ref = ref None\nlet start (path: string) =\n    match current.Value with\n    | Some _ -> ()\n    | None ->\n        let s = new FileStream(path, FileMode.Open)\n        current := Some s"
+    )
+
+[<Fact>]
+let ``FR0075: a part added to a use-bound multipart content is adopted`` () =
+    // suave's Bug256 regression test: `formdata.Add(upload, "file", "pix.gif")`
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nopen System.Net.Http\nlet post (path: string) =\n    use fs = File.OpenRead path\n    use formdata = new MultipartFormDataContent()\n    let upload = new StreamContent(fs)\n    upload.Headers.ContentType <- Headers.MediaTypeHeaderValue(\"image/gif\")\n    formdata.Add(upload, \"file\", \"pix.gif\")\n    formdata.Headers.ContentLength"
+    )
+
+[<Fact>]
+let ``FR0075: disposing through an IDisposable upcast is disposal`` () =
+    // fantomas's DaemonTests: `(daemon :> IDisposable).Dispose()`
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System\nopen System.IO\nlet run (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let b = stream.ReadByte()\n    (stream :> IDisposable).Dispose()\n    b"
+    )
+
+[<Fact>]
+let ``FR0075: closing a stream or writer is disposal`` () =
+    // ilwrite.fs: `ms.Close()` before `ms.ToArray()`, `stream.Close()` after
+    // a closure reopened it
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet copy (src: Stream) =\n    let ms = new MemoryStream()\n    src.CopyTo ms\n    ms.Close()\n    ms.ToArray()"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet write (path: string) =\n    let w = new StreamWriter(path)\n    w.Write \"x\"\n    w.Close()"
+    )
+
+[<Fact>]
+let ``FR0075: Close on a type where it is not Dispose is no disposal`` () =
+    match
+        useBindingsIn
+            "module Test\ntype Conn() =\n    member _.Close() = ()\n    interface System.IDisposable with\n        member _.Dispose() = ()\nlet run () =\n    let c = new Conn()\n    c.Close()"
+    with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+[<Fact>]
+let ``FR0075: a MemoryStream over a caller's buffer, a StringReader or a StringWriter own no resource`` () =
+    // suave's Hpack/Huffman codecs, fsharp.formatting's Transformations:
+    // Dispose on these is a no-op, there is nothing to leak
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private dec (s: Stream) = s.ReadByte()\nlet decode (buf: byte[]) =\n    let wbuf = new MemoryStream(buf)\n    dec wbuf |> ignore\n    Array.sub buf 0 (int wbuf.Position)"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private enc (s: Stream) = s.WriteByte 1uy\nlet encode (raw: byte[]) =\n    let tmp = Array.zeroCreate<byte> (raw.Length * 4 + 8)\n    let tmpBuf = new MemoryStream(tmp, 0, tmp.Length, true, true)\n    enc tmpBuf\n    tmp"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet private emit (w: TextWriter) = w.Write \"x\"\nlet render () =\n    let sb = System.Text.StringBuilder()\n    let writer = new StringWriter(sb)\n    emit writer\n    let reader = new StringReader(\"\")\n    reader.ReadLine() |> ignore\n    sb.ToString()"
+    )
+
+[<Fact>]
+let ``FR0075: a MemoryStream over its own buffer still gets use`` () =
+    match
+        useBindingsIn
+            "module Test\nopen System.IO\nlet make () =\n    let ms = new MemoryStream(1024)\n    ms.WriteByte 1uy\n    let n = ms.Length\n    n"
+    with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+[<Fact>]
+let ``FR0075: a stream wrapper over a member's stream parameter is not the scope's to dispose`` () =
+    // ilnativeres.fs: `static member ReadResFile(stream: Stream)` wraps it in
+    // a BinaryReader, AppendVersionToResourceStream(resStream, ...) in a
+    // BinaryWriter; ilwrite.fs wraps writeBinaryAux's tupled `stream`
+    // parameter inside a tuple-bound nested let
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\ntype Res() =\n    static member Read(stream: Stream) =\n        let reader = new BinaryReader(stream, System.Text.Encoding.Unicode)\n        reader.ReadUInt32()\n    static member Append(resStream: Stream, isDll: bool) =\n        let w = new BinaryWriter(resStream, System.Text.Encoding.Unicode)\n        w.Write isDll"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.IO\nlet writeBinaryAux (stream: Stream, options: int) =\n    let a, b =\n        let os = new BinaryWriter(stream, System.Text.Encoding.UTF8)\n        os.Write options\n        1, 2\n    a + b"
+    )
+
+[<Fact>]
+let ``FR0075: a hash algorithm from its Create factory is locally constructed`` () =
+    // the F# compiler's Hashing.fs and suave's WebSocket.sha1: `MD5.Create()`
+    // and `SHA1.Create()` never disposed
+    match
+        useBindingsIn
+            "module Test\nopen System.Security.Cryptography\nlet hash (bytes: byte[]) =\n    let sha = SHA1.Create()\n    let h = sha.ComputeHash bytes\n    h"
+    with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+[<Fact>]
+let ``FR0075: a construction hidden behind an upcast is still a construction`` () =
+    // YaafFSharpScripting: `new StringWriter(sb) :> TextWriter` (a no-op
+    // disposable, but the shape hides every construction)
+    match
+        useBindingsIn
+            "module Test\nopen System.IO\nlet read (path: string) =\n    let stream = new FileStream(path, FileMode.Open) :> Stream\n    let b = stream.ReadByte()\n    b"
+    with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+[<Fact>]
+let ``FR0075: a plain-valued member call as the scope's result is read before use disposes it`` () =
+    // Hashing.fs: `md5.ComputeHash bytes` is the result — a byte[], computed
+    // before the scope exits; only a task, sequence or object still tied to
+    // the disposable outlives it
+    match
+        useBindingsIn
+            "module Test\nopen System.Security.Cryptography\nlet hash (bytes: byte[]) =\n    let md5 = MD5.Create()\n    md5.ComputeHash bytes"
+    with
+    | [ s ] -> Assert.Equal(Some("let", "use"), s.Fix)
+    | other -> failwithf "Expected one use finding, got %A" other
+
+    match
+        useBindingsIn
+            "module Test\nopen System.Net.Http\nlet fetch (url: string) =\n    let client = new HttpClient()\n    client.GetStringAsync url"
+    with
+    | [ s ] ->
+        Assert.Equal(None, s.Fix)
+        Assert.Equal(Some UseBinding.Destination.ReadInResult, s.Destination)
+        Assert.Contains("the scope's result reads it", UseBinding.describeEscape s)
+    | other -> failwithf "Expected one advisory, got %A" other
+
+[<Fact>]
+let ``FR0075: a disposable stored into a local mutable is named as such`` () =
+    match
+        useBindingsIn
+            "module Test\nopen System.IO\nlet pick (path: string) =\n    let mutable best: FileStream option = None\n    let s = new FileStream(path, FileMode.Open)\n    best <- Some s\n    best.IsSome"
+    with
+    | [ s ] ->
+        Assert.Equal(None, s.Fix)
+        Assert.Equal(Some(UseBinding.Destination.StoredLocally "best"), s.Destination)
+        Assert.Contains("stored in the local 'best'", UseBinding.describeEscape s)
+    | other -> failwithf "Expected exactly one advisory, got %A" other
+
+[<Fact>]
+let ``FR0075: a disposable captured by a closure says so`` () =
+    match
+        useBindingsIn
+            "module Test\nopen System.IO\nlet defer (run: (unit -> int) -> unit) (path: string) =\n    let s = new FileStream(path, FileMode.Open)\n    run (fun () -> s.ReadByte())"
+    with
+    | [ s ] ->
+        Assert.Equal(Some UseBinding.Destination.Captured, s.Destination)
+        Assert.Contains("a closure", UseBinding.describeEscape s)
+    | other -> failwithf "Expected exactly one advisory, got %A" other
+
+// ---- FR0150 EscapingUse ----
+
+let private escapingUsesIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    UseBinding.findEscapingUse tree sourceText checkResults
+
+[<Fact>]
+let ``FR0150: a use captured by a returned task is flagged and moved inside`` () =
+    // suave's ConnectionHealthChecker: the token source is disposed when
+    // the starter returns, and the loop reads .Token on every interval
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    use cts = new CancellationTokenSource()\n\n    task {\n        do! Task.Delay(1000, cts.Token)\n        return 1\n    }"
+
+    match escapingUsesIn source with
+    | [ s ] ->
+        Assert.Equal("cts", s.Name)
+        Assert.Equal("task", s.Builder)
+
+        let patched =
+            s.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Contains("    task {\n        use cts = new CancellationTokenSource()\n        do! Task.Delay", patched)
+        Assert.DoesNotContain("    use cts = new CancellationTokenSource()\n\n    task", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: the computation reached through a binding is seen too`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    use cts = new CancellationTokenSource()\n\n    let loop =\n        task {\n            do! Task.Delay(1000, cts.Token)\n            return 1\n        }\n\n    loop"
+
+    match escapingUsesIn source with
+    | [ s ] -> Assert.Equal("cts", s.Name)
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: a use the computation never reads is fine`` () =
+    Assert.Empty(
+        escapingUsesIn
+            "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    use cts = new CancellationTokenSource()\n    ignore cts\n\n    task {\n        do! Task.Delay 1000\n        return 1\n    }"
+    )
+
+[<Fact>]
+let ``FR0150: a use consumed inside the scope is fine`` () =
+    // nothing escapes: the task is awaited before the scope returns
+    Assert.Empty(
+        escapingUsesIn
+            "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    task {\n        use cts = new CancellationTokenSource()\n        do! Task.Delay(1000, cts.Token)\n        return 1\n    }"
+    )
+
+[<Fact>]
+let ``FR0150: a statement between the use and the computation that reads it holds the fix back`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    use cts = new CancellationTokenSource()\n    let token = cts.Token\n\n    task {\n        do! Task.Delay(1000, cts.Token)\n        return 1\n    }"
+
+    match escapingUsesIn source with
+    | [ s ] ->
+        Assert.Equal("cts", s.Name)
+        Assert.Empty s.Edits
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: unrelated statements between the use and the computation stay outside it`` () =
+    // the binding moves in; the greeting it does not touch stays where it was
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet start (name: string) =\n    use cts = new CancellationTokenSource()\n    let greeting = \"hello \" + name\n    printfn \"%s\" greeting\n\n    task {\n        do! Task.Delay(1000, cts.Token)\n        return greeting.Length\n    }"
+
+    match escapingUsesIn source with
+    | [ s ] ->
+        let patched =
+            s.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Contains("    let greeting = \"hello \" + name\n    printfn \"%s\" greeting", patched)
+        Assert.Contains("    task {\n        use cts = new CancellationTokenSource()\n        do! Task.Delay", patched)
+        Assert.DoesNotContain("    use cts = new CancellationTokenSource()\n    let greeting", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: the fix through a binding keeps the statements before it in place`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet start (n: int) =\n    use cts = new CancellationTokenSource()\n    let doubled = n * 2\n    let label = string doubled\n\n    let loop =\n        task {\n            do! Task.Delay(doubled, cts.Token)\n            return label\n        }\n\n    loop"
+
+    match escapingUsesIn source with
+    | [ s ] ->
+        let patched =
+            s.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Contains("    let doubled = n * 2\n    let label = string doubled", patched)
+
+        Assert.Contains(
+            "        task {\n            use cts = new CancellationTokenSource()\n            do! Task.Delay",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: an async computation is the same shape`` () =
+    let source =
+        "open System.Threading\nlet start () =\n    use cts = new CancellationTokenSource()\n\n    async {\n        do! Async.Sleep 1000\n        return cts.Token.IsCancellationRequested\n    }"
+
+    match escapingUsesIn source with
+    | [ s ] ->
+        Assert.Equal("async", s.Builder)
+
+        let patched =
+            s.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: a computation the scope consumes itself is not escaping`` () =
+    // the task is drained before the scope returns: the use is correct
+    Assert.Empty(
+        escapingUsesIn
+            "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    use cts = new CancellationTokenSource()\n\n    let t =\n        task {\n            do! Task.Delay(1000, cts.Token)\n            return 1\n        }\n\n    t.Result"
+    )

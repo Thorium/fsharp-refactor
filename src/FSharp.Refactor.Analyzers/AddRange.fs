@@ -1,21 +1,27 @@
 /// Refactoring (performance/idiom): a loop whose whole body is a single
-/// ResizeArray Add is one AddRange call.
+/// ResizeArray Add of the loop variable is one AddRange call.
 ///
 ///     for x in xs do acc.Add x            →  acc.AddRange xs
-///     for x in xs do acc.Add(x * 2)       →  acc.AddRange(xs |> Seq.map (fun x -> x * 2))
 ///
-/// AddRange enumerates the source once and applies the projection in the
-/// same order the loop did, so the rewrite is behavior-preserving; when the
-/// source has a known count it also pre-sizes the backing array.
+/// AddRange enumerates the source once in the order the loop did, so the
+/// rewrite is behavior-preserving; when the source has a known count it
+/// also pre-sizes the backing array.
+///
+/// A PROJECTED body (`acc.Add(x * 2)`, `acc.Add(f())`) stays a loop. The
+/// `AddRange(xs |> Seq.map (fun x -> ..))` spelling it used to get has no
+/// gain to offer: Seq.map allocates an enumerator and a closure, and
+/// AddRange over a non-ICollection source enumerates item by item exactly
+/// as the loop did — suave's `for f in xs do acc.Add(f())` came out as
+/// `acc.AddRange((List.rev xs) |> Seq.map (fun f -> f()))`, longer, slower
+/// and doubly parenthesised.
 ///
 /// Safety rules:
-///   - the loop body is exactly the Add call — any other statement means
-///     the loop is not a pure accumulation and it is left alone
+///   - the loop body is exactly `acc.Add x` / `acc.Add(x)` of the loop
+///     variable — any other statement or argument leaves the loop alone
 ///   - `Add` must resolve (typed check results) to
 ///     System.Collections.Generic.List`1.Add: HashSet.Add and friends have
 ///     different semantics and often no AddRange
-///   - source, receiver, and argument are single-line, and the argument is
-///     safe to inline into a lambda body
+///   - source, receiver, and argument are single-line
 ///   - the file must have no type errors
 module FSharp.Refactor.AddRange
 
@@ -67,17 +73,6 @@ let private resolvesToListAdd (check: FSharpCheckFileResults) (source: ISourceTe
             (OptionModule.enclosingFullName value).StartsWith "System.Collections.Generic.List`"
         | _ -> false
     | None -> false
-
-/// A lambda-parameter rendering of the loop pattern.
-let private lambdaPatText (source: ISourceText) (pat: SynPat) =
-    let text = textOfRange source pat.Range
-
-    match pat with
-    | SynPat.Named _
-    | SynPat.Wild _
-    | SynPat.Paren _ -> ValueSome text
-    | SynPat.Tuple _ -> ValueSome($"({text})")
-    | _ -> ValueNone
 
 /// Find accumulate-only loops over List<'T>. Requires typed check results.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
@@ -140,33 +135,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               ->
                               match rangeSource with
                               | Some range -> Some($"{receiverText}.AddRange [| {range} |]")
+                              // argumentText parenthesises a non-atomic
+                              // source exactly once (`acc.AddRange (List.rev
+                              // xs)`) and never wraps one that is already
+                              // parenthesised
                               | None -> Some(receiverText + ".AddRange " + argumentText source enumExpr)
-                          | _ ->
-                              match lambdaPatText source pat with
-                              // a PROJECTED range has no win to offer: the
-                              // Seq.map form measured 3-8x slower than the
-                              // loop, and materialising through Array.map
-                              // only matched it while allocating 44% more
-                              | ValueSome _ when rangeSource.IsSome -> None
-                              | ValueSome patText when
-                                  isSafeInline element
-                                  && isSingleLine pat.Range
-                                  // the element moves into a fabricated
-                                  // Seq.map lambda: capturing a mutable
-                                  // local there was FS0407 before F# 10
-                                  && not (OptionModule.capturesMutableLocal (AstIndex.ofTree parseTree) element.Range)
-                                  ->
-                                  Some(
-                                      receiverText
-                                      + ".AddRange("
-                                      + atomicText source enumExpr
-                                      + " |> Seq.map (fun "
-                                      + patText
-                                      + " -> "
-                                      + textOfRange source element.Range
-                                      + "))"
-                                  )
-                              | _ -> None
+                          // a projected body stays a loop: the Seq.map
+                          // spelling measured no faster than the loop over
+                          // a range (3-8x slower) and no faster elsewhere
+                          // (suave's `acc.Add(f())` shape)
+                          | _ -> None
 
                       match replacement with
                       | Some replacementText ->

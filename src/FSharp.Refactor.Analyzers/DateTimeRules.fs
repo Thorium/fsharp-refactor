@@ -95,10 +95,81 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 argExpr = rhs)) :: _ when isCompare op -> endsWithDate rhs
             | _ -> false
 
+        // an expression-tree translator reproduces the clock ON PURPOSE:
+        // the arm that maps a member NAMED "Now" (or "Today") to the call
+        // (SQLProvider's evaluator: `when me.Member.Name = "Now" ->
+        // DateTime.Now`) is a translation table, not a clock read. The
+        // nearest enclosing match arm names the member in its guard or
+        // its pattern.
+        let clockNames = set [ "Now"; "UtcNow"; "Today" ]
+
+        let literalIn (wanted: Set<string>) (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                match e with
+                | SynExpr.Const(SynConst.String(text = s), _) when Range.rangeContainsRange r e.Range ->
+                    wanted.Contains s
+                | _ -> false)
+            || index.Pats
+               |> Array.exists (fun (_, p) ->
+                   match p with
+                   | SynPat.Const(SynConst.String(text = s), _) when Range.rangeContainsRange r p.Range ->
+                       wanted.Contains s
+                   | _ -> false)
+
+        let translatorArm (path: SyntaxNode list) (names: string list) =
+            let wanted = Set.intersect clockNames (set names)
+
+            // the guard runs for every dotted name in the file: only a clock
+            // read pays for the scan of its arm
+            not wanted.IsEmpty
+            && (path
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynMatchClause(SynMatchClause(pat = p; whenExpr = w)) -> Some(p, w)
+                    | _ -> None)
+                |> Option.exists (fun (p, w) ->
+                    literalIn wanted p.Range
+                    || (match w with
+                        | Some guard -> literalIn wanted guard.Range
+                        | None -> false)))
+
+        // the non-Utc timestamp setters take LOCAL time —
+        // `File.SetLastWriteTime(path, DateTime.Now)` (fsdocs) is right as
+        // written, and UtcNow there would stamp the file hours off
+        let localTimeSetters =
+            set
+                [ "SetCreationTime"
+                  "SetLastWriteTime"
+                  "SetLastAccessTime"
+                  "CreationTime"
+                  "LastWriteTime"
+                  "LastAccessTime" ]
+
+        let feedsLocalSetter (path: SyntaxNode list) =
+            path
+            |> List.truncate 3
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)))) ->
+                    ids.Length >= 2
+                    && localTimeSetters.Contains (List.last ids).idText
+                    && (match ids.[ids.Length - 2].idText with
+                        | "File"
+                        | "Directory" -> true
+                        | _ -> false)
+                | SyntaxNode.SynExpr(SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _))
+                | SyntaxNode.SynExpr(SynExpr.DotSet(longDotId = SynLongIdent(id = ids))) ->
+                    not ids.IsEmpty && localTimeSetters.Contains (List.last ids).idText
+                | _ -> false)
+
         [ for path, expr in index.Exprs do
               match expr with
               | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                  ids.Length >= 2 && not (sameDayCompare path expr.Range)
+                  ids.Length >= 2
+                  && not (sameDayCompare path expr.Range)
+                  && not (translatorArm path (ids |> List.map (fun i -> i.idText)))
+                  && not (feedsLocalSetter path)
                   ->
                   let names = ids |> List.map (fun i -> i.idText)
 
@@ -124,12 +195,29 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             FixRange = None }
                       | _ ->
                           // a COMPLETE DateTime.Now — nothing after Now, so
-                          // the UtcNow rewrite cannot create a calendar bug.
-                          // DateTimeOffset.Now stays quiet entirely: it
-                          // CARRIES its offset, which is often the point
-                          match List.rev names with
-                          | "Now" :: _ ->
-                              let nowId = List.last ids
+                          // the UtcNow rewrite cannot create a calendar bug —
+                          // or Now read as an INSTANT (`.Ticks` as a version
+                          // number goes backwards at the DST fall-back;
+                          // `.ToBinary`, `.ToFileTime`), which UtcNow serves
+                          // just as well. `Now.ToString(...)` renders the
+                          // local calendar, so it gets the note but not the
+                          // rewrite. DateTimeOffset.Now stays quiet entirely:
+                          // it CARRIES its offset, which is often the point
+                          let reversed =
+                              match List.rev names with
+                              | "ToString" :: rest -> Some false, rest
+                              | rest -> Some true, rest
+
+                          match reversed with
+                          | Some rewritable, "Now" :: _ ->
+                              let nowId = ids |> List.find (fun i -> i.idText = "Now")
+
+                              if entityOf check source nowId = "System.DateTime" then
+                                  { Range = expr.Range
+                                    Kind = WallClockKind.LocalNow
+                                    FixRange = if rewritable then Some nowId.idRange else None }
+                          | Some _, ("Ticks" | "ToBinary" | "ToFileTime") :: "Now" :: _ ->
+                              let nowId = ids |> List.find (fun i -> i.idText = "Now")
 
                               if entityOf check source nowId = "System.DateTime" then
                                   { Range = expr.Range

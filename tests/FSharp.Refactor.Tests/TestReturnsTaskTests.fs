@@ -403,3 +403,29 @@ let ``NUnit's ThrowsAsync returns the exception, so the let stays a let`` () =
     assertRewrite
         "namespace NUnit.Framework\nopen System\nopen System.Threading.Tasks\ntype TestAttribute() =\n    inherit Attribute()\ntype Assert =\n    static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>\n    static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : 'E = Unchecked.defaultof<'E>\nmodule Tests =\n    let fetch () = Task.FromResult 1\n    [<Test>]\n    let ``throws`` () =\n        let t = fetch ()\n        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n        ignore ex.Message"
         "task {\n            let t = fetch ()\n            let ex = Assert.ThrowsAsync<InvalidOperationException>(fun () -> t :> System.Threading.Tasks.Task)\n            ignore ex.Message\n        } :> System.Threading.Tasks.Task"
+
+[<Fact>]
+let ``a test choreographing threads with a signal keeps its blocking waits`` () =
+    // Mibo's adaptive-graph tests: work handed to a thread, a signal waited
+    // on, and the rest of the test expected on the SAME thread; `do!`
+    // resumed elsewhere and the graph refused the caller
+    Assert.Empty(
+        findIn (
+            scaffold
+            + "[<Fact>]\nlet ``worker`` () =\n    let signal = new System.Threading.ManualResetEventSlim(false)\n    let worker = Task.Run(fun () -> signal.Set())\n    signal.Wait()\n    worker.Wait()"
+        )
+    )
+
+[<Fact>]
+let ``a comment trailing the last line stays on that line inside the block`` () =
+    assertRewrite
+        (scaffold
+         + "[<Fact>]\nlet ``reads`` () =\n    let res = load () |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\" // drained by then")
+        "task {\n        let! res = load () |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\" // drained by then\n    } :> System.Threading.Tasks.Task"
+
+[<Fact>]
+let ``a comment trailing a bare awaitable test survives the upcast`` () =
+    assertRewrite
+        (scaffold
+         + "[<Fact>]\nlet ``bare`` () =\n    work () |> Async.RunSynchronously // one shot")
+        "work () |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task // one shot"

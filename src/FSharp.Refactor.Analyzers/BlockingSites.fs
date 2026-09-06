@@ -427,3 +427,32 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                 { blocking e.Range recvText with
                     UnitResult = taskResultIsUnit check source rid }
         | _ -> assertThrows check source other
+
+/// Is this body choreographed around a THREAD? Code that hands work to a
+/// thread and waits on a signal continues on the same thread after the
+/// wait; `do!` resumes wherever the scheduler posts, so "make it async"
+/// is the wrong advice there, in a test (FR0142: Mibo's thread-affine
+/// adaptive graphs — four tests failed, eleven turned flaky when
+/// converted) and at a boundary alike (FR0049). Read off the text: the
+/// names are unmistakable and a false "bound" only costs a note.
+let threadBound (source: ISourceText) (body: SynExpr) =
+    // `Thread.Sleep` is a pause, not choreography — and the site FR0049's
+    // `do! Async.Sleep` fix exists for
+    let text = (textOfRange source body.Range).Replace("Thread.Sleep", "")
+
+    [ "Monitor."
+      "Mutex"
+      "ReaderWriterLock"
+      "ThreadStatic"
+      "ThreadLocal"
+      "WaitOne"
+      "ManualResetEvent"
+      "CountdownEvent"
+      "Barrier"
+      "SemaphoreSlim"
+      "Thread("
+      "Thread."
+      "CurrentManagedThreadId"
+      "SynchronizationContext"
+      "Interlocked." ]
+    |> List.exists text.Contains

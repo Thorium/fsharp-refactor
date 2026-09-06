@@ -89,11 +89,32 @@ let private parameterShapes (displayContext: FSharpDisplayContext) (mfv: FSharpM
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         None
 
+/// Task.Run and Task.Factory.StartNew take the token as a SCHEDULING
+/// condition, not as an operation to interrupt: with an already-cancelled
+/// token the delegate never runs at all, so the side effects in its body
+/// silently never happen — suave's Tcp.fs binds the listening socket and
+/// completes a cell inside one. An I/O method's token only cancels the
+/// call it was passed to; these two change whether the work starts, and
+/// that is the author's decision.
+let private schedulesDelegate (mfv: FSharpMemberOrFunctionOrValue) =
+    (mfv.DisplayName = "Run" || mfv.DisplayName = "StartNew")
+    && (OptionModule.enclosingFullName mfv).StartsWith "System.Threading.Tasks.Task"
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
         []
     else
         let index = AstIndex.ofTree parseTree
+
+        let resolveMember (id: Ident) =
+            let lineText = source.GetLineString(id.idRange.EndLine - 1)
+
+            match check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ]) with
+            | Some symbolUse ->
+                match symbolUse.Symbol with
+                | :? FSharpMemberOrFunctionOrValue as mfv -> Some(symbolUse, mfv)
+                | _ -> None
+            | None -> None
 
         // every binding parameter annotated `: CancellationToken`, with the
         // binding it belongs to — the scope a call must sit inside
@@ -156,20 +177,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                   match callArity, tokenFor expr.Range with
                   | Some arity, Some token when not (alreadyPassed token) ->
-                      let lineText = source.GetLineString(methodId.idRange.EndLine - 1)
-
-                      let resolved =
-                          check.GetSymbolUseAtLocation(
-                              methodId.idRange.EndLine,
-                              methodId.idRange.EndColumn,
-                              lineText,
-                              [ methodId.idText ]
-                          )
-
-                      match resolved with
-                      | Some symbolUse ->
-                          match symbolUse.Symbol with
-                          | :? FSharpMemberOrFunctionOrValue as mfv when mfv.IsMember && not mfv.IsProperty ->
+                      match resolveMember methodId with
+                      | Some(symbolUse, mfv) ->
+                          match mfv with
+                          | mfv when mfv.IsMember && not mfv.IsProperty && not (schedulesDelegate mfv) ->
                               let shapes = parameterShapes symbolUse.DisplayContext mfv
 
                               let tokenAccepted =
@@ -238,18 +249,30 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                   | Some token ->
                       // only as an argument: replacing a stored binding's
                       // RHS would rewrite intent this scan cannot see
-                      let isArgument =
+                      let enclosingCall =
                           index.Exprs
-                          |> Array.exists (fun (_, e) ->
+                          |> Array.tryPick (fun (_, e) ->
                               match e with
-                              | SynExpr.App(argExpr = a) ->
+                              | SynExpr.App(funcExpr = callee; argExpr = a) when
                                   Range.equals a.Range expr.Range
                                   || (match a with
                                       | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) ->
                                           es |> List.exists (fun x -> Range.equals x.Range expr.Range)
                                       | SynExpr.Paren(expr = inner) -> Range.equals inner.Range expr.Range
                                       | _ -> false)
-                              | _ -> false)
+                                  ->
+                                  Some callee
+                              | _ -> None)
+
+                      let isArgument = enclosingCall.IsSome
+
+                      // an explicit None on Task.Run / StartNew is the
+                      // author choosing to always start the work
+                      let schedulesWork =
+                          match enclosingCall with
+                          | Some(CallIdent calleeId) ->
+                              resolveMember calleeId |> Option.exists (fun (_, mfv) -> schedulesDelegate mfv)
+                          | _ -> false
 
                       let typedGate =
                           let noneId = List.last ids
@@ -276,7 +299,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               | _ -> false
                           | None -> false
 
-                      if isArgument && typedGate then
+                      if isArgument && typedGate && not schedulesWork then
                           { Range = expr.Range
                             Original = textOfRange source expr.Range
                             Replacement = token

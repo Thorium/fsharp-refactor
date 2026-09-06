@@ -85,13 +85,81 @@ let private unionCasesOf (check: FSharpCheckFileResults) (source: ISourceText) (
                 let t = OptionModule.stripAbbreviations unionCase.ReturnType
 
                 if t.HasTypeDefinition && t.TypeDefinition.IsFSharpUnion then
-                    Some [ for c in t.TypeDefinition.UnionCases -> c.Name, c.Fields.Count > 0 ]
+                    Some(t.TypeDefinition, [ for c in t.TypeDefinition.UnionCases -> c.Name, c.Fields.Count > 0 ])
                 else
                     None
             with OptionModule.FcsSymbolFailure ->
                 None
         | _ -> None
     | None -> None
+
+/// The other unions the file can see — this project's files up to here and
+/// the referenced assemblies — with their case names. A hidden case written
+/// BARE resolves to whichever union declared that name last: suave's
+/// Http2.fs matched a Result, and `Error` there is ScanResult.Error from an
+/// earlier file of the project. A case another union also names is written
+/// qualified (`Result.Error _`), which is right in every scope.
+let private unionsInScope (check: FSharpCheckFileResults) =
+    let rec unions (entities: FSharpEntity seq) =
+        seq {
+            for e in entities do
+                let isUnion, nested =
+                    try
+                        e.IsFSharpUnion, (e.NestedEntities :> FSharpEntity seq)
+                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                        false, Seq.empty
+
+                if isUnion then
+                    yield e
+
+                yield! unions nested
+        }
+
+    // only a PUBLIC union of another assembly reaches this file (FSharp.Core
+    // keeps an internal Result-like union whose `Error` would otherwise
+    // qualify every Result match)
+    let ofAssembly (a: FSharpAssembly) =
+        try
+            unions a.Contents.Entities
+            |> Seq.filter (fun e ->
+                try
+                    e.Accessibility.IsPublic
+                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                    false)
+            |> List.ofSeq
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            []
+
+    let own =
+        try
+            unions check.PartialAssemblySignature.Entities |> List.ofSeq
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            []
+
+    let referenced =
+        try
+            check.ProjectContext.GetReferencedAssemblies() |> List.collect ofAssembly
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            []
+
+    own @ referenced
+    |> List.map (fun e ->
+        e,
+        (try
+            e.UnionCases |> Seq.map (fun c -> c.Name) |> Set.ofSeq
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             Set.empty))
+
+let private caseNamedElsewhere (unions: (FSharpEntity * Set<string>) list) (union: FSharpEntity) (name: string) =
+    unions
+    |> List.exists (fun (e, cases) ->
+        cases.Contains name
+        && not (
+            try
+                e.IsEffectivelySameAs union
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                true
+        ))
 
 /// Find near-total DU matches hiding one or two cases behind `_`. Requires
 /// typed check results.
@@ -100,6 +168,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         []
     else
         let index = AstIndex.ofTree parseTree
+        let unions = lazy (unionsInScope check)
 
         [ for _, expr in index.Exprs do
               match expr with
@@ -122,7 +191,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           match coveredIdents with
                           | first :: _ ->
                               match unionCasesOf check source (List.last first) with
-                              | Some allCases ->
+                              | Some(union, allCases) ->
                                   let coveredNames =
                                       coveredIdents |> List.map (fun ids -> (List.last ids).idText) |> Set.ofList
 
@@ -132,13 +201,26 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   // a [<RequireQualifiedAccess>] union needs
                                   // its qualifier: reuse the first clause's,
                                   // which provably compiles in this scope
-                                  let qualifier =
+                                  let clauseQualifier =
                                       first
                                       |> List.rev
                                       |> List.tail
                                       |> List.rev
                                       |> List.map (fun i -> i.idText + ".")
                                       |> String.concat ""
+
+                                  // ...and a bare name another union in scope
+                                  // also declares needs the union's own
+                                  let qualifier =
+                                      if
+                                          clauseQualifier = ""
+                                          && missing
+                                             |> List.exists (fun (name, _) ->
+                                                 caseNamedElsewhere unions.Value union name)
+                                      then
+                                          union.DisplayName + "."
+                                      else
+                                          clauseQualifier
 
                                   // every explicit name must belong to this
                                   // union, and 1-2 cases are hidden
@@ -148,14 +230,35 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       && not missing.IsEmpty
                                       && missing.Length <= 2
                                   then
-                                      let replacement =
+                                      let cases =
                                           missing
                                           |> List.map (fun (name, hasFields) ->
                                               if hasFields then
                                                   $"{qualifier}{name} _"
                                               else
                                                   $"{qualifier}{name}")
-                                          |> String.concat " | "
+
+                                      // two short cases share the wildcard's line;
+                                      // when that line would run past 100 columns
+                                      // each case takes its own line under the
+                                      // clause's `|`, the last one keeping the `->`
+                                      let joined = String.concat " | " cases
+                                      let lineText = source.GetLineString(wildRange.StartLine - 1)
+                                      let before = lineText.Substring(0, wildRange.StartColumn)
+                                      let after = lineText.Substring wildRange.EndColumn
+                                      let barIndex = before.LastIndexOf '|'
+
+                                      let replacement =
+                                          if
+                                              cases.Length > 1
+                                              && (before + joined + after).Length > 100
+                                              && barIndex >= 0
+                                              && before.Substring(0, barIndex).Trim() = ""
+                                          then
+                                              let bar = "\n" + System.String(' ', barIndex) + "| "
+                                              String.concat bar cases
+                                          else
+                                              joined
 
                                       { Range = wildRange
                                         OriginalText = textOfRange source wildRange

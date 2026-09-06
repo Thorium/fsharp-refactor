@@ -211,8 +211,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                                 let insertAt = Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start
 
+                                // a call under `#if` yields a hoisted
+                                // instance under the same `#if`
                                 let binding =
-                                    sprintf "let private %s = Regex %s" name (textOfRange source patternExpr.Range)
+                                    let bare =
+                                        sprintf "let private %s = Regex %s" name (textOfRange source patternExpr.Range)
+
+                                    match conditionToKeep source expr.Range.StartLine insertAt.StartLine with
+                                    | Some condition -> $"#if {condition}\n{bare}\n#endif"
+                                    | None -> bare
 
                                 let callReplacement =
                                     match methodName, args with

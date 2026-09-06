@@ -27,19 +27,19 @@ let private assertIndexedLoop (source: string) (expectedPatched: string) =
 let ``the canonical range-over-length loop iterates directly`` () =
     assertIndexedLoop
         "module Test\nlet f (xs: int[]) =\n    for i in 0 .. xs.Length - 1 do\n        printfn \"%d\" xs.[i]"
-        "module Test\nlet f (xs: int[]) =\n    for x in xs do\n        printfn \"%d\" x"
+        "module Test\nlet f (xs: int[]) =\n    for item in xs do\n        printfn \"%d\" item"
 
 [<Fact>]
 let ``the F#6 indexer spelling converts too`` () =
     assertIndexedLoop
         "module Test\nlet f (xs: int[]) =\n    for i in 0 .. xs.Length - 1 do\n        printfn \"%d\" xs[i]"
-        "module Test\nlet f (xs: int[]) =\n    for x in xs do\n        printfn \"%d\" x"
+        "module Test\nlet f (xs: int[]) =\n    for item in xs do\n        printfn \"%d\" item"
 
 [<Fact>]
 let ``the module-length spelling converts too`` () =
     assertIndexedLoop
         "module Test\nlet f (xs: int[]) =\n    for i in 0 .. Array.length xs - 1 do\n        printfn \"%d\" xs.[i]"
-        "module Test\nlet f (xs: int[]) =\n    for x in xs do\n        printfn \"%d\" x"
+        "module Test\nlet f (xs: int[]) =\n    for item in xs do\n        printfn \"%d\" item"
 
 [<Fact>]
 let ``an index also used as a value is the author's call`` () =
@@ -99,6 +99,45 @@ let ``List.item in a collection callback is a loop too`` () =
 [<Fact>]
 let ``a single indexed access outside any loop is fine`` () =
     Assert.Empty(listIndexingIn "let f (names: string list) (i: int) = names.[i]")
+
+[<Fact>]
+let ``FR0102: a receiver bound by a match arm's pattern inside the loop is per-element`` () =
+    // FCS SemanticClassification: `| Item.AnonRecdField(_, tys, idx, _) ->
+    // tys[idx]` inside a per-element callback binds a fresh `tys` each time
+    let source =
+        "module Test\ntype Item =\n    | Field of int list * int\n    | Other\nlet f (items: Item list) =\n    items\n    |> List.map (fun item ->\n        match item with\n        | Field(tys, idx) -> tys[idx]\n        | Other -> 0)"
+
+    Assert.Empty(listIndexingIn source)
+
+[<Fact>]
+let ``FR0102: a list's length read per iteration walks the list every time`` () =
+    // Mibo Terrain: `count / (points.Length - 1)` per segment
+    let source =
+        "module Test\nlet f (points: int list) (count: int) =\n    let mutable total = 0\n    for i in 0 .. count - 1 do\n        total <- total + count / (points.Length + 1)\n    total"
+
+    match listIndexingIn source with
+    | [ s ] ->
+        Assert.Equal("points", s.CollectionText)
+        Assert.Equal(ListIndexing.AccessKind.Length, s.Kind)
+    | other -> failwithf "Expected one length note, got %A" other
+
+[<Fact>]
+let ``FR0102: List.length in a callback and a while condition count too`` () =
+    let source =
+        "module Test\nlet f (xs: int list) (ys: int list) =\n    let a = ys |> List.map (fun y -> y + List.length xs)\n    let mutable i = 0\n    while i < xs.Length do\n        i <- i + 1\n    a"
+
+    match listIndexingIn source with
+    | [ a; b ] ->
+        Assert.Equal("xs", a.CollectionText)
+        Assert.Equal("xs", b.CollectionText)
+    | other -> failwithf "Expected two length notes, got %A" other
+
+[<Fact>]
+let ``FR0102: a loop header's length bound evaluates once and an array's length is free`` () =
+    Assert.Empty(
+        listIndexingIn
+            "module Test\nlet f (xs: int list) (arr: int[]) =\n    let mutable total = 0\n    for i in 0 .. xs.Length - 1 do\n        total <- total + arr.Length\n    total"
+    )
 
 // ---- FR0103 TypeTestChain ----
 
@@ -286,3 +325,35 @@ let ``an indexed loop that takes the element's address keeps its index`` () =
             "module Test\n[<Struct>]\ntype S = { mutable V: int }\nlet bump (v: inref<int>) = v + 1\nlet f (sprites: S[]) =\n    for index in 0 .. sprites.Length - 1 do\n        let sprite = &sprites[index]\n        bump &sprite.V |> ignore"
 
     Assert.Empty(IndexedLoop.find tree sourceText)
+
+[<Fact>]
+let ``FR0102: an index bounded by a small modulus or a small literal loop is a constant walk`` () =
+    // Kasino: `Cards.allRanks[i % 13]` in a card builder, and short fixed loops
+    Assert.Empty(
+        listIndexingIn
+            "module Test\nlet ranks = [ 1 .. 13 ]\nlet cards (n: int) = [ for i in 0 .. n - 1 do ranks[i % 13] ]\nlet firstFour (xs: int list) =\n    for i in 0 .. 3 do\n        printfn \"%d\" xs[i]\n    for i = 0 to 3 do\n        printfn \"%d\" xs.[i]"
+    )
+
+[<Fact>]
+let ``FR0102: a large modulus still walks the list`` () =
+    Assert.NotEmpty(
+        listIndexingIn
+            "module Test\nlet f (xs: int list) (n: int) =\n    for i in 0 .. n - 1 do\n        printfn \"%d\" xs[i % 1000]"
+    )
+
+[<Fact>]
+let ``FR0101: the element is item, never a name bound around the loop`` () =
+    // Mibo's Spatial2DTests: `for x in 0 .. 4 do` around the loop, and the
+    // `x` the rewrite chose shadowed it; the outer loop variable is not
+    // mentioned inside the loop, so only the scope walk can see it
+    assertIndexedLoop
+        "module Test\nlet g (xs: int[]) =\n    for x in 0 .. 4 do\n        for i in 0 .. xs.Length - 1 do\n            printfn \"%d\" xs.[i]"
+        "module Test\nlet g (xs: int[]) =\n    for x in 0 .. 4 do\n        for item in xs do\n            printfn \"%d\" item"
+
+[<Fact>]
+let ``FR0101: a taken item counts up rather than shadowing`` () =
+    // `item` is a parameter and `item2` a let on the path: neither is read
+    // in the loop, and neither may be shadowed
+    assertIndexedLoop
+        "module Test\nlet f (item: int) (xs: int[]) =\n    let item2 = item\n    for i in 0 .. xs.Length - 1 do\n        printfn \"%d\" xs.[i]\n    item2"
+        "module Test\nlet f (item: int) (xs: int[]) =\n    let item2 = item\n    for item3 in xs do\n        printfn \"%d\" item3\n    item2"

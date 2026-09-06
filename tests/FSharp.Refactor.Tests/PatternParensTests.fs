@@ -104,3 +104,24 @@ let ``adjacent parameters gain the space the parens were providing`` () =
 [<Fact>]
 let ``a parameter glued to its function name gains a space`` () =
     assertPatched "module Test\nlet f(x) = x" "module Test\nlet f x = x"
+
+[<Fact>]
+let ``a wildcard argument of a union case keeps its parens without types`` () =
+    // `Ctor(_)` may be a case that takes no data, where `Ctor _` is an error;
+    // the typed FR0088 owns that shape
+    Assert.Empty(findIn "module Test\ntype K =\n    | Ctor\nlet f k =\n    match k with\n    | Ctor(_) -> 0")
+
+[<Fact>]
+let ``a function head still loses the parens around its wildcard parameter`` () =
+    // the union-case exemption keys on the capital: `f` is a function
+    match findIn "module Test\nlet f (_) = 1" with
+    | [ s ] -> Assert.Equal("_", s.ReplacementText)
+    | other -> failwithf "Expected one paren cleanup, got %A" other
+
+[<Fact>]
+let ``an object expression member keeps the parens around its parameter`` () =
+    // FSharp.CloudAgent and Mibo: `{ new I with member _.M(x) = ... }`
+    Assert.Empty(
+        findIn
+            "module Test\ntype I =\n    abstract M: int -> int\nlet make () =\n    { new I with\n        member _.M(x) = x + 1 }"
+    )

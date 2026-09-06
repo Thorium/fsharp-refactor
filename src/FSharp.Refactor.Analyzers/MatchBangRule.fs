@@ -14,7 +14,9 @@
 ///   - the binder is the match scrutinee and appears NOWHERE else — a use
 ///     inside a clause body would dangle once the binding is gone
 ///   - the bound expression and the binding line are single-line, and the
-///     `let!` owns its whole line so the line delete removes exactly it
+///     `let!` owns its whole line so the line delete removes exactly it —
+///     together with any blank lines between it and the match, so no empty
+///     line is left where the binding was
 module FSharp.Refactor.MatchBangRule
 
 open FSharp.Compiler.Syntax
@@ -199,11 +201,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                   // `let!` owns its whole line → the line delete is exact
                   if (source.GetLineString(letLine - 1)).Trim() = bindingText then
+                      // the blank lines the author kept between the `let!`
+                      // and its match go with the binding: left behind they
+                      // open the computation with an empty line (`task {`,
+                      // then nothing — fantomas's EndToEndTests) or double
+                      // the gap above the match (fsharplint's TestApi.fs)
+                      let matchLine = lou.Body.Range.StartLine
+                      let mutable removeEnd = letLine + 1
+
+                      while removeEnd < matchLine && (source.GetLineString(removeEnd - 1)).Trim() = "" do
+                          removeEnd <- removeEnd + 1
+
                       let removeRange =
                           Range.mkRange
                               binding.RangeOfBindingWithRhs.FileName
                               (Position.mkPos letLine 0)
-                              (Position.mkPos (letLine + 1) 0)
+                              (Position.mkPos removeEnd 0)
 
                       let edits =
                           [ removeRange, textOfRange source removeRange, ""

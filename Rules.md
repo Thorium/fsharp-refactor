@@ -37,7 +37,7 @@ has a row, its category and its default state match the code.
 | FR0027 | Correctness | v | | | `src.Changed.Add(fun n -> this.Bump n)` | — |
 | FR0028 | Performance | v | | v | `for c in customers do for o in db.Orders do use c o` | — |
 | FR0029 | Performance | v | | | `task { let cfg = load () in let! x = fetch cfg in use x }` | `let cfg = load () in task { let! x = fetch cfg in use x }` |
-| FR0030 | Performance | v | | | `for x in xs do acc.Add(x * 2)` | `acc.AddRange(xs \|> Seq.map (fun x -> x * 2))` |
+| FR0030 | Performance | v | | | `for x in xs do acc.Add x` | `acc.AddRange xs` |
 | FR0031 | Idiom | v | | | `"Hello " + name + "!"` | `$"Hello {name}!"` |
 | FR0032 | Correctness | v | | v | `type T() =<br>    let stream = new FileStream(...)` | `interface System.IDisposable with member _.Dispose() = stream.Dispose()` (editor) |
 | FR0033 | Idiom | v | | | `member this.Add a b = a + b` | — |
@@ -107,7 +107,7 @@ has a row, its category and its default state match the code.
 | FR0098 | Cosmetic | v | | | `let f (x: System.Int32) = x` | `let f (x: int) = x` |
 | FR0099 | Cosmetic | | | | `let x = 1;` | `let x = 1` |
 | FR0100 | Correctness | v | | | `\| Jordan -> (* not supported yet *) None` | `\| Jordan -> (* not supported yet *) raise (NotImplementedException())` |
-| FR0101 | Idiom | v | | | `for i in 0 .. xs.Length - 1 do handle xs.[i]` | `for x in xs do handle x` |
+| FR0101 | Idiom | v | | | `for i in 0 .. xs.Length - 1 do handle xs.[i]` | `for item in xs do handle item` |
 | FR0102 | Performance | v | | | `for i in 0 .. n - 1 do printfn "%s" names.[i] (* names: string list *)` | — |
 | FR0103 | Idiom | v | | | `if (shape :? Circle) then area (shape :?> Circle) elif (shape :? Rect) then width (shape :?> Rect) else failwith "unknown"` | `match shape with :? Circle as v -> area v \| :? Rect as v -> width v \| _ -> failwith "unknown"` |
 | FR0104 | Performance | v | | | `\| x :: rest -> collect (acc @ [x]) rest` | — |
@@ -138,7 +138,7 @@ has a row, its category and its default state match the code.
 | FR0129 | Idiom | v | | | `\| x when x = "A" -> 1` | `\| "A" -> 1` |
 | FR0130 | Idiom | v | v | | `let ConnectionName = "orders"` | `[<Literal>] let ConnectionName = "orders"` |
 | FR0131 | Idiom | v | | | `let rec sum acc = function [] -> acc \| x :: xs -> sum (acc + x) xs` | `[<TailCall>] let rec sum acc = function [] -> acc \| x :: xs -> sum (acc + x) xs` |
-| FR0132 | Idiom | v | | | `let interestRate r n = r * n // monthly` | `/// monthly<br>let interestRate r n = r * n` |
+| FR0132 | Idiom | v | | | `let interestRate r n = r * n // monthly, non-compounding` | `/// monthly, non-compounding<br>let interestRate r n = r * n` |
 | FR0133 | Cosmetic | v | | | `let thisIsMyVeryComplexMethod x =` | ``` let ``this is my very complex method`` x = ``` |
 | FR0134 | Idiom | | | | `type private Row = { Seen: DateTime }<br>{ Seen = DateTime.UtcNow }` | `type private Row = { Seen: DateTimeOffset }<br>{ Seen = DateTimeOffset.UtcNow }` |
 | FR0135 | Cosmetic | v | | | `(* ### Setup *)` (in .fsx) | `(** ### Setup *)` |
@@ -154,6 +154,9 @@ has a row, its category and its default state match the code.
 | FR0145 | Correctness | v | | | `{ Name = "x"; Retries = 3 }` (Tags and Timeout unassigned) | `{ Name = "x"; Retries = 3; Tags = []; Timeout = None }` |
 | FR0146 | Correctness | v | | | `cmd.CommandText <- "SELECT * FROM users"` | — |
 | FR0147 | Idiom | v | | | `System.Threading.Tasks.Task.Delay 10` (four times in the file, or six for a two-segment namespace) | `open System.Threading.Tasks` then `Task.Delay 10` |
+| FR0148 | Correctness | v | | | `type Session() =<br>    member _.Dispose() = inner.Dispose()` | note: implement `IDisposable` (nothing can `use` it otherwise) |
+| FR0149 | Correctness | v | | | `try<br>    async { f () } \|> Async.Start<br>with e -> g e` | `async {<br>    try<br>        f ()<br>    with e -> g e<br>}<br>\|> Async.Start` (editor); otherwise a note — unhandled on a pool thread kills the process |
+| FR0150 | Correctness | v | | | `use cts = new CancellationTokenSource()<br>task { ... cts.Token ... }` | `task {<br>    use cts = ...<br>    ... }` (editor) |
 
 \*) Enabled by default. A blank cell means the rule is off until
 `fsharprefactor.json` turns it on (`"FR0099": true`) or a run asks for it

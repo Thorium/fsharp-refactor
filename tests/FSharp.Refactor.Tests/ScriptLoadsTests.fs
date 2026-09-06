@@ -165,3 +165,22 @@ let ``a reference assembly is not what a script can run against`` () =
             Assert.Equal(None, s.InsertText)
             Assert.Contains("build it", s.Message)
         | other -> failwithf "Expected one advisory suggestion, got %A" other)
+
+[<Fact>]
+let ``a script whose own load names a missing file is stale and gets no suggestion`` () =
+    // fsharp.formatting's Script.fsx: `#load "Library1.fs"` for a file long
+    // gone; its FS0039s are not a missing #load
+    withProject
+        [ "Helpers.fs"; "Gone.fs"; "Braiding.fs" ]
+        "printfn \"%d\" (Lib.Braiding.braid ())"
+        (fun _ suggestions -> Assert.Empty suggestions)
+
+[<Fact>]
+let ``a script whose #r names an unbuilt dll gets no suggestion`` () =
+    // fantomas's docs scripts: `#r` to an artifacts dll never built here made
+    // every name of that project "not defined", and the rule answered with a
+    // #load of a signature file
+    withProject
+        [ "Helpers.fs"; "Braiding.fs" ]
+        "#r \"../src/bin/Nope.dll\"\nprintfn \"%d\" (Lib.Braiding.braid ())"
+        (fun _ suggestions -> Assert.Empty suggestions)

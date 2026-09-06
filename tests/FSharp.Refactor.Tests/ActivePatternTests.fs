@@ -28,13 +28,13 @@ let ``dotted guard function becomes an active pattern`` () =
         // a .NET member's extracted input is annotated with its resolved
         // parameter type — for the overloaded ones (Path.IsPathRooted) it
         // is the difference between compiling and FS0041
-        "module Test\n[<return: Struct>]\nlet inline private (|IsNullOrEmpty|_|) (input: string) =\n    if System.String.IsNullOrEmpty input then ValueSome input else ValueNone\nlet describe (s: string) =\n    match s with\n    | IsNullOrEmpty _ -> \"empty\"\n    | s -> s"
+        "module Test\n[<return: Struct>]\nlet inline private (|IsNullOrEmpty|_|) (input: string) =\n    if System.String.IsNullOrEmpty input then ValueSome input else ValueNone\n\nlet describe (s: string) =\n    match s with\n    | IsNullOrEmpty _ -> \"empty\"\n    | s -> s"
 
 [<Fact>]
 let ``module-level guard function becomes an active pattern`` () =
     assertSingleSuggestion
         "module Test\nlet isEven (n: int) = n % 2 = 0\nlet f x =\n    match x with\n    | n when isEven n -> n\n    | n -> 0"
-        "module Test\nlet isEven (n: int) = n % 2 = 0\n[<return: Struct>]\nlet inline private (|IsEven|_|) input =\n    if isEven input then ValueSome input else ValueNone\nlet f x =\n    match x with\n    | IsEven n -> n\n    | n -> 0"
+        "module Test\nlet isEven (n: int) = n % 2 = 0\n[<return: Struct>]\nlet inline private (|IsEven|_|) input =\n    if isEven input then ValueSome input else ValueNone\n\nlet f x =\n    match x with\n    | IsEven n -> n\n    | n -> 0"
 
 [<Fact>]
 let ``locally defined guard function is not extracted`` () =
@@ -107,7 +107,7 @@ let ``a guard variable the body never reads becomes a wildcard`` () =
     // under warnings-as-errors (FsAutoComplete's AdjustConstant)
     assertSingleSuggestion
         "module Test\nlet kind (ch: char) =\n    match ch with\n    | c when System.Char.IsDigit c -> \"digit\"\n    | _ -> \"other\""
-        "module Test\n[<return: Struct>]\nlet inline private (|IsDigit|_|) (input: char) =\n    if System.Char.IsDigit input then ValueSome input else ValueNone\nlet kind (ch: char) =\n    match ch with\n    | IsDigit _ -> \"digit\"\n    | _ -> \"other\""
+        "module Test\n[<return: Struct>]\nlet inline private (|IsDigit|_|) (input: char) =\n    if System.Char.IsDigit input then ValueSome input else ValueNone\n\nlet kind (ch: char) =\n    match ch with\n    | IsDigit _ -> \"digit\"\n    | _ -> \"other\""
 
 [<Fact>]
 let ``a declaration left of its siblings' column gets no pattern`` () =
@@ -151,3 +151,17 @@ let ``an old FSharp.Core gets the option-returning pattern`` () =
         Assert.DoesNotContain("Struct", s.InsertText)
         Assert.Contains("then Some input else None", s.InsertText)
     | other -> failwithf "Expected one pattern, got %A" other
+
+[<Fact>]
+let ``a guard under #if yields a pattern under the same #if`` () =
+    // a line generated from a conditional branch and lifted to module
+    // level must keep its condition: freed of it, the definition would
+    // need names that only exist under it
+    let source =
+        "module Test\nopen System.IO\nlet f (p: string) =\n#if !FOO\n    match p with\n    | q when Path.IsPathRooted q -> q\n    | q -> q\n#else\n    p\n#endif"
+
+    match findIn source with
+    | [ s ] ->
+        Assert.StartsWith("#if !FOO\n", s.InsertText)
+        Assert.Contains("\n#endif\n", s.InsertText)
+    | other -> failwithf "Expected one suggestion, got %A" other

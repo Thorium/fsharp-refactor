@@ -52,6 +52,10 @@ type Suggestion =
         /// when the file already opens the namespace) and every prefix
         /// removal.
         Edits: (range * string * string) list
+        /// Why the open is NOT offered: the clashing names and where they
+        /// come from, or the place the open cannot take. None when the
+        /// edits are offered.
+        Reason: string option
     }
 
 /// The namespace an entity lives in, walking out of nested modules.
@@ -238,6 +242,10 @@ let find
                   | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
                   | SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when ids.Length >= 2 ->
                       yield ids
+                  // an assignment target is a spelling too: fsharp.formatting's
+                  // `System.Diagnostics.Trace.AutoFlush <- true` kept its prefix
+                  // while the reads beside it lost theirs
+                  | SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _) when ids.Length >= 2 -> yield ids
                   | _ -> ()
               for _, t in index.Types do
                   match t with
@@ -318,13 +326,43 @@ let find
         // where the open goes: after the last open that shares the
         // namespace's first segment (System.* beside the other System.*
         // opens), else after the last open, else after the header line
-        let insertionPoint (block: int) (ns: string) (firstUseLine: int) =
+        // the `#if` region a line sits in: the line number of the innermost
+        // open `#if` (or `#else`, a different condition) above it, 0 when
+        // none. An open and the uses it serves must share a region: the F#
+        // compiler's TypedTreeOps.ExprOps.fs had its last open inside
+        // `#if !NO_TYPEPROVIDERS`, the inserted `open FSComp` followed it
+        // there while the uses were unconditional, and the Proto build no
+        // longer compiled. Uses that are all under one condition get their
+        // open under the same one — a namespace needed only there must not
+        // become a dependency of every build
+        let conditionalRegion (line: int) =
+            let stack = System.Collections.Generic.Stack<int>()
+
+            for l in 0 .. min (line - 2) (source.GetLineCount() - 1) do
+                let text = source.GetLineString(l).TrimStart()
+
+                if text.StartsWith "#if" then
+                    stack.Push(l + 1)
+                elif text.StartsWith "#else" then
+                    if stack.Count > 0 then
+                        stack.Pop() |> ignore
+
+                    stack.Push(l + 1)
+                elif text.StartsWith "#endif" then
+                    if stack.Count > 0 then
+                        stack.Pop() |> ignore
+
+            if stack.Count = 0 then 0 else stack.Peek()
+
+        let insertionPoint (block: int) (ns: string) (firstUseLine: int) (region: int) =
             let family = ns.Split('.').[0]
 
             // an open scopes from its own line down: one below the first
-            // use is no neighbour to land beside, nor a last open to follow
+            // use is no neighbour to land beside, nor a last open to follow;
+            // and only an open of the uses' own region is an anchor
             let opened =
-                blocks.[block].Opened |> List.filter (fun (_, r) -> r.EndLine < firstUseLine)
+                blocks.[block].Opened
+                |> List.filter (fun (_, r) -> r.EndLine < firstUseLine && conditionalRegion r.StartLine = region)
 
             let familyOpens =
                 opened
@@ -351,6 +389,19 @@ let find
             | None, None, Some(_, lastOpen), _ ->
                 let at = Position.mkPos (lastOpen.EndLine + 1) 0
                 Some(Range.mkRange lastOpen.FileName at at, String.replicate lastOpen.StartColumn " ")
+            // no open in the uses' `#if` region: right below its `#if` line,
+            // at the indentation of the first line there
+            | None, None, None, _ when region > 0 ->
+                let indent =
+                    seq { region .. source.GetLineCount() - 1 }
+                    |> Seq.map source.GetLineString
+                    |> Seq.tryFind (fun l -> l.Trim() <> "")
+                    |> Option.map (fun l -> l.Substring(0, l.Length - l.TrimStart().Length))
+                    |> Option.defaultValue ""
+
+                let at = Position.mkPos (region + 1) 0
+                let fileName = (List.head (List.head spellings)).idRange.FileName
+                Some(Range.mkRange fileName at at, indent)
             | None, None, None, Some(fileName, line) ->
                 let at = Position.mkPos line 0
                 Some(Range.mkRange fileName at at, "")
@@ -452,7 +503,22 @@ let find
                         (e.DisplayName, e.IsFSharpModule) :: casesOf e
                         @ (if e.IsFSharpModule && autoOpen e then contentsOf e else [])
                     else
-                        []
+                        // a namespace BENEATH X is a name `open X` brings too:
+                        // `open System.Diagnostics` makes `Metrics.Meter` reach
+                        // System.Diagnostics.Metrics.Meter, and a module named
+                        // Metrics elsewhere (the F# compiler's
+                        // FSharp.Compiler.Diagnostics.Metrics) loses to it
+                        match e.Namespace with
+                        | Some n when n.StartsWith(openedName + ".") ->
+                            let rest = n.Substring(openedName.Length + 1)
+
+                            let child =
+                                match rest.IndexOf '.' with
+                                | -1 -> rest
+                                | i -> rest.Substring(0, i)
+
+                            [ child, false ]
+                        | _ -> []
                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                     [])
             |> Seq.fold
@@ -555,6 +621,13 @@ let find
             [ for _, e in index.Exprs do
                   match e with
                   | SynExpr.LongIdent(longDotId = SynLongIdent(id = head :: _ :: _)) -> yield head
+                  // a bare construction or call: fsharplint's `Byte('x'B)` is
+                  // its own union case until `open System` makes it the
+                  // System.Byte constructor
+                  | SynExpr.App(funcExpr = SynExpr.Ident head) when
+                      head.idText.Length > 0 && System.Char.IsUpper head.idText.[0]
+                      ->
+                      yield head
                   | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ id ]))) -> yield id
                   | SynExpr.New(targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = [ id ])))) ->
                       yield id
@@ -570,7 +643,9 @@ let find
         // System`, `List.map` the List module under `open
         // System.Collections.Generic` — but a MODULE of that name from the
         // namespace would shadow it (Expecto.Expect over Utils.Utils.Expect)
-        let resolvesOutside (ns: string) (id: Ident) =
+        // ... and if so, where the name resolves today: the namespace, or
+        // "" for a symbol with none
+        let resolvesOutsideTo (ns: string) (id: Ident) : string option =
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
@@ -584,11 +659,77 @@ let find
                          false)
                     && not ((exportedModules ns).Contains id.idText)
                     ->
-                    false
-                | symbol -> symbolNamespace symbol <> Some ns
-            | None -> false
+                    None
+                | symbol ->
+                    match symbolNamespace symbol with
+                    | Some other when other = ns -> None
+                    | Some other -> Some other
+                    | None -> Some ""
+            | None -> None
 
-        let clashes (ns: string) (introduced: Set<string>) (alreadyOpen: bool) =
+        // FSharp.Core is open in every file before any `open` of its own, and
+        // a later open shadows it — except that a type ABBREVIATION does not
+        // win against FSharp.Core's real type of the same name: the F#
+        // compiler's `Tagged.Map<_, _>` (an abbreviation of the
+        // three-parameter Map) shortened to `Map<_, _>` under `open Tagged`
+        // reached FSharp.Core's Map, which has no FromList
+        let fsharpCoreNames =
+            lazy
+                ([ "Microsoft.FSharp.Core"
+                   "Microsoft.FSharp.Collections"
+                   "Microsoft.FSharp.Control"
+                   "Microsoft.FSharp.Text"
+                   "Microsoft.FSharp.Linq" ]
+                 |> Seq.collect (fun ns -> scopeNames ns |> Map.toSeq |> Seq.map fst)
+                 |> Set.ofSeq)
+
+        let abbreviationsIn (ns: string) =
+            let ofEntities (entities: FSharpEntity seq) =
+                entities
+                |> Seq.collect flatten
+                |> Seq.choose (fun e ->
+                    try
+                        if e.Namespace = Some ns && e.IsFSharpAbbreviation then
+                            Some e.DisplayName
+                        else
+                            None
+                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                        None)
+
+            let fromAssemblies =
+                exportedNamesCache.GetOrAdd(
+                    "abbreviations:" + ns + "|" + assemblyKey,
+                    fun _ ->
+                        try
+                            assemblies
+                            |> Seq.collect (fun a ->
+                                try
+                                    a.Contents.Entities |> List.ofSeq
+                                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                    [])
+                            |> ofEntities
+                            |> Seq.map (fun name -> name, true)
+                            |> Map.ofSeq
+                        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                            Map.empty
+                )
+
+            fromAssemblies
+            |> Map.toSeq
+            |> Seq.map fst
+            |> Set.ofSeq
+            |> Set.union (ofEntities projectEntities.Value |> Set.ofSeq)
+
+        let quoted (names: seq<string>) =
+            names
+            |> Seq.sort
+            |> Seq.truncate 4
+            |> Seq.map (sprintf "'%s'")
+            |> String.concat ", "
+
+        /// Why an open would clash — the names and where they come from —
+        /// or None when it would not.
+        let clashes (ns: string) (introduced: Set<string>) (alreadyOpen: bool) : string option =
             let exported = exportedNames ns
 
             // for a namespace already open only the names the shortening
@@ -599,27 +740,75 @@ let find
                 else
                     Set.union introduced exported
 
-            let otherScope =
-                allOpened
-                |> Set.remove ns
-                |> Seq.collect (fun opened -> scopeNames opened |> Map.toSeq |> Seq.map fst)
-                |> Set.ofSeq
-
             // a name we introduce, or any name the open brings, that the file
             // defines itself
-            (Set.intersect arriving definedHere |> Set.isEmpty |> not)
+            let ownDefinitions = Set.intersect arriving definedHere
+
             // a name we introduce that another open of the file also brings:
             // whichever open is nearer wins, and the qualified spelling was
             // the author's way of choosing
-            || (Set.intersect introduced otherScope |> Set.isEmpty |> not)
+            let fromOtherOpens =
+                allOpened
+                |> Set.remove ns
+                |> Seq.collect (fun opened ->
+                    scopeNames opened
+                    |> Map.toSeq
+                    |> Seq.map fst
+                    |> Seq.filter introduced.Contains
+                    |> Seq.map (fun name -> name, opened))
+                |> List.ofSeq
+
+            // an abbreviation we introduce that FSharp.Core spells too
+            let coreAbbreviations =
+                let abbreviated = Set.intersect introduced (abbreviationsIn ns)
+
+                if abbreviated.IsEmpty then
+                    Set.empty
+                else
+                    Set.intersect abbreviated fsharpCoreNames.Value
+
             // a name the open brings that the file already uses unqualified
             // for something from elsewhere — checked on the first three
             // occurrences of each such name, not on every one: a shadowing
             // binding is visible in the first uses it covers
-            || (unqualifiedUses
+            let usedForElse () =
+                unqualifiedUses
                 |> List.filter (fun id -> arriving.Contains id.idText)
                 |> List.groupBy (fun id -> id.idText)
-                |> List.exists (fun (_, ids) -> ids |> List.truncate 3 |> List.exists (resolvesOutside ns)))
+                |> List.choose (fun (name, ids) ->
+                    ids
+                    |> List.truncate 3
+                    |> List.tryPick (resolvesOutsideTo ns)
+                    |> Option.map (fun other -> name, other))
+
+            if not ownDefinitions.IsEmpty then
+                Some $"this file defines {quoted ownDefinitions} itself"
+            elif not fromOtherOpens.IsEmpty then
+                let described =
+                    fromOtherOpens
+                    |> List.map (fun (name, opened) -> $"'{name}' (open {opened})")
+                    |> List.truncate 4
+                    |> String.concat ", "
+
+                let come = if fromOtherOpens.Length = 1 then "comes" else "come"
+                Some $"{described} already {come} from another open of this file"
+            elif not coreAbbreviations.IsEmpty then
+                Some $"{quoted coreAbbreviations} would shorten to an abbreviation that FSharp.Core spells too"
+            else
+                match usedForElse () with
+                | [] -> None
+                | uses ->
+                    let described =
+                        uses
+                        |> List.truncate 4
+                        |> List.map (fun (name, other) ->
+                            if other = "" then
+                                $"'{name}'"
+                            else
+                                $"'{name}' (from {other})")
+                        |> String.concat ", "
+
+                    Some $"this file already uses {described} unqualified for something else"
 
         resolved
         |> List.groupBy (fun (ns, r) -> ns, blockOf r)
@@ -631,7 +820,15 @@ let find
             // open for every use only when the open precedes them all
             let alreadyOpen =
                 blocks.[block].Opened
-                |> List.exists (fun (name, r) -> name = ns && r.EndLine < firstUseLine)
+                |> List.exists (fun (name, r) ->
+                    name = ns
+                    && r.EndLine < firstUseLine
+                    // an open under `#if` serves only uses under the same
+                    // condition; the unconditional ones would break elsewhere
+                    && (let openRegion = conditionalRegion r.StartLine
+
+                        openRegion = 0
+                        || uses |> List.forall (fun (_, u) -> conditionalRegion u.StartLine = openRegion)))
 
             if count >= minUses || (depth >= 3 && count >= minDeepUses) || alreadyOpen then
                 let removals = uses |> List.map (fun (_, r) -> r, textOfRange source r, "")
@@ -647,8 +844,20 @@ let find
                         if m.Success then Some m.Value else None)
                     |> Set.ofList
 
+                // the `#if` region the uses share: 0 when any use is
+                // unconditional (the namespace resolves in every build, so
+                // the open may too), the region when all sit under one, and
+                // none when they are split across conditions
+                let region =
+                    let regions =
+                        uses |> List.map (fun (_, r) -> conditionalRegion r.StartLine) |> List.distinct
+
+                    if List.contains 0 regions then Some 0
+                    elif regions.Length = 1 then Some regions.Head
+                    else None
+
                 let insertion =
-                    match insertionPoint block ns firstUseLine with
+                    match region |> Option.bind (insertionPoint block ns firstUseLine) with
                     | Some(at, indent) when not alreadyOpen -> [ at, "", $"{indent}open {ns}\n" ]
                     | _ -> []
 
@@ -660,35 +869,82 @@ let find
                 // of any kind leaves the spelling as it is
                 let relativeShadow =
                     blocks.[block].Own
-                    |> Seq.exists (fun own ->
+                    |> Seq.tryFind (fun own ->
                         own <> ""
                         && (moduleNamed (own + "." + ns) || not (Map.isEmpty (scopeNames (own + "." + ns)))))
 
+                // a name an ENCLOSING namespace already provides — the F#
+                // compiler's every file sits under `FSharp.Compiler`, whose
+                // own `SR` module is in scope unqualified; `open FSComp` to
+                // spell `FSComp.SR.x` as `SR.x` made `SR` mean two modules,
+                // one convention in ten files and another in the rest
+                let enclosingShadow =
+                    blocks.[block].Own
+                    |> Seq.tryPick (fun own ->
+                        if own = "" then
+                            None
+                        else
+                            let shadowed = Set.intersect introduced (exportedNames own)
+
+                            if shadowed.IsEmpty then None else Some(own, shadowed))
+
+                // why the open has no place, when it has none
                 let noPlace =
-                    not alreadyOpen && (insertion.IsEmpty || moduleNamed ns || relativeShadow)
+                    if alreadyOpen then
+                        None
+                    elif insertion.IsEmpty then
+                        Some "its uses sit under different #if conditions, so no one open serves them all"
+                    elif moduleNamed ns then
+                        Some $"a module spelled '{ns}' is what the open would resolve to, and it refuses to be opened"
+                    else
+                        match relativeShadow, enclosingShadow with
+                        | Some own, _ -> Some $"inside '{own}' the open would resolve to '{own}.{ns}' first"
+                        | None, Some(own, shadowed) ->
+                            // the enclosing module is this file's own: the
+                            // name is the file's own definition
+                            let ownDefinitions = Set.intersect shadowed definedHere
+
+                            if not ownDefinitions.IsEmpty then
+                                Some $"this file defines {quoted ownDefinitions} itself"
+                            else
+                                let reach = if shadowed.Count = 1 then "reaches" else "reach"
+                                Some $"{quoted shadowed} already {reach} this file from the enclosing '{own}'"
+                        | None, None -> None
 
                 if alreadyOpen && removals.IsEmpty then
                     None
-                elif alreadyOpen && clashes ns introduced true then
+                elif alreadyOpen && (enclosingShadow.IsSome || (clashes ns introduced true).IsSome) then
                     // the namespace is open and the author still qualified:
                     // the short name means something else here
                     None
-                // an open namespace never gets a "would clash" note: the names
-                // it brings are in scope already, accepted by the compiler
-                elif not alreadyOpen && (noPlace || clashes ns introduced false) then
-                    // worth an open, but the open would clash: say so, fix
-                    // nothing
-                    Some
-                        { Range = snd uses.Head
-                          Namespace = ns
-                          Uses = count
-                          Edits = [] }
                 else
-                    Some
-                        { Range = snd uses.Head
-                          Namespace = ns
-                          Uses = count
-                          Edits = insertion @ removals }
+                    // an open namespace never gets a "would clash" note: the names
+                    // it brings are in scope already, accepted by the compiler
+                    let reason =
+                        if alreadyOpen then
+                            None
+                        else
+                            match noPlace with
+                            | Some _ -> noPlace
+                            | None -> clashes ns introduced false
+
+                    match reason with
+                    | Some _ ->
+                        // worth an open, but the open would clash: say so, fix
+                        // nothing
+                        Some
+                            { Range = snd uses.Head
+                              Namespace = ns
+                              Uses = count
+                              Edits = []
+                              Reason = reason }
+                    | None ->
+                        Some
+                            { Range = snd uses.Head
+                              Namespace = ns
+                              Uses = count
+                              Edits = insertion @ removals
+                              Reason = None }
             else
                 None)
         |> List.sortByDescending (fun s -> (s.Namespace.Split '.').Length)

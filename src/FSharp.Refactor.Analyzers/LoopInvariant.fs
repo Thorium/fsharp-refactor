@@ -194,8 +194,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                         match pureIdentsLoop [] [] [ rhs ] with
                         | ValueSome(reads, ops) when
-                            reads
-                            |> List.forall (fun rd -> not (forbidden.Contains rd || assignedInside loopExpr.Range rd))
+                            // only an invariant that DOES WORK is worth
+                            // hoisting: an operator expression (`a + 3`).
+                            // A bare identifier, constant or literal
+                            // copy costs nothing per iteration, and
+                            // hoisting `let ny = sinPhi` out of Mibo's
+                            // Primitive3D inner loop only separated it
+                            // from the `nx`/`nz` it belongs with
+                            not ops.IsEmpty
+                            && reads
+                               |> List.forall (fun rd ->
+                                   not (forbidden.Contains rd || assignedInside loopExpr.Range rd))
                             // the hoisted binding's wider scope must collide
                             // with nothing: the name may live only in the loop
                             && not (usedOutside loopExpr.Range name.idText)
@@ -215,11 +224,26 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     (Position.mkPos (letLine + 1) 0)
 
                             let indent = System.String(' ', anchor.StartColumn)
-                            let insertAt = Range.mkRange anchor.FileName anchor.Start anchor.Start
 
-                            let edits =
-                                [ insertAt, "", $"let {bindingText}\n{indent}"
-                                  removeRange, textOfRange source removeRange, "" ]
+                            // a binding lifted out of the loop keeps the `#if`
+                            // it was written under; a directive has to open its
+                            // own line, so that form is inserted at column 0 of
+                            // the anchor's line, ahead of its indentation
+                            let insert =
+                                match conditionToKeep source letLine anchor.StartLine with
+                                | Some condition ->
+                                    Range.mkRange
+                                        anchor.FileName
+                                        (Position.mkPos anchor.StartLine 0)
+                                        (Position.mkPos anchor.StartLine 0),
+                                    "",
+                                    $"#if {condition}\n{indent}let {bindingText}\n#endif\n"
+                                | None ->
+                                    Range.mkRange anchor.FileName anchor.Start anchor.Start,
+                                    "",
+                                    $"let {bindingText}\n{indent}"
+
+                            let edits = [ insert; removeRange, textOfRange source removeRange, "" ]
 
                             if
                                 not (edits |> List.exists (fun (r, _, _) -> spansDirective source r))

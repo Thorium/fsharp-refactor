@@ -79,10 +79,23 @@ let private referenceNames (name: string) =
     else
         [ name ]
 
+/// The text with its string literals and comments blanked: a name inside
+/// `failwith "StripToNominalTyconRef: ..."` is no reference (the F#
+/// compiler's Optimizer.fs kept `let rec` on fifteen functions whose only
+/// "self-call" was such a message).
+let private codeOnly (text: string) =
+    Regex.Replace(
+        text,
+        @"@""(?:[^""]|"""")*""|""""""[\s\S]*?""""""|""(?:\\.|[^""\\])*""|\(\*[\s\S]*?\*\)|//[^\n]*",
+        fun m -> String.replicate m.Length " "
+    )
+
 /// Any use of `name` (by any of its reference identifiers) in the text.
 let private mentions (text: string) (name: string) =
+    let code = codeOnly text
+
     referenceNames name
-    |> List.exists (fun part -> Regex.IsMatch(text, identifierPattern part))
+    |> List.exists (fun part -> Regex.IsMatch(code, identifierPattern part))
 
 let rec private declsOf (decls: SynModuleDecl list) : SynModuleDecl list =
     decls
@@ -136,22 +149,15 @@ let private leansOnParameters
         | SynPat.As(SynPat.IsInst _, _, _) -> true
         | _ -> false
 
-    // a record label resolves on a bare parameter (`p.Index` names the
-    // record), a class member does not: only the latter leans on the group
-    let memberLeans (id: Ident) (m: Ident) =
-        bare.Contains id.idText
-        && (match check with
-            | Some check ->
-                let r = m.idRange
-                let lineText = source.GetLineString(r.EndLine - 1)
-
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ m.idText ]) with
-                | Some symbolUse ->
-                    match symbolUse.Symbol with
-                    | :? FSharpField -> false
-                    | _ -> true
-                | None -> false
-            | None -> false)
+    // any dotted access on a bare parameter leans on the group. A record
+    // label used to be exempt (`p.Index` names the record) — but standing
+    // alone the compiler resolves the label to the LAST record in scope that
+    // carries it, which is not necessarily the one the group inferred: the
+    // F# compiler's Optimizer.fs has several records with `Info` and
+    // `settings`, and a member pulled out with bare parameters failed with
+    // "Lookup on object of indeterminate type". The annotated header names
+    // the group's own type and costs nothing
+    let memberLeans (id: Ident) (_: Ident) = bare.Contains id.idText
 
     not bare.IsEmpty
     && index.Exprs
@@ -294,6 +300,34 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                       bindings
                       |> List.map (fun (SynBinding(trivia = trivia)) -> trivia.LeadingKeyword.Range)
 
+                  // comment lines directly above a binding's keyword belong
+                  // to it when they are doc comments (///) or mention its
+                  // name; those travel with it. An unrelated comment stays
+                  // put — and blocks nothing
+                  let commentStartOf i =
+                      let keywordLine = (List.item i keywordStarts).StartLine
+                      let name = List.item i names
+                      let mutable first = keywordLine
+                      let mutable scanning = true
+
+                      while scanning && first > 1 do
+                          let above = source.GetLineString(first - 2).Trim()
+
+                          let namesIt =
+                              referenceNames name
+                              |> List.exists (fun part -> Regex.IsMatch(above, identifierPattern part))
+
+                          if above.StartsWith "///" || (above.StartsWith "//" && namesIt) then
+                              first <- first - 1
+                          else
+                              scanning <- false
+
+                      first
+
+                  // a binding's block runs from its leading keyword to the
+                  // NEXT binding's own comments, not to its keyword: the doc
+                  // comment above `and g` is g's, and moving f out with it
+                  // orphaned five docs in the F# compiler's Optimizer.fs
                   let blockOf i =
                       let start = (List.item i keywordStarts).Start
 
@@ -301,7 +335,13 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                           if i = bindings.Length - 1 then
                               decl.Range.End
                           else
-                              (List.item (i + 1) keywordStarts).Start
+                              let nextKeyword = (List.item (i + 1) keywordStarts).Start
+                              let nextComments = commentStartOf (i + 1)
+
+                              if nextComments < nextKeyword.Line then
+                                  Position.mkPos nextComments 0
+                              else
+                                  nextKeyword
 
                       Range.mkRange decl.Range.FileName start finish
 
@@ -309,24 +349,7 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                       let keywordLine = (List.item i keywordStarts).StartLine
                       let name = List.item i names
 
-                      // comment lines directly above the `and` belong to the
-                      // member when they are doc comments (///) or mention
-                      // its name; those travel with it. An unrelated comment
-                      // stays put — and blocks nothing
-                      let commentStartLine =
-                          let mutable first = keywordLine
-
-                          let mutable scanning = true
-
-                          while scanning && first > 1 do
-                              let above = source.GetLineString(first - 2).Trim()
-
-                              if above.StartsWith "///" || (above.StartsWith "//" && mentions above name) then
-                                  first <- first - 1
-                              else
-                                  scanning <- false
-
-                          first
+                      let commentStartLine = commentStartOf i
 
                       let plainBlock = blockOf i
                       let binding = List.item i bindings
@@ -334,11 +357,27 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                       let rawText = textOfRange source plainBlock
 
                       // a record-building member leaves with its types
-                      // written out, or not at all
+                      // written out, or not at all. So does any member of a
+                      // file with a SIGNATURE: alone, a parameter the body
+                      // never constrains (`accFreeInTupInfo _opts unt acc`,
+                      // the F# compiler) generalises to 'a, and the .fsi's
+                      // concrete type then fails FS0034 — inside the group
+                      // the callers had pinned it
+                      let signatureBeside =
+                          let path = plainBlock.FileName
+
+                          not (System.String.IsNullOrEmpty path)
+                          && (try
+                                  System.IO.File.Exists(System.IO.Path.ChangeExtension(path, ".fsi"))
+                              with
+                              | :? System.ArgumentException
+                              | :? System.IO.IOException -> false)
+
                       let movableText =
                           if
                               buildsRecord index.Value binding.RangeOfBindingWithRhs
                               || leansOnParameters check source index.Value binding
+                              || signatureBeside
                           then
                               match check with
                               | Some check ->
@@ -390,8 +429,10 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                       // the member still leaves, but as its own `let rec` —
                       // a plain `let` would not compile
                       let isSelfRecursive =
+                          let code = codeOnly bindingText
+
                           referenceNames name
-                          |> List.exists (fun part -> Regex.Matches(bindingText, identifierPattern part).Count >= 2)
+                          |> List.exists (fun part -> Regex.Matches(code, identifierPattern part).Count >= 2)
 
                       if
                           attrs.IsEmpty
@@ -425,7 +466,12 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                                 // line must not bring its own (raw comment
                                 // lines carry it; inside a nested module
                                 // that doubled up)
-                                InsertText = extracted.TrimStart().TrimEnd() + $"\n\n{indent}"
+                                // a member under `#if` leaves under the same `#if`
+                                InsertText =
+                                  (match conditionToKeep source keywordLine decl.Range.StartLine with
+                                   | Some condition -> $"#if {condition}\n{extracted.TrimStart().TrimEnd()}\n#endif"
+                                   | None -> extracted.TrimStart().TrimEnd())
+                                  + $"\n\n{indent}"
                                 MemberName = name
                                 IsSelfRecursive = isSelfRecursive }
                       else

@@ -81,3 +81,34 @@ let ``FR0038: a culture-sensitive call carries the ordinal char overload as an e
             Assert.Equal("'@'", replacement)
         | None -> failwith "Expected the ordinal offer"
     | other -> failwithf "Expected one char-overload note, got %A" other
+
+[<Fact>]
+let ``FR0038: Contains carries the portable IndexOf form for a narrow target`` () =
+    // Contains(char) is netstandard2.1+, IndexOf(char) is everywhere and
+    // both are ordinal — so the two forms agree
+    match charOverloadsIn "let f (s: string) = s.Contains \"x\"" with
+    | [ s ] ->
+        match s.PortableOffer with
+        | Some(r, _, replacement) ->
+            Assert.Equal("s.IndexOf 'x' >= 0", replacement)
+            let patched = applyEdit "let f (s: string) = s.Contains \"x\"" r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the portable offer"
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0038: the culture-sensitive methods carry no portable form`` () =
+    // StartsWith(string) is culture-sensitive and StartsWith(char) is not:
+    // that change is the author's call, not a portability rewrite
+    match charOverloadsIn "let f (s: string) = s.StartsWith \"x\"" with
+    | [ s ] -> Assert.True(s.PortableOffer.IsNone)
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0038: a dotted receiver keeps its path in the portable form`` () =
+    match charOverloadsIn "type T = { Name: string }\nlet f (t: T) = t.Name.Contains \"x\"" with
+    | [ s ] ->
+        match s.PortableOffer with
+        | Some(_, _, replacement) -> Assert.Equal("t.Name.IndexOf 'x' >= 0", replacement)
+        | None -> failwith "Expected the portable offer"
+    | other -> failwithf "Expected exactly one suggestion, got %A" other

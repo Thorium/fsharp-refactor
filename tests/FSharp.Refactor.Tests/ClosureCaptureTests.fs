@@ -48,6 +48,52 @@ let ``stateless handler is fine`` () =
     )
 
 [<Fact>]
+let ``a handler on an event created in the same member is not a leak`` () =
+    // fsdocs' `let docsDependenciesChanged = Event<string>()` followed by
+    // `docsDependenciesChanged.Publish.Add(fun ...)` in one member: the
+    // publisher is born there and cannot outlive the object
+    Assert.Empty(
+        capturesIn
+            "type Watcher() =\n    let mutable total = 0\n    member this.Run() =\n        let changed = Event<string>()\n        changed.Publish.Add(fun s -> this.Bump s.Length)\n        changed.Trigger \"x\"\n    member this.Bump n = total <- total + n"
+    )
+
+    Assert.Empty(
+        capturesIn
+            "type Watcher() =\n    let mutable total = 0\n    member this.Run() =\n        let changed = new Event<string>()\n        changed.Publish.Add(fun s -> this.Bump s.Length)\n        changed.Trigger \"x\"\n    member this.Bump n = total <- total + n"
+    )
+
+[<Fact>]
+let ``a process-wide publisher is told apart from one handed in`` () =
+    // fsi: `AppDomain.CurrentDomain.ProcessExit |> Event.add (fun _ -> ...)`
+    // and `AppDomain.CurrentDomain.UnhandledException.Add(fun args -> ...)`
+    // pin the object until the process exits
+    let publisherOf (source: string) =
+        match capturesIn source with
+        | [ s ] -> s.Publisher
+        | other -> failwithf "Expected exactly one capture note, got %A" other
+
+    Assert.Equal(
+        ClosureCapture.PublisherKind.ProcessWide,
+        publisherOf
+            "type Host() =\n    let mutable exits = 0\n    member this.Hook() = System.AppDomain.CurrentDomain.ProcessExit |> Event.add (fun _ -> this.Bump())\n    member this.Bump() = exits <- exits + 1"
+    )
+
+    Assert.Equal(
+        ClosureCapture.PublisherKind.ProcessWide,
+        publisherOf
+            "type Host() =\n    let mutable exits = 0\n    member this.Hook() = System.AppDomain.CurrentDomain.UnhandledException.Add(fun _ -> this.Bump())\n    member this.Bump() = exits <- exits + 1"
+    )
+
+    // a publisher handed in lives as long as its owner does
+    Assert.Equal(
+        ClosureCapture.PublisherKind.External,
+        publisherOf (
+            sourcePrefix
+            + "type Sub(src: Src) =\n    let mutable total = 0\n    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)\n    member this.Bump n = total <- total + n"
+        )
+    )
+
+[<Fact>]
 let ``Subscribe is also a sink`` () =
     let suggestions =
         capturesIn (

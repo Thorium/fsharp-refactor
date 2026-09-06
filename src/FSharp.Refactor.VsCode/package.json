@@ -2,7 +2,7 @@
     "name": "fsharp-refactor-vscode",
     "displayName": "FSharp.Refactor",
     "description": "140 functional refactoring hints with one-click fixes for F# — wires the FSharp.Refactor analyzers into Ionide.",
-    "version": "0.8.3",
+    "version": "0.8.4",
     "publisher": "TuomasHietanen",
     "license": "Unlicense",
     "icon": "icon.png",
@@ -55,8 +55,8 @@
         ]
     },
     "fsharpRefactorBuild": {
-        "analyzers": "0.8.3",
-        "built": "2026-09-05 18:42 UTC"
+        "analyzers": "0.8.4",
+        "built": "2026-09-06 20:08 UTC"
     },
     "scripts": {
         "compile": "tsc -p ."

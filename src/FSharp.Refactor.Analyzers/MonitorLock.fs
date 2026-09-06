@@ -123,15 +123,32 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // canonical Sequential(Enter, TryFinally(body, Exit)) chain
         let guarded = System.Collections.Generic.HashSet<int * int>()
 
+        // the try/finally that follows the Enter — either the rest of the
+        // block, or the FIRST statement of it when more follows (FCS's
+        // `InlineDelayInit.Value` reads `value` after the finally: the
+        // Sequential then nests the TryFinally one level down, which the
+        // direct shape missed and reported as a bare Enter)
+        let (|GuardingTry|_|) (e: SynExpr) =
+            match e with
+            | SynExpr.TryFinally(tryExpr = body; finallyExpr = MonitorCall(exitId, exitArg); trivia = tfTrivia)
+            | SynExpr.Sequential(
+                expr1 = SynExpr.TryFinally(tryExpr = body; finallyExpr = MonitorCall(exitId, exitArg); trivia = tfTrivia)) when
+                exitId.idText = "Exit"
+                ->
+                let tf =
+                    match e with
+                    | SynExpr.Sequential(expr1 = tf) -> tf
+                    | _ -> e
+
+                Some(body, exitArg, tfTrivia, tf)
+            | _ -> None
+
         let canonical =
             [ for _, e in index.Exprs do
                   match e with
                   | SynExpr.Sequential(
                       expr1 = MonitorCall(enterId, lockArg) & enterExpr
-                      expr2 = SynExpr.TryFinally(
-                          tryExpr = body; finallyExpr = MonitorCall(exitId, exitArg); trivia = tfTrivia) & tf) when
-                      enterId.idText = "Enter" && exitId.idText = "Exit"
-                      ->
+                      expr2 = GuardingTry(body, exitArg, tfTrivia, tf)) when enterId.idText = "Enter" ->
                       guarded.Add(enterExpr.Range.StartLine, enterExpr.Range.StartColumn) |> ignore
 
                       let lockText = textOfRange source lockArg.Range
@@ -171,10 +188,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   // the lambda could not capture it (FS0407)
                                   None
                               else
+                                  // fantomas closes the lambda at the end of its
+                                  // last line, not on a line of its own — unless
+                                  // that line ends in a comment, which would
+                                  // swallow the paren
+                                  let body = bodyLines.TrimEnd()
+                                  let lastLine = body.Substring(body.LastIndexOf '\n' + 1)
+
+                                  let closing = if lastLine.Contains "//" then $"\n{indent})" else ")"
+
                                   Some(
                                       replaceRange,
                                       textOfRange source replaceRange,
-                                      $"lock {lockText} (fun () ->\n{bodyLines.TrimEnd()}\n{indent})"
+                                      $"lock {lockText} (fun () ->\n{body}{closing}"
                                   )
                           else
                               None

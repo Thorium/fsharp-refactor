@@ -31,6 +31,15 @@ open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
+[<RequireQualifiedAccess>]
+type PublisherKind =
+    /// AppDomain.CurrentDomain.*, Console.*, SystemEvents.*: a publisher
+    /// that lives as long as the process, so the subscriber does too.
+    | ProcessWide
+    /// A publisher handed in from elsewhere: the subscriber lives as long
+    /// as it does.
+    | External
+
 type Suggestion =
     {
         /// The subscribing lambda, where the hint anchors.
@@ -39,7 +48,64 @@ type Suggestion =
         CapturedName: string
         /// The sink method or function name, for the message.
         SinkName: string
+        /// How long the publisher holds the handler.
+        Publisher: PublisherKind
     }
+
+/// Receivers whose events are process-wide.
+let private processWideRoots =
+    set [ "AppDomain"; "Console"; "SystemEvents"; "Application" ]
+
+/// The dotted names a publisher expression starts with: `System.AppDomain`
+/// of `System.AppDomain.CurrentDomain.ProcessExit`, `src` of
+/// `src.Fired`, `(x.Inner)` of `(x.Inner).Changed`.
+let rec private leadingIds (e: SynExpr) =
+    match e with
+    | SynExpr.Ident id -> [ id.idText ]
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> ids |> List.map (fun i -> i.idText)
+    | SynExpr.DotGet(expr = inner)
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.App(funcExpr = inner) -> leadingIds inner
+    | _ -> []
+
+/// Does the publisher live as long as the process? Its root, or the one
+/// after a `System.` prefix, is AppDomain, Console or the like.
+let private isProcessWide (ids: string list) =
+    ids |> List.truncate 2 |> List.exists processWideRoots.Contains
+
+/// A local `let e = Event<_>()` (or `new Event<_>()`) in a scope holding
+/// the subscription: the publisher is born in the member and cannot
+/// outlive the object (fsdocs' `docsDependenciesChanged`).
+let private localEventNames (path: SyntaxNode list) =
+    let constructsEvent (e: SynExpr) =
+        let rec named (e: SynExpr) =
+            match e with
+            | SynExpr.App(funcExpr = f) -> named f
+            | SynExpr.TypeApp(expr = inner) -> named inner
+            | SynExpr.Paren(expr = inner) -> named inner
+            | SynExpr.Ident id -> id.idText = "Event"
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                (List.last ids).idText = "Event"
+            | _ -> false
+
+        match e with
+        | SynExpr.New(targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)))) ->
+            not ids.IsEmpty && (List.last ids).idText = "Event"
+        | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids))) ->
+            not ids.IsEmpty && (List.last ids).idText = "Event"
+        | other -> named other
+
+    path
+    |> List.collect (fun node ->
+        match node with
+        | SyntaxNode.SynExpr(LetOrUseE lou) ->
+            lou.Bindings
+            |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
+                match p with
+                | SynPat.Named(ident = SynIdent(ident = id)) when constructsEvent rhs -> Some id.idText
+                | _ -> None)
+        | _ -> [])
+    |> Set.ofList
 
 /// Method names that store a handler on a long-lived publisher.
 let private sinkMethods = set [ "Add"; "AddHandler"; "Subscribe" ]
@@ -207,7 +273,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     Some firstId.idText
                 | _ -> None)
 
-        [ for _, expr in index.Exprs do
+        [ for path, expr in index.Exprs do
               match expr with
               | SinkCall(methodId, lambda, receiver) ->
                   let enclosing =
@@ -235,14 +301,40 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       // reference is a cycle inside one lifetime, not a leak
                       let ownPublisher =
                           match receiver with
-                          | Some root -> capturable.Contains root
+                          | Some root -> capturable.Contains root || (localEventNames path).Contains root
                           | None -> false
+
+                      // the publisher's own spelling — `AppDomain.CurrentDomain
+                      // .UnhandledException.Add` — or, for `x |> Event.add f`,
+                      // the left side of the pipe
+                      let publisherIds =
+                          match expr with
+                          | SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
+                              ids |> List.map (fun i -> i.idText)
+                          | SynExpr.App(funcExpr = SynExpr.DotGet(expr = receiverExpr)) -> leadingIds receiverExpr
+                          | _ -> []
+
+                      let pipedIds =
+                          match path with
+                          | SyntaxNode.SynExpr(SynExpr.App(
+                              funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = lhs))) :: _ when
+                              op.idText = "op_PipeRight"
+                              ->
+                              leadingIds lhs
+                          | _ -> []
+
+                      let publisher =
+                          if isProcessWide publisherIds || isProcessWide pipedIds then
+                              PublisherKind.ProcessWide
+                          else
+                              PublisherKind.External
 
                       match mentioned capturable lambda.Range with
                       | Some captured when not ownPublisher && resolvesToSink check source methodId ->
                           { Range = lambda.Range
                             CapturedName = captured
-                            SinkName = methodId.idText }
+                            SinkName = methodId.idText
+                            Publisher = publisher }
                       | _ -> ()
                   | None -> ()
               | _ -> () ]

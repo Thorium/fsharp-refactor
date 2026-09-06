@@ -5,17 +5,29 @@
 ///         →  match x with | Some v -> v + 1 | None -> 0
 ///
 /// `.Value` throws when the option is None; after the rewrite the value is
-/// only in scope where it exists. The `IsNone` and `not x.IsSome` forms
-/// swap branches, an else-less unit `if` gains `| None -> ()`, and a
-/// ValueOption receiver spells the cases ValueSome/ValueNone.
+/// only in scope where it exists. The `IsNone`, `not x.IsSome`, `x = None`
+/// and `x <> None` forms are the same test (the comparison ones swap
+/// branches like IsNone), an else-less unit `if` gains `| None -> ()`, and
+/// a ValueOption receiver spells the cases ValueSome/ValueNone. A test
+/// whose branch reads the payload is a match in disguise, whichever way
+/// it is spelled: `Option.isSome x` beside `x.Value` is what this rule
+/// exists to remove, so FR0010 never produces it there.
+///
+/// Branches on one line each give a one-line match; a branch laid out
+/// over lines gives a match laid out over lines, each arm's body under
+/// its clause at the `if`'s indentation plus four.
 ///
 /// Safety rules:
 ///   - the receiver is a plain identifier that resolves (typed check
 ///     results) to FSharp.Core's option or voption — a custom type with
 ///     its own IsSome/Value members never matches
-///   - the whole `if` is single-line; the None-arm must not itself touch
-///     `.Value` (that code throws today — not ours to rewrite), and the
-///     Some-arm must use it at least once
+///   - the None-arm must not itself touch `.Value` (that code throws
+///     today — not ours to rewrite), and the Some-arm must use it at
+///     least once
+///   - the multi-line form needs the `if` to open its own line, no
+///     string literal spanning lines inside (re-indenting would change
+///     it), no `elif` arm, and no match or try opening the Some arm (it
+///     would take the `| None` clause)
 ///   - the binder name (`v`, falling back to `<x>Value`) must not appear
 ///     anywhere in the expression
 module FSharp.Refactor.OptionMatch
@@ -73,6 +85,27 @@ let private (|OptionTest|_|) (e: SynExpr) =
             | _ -> None
         | _ -> None
 
+    // `x <> None` / `x = None` (either order, ValueNone too): the same
+    // test spelled as a comparison. The receiver's option type, proven
+    // by the caller, is what makes `None` FSharp.Core's case here
+    let (|NoneCompared|_|) (e: SynExpr) =
+        let isNone (e: SynExpr) =
+            match e with
+            | SynExpr.Ident n -> n.idText = "None" || n.idText = "ValueNone"
+            | _ -> false
+
+        match e with
+        | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = l); argExpr = r) when
+            op.idText = "op_Equality" || op.idText = "op_Inequality"
+            ->
+            let negated = op.idText = "op_Equality"
+
+            match l, r with
+            | SynExpr.Ident x, n when isNone n -> Some(x, negated)
+            | n, SynExpr.Ident x when isNone n -> Some(x, negated)
+            | _ -> None
+        | _ -> None
+
     let rec test (e: SynExpr) =
         match e with
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ x; prop ])) when prop.idText = "IsSome" ->
@@ -82,6 +115,7 @@ let private (|OptionTest|_|) (e: SynExpr) =
         | SynExpr.App(isInfix = false; funcExpr = ModuleTest negated; argExpr = SynExpr.Ident x) ->
             ValueSome(x, negated)
         | PipeApp(SynExpr.Ident x, ModuleTest negated) -> ValueSome(x, negated)
+        | NoneCompared(x, negated) -> ValueSome(x, negated)
         | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
             match test (stripParens inner) with
             | ValueSome(x, negated) -> ValueSome(x, not negated)
@@ -206,25 +240,59 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       | None -> ()
                   | _ -> ()
               | SynExpr.IfThenElse(ifExpr = OptionTest(x, negated); thenExpr = t; elseExpr = els; trivia = trivia) when
-                  not trivia.IsElif
-                  && not (insideQuotedCode path)
-                  // the branches must be single-line (the binder substitution
-                  // is column-based); the `if` itself may span lines
-                  && isSingleLine t.Range
-                  && (els |> Option.forall (fun e -> isSingleLine e.Range))
+                  not trivia.IsElif && not (insideQuotedCode path)
                   ->
                   let someArm, noneArm = if negated then els, Some t else Some t, els
 
+                  // one-line branches keep the `if`'s place on its line;
+                  // a branch laid out over lines becomes a match laid out
+                  // over lines, which needs the `if` to open its own line
+                  let oneLine =
+                      isSingleLine t.Range && (els |> Option.forall (fun e -> isSingleLine e.Range))
+
+                  let ownLine =
+                      (source.GetLineString(expr.Range.StartLine - 1)).Substring(0, expr.Range.StartColumn).Trim() = ""
+
+                  // an `elif` arm's range starts at its keyword — spliced
+                  // after `| None ->` that is a syntax error, not a branch
+                  let isElif (e: SynExpr) =
+                      match e with
+                      | SynExpr.IfThenElse(trivia = tr) -> tr.IsElif
+                      | _ -> false
+
+                  // re-indenting a branch would re-indent the inside of a
+                  // string literal spanning lines
+                  let multiLineString =
+                      index.Exprs
+                      |> Array.exists (fun (_, e) ->
+                          match e with
+                          | SynExpr.Const(SynConst.String _, r)
+                          | SynExpr.InterpolatedString(range = r) ->
+                              r.StartLine <> r.EndLine && Range.rangeContainsRange expr.Range r
+                          | _ -> false)
+
+                  let armsFit =
+                      if oneLine then
+                          (someArm |> Option.forall isSafeInline)
+                          && (noneArm |> Option.forall isSafeInline)
+                      else
+                          ownLine
+                          && not multiLineString
+                          && not (someArm |> Option.exists isElif)
+                          && not (noneArm |> Option.exists isElif)
+                          // a match or try opening the Some arm would take
+                          // the `| None` clause for one of its own
+                          && (match someArm with
+                              | Some(SynExpr.Match _ | SynExpr.MatchBang _ | SynExpr.MatchLambda _ | SynExpr.TryWith _) ->
+                                  false
+                              | _ -> true)
+
                   match someArm with
                   | Some someExpr when
-                      (valueUses x.idText someExpr.Range).Length > 0
+                      armsFit
+                      && (valueUses x.idText someExpr.Range).Length > 0
                       && not (shadowedIn x.idText someExpr.Range)
                       && (noneArm |> Option.forall (fun n -> (valueUses x.idText n.Range).Length = 0))
-                      // an arm that is itself an `elif ...` (or any if) has
-                      // a range starting at the keyword — spliced after
-                      // `| None ->` that is a syntax error, not a branch
-                      && isSafeInline someExpr
-                      && (noneArm |> Option.forall isSafeInline)
                       ->
                       match caseNamesFor check source x with
                       | Some(someCase, noneCase) ->
@@ -237,35 +305,103 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                           match binder with
                           | Some binder ->
-                              // substitute x.Value prefixes right-to-left
+                              // substitute x.Value prefixes right-to-left,
+                              // by offset in the branch's own text (a
+                              // branch may span lines)
                               let substituted (branch: SynExpr) =
+                                  let text = textOfRange source branch.Range
+
+                                  let lineStarts =
+                                      let starts = ResizeArray<int>([ 0 ])
+
+                                      for i in 0 .. text.Length - 1 do
+                                          if text.[i] = '\n' then
+                                              starts.Add(i + 1)
+
+                                      starts
+
+                                  let offsetOf (p: pos) =
+                                      let relativeLine = p.Line - branch.Range.StartLine
+
+                                      let column =
+                                          if relativeLine = 0 then
+                                              p.Column - branch.Range.StartColumn
+                                          else
+                                              p.Column
+
+                                      lineStarts.[relativeLine] + column
+
                                   valueUses x.idText branch.Range
-                                  |> Array.sortByDescending (fun r -> r.StartColumn)
+                                  |> Array.sortByDescending (fun r -> r.StartLine, r.StartColumn)
                                   |> Array.fold
                                       (fun (text: string) (r: range) ->
-                                          let start = r.StartColumn - branch.Range.StartColumn
-                                          let length = r.EndColumn - r.StartColumn
+                                          let start = offsetOf r.Start
+                                          let length = offsetOf r.End - start
                                           text.Remove(start, length).Insert(start, binder))
-                                      (textOfRange source branch.Range)
+                                      text
 
-                              let noneText =
-                                  noneArm
-                                  |> Option.map (fun n -> textOfRange source n.Range)
-                                  |> Option.defaultValue "()"
+                              if oneLine then
+                                  let noneText =
+                                      noneArm
+                                      |> Option.map (fun n -> textOfRange source n.Range)
+                                      |> Option.defaultValue "()"
 
-                              let replacement =
-                                  sprintf
-                                      "match %s with | %s %s -> %s | %s -> %s"
-                                      x.idText
-                                      someCase
-                                      binder
-                                      (substituted someExpr)
-                                      noneCase
-                                      noneText
+                                  let replacement =
+                                      sprintf
+                                          "match %s with | %s %s -> %s | %s -> %s"
+                                          x.idText
+                                          someCase
+                                          binder
+                                          (substituted someExpr)
+                                          noneCase
+                                          noneText
 
-                              { Range = expr.Range
-                                OriginalText = wholeText
-                                ReplacementText = replacement }
+                                  { Range = expr.Range
+                                    OriginalText = wholeText
+                                    ReplacementText = replacement }
+                              else
+                                  let indent = System.String(' ', expr.Range.StartColumn)
+                                  let inner = indent + "    "
+
+                                  // a branch's first line goes under its
+                                  // clause; its continuation lines move by
+                                  // the same amount, which they must have
+                                  // room for when that amount is negative
+                                  let laidOut (branch: SynExpr) (text: string) =
+                                      let shift = expr.Range.StartColumn + 4 - branch.Range.StartColumn
+                                      let lines = text.Split '\n'
+                                      let continuation = lines |> Array.skip 1
+
+                                      let leading (l: string) = l.Length - l.TrimStart().Length
+
+                                      if
+                                          shift < 0
+                                          && continuation
+                                             |> Array.exists (fun l -> l.Trim() <> "" && leading l < -shift)
+                                      then
+                                          None
+                                      else
+                                          let moved =
+                                              continuation
+                                              |> Array.map (fun l ->
+                                                  if l.Trim() = "" then ""
+                                                  elif shift >= 0 then System.String(' ', shift) + l
+                                                  else l.Substring(-shift))
+
+                                          Some(String.concat "\n" (Array.append [| inner + lines.[0] |] moved))
+
+                                  let noneBlock =
+                                      match noneArm with
+                                      | Some n -> laidOut n (textOfRange source n.Range)
+                                      | None -> Some(inner + "()")
+
+                                  match laidOut someExpr (substituted someExpr), noneBlock with
+                                  | Some someBlock, Some noneBlock ->
+                                      { Range = expr.Range
+                                        OriginalText = wholeText
+                                        ReplacementText =
+                                          $"match {x.idText} with\n{indent}| {someCase} {binder} ->\n{someBlock}\n{indent}| {noneCase} ->\n{noneBlock}" }
+                                  | _ -> ()
                           | None -> ()
                       | None -> ()
                   | _ -> ()

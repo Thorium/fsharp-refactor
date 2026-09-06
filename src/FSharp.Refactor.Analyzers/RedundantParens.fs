@@ -90,6 +90,9 @@ let isBareableArgument (source: ISourceText) (inner: SynExpr) =
         not (text.StartsWith '-' || text.StartsWith '+')
     | SynExpr.ArrayOrList _
     | SynExpr.ArrayOrListComputed _ -> true
+    // an interpolated string is one token to the parser, as a literal is:
+    // `f ($"..")` left by a sprintf-to-interpolation rewrite (FR0042)
+    | SynExpr.InterpolatedString _ -> true
     | _ -> false
 
 /// Find single-argument calls whose parenthesized argument is a bare atom.

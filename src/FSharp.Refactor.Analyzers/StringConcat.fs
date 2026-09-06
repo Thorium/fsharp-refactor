@@ -46,6 +46,29 @@ type Suggestion =
 type private Piece =
     | Lit of text: string * verbatim: bool
     | Hole of string
+    /// A hole spelled `%s{x}`: the `+` was what typed `x` as a string (an
+    /// unannotated parameter), and a plain hole would let it generalise —
+    /// against a signature file that is FS0034 (the F# compiler's
+    /// `qualifiedMangledNameOfTyconRef tcref nm`). `%s` keeps the constraint.
+    | TypedHole of string
+
+/// The parameters bound WITHOUT an annotation by the bindings and lambdas
+/// around a node: names whose string type may come from the chain alone.
+let private unannotatedParameters (path: SyntaxNode list) =
+    let bare (p: SynPat) =
+        match p with
+        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+        | SynPat.Paren(SynPat.Named(ident = SynIdent(ident = id)), _) -> Some id.idText
+        | _ -> None
+
+    path
+    |> List.collect (fun node ->
+        match node with
+        | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats pats))) ->
+            pats |> List.choose bare
+        | SyntaxNode.SynExpr(SynExpr.Lambda(parsedData = Some(pats, _))) -> pats |> List.choose bare
+        | _ -> [])
+    |> Set.ofList
 
 /// Left-to-right operands of a `+` chain.
 [<TailCall>]
@@ -144,7 +167,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   spliceableLiteral true (textOfRange source operand.Range)
                                   |> Option.map (fun t -> Lit(t, true))
                               | SynExpr.Ident id when resolvesToString check source id ->
-                                  Some(Hole(textOfRange source operand.Range))
+                                  // an unannotated parameter the chain alone
+                                  // typed as a string: a plain hole would let
+                                  // it generalise (FS0034 against a signature
+                                  // file, the F# compiler), and a `%s` hole
+                                  // would leave the String.Concat fast path for
+                                  // the printf machinery — so the chain stays
+                                  if (unannotatedParameters path).Contains id.idText then
+                                      None
+                                  else
+                                      Some(Hole(textOfRange source operand.Range))
                               | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
                                   not ids.IsEmpty && resolvesToString check source (List.last ids)
                                   ->
@@ -163,7 +195,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           pieces
                           |> List.sumBy (fun p ->
                               match p with
-                              | Some(Hole _) -> 1
+                              | Some(Hole _)
+                              | Some(TypedHole _) -> 1
                               | _ -> 0)
 
                       let hasHole = holeCount >= 1 && holeCount <= 2
@@ -201,7 +234,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               |> List.map (fun piece ->
                                   match piece with
                                   | Lit(text, _) -> text
-                                  | Hole text -> "{" + text + "}")
+                                  | Hole text -> "{" + text + "}"
+                                  | TypedHole text -> "%s{" + text + "}")
                               |> String.concat ""
 
                           let concatAlternative =

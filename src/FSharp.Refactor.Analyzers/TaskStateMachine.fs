@@ -34,7 +34,10 @@
 ///   c) a body that IS an if/else whose both arms await splits into
 ///      `if c then task { .. } else task { .. }` — arm text verbatim.
 ///      With leading lets present, (a) goes first and the multi-pass loop
-///      brings (c) around on the next pass.
+///      brings (c) around on the next pass. A `match` body is advice only.
+///
+/// None of the fixes touches a binding whose comments speak of allocation,
+/// a hot path, perf or a fast path: that code was tuned by hand.
 module FSharp.Refactor.TaskStateMachine
 
 open System.Text.RegularExpressions
@@ -197,6 +200,10 @@ let private alreadyWrappedTail (tail: SynExpr) =
         | _ -> false
     | _ -> false
 
+/// Comment text marking code the author tuned by hand.
+let private handTunedPattern =
+    Regex(@"\balloc|hot[ -]?path|\bperf|fast[ -]?path", RegexOptions.IgnoreCase ||| RegexOptions.Compiled)
+
 let private freshName (source: ISourceText) (baseName: string) =
     let full =
         String.concat "\n" [ for i in 0 .. source.GetLineCount() - 1 -> source.GetLineString i ]
@@ -224,31 +231,60 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             | LetOrUseE lou -> lou.IsUse && Range.rangeContainsRange r e.Range
             | _ -> false)
 
-    // the suffix of a CE's top-level statement chain that follows its last
-    // awaiting step; None when no step awaits
-    let rec tailAfterLastBang (e: SynExpr) : SynExpr option =
+    // the suffix of a CE's statement chain that follows its last awaiting
+    // step (the one on `lastBangLine`), paired with whether the chain had
+    // to descend into a branch to reach it: on the body's own spine, or —
+    // when the spine ends in a match, an if or a try whose BODY holds the
+    // last await — on the spine of that branch. Exception handlers and
+    // finally blocks are not a tail (they are not business logic to
+    // extract), and neither is a loop body (it re-awaits every
+    // iteration); None when no step awaits
+    let rec tailAfterLastBang (lastBangLine: int) (descended: bool) (e: SynExpr) : (SynExpr * bool) option =
+        let holdsLast (r: range) =
+            r.StartLine <= lastBangLine && lastBangLine <= r.EndLine
+
+        let into = tailAfterLastBang lastBangLine
+
         match e with
         | LetOrUseE lou when not lou.IsBang ->
-            match tailAfterLastBang lou.Body with
+            match into descended lou.Body with
             | Some t -> Some t
             | None ->
                 if lou.Bindings |> List.exists (fun b -> containsBang b.RangeOfBindingWithRhs) then
-                    Some lou.Body
+                    Some(lou.Body, descended)
                 else
                     None
         | LetOrUseE lou -> // a let!/use! step: what follows is its body
-            match tailAfterLastBang lou.Body with
+            match into descended lou.Body with
             | Some t -> Some t
-            | None -> Some lou.Body
+            | None -> Some(lou.Body, descended)
         | SynExpr.Sequential(expr1 = a; expr2 = b) ->
-            match tailAfterLastBang b with
+            match into descended b with
             | Some t -> Some t
             | None ->
                 if isBangExpr a || containsBang a.Range then
-                    Some b
+                    Some(b, descended)
                 else
                     None
+        | SynExpr.Match(clauses = clauses)
+        | SynExpr.MatchBang(clauses = clauses) ->
+            clauses
+            |> List.tryPick (fun (SynMatchClause(resultExpr = result)) ->
+                if holdsLast result.Range then into true result else None)
+        | SynExpr.IfThenElse(thenExpr = thenExpr; elseExpr = elseExpr) ->
+            [ Some thenExpr; elseExpr ]
+            |> List.tryPick (fun branch ->
+                match branch with
+                | Some b when holdsLast b.Range -> into true b
+                | _ -> None)
+        | SynExpr.TryWith(tryExpr = body)
+        | SynExpr.TryFinally(tryExpr = body) when holdsLast body.Range -> into true body
         | _ -> None
+
+    // an await of THIS task's resumable code inside the range
+    let resumableBangIn (inResumableBody: range -> bool) (r: range) =
+        index.Exprs
+        |> Array.exists (fun (_, e) -> isBangExpr e && inResumableBody e.Range && Range.rangeContainsRange r e.Range)
 
     // LOCAL mutable bindings anywhere in the file, with where they are
     // declared: a closure cannot capture one (read or write), so a block
@@ -298,12 +334,32 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> Some [ id.idText ]
         | _ -> None
 
-    [ for _, expr in index.Exprs do
+    let comments = commentsWithText parseTree source
+
+    [ for path, expr in index.Exprs do
           match expr with
           | SynExpr.App(
               isInfix = false; funcExpr = fe & IdentName builder; argExpr = SynExpr.ComputationExpr(expr = body)) when
               taskBuilders.Contains builder
               ->
+              // a hand-tuned hot path is not restructured behind the
+              // author's back: a comment inside the enclosing binding
+              // that speaks of allocation, a hot path, perf or a fast
+              // path (suave's HttpOutput.fs) keeps every move advice-only
+              let enclosingRange =
+                  path
+                  |> List.tryPick (fun node ->
+                      match node with
+                      | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                      | _ -> None)
+                  |> Option.defaultValue expr.Range
+
+              let handTuned =
+                  comments
+                  |> List.exists (fun (r, text) ->
+                      Range.rangeContainsRange enclosingRange r && handTunedPattern.IsMatch text)
+
+              let withhold (edits: (range * string) list) = if handTuned then [] else edits
 
               // sub-ranges whose contents are not this task's resumable code
               let opaqueRanges =
@@ -400,7 +456,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                       { Range = r
                         Kind = AdviceKind.HoistPlainLets letCount
-                        Edits = hoistEdits }
+                        Edits = withhold hoistEdits }
                   | _ -> ()
 
                   // b) branching — when the body IS the if (letCount 0; pass
@@ -503,7 +559,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                       { Range = rest.Range
                         Kind = AdviceKind.SplitBranches
-                        Edits = splitEdits }
+                        Edits = withhold splitEdits }
                   | SynExpr.Match(clauses = clauses)
                   | SynExpr.MatchBang(clauses = clauses) when
                       (clauses
@@ -511,69 +567,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                        |> List.length)
                       >= 2
                       ->
-                      // the match header never moves (match! NEEDS the outer
-                      // bind), so the split happens per ARM: each awaiting
-                      // arm's body becomes `return! task { .. }` — a nested
-                      // machine that carries the arm's weight, returns still
-                      // legal inside. All-or-nothing across awaiting arms.
-                      let armEdits =
-                          let perArm =
-                              [ for SynMatchClause(resultExpr = result) as clause in clauses do
-                                    // a single return statement is the whole
-                                    // arm: wrapping it moves NOTHING out of
-                                    // the machine, and the wrapped result is
-                                    // itself a single return! — the shape
-                                    // that once re-wrapped every pass into
-                                    // return! task { return! task { ... } }
-                                    let singleReturnArm =
-                                        match result with
-                                        | SynExpr.YieldOrReturn _
-                                        | SynExpr.YieldOrReturnFrom _ -> true
-                                        | _ -> false
-
-                                    if containsBang result.Range && not singleReturnArm then
-                                        let r = result.Range
-                                        let bodyLines = linesOf source r.StartLine r.EndLine
-                                        let armInd = String.replicate r.StartColumn " "
-
-                                        if
-                                            startsOwnLine source r
-                                            && r.StartLine > clause.Range.StartLine
-                                            && (source.GetLineString(r.EndLine - 1)).Substring(r.EndColumn).Trim() = ""
-                                            && multiLineStringSafe bodyLines
-                                            && not (spansMultiLineLiteral index r.StartLine r.EndLine)
-                                            && not (spansDirective source r)
-                                            && not (mentionsForeignMutable r (String.concat "\n" bodyLines))
-                                        then
-                                            Some
-                                                [ // opening rides the first line's indent insert
-                                                  for l in r.StartLine .. r.EndLine do
-                                                      let text = source.GetLineString(l - 1)
-
-                                                      let opening =
-                                                          if l = r.StartLine then
-                                                              $"{armInd}return! {builder} {{\n"
-                                                          else
-                                                              ""
-
-                                                      if l = r.StartLine || not (isBlank text) then
-                                                          Range.mkRange
-                                                              fileName
-                                                              (Position.mkPos l 0)
-                                                              (Position.mkPos l 0),
-                                                          opening + (if isBlank text then "" else "    ")
-                                                  Range.mkRange fileName r.End r.End, $"\n{armInd}}}" ]
-                                        else
-                                            None ]
-
-                          if perArm |> List.forall Option.isSome then
-                              perArm |> List.collect Option.get
-                          else
-                              []
-
+                      // a match stays ADVICE: the documented split is the
+                      // if/else body, arms cut as line regions into two
+                      // tasks. The per-arm `return! task { .. }` wrap this
+                      // once carried nested a machine inside every awaiting
+                      // arm of suave's HttpOutput.fs — a shape the doc
+                      // never promised, on a hand-tuned hot path
                       { Range = rest.Range
                         Kind = AdviceKind.SplitBranches
-                        Edits = armEdits }
+                        Edits = [] }
                   | _ -> ()
 
                   // c) a long non-awaiting tail after the last await — the
@@ -593,7 +595,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                   let mutable tailFixOffered = false
 
-                  if lastBangLine > 0 then
+                  // the tail is the statement suffix after the last await,
+                  // never a line count from that await to the closing
+                  // brace: a multi-line `return!` argument, the `with`
+                  // and `finally` of a try, and a `while` body that
+                  // re-awaits are not non-awaiting code (suave's Proxy,
+                  // Combinators and ConnectionHealthChecker)
+                  let tail =
+                      if lastBangLine > 0 then
+                          tailAfterLastBang lastBangLine false body
+                          |> Option.filter (fun (t, _) -> not (resumableBangIn inResumableBody t.Range))
+                      else
+                          None
+
+                  match tail with
+                  | Some(tail, descended) ->
                       // local function definitions in the tail compile to
                       // closures, not resumable code — they weigh nothing,
                       // and NOT counting them is what makes the extraction
@@ -612,14 +628,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                       | _ -> 0)
                               | _ -> 0)
 
-                      let noteRange =
-                          Range.mkRange fileName (Position.mkPos (lastBangLine + 1) 0) body.Range.End
+                      // the note sits on the first non-awaiting statement,
+                      // where the author can act on it — not on the blank
+                      // or `with` line after the await
+                      let noteRange = tail.Range
 
-                      let tailLineCount = body.Range.EndLine - lastBangLine - functionDefLines noteRange
+                      let tailLineCount =
+                          tail.Range.EndLine - tail.Range.StartLine + 1 - functionDefLines tail.Range
 
                       if tailLineCount >= 4 then
                           let tailEdits =
-                              match tailAfterLastBang body, freshName source "runTail" with
+                              // a tail reached through a branch stays
+                              // advice: the wrap is proven on the spine only
+                              match (if descended then None else Some tail), freshName source "runTail" with
                               | Some tail, Some fnName when
                                   not (containsBang tail.Range)
                                   && startsOwnLine source tail.Range
@@ -737,7 +758,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                           { Range = noteRange
                             Kind = AdviceKind.ExtractTail tailLineCount
-                            Edits = tailEdits }
+                            Edits = withhold tailEdits }
+                  | None -> ()
 
                   // d) an awaiting suffix the tail wrap cannot carry — early
                   // returns, try/finally AROUND the awaits — can still split
@@ -847,9 +869,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                               { Range = blockRange
                                 Kind = AdviceKind.ExtractAwaitingSuffix blockLineCount
                                 Edits =
-                                  [ Range.mkRange fileName fe.Range.Start fe.Range.Start,
-                                    fnDef.TrimStart() + taskIndentText
-                                    blockRange, $"{bodyIndentText}return! {fnName} ()" ] }
+                                  withhold
+                                      [ Range.mkRange fileName fe.Range.Start fe.Range.Start,
+                                        fnDef.TrimStart() + taskIndentText
+                                        blockRange, $"{bodyIndentText}return! {fnName} ()" ] }
                           | _ -> ()
                       | _ -> ()
           | _ -> () ]
