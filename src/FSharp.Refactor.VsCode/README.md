@@ -1,10 +1,19 @@
 # FSharp.Refactor for VS Code
 
+**[Get it from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=TuomasHietanen.fsharp-refactor-vscode)**
 
-[Get it from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=TuomasHietanen.fsharp-refactor-vscode)
+
+View -> Command Palette -> FSharp.Refactor to drive the command line tool for the full project:
+
+<img width="590" height="189" alt="image" src="https://github.com/user-attachments/assets/aecd7d21-bcb5-4eaf-b932-332809dc7113" />
 
 
-140 functional refactoring hints with one-click quick fixes for F#,
+And IDE light bulbs while you type
+
+<img width="1010" height="302" alt="image" src="https://github.com/user-attachments/assets/e8a2e72a-3096-4963-824a-3f6a91a085b9" />
+
+
+150+ functional refactoring hints with one-click quick fixes for F#,
 delivered through Ionide.
 
 VS Code has no analyzer concept of its own — F# analyzers load through
