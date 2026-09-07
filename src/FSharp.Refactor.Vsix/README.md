@@ -1,6 +1,6 @@
 # FSharp.Refactor for Visual Studio (classic VSIX)
 
-[Get it from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=TuomasHietanen.fSharp-refactor)
+**[Get it from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=TuomasHietanen.fSharp-refactor)**
 
 Tools > FSharp.Refactor -menu to drive the command line tool for the full project:
 
