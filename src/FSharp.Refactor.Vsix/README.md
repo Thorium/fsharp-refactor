@@ -2,6 +2,15 @@
 
 [Get it from the Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=TuomasHietanen.fSharp-refactor)
 
+Tools > FSharp.Refactor -menu to drive the command line tool for the full project:
+
+<img width="354" height="188" alt="image" src="https://github.com/user-attachments/assets/62409f1e-a177-49f0-9b5b-616f6b88ea25" />
+
+
+And IDE light bulbs while you type
+
+<img width="1136" height="215" alt="image" src="https://github.com/user-attachments/assets/cd4e3ed3-1ca6-40b6-bab4-da590e6d0410" />
+
 
 Squiggles and light-bulb quick fixes from the FSharp.Refactor analyzers
 inside full Visual Studio, using the classic in-proc MEF editor surfaces:
