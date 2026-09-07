@@ -92,7 +92,7 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                   defns do
                   match repr with
                   | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) when
-                      Visibility.isInScope allowApiChanges path [ access ]
+                      Visibility.isInScopeNamedPath allowApiChanges path [ access ] typeIds
                       ->
                       let isFilePrivate =
                           (match access with

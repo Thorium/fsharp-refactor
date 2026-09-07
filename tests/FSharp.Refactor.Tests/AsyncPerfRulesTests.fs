@@ -2141,3 +2141,103 @@ let ``FR0049: an antecedent read with no free binder name is noted without a rew
         Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind)
         Assert.Empty s.Fixes
     | other -> failwithf "Expected exactly one antecedent note, got %A" other
+
+[<Fact>]
+let ``FR0049: Task.Run around a RunSynchronously becomes Async.StartAsTask`` () =
+    // Task.Run queues the lambda to the thread pool and hands back its Task â€”
+    // Async.StartAsTask does exactly that without parking a pool thread on the
+    // result, so the lambda (and the blocking wait inside it) goes away
+    let source =
+        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)\n    return x\n}"
+
+    match blockingIn source with
+    | [ s ] ->
+        Assert.True(s.InLambda)
+
+        match s.Fixes with
+        | [ (_, _, "comp |> Async.StartAsTask") ] ->
+            let patched = applyFixes source s.Fixes
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected the StartAsTask fix, got %A" other
+    | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0049: an ignored Task.Run keeps do-bang through an upcast`` () =
+    // `|> ignore` makes Task.Run return the non-generic Task that `do!` wants;
+    // Async.StartAsTask returns Task<'T>, which `do!` refuses, so the fix
+    // upcasts rather than changing the statement into a bind it cannot end on
+    let source =
+        "let comp = async { return 1 }\nlet f () = task {\n    do! System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously |> ignore)\n    return 1\n}"
+
+    match blockingIn source with
+    | [ s ] ->
+        match s.Fixes with
+        | [ (_, _, "(comp |> Async.StartAsTask) :> System.Threading.Tasks.Task") ] ->
+            let patched = applyFixes source s.Fixes
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected the upcast StartAsTask fix, got %A" other
+    | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0049: a Task.Run lambda that does more than block keeps the note alone`` () =
+    // the rewrite only holds when the lambda is nothing but the blocking call;
+    // anything else in there still has to run on the pool
+    let source =
+        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> let v = comp |> Async.RunSynchronously in v + 1)\n    return x\n}"
+
+    match blockingIn source with
+    | [ s ] -> Assert.Empty s.Fixes
+    | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0049: a thread-choreographed body still gets the Task.Run rewrite`` () =
+    // the thread-bound veto withholds binds because a bind resumes elsewhere;
+    // this rewrite adds no bind and moves no continuation, so it stands even
+    // next to the SynchronizationContext that trips the veto
+    let source =
+        "let comp = async { return 1 }\nlet f () = task {\n    let ctx = System.Threading.SynchronizationContext.Current\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)\n    return x + (if isNull ctx then 0 else 1)\n}"
+
+    match blockingIn source with
+    | [ s ] ->
+        match s.Fixes with
+        | [ (_, _, "comp |> Async.StartAsTask") ] ->
+            let patched = applyFixes source s.Fixes
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected the StartAsTask fix to survive the veto, got %A" other
+    | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0049: a name merely ENDING in Thread is not thread choreography`` () =
+    // the veto read "Thread(" as a substring, so ThrowIfNotOnUIThread() â€”
+    // and every other VS threading helper, they are all spelled that way â€”
+    // counted as choreography and withheld the fixes for a whole file
+    let source =
+        "let throwIfNotOnUIThread () = ()\nlet f (t: System.Threading.Tasks.Task) = task {\n    throwIfNotOnUIThread()\n    t.Wait()\n    return 1\n}"
+
+    match blockingIn source with
+    | [ s ] ->
+        match s.Fixes with
+        | [ (_, "t.Wait()", "do! t") ] ->
+            let patched = applyFixes source s.Fixes
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected the do! fix to survive the veto, got %A" other
+    | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0049: a real Thread construction is still thread choreography`` () =
+    // the narrowing must not cost the case the veto exists for
+    let source =
+        "let f (t: System.Threading.Tasks.Task) = task {\n    let worker = System.Threading.Thread(System.Threading.ThreadStart(fun () -> ()))\n    worker.Start()\n    t.Wait()\n    return 1\n}"
+
+    match blockingIn source with
+    | [ s ] -> Assert.Empty s.Fixes
+    | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0049: a bare Thread member is still thread choreography`` () =
+    let source =
+        "open System.Threading\nlet f (t: System.Threading.Tasks.Task) = task {\n    let id = Thread.CurrentThread.ManagedThreadId\n    t.Wait()\n    return id\n}"
+
+    match blockingIn source with
+    | [ s ] -> Assert.Empty s.Fixes
+    | other -> failwithf "Expected exactly one blocking site, got %A" other

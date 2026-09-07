@@ -295,6 +295,9 @@ let find
                               // assembly's call sites are invisible to the
                               // scan AND to the verification build
                               && (projectCheck |> Option.exists (ProjectSources.hasInternalsVisibleTo >> not))
+                              // and neither is a file #loaded by a script we
+                              // could not read
+                              && not (ProjectSources.isUnreadable parseTree.FileName)
                               && Visibility.scopeMatches
                                   Visibility.Scope.Assembly
                                   declPath
@@ -476,7 +479,13 @@ let find
                                           else
                                               match projectCheck with
                                               | Some pc ->
-                                                  pc.GetUsesOfSymbol symbolUse.Symbol
+                                                  // a `#load`ing script calls this
+                                                  // definition from outside the
+                                                  // compilation, and no build check
+                                                  // covers it — see ProjectSources
+                                                  Array.append
+                                                      (pc.GetUsesOfSymbol symbolUse.Symbol)
+                                                      (ProjectSources.outsideUsesOf symbolUse.Symbol)
                                                   |> Seq.filter (fun u -> not u.IsFromDefinition)
                                                   |> Seq.toList
                                               | None -> []

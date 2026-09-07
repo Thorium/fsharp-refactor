@@ -173,6 +173,12 @@ module private Out =
     let good text =
         line Console.Out Console.IsOutputRedirected ConsoleColor.Green text
 
+    /// A standing invitation about the RUN itself rather than about the
+    /// code — brighter than the default foreground, so it reads as
+    /// addressed to the operator without borrowing a finding's colour.
+    let white text =
+        line Console.Out Console.IsOutputRedirected ConsoleColor.White text
+
     /// Deliberately not done — a skip, a hold-back, a stand-down. Not a
     /// failure, and worth being able to tell apart at a glance.
     let skip text =
@@ -242,6 +248,9 @@ type private Options =
         Json: bool
         /// Print the rule catalog and exit.
         ListRules: bool
+        /// Write a fsharprefactor.json of this build's defaults and exit.
+        /// Never overwrites: an existing config is someone's decisions.
+        CreateConfig: bool
         /// Serve analyze/list_rules over MCP (JSON-RPC on stdio).
         Mcp: bool
         MaxPasses: int
@@ -328,6 +337,10 @@ OPTIONS
                         stderr and the findings leave as one JSON document.
                         The default stays human-readable
   --rules               print the rule catalog (honors --format json)
+  --create-config       write a fsharprefactor.json of this build's defaults
+                        (every rule, every run-level key, one comment each)
+                        into the current directory, or into <what> when that
+                        is a directory. Never overwrites an existing one
   --mcp                 serve analyze/list_rules as an MCP server over
                         stdio, keeping the typechecker warm between calls
   --max-passes <n>      fix-then-reanalyse iterations (default 5)
@@ -420,6 +433,7 @@ let rec private parseArgsLoop opts args =
     | "--format" :: "json" :: rest -> parseArgsLoop { opts with Json = true } rest
     | "--format" :: other :: _ -> Error $"--format knows 'json' (the default output is human-readable); got '{other}'"
     | "--rules" :: rest -> parseArgsLoop { opts with ListRules = true } rest
+    | "--create-config" :: rest -> parseArgsLoop { opts with CreateConfig = true } rest
     | "--mcp" :: rest -> parseArgsLoop { opts with Mcp = true } rest
     | "--framework" :: tfm :: rest -> parseArgsLoop { opts with Framework = tfm } rest
     | "--jobs" :: n :: rest ->
@@ -489,6 +503,7 @@ let private parseArgs (argv: string[]) =
           NotesOnly = false
           Json = false
           ListRules = false
+          CreateConfig = false
           Mcp = false
           MaxPasses = 5
           // Measured sweet spot. FCS reuses each file's prefix within one
@@ -1499,8 +1514,25 @@ let private errorCount (checker: FSharpChecker) (options: FSharpProjectOptions) 
 let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOptions) (files: string list) =
     let project = projectErrors checker options
 
+    // A pass can change a file this compilation does not contain: a
+    // `#load`ing script is rewritten alongside the definition it calls.
+    // FCS THROWS on a per-file check of a file that is not in the project
+    // ("was not part of the project"), and there is nothing to check
+    // anyway — the project build never compiled that script, which is
+    // precisely why the script edit is answerable to the same-symbol
+    // reasoning that produced it and to nothing else.
+    let inProject =
+        options.SourceFiles
+        |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant())
+        |> Set.ofArray
+
     let perFile =
         files
+        |> List.filter (fun path ->
+            try
+                inProject.Contains(Path.GetFullPath(path).ToLowerInvariant())
+            with _ -> // an unopenable path is not this project's; fsharpanalyzer: ignore-line FR0055
+                false)
         |> List.toArray
         |> Array.collect (fun path ->
             try
@@ -1770,11 +1802,24 @@ type private ScriptCallSites =
 
 /// FullName throws for a few symbol kinds; a symbol we cannot name simply
 /// contributes no cross-compilation match.
+/// A symbol's full name, or None when there is not one to be had.
+///
+/// The try alone was not enough. `FullName` can RETURN null as well as
+/// throw, and a null answer used to travel on as `Some null` into a
+/// Dictionary key - which throws ArgumentNullException outside this try and
+/// takes the run down. Both shapes are the same answer to the caller: a use
+/// that cannot be named, which the caller treats as a reason to leave the
+/// sources alone rather than migrate one call site short.
 let private symbolFullName (s: FSharpSymbol) =
-    try
-        Some s.FullName
-    with _ -> // fsharpanalyzer: ignore-line FR0055
+    if isNull (box s) then
         None
+    else
+        try
+            match s.FullName with
+            | name when String.IsNullOrWhiteSpace name -> None
+            | name -> Some name
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            None
 
 /// Are these two symbols — one from the project's compilation, one from a
 /// script's — the same declaration? Full names alone are not identity: a
@@ -1897,6 +1942,70 @@ let inline private (|Exists|_|) (input: string) =
         ValueNone
 
 /// Index the call sites this project's compilation cannot see.
+/// `applyEditGroups`, plus the check a script needs and the project build
+/// cannot give it.
+///
+/// Scripts sit outside the build check: `dotnet build` compiles the
+/// project, not the .fsx beside it, so nothing downstream would ever
+/// notice a script we broke. Check them directly. Every script we edited
+/// typechecked cleanly beforehand — call sites are never read from one
+/// that did not — so the baseline is zero errors and any error now is
+/// ours.
+///
+/// A suggestion is atomic across files, so a broken script takes its whole
+/// group with it: leaving the definition reshaped while putting the script
+/// back is precisely the breakage this exists to prevent.
+///
+/// Both passes go through here. The api pass (FR0090/FR0091) has always
+/// rewritten `#load`ing scripts; the normal pass does too now that the
+/// FR0069/FR0093 migrations read their call sites, and one rule's safety
+/// net is no use to the other if it hangs in only one of the two places.
+let rec private applyEditGroupsCheckingScripts
+    (checker: FSharpChecker)
+    (dryRun: bool)
+    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
+    : int * AppliedFile list =
+    let applied, changed = applyEditGroups dryRun suppressed editsByFile
+
+    let brokenGroups =
+        if dryRun then
+            Set.empty
+        else
+            changed
+            |> List.filter (fun cf ->
+                cf.Path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
+                && (readScript checker cf.Path).Context.IsNone)
+            |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
+            |> Set.ofList
+
+    if Set.isEmpty brokenGroups then
+        applied, changed
+    else
+        // restore everything this pass wrote, then re-apply the groups that
+        // were not implicated, so one bad suggestion does not cost the
+        // others their edits
+        for cf in changed do
+            writeSource cf.Path cf.Before
+
+        let survivors =
+            System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>(
+                StringComparer.OrdinalIgnoreCase
+            )
+
+        for kv in editsByFile do
+            let kept =
+                kv.Value
+                |> Seq.filter (fun (g, _, _) -> not (brokenGroups.Contains g))
+                |> ResizeArray
+
+            if kept.Count > 0 then
+                survivors.[kv.Key] <- kept
+
+        Out.skip $"  ({brokenGroups.Count} suggestion(s) put back: the script they rewrote stopped typechecking)"
+
+        applyEditGroupsCheckingScripts checker dryRun suppressed survivors
+
 let private findScriptCallSites (checker: FSharpChecker) (root: string) (options: FSharpProjectOptions) =
     let searchRoot =
         let full =
@@ -1938,6 +2047,14 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
         | None -> [||]
         | Some dir ->
             try
+                // `ignorePaths` is honoured here DELIBERATELY, and it is not an
+                // oversight that it narrows this safety probe: a path the
+                // repository has told the tool to ignore is external code, and
+                // external code does not get a vote on how this repository's
+                // declarations are shaped. Scripts outside the target tree are
+                // invisible for the same reason - the search cannot be the
+                // whole disk - so the guarantee is scoped to the code this run
+                // is actually responsible for, which is the honest scope.
                 Directory.EnumerateFiles(dir, "*.fsx", SearchOption.AllDirectories)
                 |> Seq.filter (fun f -> not ((isBuildOutput f) || (Configuration.isIgnoredPath f)))
                 |> Seq.toArray
@@ -1979,7 +2096,32 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
                             let fresh = ResizeArray()
                             fresh.Add u
                             usesByName.[name] <- fresh
-                    | None -> ()
+                    | None ->
+                        // A use with no readable full name cannot be matched to
+                        // a declaration, so proceeding would migrate one call
+                        // site short - the single thing this probe exists to
+                        // prevent. It only matters when the use points INTO the
+                        // sources this script loads; an unnameable symbol from
+                        // a referenced library is nothing to do with us.
+                        let pointsAtLoaded =
+                            match u.Symbol.DeclarationLocation with
+                            | Some d ->
+                                let declared =
+                                    try
+                                        Some(Path.GetFullPath d.FileName)
+                                    with _ -> // fsharpanalyzer: ignore-line FR0055
+                                        None
+
+                                match declared with
+                                | Some df ->
+                                    loaded
+                                    |> Array.exists (fun f -> String.Equals(f, df, StringComparison.OrdinalIgnoreCase))
+                                | None -> false
+                            | None -> false
+
+                        if pointsAtLoaded then
+                            for f in loaded do
+                                unverifiable.Add f |> ignore
 
     let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
 
@@ -2157,55 +2299,7 @@ let private runApiPass
                         fresh.Add range
                         acceptedRanges.[target] <- fresh
 
-        let applied, changed = applyEditGroups dryRun suppressed editsByFile
-
-        // Scripts sit outside the build check: `dotnet build` compiles the
-        // project, not the .fsx beside it, so nothing downstream would ever
-        // notice a script we broke. Check them directly. Every script we
-        // edited typechecked cleanly beforehand — call sites are never read
-        // from one that did not — so the baseline is zero errors and any
-        // error now is ours.
-        //
-        // A suggestion is atomic across files, so a broken script takes its
-        // whole group with it: leaving the definition reshaped while putting
-        // the script back is precisely the breakage this exists to prevent.
-        let brokenGroups =
-            if dryRun then
-                Set.empty
-            else
-                changed
-                |> List.filter (fun cf ->
-                    cf.Path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
-                    && (readScript checker cf.Path).Context.IsNone)
-                |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
-                |> Set.ofList
-
-        if Set.isEmpty brokenGroups then
-            applied, changed
-        else
-            // restore everything this pass wrote, then re-apply the groups
-            // that were not implicated, so one bad suggestion does not cost
-            // the others their edits
-            for cf in changed do
-                writeSource cf.Path cf.Before
-
-            let survivors =
-                System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>(
-                    StringComparer.OrdinalIgnoreCase
-                )
-
-            for kv in editsByFile do
-                let kept =
-                    kv.Value
-                    |> Seq.filter (fun (g, _, _) -> not (brokenGroups.Contains g))
-                    |> ResizeArray
-
-                if kept.Count > 0 then
-                    survivors.[kv.Key] <- kept
-
-            Out.skip $"  ({brokenGroups.Count} suggestion(s) put back: the script they rewrote stopped typechecking)"
-
-            applyEditGroups dryRun suppressed survivors
+        applyEditGroupsCheckingScripts checker dryRun suppressed editsByFile
 
 /// One analyze-and-apply pass over every file. Returns the number of fixes
 /// applied.
@@ -3641,7 +3735,7 @@ let private runPass
     if slowest <> "" then
         Out.dim $"  slowest analyzers: {slowest}"
 
-    applyEditGroups dryRun suppressed editsByFile
+    applyEditGroupsCheckingScripts checker dryRun suppressed editsByFile
 
 /// One compilation to work on. Which kind it is comes from the file
 /// extension — the caller never has to say.
@@ -4493,6 +4587,34 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                  | :? UnauthorizedAccessException -> None)
          ))
 
+        // The same probe the api pass uses for FR0090/FR0091, on the
+        // channel the ANALYZERS can reach: the FR0069 and FR0093 cross-file
+        // migrations reshape `internal` declarations, which a `#load`ing
+        // script sees — it compiles the file into itself — and whose calls
+        // are in neither the project's symbol tables nor the verification
+        // build. Only under --api-changes, which is the only thing that
+        // opens those migrations, so the script typecheck is paid exactly
+        // where it already was.
+        if opts.ApiChanges then
+            let sites = findScriptCallSites checker opts.Target options
+
+            // a script's edits are rendered from the tree the script host
+            // typechecked, not from one parsed with the project's options
+            for script, ctx in sites.Contexts do
+                ProjectSources.seed script ctx.ParseTree ctx.Source
+
+            ProjectSources.configureOutside
+                (Some(fun symbol ->
+                    match symbolFullName symbol with
+                    | Some name ->
+                        match sites.UsesByFullName.TryGetValue name with
+                        | true, uses -> uses |> Array.filter (fun u -> sameDeclaration symbol u.Symbol)
+                        | false, _ -> [||]
+                    | None -> [||]))
+                sites.Unverifiable
+        else
+            ProjectSources.configureOutside None []
+
         // every sweepable source already swept by an earlier compilation of
         // this run (same defines, or directive-free): the sweep will visit
         // zero files, so the project typecheck buys nothing. Only while the
@@ -5134,12 +5256,57 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
         2
     | Ok targets ->
         let targets = orderNarrowestFirst targets
+
+        // `"apiChanges": true` in fsharprefactor.json is the flag as a
+        // standing decision, for a repository where it is always the right
+        // answer. It can only widen: a run that already passed the flag is
+        // unaffected, and no config can take it away.
+        let opts =
+            if opts.ApiChanges then
+                opts
+            else
+                let probe =
+                    targets
+                    |> List.tryPick (fun t ->
+                        match t with
+                        | Target.Project(path, _)
+                        | Target.Script path -> Some path)
+
+                match probe |> Option.map Configuration.apiChangesFor with
+                | Some true ->
+                    Out.white $"--api-changes is on: {Configuration.ConfigFileName} asks for it."
+                    { opts with ApiChanges = true }
+                | _ -> opts
+
         let several = targets.Length > 1
 
         if several then
             printfn $"{targets.Length} compilations to work through (narrowest target first)"
 
+        // Said twice, at both ends of the run, and deliberately: the flag
+        // changes which rules fire at all, and a sweep prints enough that
+        // one line in the middle of it is a line nobody reads. Before the
+        // work so it can be acted on without paying for the run twice;
+        // after it because that is where the reader is looking. Scripts are
+        // left out — they have no assembly surface for the scope gate to
+        // hold anything back from.
+        let inviteApiChanges () =
+            if
+                not opts.ApiChanges
+                && targets
+                   |> List.exists (fun t ->
+                       match t with
+                       | Target.Project _ -> true
+                       | Target.Script _ -> false)
+            then
+                Out.white "Consider running with --api-changes if public changes are allowed."
+
+        inviteApiChanges ()
+
         sweptFiles.Clear()
+        // the corpus harness runs main in-process; a leaked count would
+        // report the previous run's held-back findings as this one's
+        Analyzers.heldByScope.Clear()
         directiveFreeCache.Clear()
         runTotalApplied <- 0
         runBuildFailures <- 0
@@ -5289,27 +5456,36 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
             if baselineSuppressed > 0 then
                 printfn $"  ({baselineSuppressed} finding(s) matched the baseline and were suppressed)"
 
-            // some fixes exist only under --api-changes (internal-scope
-            // migrations, cross-file rewrites); without the flag they are
-            // never even computed, so no held-back count can hint at them.
-            // On your own code the flag is usually what you want.
-            if
-                not opts.ApiChanges
-                && targets
-                   |> List.exists (fun t ->
-                       match t with
-                       | Target.Project _ -> true
-                       | Target.Script _ -> false)
-            then
-                printfn
-                    "  tip: --api-changes also applies internal-scope migrations and cross-file fixes (rewriting call sites project-wide) — recommended on code you own"
-
             if commentSuppressed > 0 then
                 printfn $"  ({commentSuppressed} finding(s) silenced by suppression comments)"
 
             if suppressionOverridden > 0 then
                 printfn
                     $"  ({suppressionOverridden} suppression comment(s) not honored by the \"suppressions\" policy — reported above, never auto-fixed)"
+
+            // What the scope gate held back, named. Without this the
+            // invitation below is an abstraction: nobody widens a scope for
+            // an unknown number of unknown findings, and a rule that finds
+            // nothing to say says nothing here either.
+            let held =
+                Analyzers.heldByScope
+                |> Seq.map (fun kv -> kv.Key, kv.Value)
+                |> Seq.sortByDescending snd
+                |> List.ofSeq
+
+            if not held.IsEmpty then
+                let total = held |> List.sumBy snd
+
+                let breakdown =
+                    held |> List.map (fun (code, n) -> $"{n} {code}") |> String.concat ", "
+
+                Out.white
+                    $"  {total} finding(s) held back by scope: {breakdown} — public declarations this run may not reshape. Set \"publicApi\": false in {Configuration.ConfigFileName} if nothing outside this assembly links to them or serializes them."
+
+            // the second half of the pair the run opened with — after every
+            // count, where the reader has just seen what the run found and
+            // is deciding whether to run it again
+            inviteApiChanges ()
 
             // LAST, after every count, because a coverage gap changes what
             // all of them mean: a clean-looking tally over the projects that
@@ -5352,6 +5528,94 @@ let private printRules (json: bool) =
         for code, category, enabledByDefault in rulesAsRows () do
             let marker = if enabledByDefault then "" else "  (off by default)"
             printfn $"%s{code}  %-12s{category}%s{marker}"
+
+/// The text of a fsharprefactor.json that changes nothing: every rule at
+/// the default this build would apply anyway, every run-level key at its
+/// own default, and a comment on each saying what turning it round does.
+///
+/// Written out rather than described because the catalog is the part
+/// nobody can type from memory — and because a file whose every line is
+/// already the default is the one safe starting point: a repository can
+/// flip the lines it disagrees with and delete the rest.
+///
+/// JSON with comments and trailing commas, which is what the config
+/// parser accepts (JsonCommentHandling.Skip, AllowTrailingCommas).
+let defaultConfigText () =
+    let text = System.Text.StringBuilder()
+    let line (s: string) = text.AppendLine s |> ignore
+
+    line "// fsharprefactor.json — per-repository configuration for fsharp-refactor."
+    line "// Generated by `fsharp-refactor --create-config`: every value below is this"
+    line "// version's default, so an untouched file changes nothing. Delete a line to"
+    line "// follow the tool's default for it as that default changes between versions;"
+    line "// keep a line to pin today's answer. Comments and trailing commas are fine."
+    line "{"
+    line "  // Does anything OUTSIDE this assembly link against its public declarations?"
+    line "  // F# makes a declaration public by default, so `public` is usually the"
+    line "  // absence of a decision rather than one. `false` says this is a leaf — an"
+    line "  // application, an internal tool — and the rules that change a declaration's"
+    line "  // compiled shape in place ([<Struct>], [<Literal>], named union fields) then"
+    line "  // treat public as internal. It never licenses an edit to another file."
+    line "  //"
+    line "  // Left COMMENTED OUT because the default is not a fixed value: with no"
+    line "  // setting the compilation answers, and an OutputType of Exe or WinExe — or"
+    line "  // a script — is read as a leaf, a library is not. Uncomment to overrule"
+    line "  // that either way: `true` is what an executable writes when it serializes"
+    line "  // its own public types or loads plugins by reflection."
+    line "  // \"publicApi\": true,"
+    line ""
+    line "  // --api-changes on every run: fixes that rewrite call sites project-wide"
+    line "  // (currying a function, reordering its parameters). Implies publicApi: false."
+    line "  \"apiChanges\": false,"
+    line ""
+    line "  // What a `// fsharpanalyzer: ignore-line FRxxxx` comment is worth:"
+    line "  //   \"all\"            it silences the finding (what editors do regardless)"
+    line "  //   \"no-correctness\" correctness findings are reported anyway, never fixed"
+    line "  //   \"none\"           every suppressed finding is reported anyway"
+    line "  \"suppressions\": \"all\","
+    line ""
+    line "  // Extra paths never analysed, ADDITIVE over the built-in defaults"
+    line "  // (git-ignored files, obj/, generated sources). Substring or glob."
+    line "  \"ignorePaths\": [],"
+    line ""
+    line "  // Extra fsharplint-style hints, e.g. \"not (a = b) ===> a <> b\""
+    line "  \"hints\": { \"add\": [] },"
+    line ""
+    line "  // Every rule this build knows, at its default. false turns one off."
+    line "  \"rules\": {"
+
+    let rows = rulesAsRows ()
+
+    for category in RuleCatalog.all do
+        let name = RuleCatalog.name category
+
+        let inCategory =
+            rows
+            |> List.filter (fun (_, c, _) -> c = name)
+            |> List.sortBy (fun (code, _, _) -> code)
+
+        if not inCategory.IsEmpty then
+            line ""
+            line $"    // ---- {name} ({inCategory.Length}) ----"
+
+            for code, _, enabledByDefault in inCategory do
+                let value = if enabledByDefault then "true" else "false"
+
+                // catalog descriptions run to a paragraph for some rules;
+                // a config file wants a label, and Rules.md has the rest
+                let summary =
+                    let full = (RuleCatalog.describe code).Replace('\n', ' ').Replace('\r', ' ')
+
+                    if full.Length > 90 then
+                        full.Substring(0, 87) + "..."
+                    else
+                        full
+
+                line $"    \"{code}\": {value}, // {summary}"
+
+    line "  }"
+    line "}"
+    text.ToString()
 
 /// One MCP tool-call response body: text content plus the protocol wrapper.
 let private mcpToolResult (text: string) =
@@ -5627,6 +5891,44 @@ let main argv =
     | Ok opts when opts.ListRules ->
         printRules opts.Json
         0
+    | Ok opts when opts.CreateConfig ->
+        // a path that is not a directory is a typo, not an instruction to
+        // write somewhere else: falling back to the current directory once
+        // put a config in a repository root nobody asked about
+        let directory =
+            if opts.Target = "" then
+                Ok(Directory.GetCurrentDirectory())
+            elif Directory.Exists opts.Target then
+                Ok opts.Target
+            else
+                Error $"--create-config writes into a DIRECTORY; '{opts.Target}' is not one."
+
+        match directory with
+        | Error message ->
+            eprintfn $"{message}"
+            2
+        | Ok directory ->
+
+            let path = Path.Combine(directory, Configuration.ConfigFileName)
+
+            if File.Exists path then
+                // someone's decisions live in there; --create-config is a
+                // starting point, never a reset
+                eprintfn $"{path} already exists — delete it first, or write the new one elsewhere."
+                2
+            else
+                try
+                    File.WriteAllText(path, defaultConfigText ())
+
+                    printfn
+                        $"Wrote {path} — every rule at this build's default, so it changes nothing until you edit it."
+
+                    0
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException as e ->
+                    eprintfn $"Could not write {path}: {e.Message}"
+                    1
     | Ok opts when opts.Mcp -> runMcp ()
     // no arguments at all is a question, not a mistake: show the help
     | Ok opts when opts.Target = "" ->

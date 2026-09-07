@@ -159,6 +159,8 @@
     <Compile Include="RecordFields.fs" />
     <Compile Include="QualifiedNames.fs" />
     <Compile Include="CatchLogException.fs" />
+    <Compile Include="ExceptionDetail.fs" />
+    <Compile Include="CachedFailure.fs" />
     <Compile Include="DateTimeRules.fs" />
     <Compile Include="MonitorLock.fs" />
     <Compile Include="LogTemplates.fs" />

@@ -15,6 +15,11 @@
 /// A malformed or unreadable file fails open (everything enabled) so a bad
 /// config can never break the user's editor; unknown keys are ignored.
 ///
+/// A few root keys configure the RUN rather than a rule — `hints`,
+/// `ignorePaths`, `suppressions`, `publicApi`, `apiChanges` — and are
+/// never read as rule names, so a future rule of one of those names
+/// cannot silently collide with them.
+///
 /// Lookups are cached: directory discovery is revalidated after a short
 /// interval and the parsed file is reloaded when its timestamp changes, so
 /// config edits are picked up without restarting the editor.
@@ -28,6 +33,12 @@ open System.Text.Json
 [<Literal>]
 let ConfigFileName = "fsharprefactor.json"
 
+/// Root keys that configure the RUN, not a rule. Excluded from the rule
+/// map when rule keys sit at the root, so `"apiChanges": true` there can
+/// never be read as a rule named apiChanges.
+let private reservedRootKeys =
+    set [ "rules"; "hints"; "ignorepaths"; "suppressions"; "publicapi"; "apichanges" ]
+
 /// Parse the config text into a rule-key -> enabled map (keys lowercased).
 /// Pure and total: malformed input yields an empty map (fail open).
 let parse (json: string) : Map<string, bool> =
@@ -38,12 +49,13 @@ let parse (json: string) : Map<string, bool> =
         use doc = JsonDocument.Parse(json, options)
         let root = doc.RootElement
 
-        let rulesElement =
+        let rulesElement, atRoot =
             match root.TryGetProperty "rules" with
-            | true, rules when rules.ValueKind = JsonValueKind.Object -> rules
-            | _ -> root
+            | true, rules when rules.ValueKind = JsonValueKind.Object -> rules, false
+            | _ -> root, true
 
         rulesElement.EnumerateObject()
+        |> Seq.filter (fun property -> not (atRoot && reservedRootKeys.Contains(property.Name.ToLowerInvariant())))
         |> Seq.choose (fun property ->
             let enabled =
                 match property.Value.ValueKind with
@@ -216,6 +228,32 @@ type ConfigData =
         ///                    reported anyway (though never auto-fixed)
         ///   "none"           every suppression comment is reported anyway
         Suppressions: string
+        /// `"publicApi"`: does anything OUTSIDE this assembly link against
+        /// its public declarations?
+        ///
+        /// F# makes a declaration public by default, so "public" in a
+        /// parse tree is mostly the absence of a decision rather than one.
+        /// The scope-gated rules — the ones whose fix changes a
+        /// declaration's compiled SHAPE in place, `[<Struct>]`,
+        /// `[<Literal>]`, named union fields — hold back on public
+        /// declarations because a consumer in another assembly would see
+        /// the change and nothing here can check it. `false` says there is
+        /// no such consumer (an application, an internal tool, a leaf
+        /// project), and those rules then treat public as internal.
+        ///
+        /// It says nothing about fixes that must edit OTHER FILES —
+        /// currying a function and rewriting its call sites project-wide
+        /// is a different risk, and stays behind `apiChanges`. A companion
+        /// .fsi still wins over both: a signature file is the author's own
+        /// statement of what is exported.
+        ///
+        /// None = unset, and the conservative reading (public is an API).
+        PublicApi: bool option
+        /// `"apiChanges"`: `--api-changes` as a per-repository setting,
+        /// for the repositories where it is always the right answer.
+        /// Covers everything the flag does, cross-file rewrites included,
+        /// and so implies `publicApi: false`.
+        ApiChanges: bool
     }
 
 /// The `"suppressions"` policy string; unknown values read as "all" so a
@@ -238,6 +276,33 @@ let parseSuppressions (json: string) : string =
     | :? JsonException
     | :? InvalidOperationException -> "all"
 
+/// A root-level boolean setting. Pure and total: anything malformed, or a
+/// value that is not a JSON boolean, reads as unset.
+let private parseRootBool (name: string) (json: string) : bool option =
+    try
+        let options =
+            JsonDocumentOptions(CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true)
+
+        use doc = JsonDocument.Parse(json, options)
+
+        match doc.RootElement.TryGetProperty name with
+        | true, v when v.ValueKind = JsonValueKind.True -> Some true
+        | true, v when v.ValueKind = JsonValueKind.False -> Some false
+        | _ -> None
+    with
+    | :? JsonException
+    | :? InvalidOperationException -> None
+
+/// The `"publicApi"` setting; unset reads as None, the conservative
+/// reading.
+let parsePublicApi (json: string) : bool option = parseRootBool "publicApi" json
+
+/// The `"apiChanges"` setting; unset reads as false, so a config can only
+/// ever WIDEN what a default run does, never quietly widen a run that
+/// already passed the flag.
+let parseApiChanges (json: string) : bool =
+    parseRootBool "apiChanges" json |> Option.defaultValue false
+
 /// Numeric rule parameters from object-valued rule entries. Pure and
 /// total: anything malformed yields an empty map.
 let parseParameters (json: string) : Map<string, Map<string, int>> =
@@ -248,12 +313,13 @@ let parseParameters (json: string) : Map<string, Map<string, int>> =
         use doc = JsonDocument.Parse(json, options)
         let root = doc.RootElement
 
-        let rulesElement =
+        let rulesElement, atRoot =
             match root.TryGetProperty "rules" with
-            | true, rules when rules.ValueKind = JsonValueKind.Object -> rules
-            | _ -> root
+            | true, rules when rules.ValueKind = JsonValueKind.Object -> rules, false
+            | _ -> root, true
 
         rulesElement.EnumerateObject()
+        |> Seq.filter (fun property -> not (atRoot && reservedRootKeys.Contains(property.Name.ToLowerInvariant())))
         |> Seq.choose (fun property ->
             if property.Value.ValueKind = JsonValueKind.Object then
                 let knobs =
@@ -283,7 +349,9 @@ let private emptyConfig =
       Hints = []
       IgnorePaths = []
       Parameters = Map.empty
-      Suppressions = "all" }
+      Suppressions = "all"
+      PublicApi = None
+      ApiChanges = false }
 
 let private parseCache = ConcurrentDictionary<string, DateTime * ConfigData>()
 
@@ -340,7 +408,9 @@ let configFor (analyzedFile: string) : ConfigData =
                   Hints = parseHints content
                   IgnorePaths = parseIgnorePaths content
                   Parameters = parseParameters content
-                  Suppressions = parseSuppressions content }
+                  Suppressions = parseSuppressions content
+                  PublicApi = parsePublicApi content
+                  ApiChanges = parseApiChanges content }
 
             let _, config =
                 parseCache.AddOrUpdate(
@@ -360,6 +430,35 @@ let rulesFor (analyzedFile: string) : Map<string, bool> = (configFor analyzedFil
 
 /// Extra hint-engine rules configured for a file being analyzed.
 let hintsFor (analyzedFile: string) : string list = (configFor analyzedFile).Hints
+
+/// The repository's own answer to "may a declaration that is public only
+/// because F# has no other default be reshaped in place?", when it has
+/// one. `Some true` — `"publicApi": false`, or `"apiChanges": true`, both
+/// of which open it. `Some false` — `"publicApi": true`, an explicit no,
+/// which a project the host would otherwise open (an executable that
+/// serializes its own types, or loads plugins by reflection) uses to opt
+/// back out. `None` — the config is silent, and the host decides.
+///
+/// Deliberately NOT a licence for cross-file rewrites: those ask a
+/// different question — whether the fix may edit files other than the one
+/// being analyzed — and keep their own gate.
+let publicSurfaceSetting (analyzedFile: string) : bool option =
+    let config = configFor analyzedFile
+
+    if config.ApiChanges then
+        Some true
+    else
+        config.PublicApi |> Option.map not
+
+/// The setting alone, with a silent config reading as "keep the gate
+/// closed" — the answer for a caller that knows nothing about the
+/// compilation.
+let publicSurfaceOpen (analyzedFile: string) : bool =
+    publicSurfaceSetting analyzedFile |> Option.defaultValue false
+
+/// Does the repository ask for `--api-changes` on every run, cross-file
+/// rewrites included?
+let apiChangesFor (analyzedFile: string) : bool = (configFor analyzedFile).ApiChanges
 
 /// The single entry point the analyzers use: is this rule enabled for this file?
 /// Build-generated sources (AssemblyInfo.fs, AssemblyAttributes.fs under

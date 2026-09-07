@@ -34,9 +34,9 @@ let private spanOfEdit (snapshot: ITextSnapshot) ((sl, sc, el, ec, _): Edit) =
         let endLine = snapshot.GetLineFromLineNumber el
         let startPos = startLine.Start.Position + min sc startLine.Length
         let endPos = endLine.Start.Position + min ec endLine.Length
-        Some(Span(startPos, max 0 (endPos - startPos)))
+        ValueSome(Span(startPos, max 0 (endPos - startPos)))
     else
-        None
+        ValueNone
 
 /// The preview pane: what each edit removes and what it puts there,
 /// one monospace block per edit, long texts cut at a dozen lines.
@@ -68,8 +68,8 @@ let private previewOf (snapshot: ITextSnapshot) (edits: Edit list) : obj =
 
         let oldText =
             match spanOfEdit snapshot edit with
-            | Some span -> snapshot.GetText span
-            | None -> ""
+            | ValueSome span -> snapshot.GetText span
+            | ValueNone -> ""
 
         if oldText <> "" then
             panel.Children.Add(block "- " oldText (SolidColorBrush(Color.FromRgb(180uy, 60uy, 60uy))))
@@ -111,10 +111,10 @@ type FixAction(buffer: ITextBuffer, title: string, edits: Edit list) =
                 // bottom-up, so earlier replacements never shift later spans
                 for e in edits |> List.sortByDescending (fun (sl, sc, _, _, _) -> sl, sc) do
                     match spanOfEdit snapshot e with
-                    | Some span ->
+                    | ValueSome span ->
                         let (_, _, _, _, newText) = e
                         edit.Replace(span, newText) |> ignore
-                    | None -> ()
+                    | ValueNone -> ()
 
                 edit.Apply() |> ignore
                 FsacClient.clientTrace $"invoke '{title}' applied"

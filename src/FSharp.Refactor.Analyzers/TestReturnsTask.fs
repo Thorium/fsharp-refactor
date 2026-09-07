@@ -46,6 +46,7 @@
 module FSharp.Refactor.TestReturnsTask
 
 open System
+open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
@@ -64,6 +65,144 @@ type Suggestion =
         /// How many blocking sites became binds.
         Sites: int
     }
+
+/// State that OUTLIVES a single test: a module-level `let mutable`, or a
+/// `static let mutable` on a type that holds tests.
+///
+/// A synchronous test owns its thread from start to finish. A
+/// `Task`-returning one releases it at every `let!`, and that changes how
+/// much really runs at once: xUnit runs test collections in parallel
+/// against a bounded pool, so blocking tests are partly serialised by
+/// thread starvation alone. Freeing the threads lets collections that
+/// always COULD have raced actually do so. The race was latent before this
+/// rewrite; the rewrite is what makes it show up, on someone else's
+/// machine, intermittently, in a test suite whose whole job is to be
+/// trustworthy.
+///
+/// So a test that touches such a binding is left alone. Nothing here is a
+/// correctness fix — it is a test that finishes sooner — and a missed one
+/// costs nothing worth having.
+let private sharedMutableNames (index: AstIndex.Index) =
+    set
+        [ for _, decl in index.Decls do
+              match decl with
+              | SynModuleDecl.Let(bindings = bindings) ->
+                  for SynBinding(isMutable = isMutable; headPat = p) in bindings do
+                      if isMutable then
+                          yield! patBoundNames p
+              | SynModuleDecl.Types(typeDefns = defns) ->
+                  for SynTypeDefn(typeRepr = repr) in defns do
+                      match repr with
+                      | SynTypeDefnRepr.ObjectModel(members = objMembers) ->
+                          for m in objMembers do
+                              match m with
+                              | SynMemberDefn.LetBindings(bindings = bs; isStatic = true) ->
+                                  for SynBinding(isMutable = isMutable; headPat = p) in bs do
+                                      if isMutable then
+                                          yield! patBoundNames p
+                              | _ -> ()
+                      | _ -> ()
+              | _ -> () ]
+
+/// Setters whose effect is the PROCESS, not the caller — the same hazard
+/// without a name of its own to look for. A test that changes the current
+/// directory or an environment variable and reads it back is racing every
+/// other test that does, the moment they genuinely overlap.
+let private processGlobalSetters =
+    [ "Environment.SetEnvironmentVariable"
+      "Directory.SetCurrentDirectory"
+      "Console.SetOut"
+      "Console.SetError"
+      "Console.SetIn"
+      "CurrentCulture"
+      "CurrentUICulture" ]
+
+/// Does this FILE install global state by reflection?
+///
+/// The hardest version of the shared-state problem, and a real one: a mock
+/// harness that swaps out a library's private static holders —
+///
+///     typeof<Marker>.DeclaringType
+///         .GetProperty("contextHolder", BindingFlags.NonPublic ||| BindingFlags.Static)
+///         .SetValue(null, lazyReadContext)
+///
+/// — then puts them back on Dispose. There is no `<-` to find and no name
+/// this file declares; the state lives in another assembly, reached
+/// through a string. Neither the syntax nor the typed tree can see it.
+///
+/// `BindingFlags` is the tell, and it is asked of the whole file rather
+/// than of one test body: the harness is a helper class, and the tests
+/// that depend on it only ever say `use ctx = new MockDatabaseContext(...)`.
+/// Every test in such a file is order-dependent whether or not it names
+/// the machinery, so none of them is converted.
+let private installsGlobalStateByReflection (source: ISourceText) =
+    let text = source.GetSubTextString(0, source.Length)
+    text.Contains "BindingFlags"
+
+/// Everything this test ASSIGNS to that is not one of its own locals.
+///
+/// The shared setting is often not in the test file at all — it is a
+/// `let mutable` or a settable static property in the library under test,
+/// which each test configures its own way. No scan of this file can see
+/// that declaration, so the question is asked of the typed tree instead:
+/// resolve what the assignment targets and ask whether it is a local. A
+/// target that will not resolve counts as shared, since the reason to look
+/// was to find out.
+///
+/// `obj.Property <- v` is left out deliberately: the receiver is usually a
+/// local the test just built, and flagging every `sb.Capacity <- 10` would
+/// cost far more than it saves.
+let private assignsBeyondItself
+    (index: AstIndex.Index)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    (body: SynExpr)
+    =
+    index.Exprs
+    |> Array.exists (fun (_, e) ->
+        match e with
+        | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids)) when
+            not ids.IsEmpty && Range.rangeContainsRange body.Range e.Range
+            ->
+            let target = List.last ids
+            let lineText = source.GetLineString(target.idRange.EndLine - 1)
+
+            match
+                check.GetSymbolUseAtLocation(
+                    target.idRange.EndLine,
+                    target.idRange.EndColumn,
+                    lineText,
+                    [ target.idText ]
+                )
+            with
+            | Some symbolUse ->
+                match symbolUse.Symbol with
+                | :? FSharpMemberOrFunctionOrValue as v -> v.IsModuleValueOrMember
+                | _ -> true
+            | None -> true
+        | _ -> false)
+
+/// Does this test read or write state that outlives it? Either direction
+/// counts: a reader races a writer just as a writer races a writer.
+///
+/// One gap worth naming: a test that only READS a setting declared in
+/// another assembly, whose writer lives in a different test file, is not
+/// caught — nothing in this file says the two are related. Holding the
+/// WRITERS back is what shrinks the exposure, and writers are caught
+/// wherever their target is declared.
+let private touchesSharedState
+    (index: AstIndex.Index)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    (shared: Set<string>)
+    (body: SynExpr)
+    =
+    let text = textOfRange source body.Range
+
+    (not shared.IsEmpty
+     && shared |> Set.exists (fun name -> Regex.IsMatch(text, identifierPattern name)))
+    || processGlobalSetters |> List.exists text.Contains
+    || assignsBeyondItself index source check body
 
 let private testAttributes =
     set [ "Test"; "Fact"; "Theory"; "TestCase"; "TestMethod" ]
@@ -314,6 +453,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         []
     else
         let index = AstIndex.ofTree parseTree
+        let shared = sharedMutableNames index
+        let reflectionHarness = installsGlobalStateByReflection source
 
         [ for binding in testBindings index do
               match binding with
@@ -321,6 +462,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                   hasTestAttribute check source attributes
                   && not (alreadyComputation body)
                   && not (threadBound source body)
+                  && not reflectionHarness
+                  && not (touchesSharedState index source check shared body)
                   ->
                   let nameIdent =
                       match headPat with

@@ -699,7 +699,7 @@ let find
                             && not (isProtocolStub bodyExpr)
                             // callers spell `x.M()` today: static is an API
                             // change on a public member
-                            && Visibility.isInScope allowApiChanges declPath [ typeAccess; bindingAccess; patAccess ]
+                            && Visibility.isInScopeNamed allowApiChanges declPath [ typeAccess; bindingAccess; patAccess ] nameId.idText
                             ->
                             let memberParamNames = args |> List.collect patNames |> Set.ofList
 

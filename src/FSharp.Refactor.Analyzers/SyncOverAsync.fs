@@ -28,7 +28,9 @@
 /// awaiter's GetResult, FSharp.Core's RunSynchronously, Thread.Sleep), so
 /// a user type with a `Result` property never matches. Only the innermost
 /// enclosing CE reports a site, and no fix is offered inside a lambda
-/// (where `do!` would not compile).
+/// (where `do!` would not compile) - with one exception, the fix that
+/// removes the lambda: `Task.Run(fun () -> c |> Async.RunSynchronously)`
+/// becomes `c |> Async.StartAsTask`.
 module FSharp.Refactor.SyncOverAsync
 
 open System.Text.RegularExpressions
@@ -190,6 +192,69 @@ let private (|RunSyncApplication|_|) (e: SynExpr) =
             | _ -> true)
         ->
         ValueSome comp
+    | _ -> ValueNone
+
+let private isPipeRight (e: SynExpr) =
+    match e with
+    | SynExpr.Ident op -> op.idText = "op_PipeRight"
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])) -> op.idText = "op_PipeRight"
+    | _ -> false
+
+/// `Task.Run(fun () -> <comp> |> Async.RunSynchronously)`, with or without a
+/// trailing `|> ignore` (the flag says which). Task.Run queues the lambda to
+/// the thread pool and hands back its Task, which is exactly what
+/// `Async.StartAsTask` does - except StartAsTask does not park a pool thread
+/// on the result. (`Async.StartImmediateAsTask` would be the wrong twin: it
+/// runs on the CALLING thread until the first await, which Task.Run never
+/// does.) Only the plain shape qualifies - one `fun () ->` lambda, no
+/// cancellation token or scheduler, and a body that is nothing but the
+/// blocking call - because anything else in the lambda has to keep running
+/// on the pool.
+///
+/// One behaviour does change, in the rare non-happy path. A cancelled
+/// computation gives a CANCELLED task here, where Task.Run gives one
+/// FAULTED with the OperationCanceledException (TPL only reports Canceled
+/// when the exception matches the task's own token, and Task.Run has none).
+/// `let!` therefore raises TaskCanceledException instead of the original.
+/// That is the more semantically correct of the two - a cancelled
+/// computation did not fail - and no handler has to move for it, because
+/// TaskCanceledException DERIVES from OperationCanceledException: anything
+/// that caught the old exception catches the new one. The only flip runs
+/// the other way, and only for a handler written as `:? TaskCanceledException`
+/// specifically, which now catches a cancellation it used to let past.
+let private taskRunOfRunSync (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) =
+    match e with
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
+        pathEndsWith "Task" "Run" ids
+        && (enclosingEntityOf check source (List.last ids)).StartsWith "System.Threading.Tasks.Task"
+        ->
+        match stripParens arg with
+        | SynExpr.Lambda(args = lambdaArgs; body = lambdaBody; parsedData = parsed) when
+            // `fun () ->` and nothing else: unit erases to an empty simple-pat
+            // list, and the parsed form spells it either bare or parenthesised
+            (match lambdaArgs with
+             | SynSimplePats.SimplePats(pats = []) -> true
+             | _ -> false)
+            && (match parsed with
+                | Some([ SynPat.Const(SynConst.Unit, _) ], _)
+                | Some([ SynPat.Paren(SynPat.Const(SynConst.Unit, _), _) ], _) -> true
+                | None -> true
+                | _ -> false)
+            ->
+            let body =
+                match parsed with
+                | Some(_, parsedBody) -> parsedBody
+                | None -> lambdaBody
+
+            match stripParens body with
+            | RunSyncApplication comp -> ValueSome(comp, false)
+            | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = pipeOp; argExpr = inner)
+                          argExpr = SynExpr.Ident ign) when isPipeRight pipeOp && ign.idText = "ignore" ->
+                match stripParens inner with
+                | RunSyncApplication comp -> ValueSome(comp, true)
+                | _ -> ValueNone
+            | _ -> ValueNone
+        | _ -> ValueNone
     | _ -> ValueNone
 
 /// Wrap an expression's text in parentheses unless it is a bare
@@ -1056,8 +1121,47 @@ let findWith
                           else
                               None
 
+                      // The one fix offered INSIDE a lambda, because it deletes
+                      // the lambda: `Task.Run(fun () -> c |> Async.RunSynchronously)`
+                      // is `c |> Async.StartAsTask` written the long way, minus
+                      // the parked pool thread. The `|> ignore` spelling returns
+                      // a non-generic Task and `do!` will not take a `Task<'T>`,
+                      // so that one keeps its shape through an upcast.
+                      // Held apart from `fixes` because it survives the
+                      // thread-bound veto below: it rewrites neither the bind
+                      // nor where the bind resumes, only what it waits on.
+                      let taskRunFixes =
+                          if
+                              kind = BlockKind.RunSynchronously
+                              && taskBuilder
+                              && insideLambdaWithin ceRange expr.Range
+                              && not (insideOtherCeWithin ceRange expr.Range)
+                          then
+                              index.Exprs
+                              |> Array.tryPick (fun (_, e) ->
+                                  if Range.rangeContainsRange e.Range expr.Range then
+                                      match taskRunOfRunSync check source e with
+                                      | ValueSome(comp, ignored) -> Some(e.Range, comp, ignored)
+                                      | ValueNone -> None
+                                  else
+                                      None)
+                              |> Option.map (fun (runRange, comp, ignored) ->
+                                  let started = $"{textOfRange source comp.Range} |> Async.StartAsTask"
+
+                                  let replacement =
+                                      if ignored then
+                                          $"({started}) :> System.Threading.Tasks.Task"
+                                      else
+                                          started
+
+                                  [ runRange, textOfRange source runRange, replacement ])
+                              |> Option.defaultValue []
+                          else
+                              []
+
                       let fixes =
                           match kind, sleepArg with
+                          | BlockKind.RunSynchronously, _ when not (List.isEmpty taskRunFixes) -> taskRunFixes
                           | BlockKind.ThreadSleep, Some arg when
                               not (insideLambdaWithin ceRange expr.Range)
                               && not (insideOtherCeWithin ceRange expr.Range)
@@ -1209,7 +1313,7 @@ let findWith
                         // inside a thread-choreographed body a bind moves the
                         // continuation off the thread the wait was keeping
                         // it on: the site is still noted, the fix withheld
-                        Fixes = (if threadBoundScope path then [] else fixes)
+                        Fixes = (if threadBoundScope path then taskRunFixes else fixes)
                         AlternativeFixes = []
                         Receiver = ValueNone
                         InLambda = insideLambdaWithin ceRange expr.Range

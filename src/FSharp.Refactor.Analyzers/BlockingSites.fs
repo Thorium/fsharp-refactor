@@ -19,6 +19,7 @@
 /// for and stay as written.
 module FSharp.Refactor.BlockingSites
 
+open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
@@ -450,9 +451,16 @@ let threadBound (source: ISourceText) (body: SynExpr) =
       "CountdownEvent"
       "Barrier"
       "SemaphoreSlim"
-      "Thread("
-      "Thread."
       "CurrentManagedThreadId"
       "SynchronizationContext"
       "Interlocked." ]
     |> List.exists text.Contains
+    // The two Thread spellings need a word boundary, which a substring test
+    // cannot give them: plain "Thread(" also reads ThrowIfNotOnUIThread(),
+    // SwitchToMainThread( and every other name ENDING in Thread â€” the VS
+    // threading helpers are called that, and a whole file's fixes were
+    // withheld over it. `\bThread` matches the type and nothing built on
+    // its name (ThreadHelper, ThreadPool, ThreadStatic keep their own
+    // entries above where they belong).
+    || Regex.IsMatch(text, @"\bThread\s*\(")
+    || Regex.IsMatch(text, @"\bThread\.")

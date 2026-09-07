@@ -115,6 +115,121 @@ let private whenEnabled (fileName: string) (code: string) (name: string) (produc
                 []
     }
 
+/// The scope gate for the rules whose fix changes a declaration's
+/// compiled SHAPE in place — `[<Struct>]`, `[<Literal>]`, named union
+/// fields, a field's Option becoming ValueOption.
+///
+/// Two quite different things can open it, and they are worth keeping
+/// apart. `--api-changes` (or `"apiChanges": true`) is the caller saying
+/// they own the callers of everything, cross-file rewrites included.
+/// `"publicApi": false` is the narrower and much commoner statement: this
+/// assembly is a leaf — an application, an internal tool — so a
+/// declaration that is public merely because F# has no other default is
+/// not an API, and reshaping it in one file changes nothing anyone can
+/// see. The second never licenses an edit to another file; that is the
+/// first's job alone.
+///
+/// With no config saying either way, the COMPILATION answers: an
+/// executable has no external linker, so its public surface is not an API
+/// and the gate opens by itself. A project that disagrees — an
+/// application that serializes its own public types, or loads plugins by
+/// reflection — writes `"publicApi": true` and gets the closed gate back.
+/// Whether a compilation is a leaf depends on its source list and its
+/// compiler arguments, both of which run to hundreds of entries — and the
+/// gate is consulted once per scope-gated rule per file. So the answer is
+/// held per compilation. Keyed by project file, which is what identifies
+/// one: a multi-targeted project varies its defines and references per
+/// framework, never its OutputType or whether it is a script.
+let private leafCompilations =
+    System.Collections.Concurrent.ConcurrentDictionary<string, bool>(System.StringComparer.OrdinalIgnoreCase)
+
+let private shapeScopeOpen (fileName: string) (options: AnalyzerProjectOptions) =
+    Visibility.apiChangesAllowed ()
+    || match Configuration.publicSurfaceSetting fileName with
+       | Some declared -> declared
+       | None ->
+           let leaf =
+               leafCompilations.GetOrAdd(
+                   options.ProjectFileName,
+                   fun _ -> Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
+               )
+
+           Visibility.isApplication fileName leaf
+
+/// What the scope gate is holding back, per rule code, for the run to
+/// report. Only the CLI reads it; editors show the findings themselves.
+let heldByScope = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
+
+/// The caveat a widened finding carries. Deliberately about SHAPE rather
+/// than about visibility: the risk is not that the declaration is public,
+/// it is that something outside this assembly can observe its compiled
+/// form — a linker, or a serializer. And serialization cannot be detected:
+/// System.Text.Json, Newtonsoft, XmlSerializer, DataContract, protobuf,
+/// MessagePack and whatever a consumer wired up by reflection all read the
+/// shape, and a guard that enumerated some of them would break the rest
+/// silently. So the tool does not guess — it says what changes and leaves
+/// the judgement to the person reading the code, who is the only reliable
+/// detector there is.
+[<Literal>]
+let private ShapeCaveat =
+    " CHANGES THE PUBLIC SHAPE: safe only if nothing outside this assembly links to it or serializes it (JSON, XML, protobuf — the tool cannot tell)."
+
+/// The findings a widened scope adds, marked with the caveat.
+///
+/// The rules take the gate as a plain bool, so "which declarations did it
+/// exclude?" is answered by running them both ways and differencing on
+/// range — no rule needs to learn to explain itself. Editors show the
+/// extras as light bulbs, because a light bulb is per-site consent from
+/// the one person who knows whether that record crosses a wire. The CLI
+/// only counts them: a batch run has nobody to ask, and the answer there
+/// is a repository-level `"publicApi": false` rather than a fix applied on
+/// a guess.
+/// `scopeOpen` short-circuits: with the gate already open the second run
+/// would find exactly the first one's findings, and these rules would pay
+/// twice on every file for nothing.
+///
+/// Which host this is decides what happens to the extras, and
+/// `ProjectSources.available ()` already answers that: the CLI installs a
+/// cross-file parser, editors do not.
+let private widened (scopeOpen: bool) (build: bool -> Message list) =
+    let narrow = build scopeOpen
+
+    if scopeOpen then
+        narrow
+    else
+
+        // range carries NoComparison, so identity is its coordinates
+        let key (m: Message) =
+            m.Code, m.Range.FileName, m.Range.StartLine, m.Range.StartColumn
+
+        let known = narrow |> List.map key |> Set.ofList
+        let extras = build true |> List.filter (fun m -> not (known.Contains(key m)))
+
+        for m in extras do
+            heldByScope.AddOrUpdate(m.Code, 1, (fun _ n -> n + 1)) |> ignore
+
+        if ProjectSources.available () then
+            // a batch run has nobody to ask; the answer there is a
+            // repository-level `"publicApi": false`, which the summary names
+            narrow
+        else
+            narrow
+            @ (extras
+               |> List.map (fun m ->
+                   { m with
+                       // NOTE-ONLY, deliberately. FsAutoComplete titles every
+                       // analyzer fix "Fix <code>", so this caveat never
+                       // reaches the light bulb the user clicks - it lands in
+                       // the squiggle's tooltip. This branch is the EDITOR
+                       // (the CLI installs a cross-file parser and took
+                       // `narrow` above), the one host with no build check and
+                       // no rollback. A one-click rewrite of a declaration's
+                       // public compiled shape there is what the safety model
+                       // rules out, so the finding is reported and the fix
+                       // withheld.
+                       Message = m.Message + ShapeCaveat
+                       Fixes = [] }))
+
 /// The EDITOR-side twin of the apply tool's comment guard: a fix whose
 /// span contains a comment that no fix of the same message re-emits would
 /// silently DELETE it through the light bulb — and unlike the CLI, the
@@ -459,6 +574,65 @@ let catchLogEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let catchLogCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0120" "CatchLogException" (fun () ->
         catchLogMessages ctx.ParseFileResults.ParseTree ctx.SourceText false ctx.CheckFileResults)
+
+// ---- FR0151 ExceptionDetail / FR0152 CachedFailure ----
+
+let private exceptionDetailMessages
+    (offerFix: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    ExceptionDetail.find parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0151"
+            (s.Advice)
+            s.Range
+            // editor-only, like FR0049's sync swap: it compiles either way,
+            // but WHAT GETS LOGGED is the author's call, not the tool's
+            (if offerFix then
+                 // the carry-on repair FIRST where it applies: not failing at
+                 // all beats reporting the failure better
+                 (match s.AlternativeFix with
+                  | Some(r, original, replacement) -> [ fix r original replacement ]
+                  | None -> [])
+                 @ (match s.Fix with
+                    | Some(r, original, replacement) -> [ fix r original replacement ]
+                    | None -> [])
+             else
+                 []))
+
+let private cachedFailureMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    CachedFailure.find parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0152"
+            (sprintf
+                "A cached %s REMEMBERS a failure instead of raising it, so the entry has to be removed when the value faults - otherwise every later GetOrAdd hands out the same failure. One transient error then outlives whatever caused it, and the dependency looks down long after it recovered. (A factory that simply THROWS is fine: GetOrAdd stores nothing and the next caller retries.)"
+                s.ValueKind)
+            s.Range
+            [])
+
+[<EditorAnalyzer("ExceptionDetail", "Report handlers that read only .Message from an exception carrying more", HelpBase)>]
+let exceptionDetailEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0151" "ExceptionDetail" (fun () ->
+        whenChecked ctx (exceptionDetailMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("ExceptionDetail", "Report handlers that read only .Message from an exception carrying more", HelpBase)>]
+let exceptionDetailCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0151" "ExceptionDetail" (fun () ->
+        exceptionDetailMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+[<EditorAnalyzer("CachedFailure", "Report GetOrAdd caching a Task or Lazy that can remember a failure", HelpBase)>]
+let cachedFailureEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0152" "CachedFailure" (fun () ->
+        whenChecked ctx (cachedFailureMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("CachedFailure", "Report GetOrAdd caching a Task or Lazy that can remember a failure", HelpBase)>]
+let cachedFailureCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0152" "CachedFailure" (fun () ->
+        cachedFailureMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0121 DateTimeRules ----
 
@@ -975,23 +1149,33 @@ let simplificationCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0011 StructActivePattern ----
 
-let private structActivePatternMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
-    StructActivePattern.find (Visibility.apiChangesAllowed ()) parseTree source checkResults
-    |> List.map (fun s ->
-        hint
-            "FR0011"
-            (sprintf
-                "Active pattern (%s) can return a struct option ([<return: Struct>]), avoiding an allocation per match attempt."
-                s.PatternName)
-            s.NameRange
-            (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
+let private structActivePatternMessages
+    (scopeOpen: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    widened scopeOpen (fun scope ->
+        StructActivePattern.find scope parseTree source checkResults
+        |> List.map (fun s ->
+            hint
+                "FR0011"
+                (sprintf
+                    "Active pattern (%s) can return a struct option ([<return: Struct>]), avoiding an allocation per match attempt."
+                    s.PatternName)
+                s.NameRange
+                (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement))))
 
 [<EditorAnalyzer("StructActivePattern", "Make trivial partial active patterns struct-returning", HelpBase)>]
 let structActivePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0011" "StructActivePattern" (fun () ->
         whenChecked ctx (fun check ->
             if fsharpCoreAtLeast 6 ctx.ProjectOptions then
-                structActivePatternMessages ctx.ParseFileResults.ParseTree ctx.SourceText check
+                structActivePatternMessages
+                    (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText
+                    check
             else
                 []))
 
@@ -999,7 +1183,11 @@ let structActivePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list>
 let structActivePatternCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0011" "StructActivePattern" (fun () ->
         if fsharpCoreAtLeast 6 ctx.ProjectOptions then
-            structActivePatternMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+            structActivePatternMessages
+                (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                ctx.ParseFileResults.ParseTree
+                ctx.SourceText
+                ctx.CheckFileResults
         else
             [])
 
@@ -1273,54 +1461,62 @@ let regexValidityCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0016 StructDu ----
 
-let private structDuMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    StructDu.find (Visibility.apiChangesAllowed ()) parseTree source
-    |> List.map (fun s ->
-        hint
-            "FR0016"
-            (sprintf
-                "Union '%s' holds only small value types; [<Struct>] avoids a heap allocation per value."
-                s.TypeName)
-            s.InsertRange
-            (fix s.InsertRange "" s.InsertText
-             :: (s.SignatureEdits
-                 |> List.map (fun (r, original, replacement) -> fix r original replacement))))
+let private structDuMessages (scopeOpen: bool) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    widened scopeOpen (fun scope ->
+        StructDu.find scope parseTree source
+        |> List.map (fun s ->
+            hint
+                "FR0016"
+                (sprintf
+                    "Union '%s' holds only small value types; [<Struct>] avoids a heap allocation per value."
+                    s.TypeName)
+                s.InsertRange
+                (fix s.InsertRange "" s.InsertText
+                 :: (s.SignatureEdits
+                     |> List.map (fun (r, original, replacement) -> fix r original replacement)))))
 
 [<EditorAnalyzer("StructDu", "Mark small discriminated unions with Struct", HelpBase)>]
 let structDuEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0016" "StructDu" (fun () ->
-        structDuMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        structDuMessages (shapeScopeOpen ctx.FileName ctx.ProjectOptions) ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("StructDu", "Mark small discriminated unions with Struct", HelpBase)>]
 let structDuCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0016" "StructDu" (fun () ->
-        structDuMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        structDuMessages (shapeScopeOpen ctx.FileName ctx.ProjectOptions) ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0022 DuFieldNames ----
 
-let private duFieldNamesMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    DuFieldNames.find (Visibility.apiChangesAllowed ()) parseTree source
-    |> List.map (fun s ->
-        hint
-            "FR0022"
-            (sprintf
-                "Union case '%s' can name its fields (%s) after the names %s already spell."
-                s.CaseName
-                (String.concat ", " s.Names)
-                s.Source)
-            s.Range
-            (s.Edits
-             |> List.map (fun (r, original, replacement) -> fix r original replacement)))
+let private duFieldNamesMessages (scopeOpen: bool) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    widened scopeOpen (fun scope ->
+        DuFieldNames.find scope parseTree source
+        |> List.map (fun s ->
+            hint
+                "FR0022"
+                (sprintf
+                    "Union case '%s' can name its fields (%s) after the names %s already spell."
+                    s.CaseName
+                    (String.concat ", " s.Names)
+                    s.Source)
+                s.Range
+                (s.Edits
+                 |> List.map (fun (r, original, replacement) -> fix r original replacement))))
 
 [<EditorAnalyzer("DuFieldNames", "Name private union case fields after their match sites", HelpBase)>]
 let duFieldNamesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0022" "DuFieldNames" (fun () ->
-        duFieldNamesMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        duFieldNamesMessages
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
 
 [<CliAnalyzer("DuFieldNames", "Name private union case fields after their match sites", HelpBase)>]
 let duFieldNamesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0022" "DuFieldNames" (fun () ->
-        duFieldNamesMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        duFieldNamesMessages
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
 
 // ---- FR0023 ParamOrder ----
 
@@ -1743,6 +1939,7 @@ let stringConcatCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0032 / FR0033 ObjectDesign ----
 
 let private objectDesignMessages
+    (scopeOpen: bool)
     (fileName: string)
     (offerFixes: bool)
     (parseTree: ParsedInput)
@@ -1778,7 +1975,7 @@ let private objectDesignMessages
         disposeWithoutInterfaceMessages
     else
         let disposables, statics, undisposedFields =
-            ObjectDesign.find (Visibility.apiChangesAllowed ()) parseTree source checkResults
+            ObjectDesign.find scopeOpen parseTree source checkResults
 
         let disposableMessages =
             if disposableEnabled then
@@ -1857,7 +2054,14 @@ let objectDesignEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
         return
             DeepStack.run (fun () ->
-                whenChecked ctx (objectDesignMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText))
+                whenChecked
+                    ctx
+                    (objectDesignMessages
+                        (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                        ctx.FileName
+                        true
+                        ctx.ParseFileResults.ParseTree
+                        ctx.SourceText))
     }
 
 [<CliAnalyzer("ObjectDesign", "Disposable fields without IDisposable; could-be-static members", HelpBase)>]
@@ -1866,6 +2070,7 @@ let objectDesignCliAnalyzer (ctx: CliContext) : Async<Message list> =
         return
             DeepStack.run (fun () ->
                 objectDesignMessages
+                    (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
                     false
                     ctx.ParseFileResults.ParseTree
@@ -1897,7 +2102,12 @@ let optionMatchCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0035 / FR0037 LoopPerf ----
 
-let private loopPerfMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+let private loopPerfMessages
+    (scopeOpen: bool)
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
     let containsEnabled = Configuration.isRuleEnabled fileName "FR0035" "ContainsInLoop"
 
     let constructionEnabled =
@@ -1906,8 +2116,7 @@ let private loopPerfMessages (fileName: string) (parseTree: ParsedInput) (source
     if not (containsEnabled || constructionEnabled) then
         []
     else
-        let contains, constructions =
-            LoopPerf.find (Visibility.apiChangesAllowed ()) parseTree source
+        let contains, constructions = LoopPerf.find scopeOpen parseTree source
 
         let containsMessages =
             if containsEnabled then
@@ -1963,13 +2172,25 @@ let private loopPerfMessages (fileName: string) (parseTree: ParsedInput) (source
 [<EditorAnalyzer("LoopPerf", "Linear probes and expensive constructions inside loops", HelpBase)>]
 let loopPerfEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return DeepStack.run (fun () -> loopPerfMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return
+            DeepStack.run (fun () ->
+                loopPerfMessages
+                    (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                    ctx.FileName
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText)
     }
 
 [<CliAnalyzer("LoopPerf", "Linear probes and expensive constructions inside loops", HelpBase)>]
 let loopPerfCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return DeepStack.run (fun () -> loopPerfMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return
+            DeepStack.run (fun () ->
+                loopPerfMessages
+                    (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                    ctx.FileName
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText)
     }
 
 // ---- FR0036 TypeChecks ----
@@ -3125,28 +3346,35 @@ let matchGuardsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0130 LiteralConst ----
 
-let private literalConstMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    LiteralConst.find (Visibility.apiChangesAllowed ()) parseTree source
-    |> List.map (fun s ->
-        let insertRange, text = s.Fix
+let private literalConstMessages (scopeOpen: bool) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    widened scopeOpen (fun scope ->
+        LiteralConst.find scope parseTree source
+        |> List.map (fun s ->
+            let insertRange, text = s.Fix
 
-        hint
-            "FR0130"
-            $"'{s.Name}' is a compile-time constant; [<Literal>] lets it serve in patterns and attribute arguments and const-folds at use sites."
-            s.Range
-            (fix insertRange "" text
-             :: (s.SignatureEdits
-                 |> List.map (fun (r, original, replacement) -> fix r original replacement))))
+            hint
+                "FR0130"
+                $"'{s.Name}' is a compile-time constant; [<Literal>] lets it serve in patterns and attribute arguments and const-folds at use sites."
+                s.Range
+                (fix insertRange "" text
+                 :: (s.SignatureEdits
+                     |> List.map (fun (r, original, replacement) -> fix r original replacement)))))
 
 [<EditorAnalyzer("LiteralConst", "Module-level constants gain [<Literal>]", HelpBase)>]
 let literalConstEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0130" "LiteralConst" (fun () ->
-        literalConstMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        literalConstMessages
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
 
 [<CliAnalyzer("LiteralConst", "Module-level constants gain [<Literal>]", HelpBase)>]
 let literalConstCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0130" "LiteralConst" (fun () ->
-        literalConstMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        literalConstMessages
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
 
 // ---- FR0131 RecTailCall ----
 
@@ -3234,8 +3462,13 @@ let nameQuotingCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0134 DateTimeOffsetMigration ----
 
-let private dateTimeOffsetMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
-    DateTimeOffsetMigration.find (Visibility.apiChangesAllowed ()) parseTree source
+let private dateTimeOffsetMessages
+    (scopeOpen: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    DateTimeOffsetMigration.find scopeOpen parseTree source
     |> List.choose (fun s ->
         if s.IsFilePrivate then
             DateTimeOffsetMigration.migrate parseTree source checkResults s
@@ -3251,12 +3484,21 @@ let private dateTimeOffsetMessages (parseTree: ParsedInput) (source: ISourceText
 [<EditorAnalyzer("DateTimeOffsetMigration", "DateTime record fields migrate to DateTimeOffset", HelpBase)>]
 let dateTimeOffsetEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0134" "DateTimeOffsetMigration" (fun () ->
-        whenChecked ctx (dateTimeOffsetMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+        whenChecked
+            ctx
+            (dateTimeOffsetMessages
+                (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                ctx.ParseFileResults.ParseTree
+                ctx.SourceText))
 
 [<CliAnalyzer("DateTimeOffsetMigration", "DateTime record fields migrate to DateTimeOffset", HelpBase)>]
 let dateTimeOffsetCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0134" "DateTimeOffsetMigration" (fun () ->
-        dateTimeOffsetMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+        dateTimeOffsetMessages
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            ctx.CheckFileResults)
 
 // ---- FR0135 LiterateComment ----
 
@@ -3649,154 +3891,171 @@ let miscRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0069 / FR0070 StructHints ----
 
 let private structHintsMessages
+    (scopeOpen: bool)
     (fileName: string)
     (parseTree: ParsedInput)
     (source: ISourceText)
     (checkOpt: FSharpCheckFileResults option)
     (projectCheck: FSharpCheckProjectResults option)
     : Message list =
-    let voptionEnabled = Configuration.isRuleEnabled fileName "FR0069" "VOptionField"
-    let structEnabled = Configuration.isRuleEnabled fileName "FR0070" "SmallStructType"
+    widened scopeOpen (fun scope ->
+        let voptionEnabled = Configuration.isRuleEnabled fileName "FR0069" "VOptionField"
+        let structEnabled = Configuration.isRuleEnabled fileName "FR0070" "SmallStructType"
 
-    let structTupleEnabled =
-        Configuration.isRuleEnabled fileName "FR0093" "StructTupleField"
+        let structTupleEnabled =
+            Configuration.isRuleEnabled fileName "FR0093" "StructTupleField"
 
-    if not (voptionEnabled || structEnabled || structTupleEnabled) then
-        []
-    else
-        // A companion .fsi declares these types too, and a migration changes
-        // what it declares — `{ Seen: int option }` becoming voption stops
-        // the project compiling. The api pass sidesteps this by skipping
-        // signature-carrying projects wholesale, but these migrations run in
-        // the NORMAL pass, so that skip never covered them: verified by
-        // running FR0069 against a signature, which applied four edits and
-        // was rolled back.
-        //
-        // The advice still stands; only the edit is withheld, the same way a
-        // capability fix stands down where it has nowhere safe to live.
-        let signatureBound = Text.hasSignatureFile parseTree.FileName
+        if not (voptionEnabled || structEnabled || structTupleEnabled) then
+            []
+        else
+            // A companion .fsi declares these types too, and a migration changes
+            // what it declares — `{ Seen: int option }` becoming voption stops
+            // the project compiling. The api pass sidesteps this by skipping
+            // signature-carrying projects wholesale, but these migrations run in
+            // the NORMAL pass, so that skip never covered them: verified by
+            // running FR0069 against a signature, which applied four edits and
+            // was rolled back.
+            //
+            // The advice still stands; only the edit is withheld, the same way a
+            // capability fix stands down where it has nowhere safe to live.
+            let signatureBound = Text.hasSignatureFile parseTree.FileName
 
-        let voptions, structs, structTuples =
-            StructHints.find (Visibility.apiChangesAllowed ()) parseTree source
+            let voptions, structs, structTuples = StructHints.find scope parseTree source
 
-        let voptionMessages =
-            if voptionEnabled then
-                voptions
-                |> List.map (fun s ->
-                    // a strictly file-private field migrates as ONE edit
-                    // set: field type plus every use, all in this file by
-                    // construction. Any use outside the provably-
-                    // rewritable shapes keeps it a note
-                    let migration =
-                        match checkOpt with
-                        | Some check when s.IsFilePrivate && not signatureBound ->
-                            VOptionMigration.migrate
-                                parseTree
-                                source
-                                check
-                                s.FieldIdRange
-                                s.FieldName
-                                s.OptionNameRange
-                        | Some check when Visibility.apiChangesAllowed () && s.IsConfined && not signatureBound ->
-                            // a strictly INTERNAL field under --api-changes:
-                            // every use in the project classified against its
-                            // own file, one edit set spanning files. Public
-                            // fields never take this path (consumers can sit
-                            // in a sibling project no scan sees), and neither
-                            // does an assembly that opens its internals to
-                            // friends
-                            projectCheck
-                            |> Option.filter (ProjectSources.hasInternalsVisibleTo >> not)
-                            |> Option.bind (fun pc ->
-                                VOptionMigration.migrateProject
+            let voptionMessages =
+                if voptionEnabled then
+                    voptions
+                    |> List.map (fun s ->
+                        // a strictly file-private field migrates as ONE edit
+                        // set: field type plus every use, all in this file by
+                        // construction. Any use outside the provably-
+                        // rewritable shapes keeps it a note
+                        let migration =
+                            match checkOpt with
+                            | Some check when s.IsFilePrivate && not signatureBound ->
+                                VOptionMigration.migrate
                                     parseTree
                                     source
                                     check
-                                    pc
                                     s.FieldIdRange
                                     s.FieldName
-                                    s.OptionNameRange)
-                        | _ -> None
+                                    s.OptionNameRange
+                            | Some check when
+                                Visibility.apiChangesAllowed ()
+                                && s.IsConfined
+                                && not signatureBound
+                                // a file #loaded by a script that does not typecheck:
+                                // its calls cannot be read, so nothing declared in
+                                // it may be reshaped
+                                && not (ProjectSources.isUnreadable parseTree.FileName)
+                                ->
+                                // a strictly INTERNAL field under --api-changes:
+                                // every use in the project classified against its
+                                // own file, one edit set spanning files. Public
+                                // fields never take this path (consumers can sit
+                                // in a sibling project no scan sees), and neither
+                                // does an assembly that opens its internals to
+                                // friends
+                                projectCheck
+                                |> Option.filter (ProjectSources.hasInternalsVisibleTo >> not)
+                                |> Option.bind (fun pc ->
+                                    VOptionMigration.migrateProject
+                                        parseTree
+                                        source
+                                        check
+                                        pc
+                                        s.FieldIdRange
+                                        s.FieldName
+                                        s.OptionNameRange)
+                            | _ -> None
 
-                    let containment = if s.IsFilePrivate then "file-private" else "internal"
+                        let containment = if s.IsFilePrivate then "file-private" else "internal"
 
-                    match migration with
-                    | Some edits ->
+                        match migration with
+                        | Some edits ->
+                            hint
+                                "FR0069"
+                                $"Field '%s{s.FieldName}: %s{s.ElementText} option' of the %s{containment} type '%s{s.TypeName}' boxes the %s{s.ElementText} on every Some; the fix migrates the field and its %d{edits.Length - 1} use(s) to '%s{s.ElementText} voption'."
+                                s.Range
+                                (edits |> List.map (fun (r, original, replacement) -> fix r original replacement))
+                        | None ->
+                            hint
+                                "FR0069"
+                                $"Field '%s{s.FieldName}: %s{s.ElementText} option' of the contained type '%s{s.TypeName}' boxes the %s{s.ElementText} on every Some; '%s{s.ElementText} voption' keeps it flat — and private/internal visibility keeps the migration contained (public types risk serialization changes and unbounded call-site churn)."
+                                s.Range
+                                [])
+                else
+                    []
+
+            let structMessages =
+                if structEnabled then
+                    structs
+                    |> List.map (fun s ->
+                        let fixes =
+                            match s.Fix with
+                            | Some(r, text) -> [ fix r "" text ]
+                            | None -> []
+
                         hint
-                            "FR0069"
-                            $"Field '%s{s.FieldName}: %s{s.ElementText} option' of the %s{containment} type '%s{s.TypeName}' boxes the %s{s.ElementText} on every Some; the fix migrates the field and its %d{edits.Length - 1} use(s) to '%s{s.ElementText} voption'."
+                            "FR0070"
+                            $"Contained record '%s{s.TypeName}' has only %d{s.FieldCount} small struct field(s); [<Struct>] removes a heap allocation per instance (mind copy semantics: struct records copy on assignment)."
                             s.Range
-                            (edits |> List.map (fun (r, original, replacement) -> fix r original replacement))
-                    | None ->
-                        hint
-                            "FR0069"
-                            $"Field '%s{s.FieldName}: %s{s.ElementText} option' of the contained type '%s{s.TypeName}' boxes the %s{s.ElementText} on every Some; '%s{s.ElementText} voption' keeps it flat — and private/internal visibility keeps the migration contained (public types risk serialization changes and unbounded call-site churn)."
-                            s.Range
-                            [])
-            else
-                []
+                            fixes)
+                else
+                    []
 
-        let structMessages =
-            if structEnabled then
-                structs
-                |> List.map (fun s ->
-                    let fixes =
-                        match s.Fix with
-                        | Some(r, text) -> [ fix r "" text ]
-                        | None -> []
+            let structTupleMessages =
+                if structTupleEnabled then
+                    structTuples
+                    |> List.map (fun s ->
+                        // a strictly file-private field migrates as ONE edit set:
+                        // field type plus every construction/destructuring, all
+                        // in this file by construction
+                        let migration =
+                            match checkOpt with
+                            | Some check when s.IsFilePrivate && not signatureBound ->
+                                StructTupleMigration.migrate parseTree source check s.FieldIdRange s.FieldName s.Range
+                            | Some check when
+                                Visibility.apiChangesAllowed ()
+                                && s.IsConfined
+                                && not signatureBound
+                                // a file #loaded by a script that does not typecheck:
+                                // its calls cannot be read, so nothing declared in
+                                // it may be reshaped
+                                && not (ProjectSources.isUnreadable parseTree.FileName)
+                                ->
+                                projectCheck
+                                |> Option.filter (ProjectSources.hasInternalsVisibleTo >> not)
+                                |> Option.bind (fun pc ->
+                                    StructTupleMigration.migrateProject
+                                        parseTree
+                                        source
+                                        check
+                                        pc
+                                        s.FieldIdRange
+                                        s.FieldName
+                                        s.Range)
+                            | _ -> None
 
-                    hint
-                        "FR0070"
-                        $"Contained record '%s{s.TypeName}' has only %d{s.FieldCount} small struct field(s); [<Struct>] removes a heap allocation per instance (mind copy semantics: struct records copy on assignment)."
-                        s.Range
-                        fixes)
-            else
-                []
+                        let containment = if s.IsFilePrivate then "file-private" else "internal"
 
-        let structTupleMessages =
-            if structTupleEnabled then
-                structTuples
-                |> List.map (fun s ->
-                    // a strictly file-private field migrates as ONE edit set:
-                    // field type plus every construction/destructuring, all
-                    // in this file by construction
-                    let migration =
-                        match checkOpt with
-                        | Some check when s.IsFilePrivate && not signatureBound ->
-                            StructTupleMigration.migrate parseTree source check s.FieldIdRange s.FieldName s.Range
-                        | Some check when Visibility.apiChangesAllowed () && s.IsConfined && not signatureBound ->
-                            projectCheck
-                            |> Option.filter (ProjectSources.hasInternalsVisibleTo >> not)
-                            |> Option.bind (fun pc ->
-                                StructTupleMigration.migrateProject
-                                    parseTree
-                                    source
-                                    check
-                                    pc
-                                    s.FieldIdRange
-                                    s.FieldName
-                                    s.Range)
-                        | _ -> None
+                        match migration with
+                        | Some edits ->
+                            hint
+                                "FR0093"
+                                $"Field '%s{s.FieldName}: %s{s.TupleText}' of the %s{containment} type '%s{s.TypeName}' is a reference tuple: one heap object per value; the fix migrates the field and its %d{edits.Length - 1} use(s) to 'struct (%s{s.TupleText})'."
+                                s.Range
+                                (edits |> List.map (fun (r, original, replacement) -> fix r original replacement))
+                        | None ->
+                            hint
+                                "FR0093"
+                                $"Field '%s{s.FieldName}: %s{s.TupleText}' of the contained type '%s{s.TypeName}' is a reference tuple: one heap object per value. 'struct (%s{s.TupleText})' stores it inline — but every construction and destructuring of the field needs the struct keyword too, so this is advice, not a mechanical fix."
+                                s.Range
+                                [])
+                else
+                    []
 
-                    let containment = if s.IsFilePrivate then "file-private" else "internal"
-
-                    match migration with
-                    | Some edits ->
-                        hint
-                            "FR0093"
-                            $"Field '%s{s.FieldName}: %s{s.TupleText}' of the %s{containment} type '%s{s.TypeName}' is a reference tuple: one heap object per value; the fix migrates the field and its %d{edits.Length - 1} use(s) to 'struct (%s{s.TupleText})'."
-                            s.Range
-                            (edits |> List.map (fun (r, original, replacement) -> fix r original replacement))
-                    | None ->
-                        hint
-                            "FR0093"
-                            $"Field '%s{s.FieldName}: %s{s.TupleText}' of the contained type '%s{s.TypeName}' is a reference tuple: one heap object per value. 'struct (%s{s.TupleText})' stores it inline — but every construction and destructuring of the field needs the struct keyword too, so this is advice, not a mechanical fix."
-                            s.Range
-                            [])
-            else
-                []
-
-        voptionMessages @ structMessages @ structTupleMessages
+            voptionMessages @ structMessages @ structTupleMessages)
 
 [<EditorAnalyzer("StructHints", "voption fields and [<Struct>] candidates in contained types", HelpBase)>]
 let structHintsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -3806,6 +4065,7 @@ let structHintsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
         return
             DeepStack.run (fun () ->
                 structHintsMessages
+                    (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText
@@ -3821,6 +4081,7 @@ let structHintsCliAnalyzer (ctx: CliContext) : Async<Message list> =
         return
             DeepStack.run (fun () ->
                 structHintsMessages
+                    (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText

@@ -248,6 +248,11 @@ let private categories =
       "FR0148", Category.Correctness, "a public Dispose() on a type that is not IDisposable"
       "FR0149", Category.Correctness, "a computation started with nobody to observe its failure"
       "FR0150", Category.Correctness, "a use-bound disposable captured by a computation that outlives the scope"
+
+      "FR0151",
+      Category.Correctness,
+      "an exception handler reading only .Message from a type whose diagnosis is elsewhere"
+      "FR0152", Category.Correctness, "GetOrAdd caching a Task or Lazy, so one failure is cached for every later reader"
       "FR0073",
       Category.Idiom,
       "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"

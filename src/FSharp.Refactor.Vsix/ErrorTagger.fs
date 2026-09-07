@@ -61,6 +61,22 @@ type FrTagger(buffer: ITextBuffer, filePath: string) as this =
 
     let mutable lastTraced = -1
 
+    // GetTags runs on every scroll, edit and layout pass, so nothing in it may
+    // be O(diagnostics) if it can be helped. The list from the client is
+    // replaced wholesale when diagnostics change, so a reference check tells us
+    // whether the array is stale - O(1) on the hot path, O(n) only on change.
+    let mutable cachedSource: Diag list = []
+    let mutable cached: Diag[] = [||]
+
+    let currentDiags () =
+        let ds = diagsFor filePath
+
+        if not (obj.ReferenceEquals(ds, cachedSource)) then
+            cachedSource <- ds
+            cached <- List.toArray ds
+
+        cached
+
     let subscription =
         FsacClient.diagnosticsChanged.Publish.Subscribe(fun changedPath ->
             if String.Equals(changedPath, key, StringComparison.OrdinalIgnoreCase) then
@@ -80,21 +96,47 @@ type FrTagger(buffer: ITextBuffer, filePath: string) as this =
                 Seq.empty
             else
                 let snapshot = spans[0].Snapshot
-                let diags = diagsFor filePath
+                let diags = currentDiags ()
 
-                if List.length diags <> lastTraced then
-                    lastTraced <- List.length diags
+                if diags.Length <> lastTraced then
+                    lastTraced <- diags.Length
                     FsacClient.clientTrace $"GetTags sees {lastTraced} diags for {filePath}"
 
-                seq {
-                    for d in diags do
+                // A NormalizedSnapshotSpanCollection is sorted and
+                // non-overlapping, so the whole requested region is bounded by
+                // its first and last span. Two line lookups here replace two
+                // per diagnostic: a diagnostic outside the window is rejected
+                // by integer comparison, without touching the snapshot at all.
+                let firstLine = snapshot.GetLineNumberFromPosition spans[0].Start.Position
+                let lastLine = snapshot.GetLineNumberFromPosition spans[spans.Count - 1].End.Position
+
+                let tags = ResizeArray<ITagSpan<IErrorTag>>()
+
+                for i in 0 .. diags.Length - 1 do
+                    let d = diags[i]
+
+                    // spans an edge of the window, or sits inside it
+                    if d.EndLine >= firstLine && d.StartLine <= lastLine then
                         match spanOf snapshot d with
-                        | Some span when spans |> Seq.exists (fun s -> s.IntersectsWith span) ->
-                            yield
-                                TagSpan<IErrorTag>(span, ErrorTag(FrHintErrorType, $"{d.Code}: {d.Message}"))
-                                :> ITagSpan<IErrorTag>
-                        | _ -> ()
-                }
+                        | Some span ->
+                            // indexed, to avoid an enumerator per diagnostic
+                            let mutable hit = false
+                            let mutable j = 0
+
+                            while not hit && j < spans.Count do
+                                if spans[j].IntersectsWith span then
+                                    hit <- true
+
+                                j <- j + 1
+
+                            if hit then
+                                tags.Add(
+                                    TagSpan<IErrorTag>(span, ErrorTag(FrHintErrorType, $"{d.Code}: {d.Message}"))
+                                    :> ITagSpan<IErrorTag>
+                                )
+                        | None -> ()
+
+                tags :> seq<ITagSpan<IErrorTag>>
 
     interface IDisposable with
         member _.Dispose() = subscription.Dispose()

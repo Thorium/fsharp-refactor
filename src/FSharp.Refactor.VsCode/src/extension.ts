@@ -18,6 +18,17 @@ function analyzersDir(context: vscode.ExtensionContext): string {
     return vscode.Uri.joinPath(context.extensionUri, 'analyzers').fsPath;
 }
 
+/// The GLOBAL analyzersPath, never the effective one.
+///
+/// `getConfiguration().get()` merges workspace over global, so a workspace
+/// that sets its own analyzersPath HIDES the entry this extension maintains -
+/// the stale-version repair then sees nothing to repair and silently leaves
+/// the old, now deleted, extension folder in place. Every decision about the
+/// entry we own has to look at the global scope directly.
+function globalAnalyzersPath(): string[] {
+    return vscode.workspace.getConfiguration(SECTION).inspect<string[]>('analyzersPath')?.globalValue ?? [];
+}
+
 async function promptReload(message: string): Promise<void> {
     const pick = await vscode.window.showInformationMessage(message, 'Reload Window');
     if (pick === 'Reload Window') {
@@ -28,7 +39,7 @@ async function promptReload(message: string): Promise<void> {
 async function wire(context: vscode.ExtensionContext, interactive: boolean): Promise<void> {
     const config = vscode.workspace.getConfiguration(SECTION);
     const dir = analyzersDir(context);
-    const current = config.get<string[]>('analyzersPath') ?? [];
+    const current = globalAnalyzersPath();
 
     // replace entries from older versions of this extension, keep the rest
     const kept = current.filter(p => !p.includes(PATH_MARKER));
@@ -53,7 +64,7 @@ async function wire(context: vscode.ExtensionContext, interactive: boolean): Pro
 
 async function unwire(context: vscode.ExtensionContext): Promise<void> {
     const config = vscode.workspace.getConfiguration(SECTION);
-    const current = config.get<string[]>('analyzersPath') ?? [];
+    const current = globalAnalyzersPath();
     const kept = current.filter(p => !p.includes(PATH_MARKER));
 
     if (kept.length === current.length) {
@@ -102,7 +113,7 @@ const TOOL = 'fsharp-refactor';
 /// The tool's version, or undefined when it is not on the PATH.
 function toolVersion(): Promise<string | undefined> {
     return new Promise(resolve => {
-        cp.execFile(TOOL, ['--version'], { timeout: 15000, shell: true }, (error, stdout) => {
+        cp.execFile(TOOL, ['--version'], { timeout: 15000 }, (error, stdout) => {
             if (error) {
                 resolve(undefined);
             } else {
@@ -181,13 +192,13 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
     );
 }
 
-/// Run the apply tool on a solution or project of this workspace, in the
-/// integrated terminal: report only by default, the real thing on request.
-async function run(): Promise<void> {
+/// The solution or project to work on: the only one there is, or the
+/// user's pick when the workspace holds several.
+async function pickTarget(): Promise<vscode.Uri | undefined> {
     const folders = vscode.workspace.workspaceFolders ?? [];
     if (folders.length === 0) {
         vscode.window.showWarningMessage('FSharp.Refactor: open a folder or workspace first.');
-        return;
+        return undefined;
     }
 
     const found = await vscode.workspace.findFiles(
@@ -195,25 +206,70 @@ async function run(): Promise<void> {
         '**/{node_modules,bin,obj,packages,paket-files,.git}/**',
         100
     );
+
+    /// The TOOL takes a script or a whole directory as happily as a project -
+    /// a folder of loose .fsx has always worked on the command line. Only this
+    /// picker ever insisted on a project file, which made "open folder" and a
+    /// lone script look unsupported when they are not.
+    const active = vscode.window.activeTextEditor?.document.uri;
+    const activeScript = active && /\.(fsx|fsscript)$/i.test(active.fsPath) ? active : undefined;
+
     if (found.length === 0) {
-        vscode.window.showWarningMessage('FSharp.Refactor: no .sln, .slnx or .fsproj in this workspace.');
-        return;
+        // the folder itself: the tool sweeps the scripts inside it
+        return activeScript ?? folders[0].uri;
     }
 
     const rank = (u: vscode.Uri) => (u.fsPath.endsWith('.fsproj') ? 1 : 0);
-    const targets = found.sort((a, b) => rank(a) - rank(b) || a.fsPath.localeCompare(b.fsPath));
-    let target = targets[0];
-    if (targets.length > 1) {
-        const pick = await vscode.window.showQuickPick(
-            targets.map(u => ({ label: vscode.workspace.asRelativePath(u), uri: u })),
-            { placeHolder: 'Solution or project to run fsharp-refactor on' }
-        );
-        if (!pick) {
-            return;
-        }
-        target = pick.uri;
+    const projects = found.sort((a, b) => rank(a) - rank(b) || a.fsPath.localeCompare(b.fsPath));
+
+    // an open script is a legitimate target even in a workspace full of
+    // projects, and it is the one the user is looking at
+    const targets = activeScript ? [activeScript, ...projects] : projects;
+    if (targets.length === 1) {
+        return targets[0];
     }
 
+    const pick = await vscode.window.showQuickPick(
+        targets.map(u => ({ label: vscode.workspace.asRelativePath(u), uri: u })),
+        { placeHolder: 'Solution, project or script to run fsharp-refactor on' }
+    );
+    return pick?.uri;
+}
+
+/// The tool has to be on PATH before a terminal line is worth sending;
+/// offer the install when it is not.
+async function ensureTool(): Promise<boolean> {
+    if (await toolVersion()) {
+        return true;
+    }
+
+    const pick = await vscode.window.showWarningMessage(
+        'FSharp.Refactor: the fsharp-refactor dotnet tool is not installed.',
+        'Install it'
+    );
+    if (pick === 'Install it') {
+        const t = toolTerminal();
+        t.show();
+        t.sendText('dotnet tool install -g fsharp-refactor');
+    }
+    return false;
+}
+
+/// Send one tool invocation to the integrated terminal.
+async function invoke(args: string): Promise<void> {
+    const target = await pickTarget();
+    if (!target || !(await ensureTool())) {
+        return;
+    }
+
+    const t = toolTerminal();
+    t.show();
+    t.sendText(`${TOOL} "${target.fsPath}" ${args}`.trim());
+}
+
+/// Run the apply tool on a solution or project of this workspace, in the
+/// integrated terminal: report only by default, the real thing on request.
+async function run(): Promise<void> {
     const mode = await vscode.window.showQuickPick(
         [
             { label: 'Report only', description: '--dry-run: list the fixes, change nothing', args: '--dry-run' },
@@ -226,22 +282,178 @@ async function run(): Promise<void> {
         return;
     }
 
-    if (!(await toolVersion())) {
-        const pick = await vscode.window.showWarningMessage(
-            'FSharp.Refactor: the fsharp-refactor dotnet tool is not installed.',
-            'Install it'
-        );
-        if (pick === 'Install it') {
-            const t = toolTerminal();
-            t.show();
-            t.sendText('dotnet tool install -g fsharp-refactor');
-        }
+    await invoke(mode.args);
+}
+
+/// --api-changes without the mode prompt. It widens which rules fire at
+/// all (scope-gated rules skip public declarations otherwise), so it is
+/// worth its own palette entry rather than a step inside another flow.
+async function runApiChanges(): Promise<void> {
+    const pick = await vscode.window.showQuickPick(
+        [
+            { label: 'Report only', description: '--dry-run --api-changes: change nothing', args: '--dry-run --api-changes' },
+            {
+                label: 'Apply fixes',
+                description: 'rewrites public signatures, names and call sites project-wide',
+                args: '--api-changes',
+            },
+        ],
+        { placeHolder: 'fsharp-refactor --api-changes: this rewrites your public surface' }
+    );
+    if (!pick) {
         return;
     }
 
-    const t = toolTerminal();
-    t.show();
-    t.sendText(`${TOOL} "${target.fsPath}" ${mode.args}`.trim());
+    await invoke(pick.args);
+}
+
+/// A SARIF file of every finding, for code scanning or a second pass as a
+/// --baseline. Always a dry run: a report describes the code as it stands.
+async function report(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const suggested = folder ? vscode.Uri.joinPath(folder.uri, 'fsharp-refactor.sarif').fsPath : 'fsharp-refactor.sarif';
+
+    const path = await vscode.window.showInputBox({
+        prompt: 'Write the SARIF report to',
+        value: suggested,
+        // .csv and .html are the other two shapes --report knows
+        placeHolder: 'a .sarif, .csv or .html path',
+    });
+    if (!path) {
+        return;
+    }
+
+    await invoke(`--dry-run --notes --report "${path}"`);
+}
+
+/// Run the tool to completion, reporting progress and letting the user
+/// cancel. The other commands send a line to the terminal and forget it;
+/// these two need to know when it finished, because there is a file to
+/// open afterwards.
+type ToolRun = { cancelled?: true; failure?: string; output: string };
+
+function runToCompletion(args: string[], title: string): Thenable<ToolRun> {
+    return vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+        (_progress, token) =>
+            new Promise<ToolRun>(resolve => {
+                const child = cp.execFile(
+                    TOOL,
+                    args,
+                    // a solution-wide notes pass is minutes of work on a
+                    // large repository; Deedle's 16 compilations took five
+                                        // NO shell: with `shell: true` Node joins argv into one
+                    // command line WITHOUT quoting, so any workspace path
+                    // holding a space ("Visual Studio 18", "Program Files")
+                    // arrives split, and one holding & ( ) ` $ arrives as
+                    // something else entirely. execFile finds the tool on
+                    // PATH by itself.
+                    { timeout: 45 * 60 * 1000, maxBuffer: 32 * 1024 * 1024 },
+                    (error, stdout, stderr) => {
+                        const output = String(stdout ?? '');
+
+                        if (token.isCancellationRequested) {
+                            resolve({ cancelled: true, output });
+                        } else if (error) {
+                            resolve({
+                                failure: String(stderr || stdout || error.message).trim() || 'the tool failed',
+                                output,
+                            });
+                        } else {
+                            resolve({ output });
+                        }
+                    }
+                );
+
+                token.onCancellationRequested(() => child.kill());
+            })
+    );
+}
+
+/// Write a fsharprefactor.json of the current defaults and open it — or
+/// open the one already there.
+///
+/// The configuration is where publicApi, apiChanges, ignorePaths,
+/// suppressions and every rule's default live, and none of that is
+/// discoverable by guessing the file exists.
+async function createConfig(): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+        vscode.window.showWarningMessage('FSharp.Refactor: open a folder or workspace first.');
+        return;
+    }
+
+    const configPath = vscode.Uri.joinPath(folder.uri, 'fsharprefactor.json');
+
+    // an existing config holds someone's decisions: open it, never offer to
+    // replace it. The tool refuses to overwrite for the same reason.
+    if (!(await exists(configPath))) {
+        if (!(await ensureTool())) {
+            return;
+        }
+
+        const run = await runToCompletion(
+            ['--create-config', folder.uri.fsPath],
+            'FSharp.Refactor: writing fsharprefactor.json'
+        );
+
+        if (run.cancelled) {
+            return;
+        }
+
+        if (run.failure) {
+            vscode.window.showErrorMessage(`FSharp.Refactor: ${run.failure}`);
+            return;
+        }
+
+        vscode.window.showInformationMessage(
+            'FSharp.Refactor: wrote fsharprefactor.json — every rule at its current default, so it changes nothing until you edit it.'
+        );
+    }
+
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(configPath));
+}
+
+/// The advisory findings as a page, in the browser.
+///
+/// These are the findings that carry no fix — the rule's whole product is
+/// the observation — so unlike everything else the tool does, they are only
+/// worth anything if a person reads them. A SARIF file is for CI; this is
+/// for the reader.
+async function reviewNotes(): Promise<void> {
+    const target = await pickTarget();
+    if (!target || !(await ensureTool())) {
+        return;
+    }
+
+    const folder = vscode.workspace.workspaceFolders?.[0];
+
+    const out = folder
+        ? vscode.Uri.joinPath(folder.uri, 'fsharp-refactor-notes.html').fsPath
+        : 'fsharp-refactor-notes.html';
+
+    const run = await runToCompletion(
+        ['--dry-run', '--notes', 'only', '--report', out, target.fsPath],
+        'FSharp.Refactor: collecting advisory notes (nothing is written to your code)'
+    );
+
+    if (run.cancelled) {
+        return;
+    }
+
+    if (run.failure) {
+        vscode.window.showErrorMessage(`FSharp.Refactor: ${run.failure}`);
+        return;
+    }
+
+    // the page is written even when it holds nothing, so the run's own
+    // count is what says whether there is anything to read
+    if (/\b0 finding\(s\) written\b/.test(run.output)) {
+        vscode.window.showInformationMessage('FSharp.Refactor: no advisory notes to review.');
+        return;
+    }
+
+    await vscode.env.openExternal(vscode.Uri.file(out));
 }
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -252,6 +464,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         ['fsharpRefactor.disable', () => unwire(context)],
         ['fsharpRefactor.status', () => status(context)],
         ['fsharpRefactor.run', () => run()],
+        ['fsharpRefactor.runApiChanges', () => runApiChanges()],
+        ['fsharpRefactor.report', () => report()],
+        ['fsharpRefactor.createConfig', () => createConfig()],
+        ['fsharpRefactor.reviewNotes', () => reviewNotes()],
     ] as const) {
         try {
             context.subscriptions.push(vscode.commands.registerCommand(id, handler));
@@ -263,7 +479,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     void retirePrevious();
 
     const config = vscode.workspace.getConfiguration(SECTION);
-    const current = config.get<string[]>('analyzersPath') ?? [];
+    const current = globalAnalyzersPath();
     const dir = analyzersDir(context);
     const staleEntry = current.some(p => p.includes(PATH_MARKER) && p !== dir);
 

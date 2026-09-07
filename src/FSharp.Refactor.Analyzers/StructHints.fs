@@ -217,7 +217,7 @@ let find
 
                 match repr with
                 | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) when
-                    Visibility.isInScope allowApiChanges path [ access ]
+                    Visibility.isInScopeNamedPath allowApiChanges path [ access ] typeIds
                     ->
                     // strictly file-private: its own modifier, or a private
                     // enclosing module — then every use is in this file and

@@ -69,7 +69,7 @@ Examples:
 | Redundancy | `[<SerializableAttribute>]` | `[<Serializable>]` |
 | Diagnostics | `failwith "Error"` | `failwith $"Error, calling f with x: {x}"` |
 
-A spread of what the 100-odd rules do — the full list is in
+A spread of what the 150-odd rules do — the full list is in
 [Refactorings](#refactorings):
 
 ## Editor and CI setup
@@ -193,6 +193,7 @@ if applying ever introduces one.
 | `--notes only` | A review pass: every rule runs, only the findings WITHOUT a fix are listed inline, and nothing is written. That is the 37 advisory rules (an em dash in [Rules.md](Rules.md)'s fix column) plus the cases where a fixing rule can only advise. `fsharp-refactor src/Your.fsproj --notes only --report notes.html` writes them as a page. |
 | `--format json` | Machine-readable stdout: progress prose moves to stderr and the run's findings leave as one JSON document (code, severity, fixable, position, message, fingerprint, source snippet). The default output stays human-readable. |
 | `--rules` | Print the rule catalog — code, category, enabled-by-default (honors `--format json`). |
+| `--create-config` | Write a `fsharprefactor.json` of this build's defaults — every rule, every run-level key, one comment each — into the current directory, or into `<what>` when that is a directory. It changes nothing until you edit it, and never overwrites an existing config. |
 | `--mcp` | Serve the tool as an MCP server over stdio (newline-delimited JSON-RPC, no extra dependencies): tools `analyze` (target, codes/categories, parseOnly, apply) and `list_rules`. One warm typechecker lives across calls, so the first analyze pays the reference parse and the rest answer from a hot cache — the economics agent loops need. |
 | `--parse-only` | For a codebase that cannot COMPILE on this machine — a type provider needing its database, references that cannot restore. No MSBuild, no reference resolution: sources come straight from the fsproj's `<Compile>` items, and only the 55 of 113 analyzers that never consult the typechecker run (the typed rules are excluded outright, not trusted to self-silence). **It is not a substitute for a real run, and what survives is skewed the wrong way**: measured across the corpus, roughly a quarter of the correctness rules and a quarter of the performance rules still fire, against three quarters of the cosmetic ones — so a clean `--parse-only` says very little, and says least about the things worth knowing. Findings lost run to 38% on a typed-heavy codebase and under 10% on one the cosmetic rules dominate. Safety shifts accordingly: instead of a build, the gate is that a pass must not RAISE the compilation's error count over its baseline, and the usual parse-level protections (comment guard, overlap holds) still apply. Limitations: `#if` branches behind conditional or computed `DefineConstants` are not parsed, wildcard `<Compile>` globs are refused, and multi-framework passes collapse to one. Review the diff — the all-frameworks build arbiter is exactly what this mode does without. |
 
@@ -280,7 +281,7 @@ Every rule is one of four kinds, shown in the last column of
 
 | Kind | | Count |
 |---|---|---|
-| `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 49 |
+| `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 51 |
 | `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 32 |
 | `idiom` | The same behaviour written the way F# writes it. Worth doing, and worth agreeing on first — it is a matter of house style as much as anything | 51 |
 | `cosmetic` | The punctuation and spelling of code. Real cleanups, and nobody's idea of a welcome pull request from a stranger | 17 |
@@ -417,6 +418,14 @@ to compile rather than change behaviour silently. Naming a single source
 file skips these entirely — asking for one file and getting edits in its
 callers would be a surprise.
 
+The flag bundles two separable things: fixes that edit OTHER files, and
+the widening of in-place shape changes to public declarations. Only the
+first needs asking for: an assembly nothing links against — an executable,
+a script — gets the second by itself, and a library opts in with
+`"publicApi": false` in `fsharprefactor.json`. Either way it reaches the
+editors, where the flag never has.
+See [Is your public surface an API?](#is-your-public-surface-an-api).
+
 ## Refactorings
 
 The one-line version of this list — every rule with a from → to example,
@@ -430,7 +439,7 @@ Roadmap based on ["F# refactoring possibilities"](https://www.slideshare.net/Tho
 | FR0001 | Boolean `match` → `if-else` | idiom |
 | FR0002 | Manual `Some/None` (and `ValueSome/ValueNone`) match → `Option`/`ValueOption` `map`/`bind`/`flatten`/`defaultValue`/`defaultWith`/`isSome`/`isNone` (spelled `x.IsSome`/`x.IsNone` where the receiver's type is settled, as FR0010 does)/`iter`/`exists`/`forall` + map-then-default combos. OFF BY DEFAULT: the measured board's one rewrite that slows the rewritten code (+53%, one closure per call) — enable via `"FR0002": true` or `--codes FR0002` when the readability trade suits | idiom |
 | FR0003 | Extract function composition (`f >> g`) from pipeline/nested-application lambdas | idiom |
-| FR0004 | Move `List`/`Seq`/`Array` conversion past the next pipeline operation (or drop it before consuming ops) | performance |
+| FR0004 | Move `List`/`Seq`/`Array` conversion past the next pipeline operation (or drop it before consuming ops). Moving INTO Seq is offered only for operations that SHRINK their input: measured, `Seq.toList |> List.map f` → `Seq.map f |> Seq.toList` runs 35% slower for 12% less allocation, because `Seq.toList` rebuilds the result through an enumerator where `List.map` walked cons cells, and a length-preserving operation has no smaller output to pay for that. `filter` does (−4% time, −13% allocation), and moving into Array wins outright (map −39% time, −44% allocation). Moving into List is never offered | performance |
 | FR0005 | Strip do-nothing CE wrapping (`async { return! c }`, rewrap identity, immediately-run wraps, `task { return x }` → `Task.FromResult`) | idiom |
 | FR0006 | Extract a `when` guard into an active pattern | idiom |
 | FR0007 | Remove `mutable` from never-mutated local bindings and type-level `let mutable` fields (class lets are private to the type, so the whole mutation scope is visible) | idiom |
@@ -475,7 +484,7 @@ Roadmap based on ["F# refactoring possibilities"](https://www.slideshare.net/Tho
 | FR0046 | `lock "str"` / `lock typeof<T>` / `lock (x.GetType())` — weak-identity objects are process-wide singletons, so the monitor is shared with strangers (CA2002, note): use a dedicated `let lockObj = obj ()`; the editor offers a private lock object declared next to the locked value (or before the enclosing binding) — `lock this`, `lock stdout` and `lock x <| ...` are recognised too | correctness |
 | FR0047 | A type implementing `IDisposable` whose `Dispose` never touches one of its `new`-constructed disposable fields (CA2213, note) — the mirror of FR0032; the interface `Dispose` is followed one hop into `this.Dispose()` or a let-bound `dispose ()`. A `Dispose` that USES the field without releasing it says so separately — `member this.Dispose() = cts.Cancel()` cancels the token and leaves the handle (fantomas's LSPFantomasService and CloudAgent's connection factory both do), where releasing means `Dispose`/`DisposeAsync`/`Close` on it, directly or through an upcast. Quiet when the body hands off to `base.Dispose()`, and in a file that opens `System.Reactive`/`FSharp.Control.Reactive`, where a `Dispose` that unsubscribes rather than releases is the design | correctness |
 | FR0048 | `String.Format("{0} of {1}", x)` — a placeholder without an argument throws `FormatException` at runtime (CA2241, note); `{{` escapes handled, culture-first overload ignored | correctness |
-| FR0049 | Sync-over-async (CA1849/VSTHRD): `.Result`, `.Wait()`, `GetAwaiter().GetResult()`, `Async.RunSynchronously`, `Thread.Sleep` **inside** `async`/`task { }` invite thread-pool starvation and deadlocks (typed-gated receivers; `Thread.Sleep n` gets a `do! Async.Sleep n` / `do! Task.Delay n` fix in statement position, and so do `t.Wait()` — `do! t`, a `Task<T>` upcast — and `Task.WaitAll(...)` — `do! Task.WhenAll(...)`, or `let! _ =` when the joined tasks carry values; `Task.WaitAll(tasks, timeout)` stays); a blocking call inside the delegate of `Assert.Throws<E>(fun () -> ...)` moves with the assert to `ThrowsAsync` — a `let!` for xUnit and MSTest, a plain replacement for NUnit, whose ThrowsAsync returns the exception; a `let x = <blocking>` as a direct CE statement gets the bind fix across the whole matrix — `.GetAwaiter().GetResult()`, `.Result`, and single-argument `Async.RunSynchronously` (pipe or direct form) all become `let! x = ...`, with the asymmetric adapters applied: task { } binds Tasks AND Asyncs with a plain `let!`, async { } binds Asyncs natively but Tasks go behind `Async.AwaitTask` (ValueTasks have no AwaitTask overload and stay advice there); `.Result`/`.Wait()`/`GetResult()` **outside** CEs get the boundary note — wrap in `task { }` or use the sync API — and `X.FooAsync(args).GetAwaiter().GetResult()` can swap to `X.Foo(args)` when the typed tree proves a synchronous sibling with the same argument count exists — but only as an editor action or behind `{ "FR0049": { "syncSwap": 1 } }`, never auto-applied: async-in-sync is usually a waypoint toward a full-async refactor, and the tool must not walk the code backward (`Async.RunSynchronously` outside a CE is F#'s intended sync boundary and stays quiet); and the TASKIFY fix: a FILE-PRIVATE sync function draining a task at its boundary becomes task-returning (body wrapped in `task { }`, drains bound with `let!`/`return!`, tails `return`-prefixed) with every caller — each required to sit in a task/async CE in a bindable shape — awaiting it, `Async.AwaitTask`-bridged in `async`; one unconvertible caller vetoes everything. Quiet when the task is known complete — under its own `IsCompleted`/`IsCompletedSuccessfully` probe, a `Task.FromResult`/`CompletedTask`/`ValueTask.FromResult` value, or after the receiver's own `Wait(...)` above; `.Result` on the antecedent inside its own `ContinueWith` continuation gets its own note instead — a faulted antecedent throws wrapped in an AggregateException there, and the continuation is a bind: the plain `t.ContinueWith(fun a -> ... a.Result ...)` becomes `task { let! r = t; return ... r ... }` (fix, for a value-returning single-line continuation that only reads `a.Result` — one that tests IsFaulted handles the antecedent itself and stays a note); before FSharp.Core 6, or on Fable, `ContinueWith` IS the bind and nothing is reported, and the taskify fix follows the same gate, or after the receiver's own `Wait(...)` above; `Task.WaitAll(tasks, timeout|token)` outside a CE is the bounded idiom like `t.Wait(timeout)`; the spine of `[<EntryPoint>]` main, a runner ending in an exit-code literal, and `.fsx` top-level statements are the console's blocking point (no boundary note), and so is a wait in a function choreographed around a thread (a signal, a `Thread`, `Interlocked` — the body FR0142 refuses to convert for the same reason: no boundary note there, a bind inside such a CE stays a note without its fix, and the taskify fix never converts such a function; `Thread.Sleep` alone is a pause, not choreography); a wait in a `finally` of async/task gets an honest note and no fix (no bind is legal there); `ManualResetEventSlim`/`SemaphoreSlim`/`CountdownEvent.Wait()`, `WaitHandle.WaitOne()`, `Barrier.SignalAndWait()`, `Thread.Join()` and `Monitor.Wait` inside a CE get an advice-only note | correctness |
+| FR0049 | Sync-over-async (CA1849/VSTHRD): `.Result`, `.Wait()`, `GetAwaiter().GetResult()`, `Async.RunSynchronously`, `Thread.Sleep` **inside** `async`/`task { }` invite thread-pool starvation and deadlocks (typed-gated receivers; `Thread.Sleep n` gets a `do! Async.Sleep n` / `do! Task.Delay n` fix in statement position, and so do `t.Wait()` — `do! t`, a `Task<T>` upcast — and `Task.WaitAll(...)` — `do! Task.WhenAll(...)`, or `let! _ =` when the joined tasks carry values; `Task.WaitAll(tasks, timeout)` stays); a blocking call inside the delegate of `Assert.Throws<E>(fun () -> ...)` moves with the assert to `ThrowsAsync` — a `let!` for xUnit and MSTest, a plain replacement for NUnit, whose ThrowsAsync returns the exception; a `let x = <blocking>` as a direct CE statement gets the bind fix across the whole matrix — `.GetAwaiter().GetResult()`, `.Result`, and single-argument `Async.RunSynchronously` (pipe or direct form) all become `let! x = ...`, with the asymmetric adapters applied: task { } binds Tasks AND Asyncs with a plain `let!`, async { } binds Asyncs natively but Tasks go behind `Async.AwaitTask` (ValueTasks have no AwaitTask overload and stay advice there); `.Result`/`.Wait()`/`GetResult()` **outside** CEs get the boundary note — wrap in `task { }` or use the sync API — and `X.FooAsync(args).GetAwaiter().GetResult()` can swap to `X.Foo(args)` when the typed tree proves a synchronous sibling with the same argument count exists — but only as an editor action or behind `{ "FR0049": { "syncSwap": 1 } }`, never auto-applied: async-in-sync is usually a waypoint toward a full-async refactor, and the tool must not walk the code backward (`Async.RunSynchronously` outside a CE is F#'s intended sync boundary and stays quiet); `Task.Run(fun () -> c |> Async.RunSynchronously)` inside `task { }` becomes `c |> Async.StartAsTask` (fix), the one fix offered inside a lambda because it deletes the lambda: both queue the computation to the thread pool, but StartAsTask does not park a pool thread on the result (`Async.StartImmediateAsTask` is the wrong twin, running on the CALLING thread until the first await). The `|> ignore` spelling keeps its `do!` through a `:> Task` upcast, since `do!` refuses a `Task<T>`. One behavioural difference, in the rare non-happy path: a cancelled computation surfaces as a CANCELLED task rather than one faulted with OperationCanceledException, which is the more honest of the two; and the TASKIFY fix: a FILE-PRIVATE sync function draining a task at its boundary becomes task-returning (body wrapped in `task { }`, drains bound with `let!`/`return!`, tails `return`-prefixed) with every caller — each required to sit in a task/async CE in a bindable shape — awaiting it, `Async.AwaitTask`-bridged in `async`; one unconvertible caller vetoes everything. Quiet when the task is known complete — under its own `IsCompleted`/`IsCompletedSuccessfully` probe, a `Task.FromResult`/`CompletedTask`/`ValueTask.FromResult` value, or after the receiver's own `Wait(...)` above; `.Result` on the antecedent inside its own `ContinueWith` continuation gets its own note instead — a faulted antecedent throws wrapped in an AggregateException there, and the continuation is a bind: the plain `t.ContinueWith(fun a -> ... a.Result ...)` becomes `task { let! r = t; return ... r ... }` (fix, for a value-returning single-line continuation that only reads `a.Result` — one that tests IsFaulted handles the antecedent itself and stays a note); before FSharp.Core 6, or on Fable, `ContinueWith` IS the bind and nothing is reported, and the taskify fix follows the same gate, or after the receiver's own `Wait(...)` above; `Task.WaitAll(tasks, timeout|token)` outside a CE is the bounded idiom like `t.Wait(timeout)`; the spine of `[<EntryPoint>]` main, a runner ending in an exit-code literal, and `.fsx` top-level statements are the console's blocking point (no boundary note), and so is a wait in a function choreographed around a thread (a signal, a `Thread`, `Interlocked` — the body FR0142 refuses to convert for the same reason: no boundary note there, a bind inside such a CE stays a note without its fix, and the taskify fix never converts such a function; `Thread.Sleep` alone is a pause, not choreography); a wait in a `finally` of async/task gets an honest note and no fix (no bind is legal there); `ManualResetEventSlim`/`SemaphoreSlim`/`CountdownEvent.Wait()`, `WaitHandle.WaitOne()`, `Barrier.SignalAndWait()`, `Thread.Join()` and `Monitor.Wait` inside a CE get an advice-only note | correctness |
 | FR0050 | `let mutable total = 0` + `for x in xs do total <- total + x` → `let total = xs \|> List.sum` (fix); projections → `sumBy`, general combines → `fold (fun acc x -> ...) init` — same expression, same bindings, no mutable. The module matches the source's resolved kind: measured, `List.sum`/`Array.sum` run LEVEL with the loop while `Seq.sum` is ~50% slower on a list, so this is an idiom rule, and the rewrite never spells `Seq` when it knows better | idiom |
 | FR0107 | `let mutable found = false` + `for x in xs do if p x then found <- true` → `let found = xs \|> List.exists (fun x -> p x)` (fix); the `true`-initialized dual becomes `forall` with the predicate negated. Tightly gated because `exists` SHORT-CIRCUITS where the flag loop kept iterating: the loop body must be the one `if` (no `else`) optionally preceded by pure, immutable, single-line `let` bindings, which fold into the lambda; the predicate must never mention the flag and must be visibly effect-free (any assignment, sequencing, statement construct or `ignore` inside it disqualifies), nothing may reassign the flag afterward, and the source must resolve to a real List/Array/Seq. Module-resolved like FR0050; measured level with the loop on the no-hit worst case, faster on any hit | idiom |
 | FR0108 | Boolean identity literals drop (fix): `x && true`, `true && x`, `x \|\| false`, `false \|\| x` — the literal contributes nothing, the expression is the other operand. `x && false` and `true \|\| x` stay: their value is constant but `x`'s evaluation (and its effects) changes. Deliberately fires inside `query { }` too — removing a node leaves a strictly simpler tree of shapes the translator already accepted | idiom |
@@ -507,6 +516,8 @@ Roadmap based on ["F# refactoring possibilities"](https://www.slideshare.net/Tho
 | FR0148 | A public `Dispose()` on a type that does not implement `IDisposable` — directly, through an interface inheriting it, or through a base type (typed) — is a resource nothing can `use` (CA1063, note); fsharp.formatting's FsiSession hid an FCS evaluation session behind one | correctness |
 | FR0149 | A computation handed to `Async.Start`/`Async.StartImmediate` has nobody to observe a failure — no caller to return to, no Task to fault — so an exception in it is **unhandled on a thread-pool thread and terminates the process** (measured in fsi: `try async { failwith "y" } \|> Async.Start with _ -> ()` dies). A `try/with` around the call catches nothing, because the work never runs on that thread; `StartImmediate` differs only up to the first await. `Async.StartAsTask` (fault in the Task) and `Async.RunSynchronously` (raised on the caller) are observable and never reported. Handled means the body IS a `try ... with`, or `Async.Catch` appears and a match consumes both `Choice1Of2` and `Choice2Of2` — producing the `Choice` is not handling it. Only a body this file can see is judged: an inline `async { }` or a one-hop binding in the same file. Normally no fix: the repair is a handler whose body is a design decision, and where it goes changes the behaviour — wrapped around a looping computation it still stops on the first failure, inside the loop it keeps running — so the note names that choice when the body loops. The exception is a `try/with` that wraps the start AND NOTHING ELSE: the author already wrote the handler for this computation, so the editor offers it moved inside, every clause verbatim (typed patterns and `when` guards included, which the `Async.Catch` spelling could not carry — and `Async.Catch` does not even pipe into `Async.Start`, whose argument is `Async<unit>`). A tupled start keeps its cancellation token, so that form gets no move | correctness |
 | FR0150 | A `use`-bound disposable read by a `task`/`async` the scope RETURNS: `use` disposes at the end of the scope, the computation runs after it, and the first read past the return throws `ObjectDisposedException` (suave's ConnectionHealthChecker died on its first interval this way). The editor offers the move — the same `use` inside the computation, disposing when the work finishes — when nothing between the binding and the computation touches it; constructing later is a timing change, so a sweep never makes it. G-Research's `DisposedBeforeAsyncRunAnalyzer` covers the same shape and recommends the same repair; this one requires the computation to actually read the binder (theirs flags the shape either way) and carries the move as an edit. Already running theirs? `"FR0150": false` | correctness |
+| FR0151 | An exception handler that reads only `.Message` (or `.ToString()`) from a type whose real diagnosis lives elsewhere. `ReflectionTypeLoadException.Message` is the fixed string "Unable to load one or more of the requested types." and names no cause - `LoaderExceptions` holds one exception per failure, and `Types` is PARTIALLY POPULATED rather than null, so the types that did load are in it. `WebException.Message` never contains the server's error body; that is only in `Response.GetResponseStream()`. The ReflectionTypeLoadException case gets a fix (editor only, like FR0049's sync swap - it compiles either way, but what gets logged is the author's call) that joins the loader exceptions and FILTERS NULLS, because on .NET Framework those elements can be null. But the FIRST fix offered is a different one: .NET loads every referenced assembly, so what failed is routinely a dependency this code never uses - a localization satellite, an optional plugin - while `e.Types` already holds the types that DID load, nulls standing in for the rest. Where the try body is a `GetTypes()` call, so both branches are provably `Type[]`, the editor offers the filtered `e.Types` in place of a `reraise()`/`raise`: not failing at all beats reporting the failure better. It is not a silent swallow, though - the rewrite KEEPS the rethrow for the case where nothing loaded (`Types` can be null outright, and filtering can empty it, and then the original failure really was fatal), and appends a `// TODO: log e.LoaderExceptions as a warning` where the rethrow ends its line, never where a trailing comment would swallow an `else`. Reading either member counts as an informed handler, in the clause BODY or in its `when` guard - the corpus writes `when not (isNull wex.Response)` and that handler already knows where the body is; WebException is note-only, since reading the body needs two `use` bindings and a null-Response guard. A table, so AggregateException/SqlException slot in later. Distinct from FR0120, which treats `ex.Message` as handled on purpose because logging only the message can be a PII choice - this rule fires only where the message is provably uninformative | correctness |
+| FR0152 | `ConcurrentDictionary.GetOrAdd` whose VALUE TYPE is a `Task`, `ValueTask` or `Lazy`. Those REMEMBER a failure instead of raising it: a faulted entry stays in the dictionary and every later reader is handed the same failure, so one transient error - a timeout, a cold dependency - outlives whatever caused it and the dependency looks down long after it recovered. Remove the entry when the value faults. Gated on the value type, so a factory that simply THROWS is never reported: GetOrAdd propagates that and stores nothing, and the next caller retries. Note-only - the remedy is a change to how the cache is designed | correctness |
 | FR0129 | A when-guard that only equality-tests the clause's own binder against a literal IS the literal pattern (fix): `| x when x = "A" ->` becomes `| "A" ->`, per clause, on match/match!/`function` alike — gated on the body never mentioning the binder (it no longer exists after the rewrite) and the compared value being a constant the pattern language can spell | idiom |
 | FR0128 | The obsolete `*Managed`/`*CryptoServiceProvider` crypto constructors (SYSLIB0021) become the static factories (fix): `new SHA256Managed()` → `SHA256.Create()`, `new RNGCryptoServiceProvider()` → `RandomNumberGenerator.Create()` — the SAME algorithm, so behavior is preserved; weak algorithms keep their FR0065 note separately. Zero-argument constructors only | idiom |
 | FR0127 | A string literal matching a provider's DOCUMENTED credential format — `sk-ant-…` (Anthropic), `sk-…`/`sk-proj-…` (OpenAI), `AIza…` (Google), `ghp_`/`github_pat_` (GitHub), `AKIA…` (AWS), `xoxb-…` (Slack), PEM private-key headers — is a leaked key until proven otherwise (note): not entropy guessing, format anchoring; a literal that says `test` anywhere is a test account's credential and stays quiet | correctness |
@@ -583,7 +594,13 @@ Rules can be disabled per repository with an optional `fsharprefactor.json`,
 searched upward from each analyzed file, stopping at the repository root (the
 nearest file wins). Keys are rule codes or analyzer names, case-insensitive;
 a malformed file fails open so it can never break the editor. Comments and
-trailing commas are tolerated:
+trailing commas are tolerated.
+
+`fsharp-refactor --create-config` writes one for you: every rule this build
+knows at its current default, every run-level key at its own default, one
+comment each. Nothing in it changes anything until you edit a line — flip
+what you disagree with, delete the rest to keep following the defaults as
+they change. It refuses to overwrite an existing config.
 
 ```json
 {
@@ -679,6 +696,97 @@ machines but honored by the pipeline commits `"no-correctness"` (or
 policy, the run summary counts what comments silenced — suppression is
 never silent. Note the policy only governs this tool: editors honor the
 SDK's comments natively, so the light bulb stays silenceable regardless.
+
+### Is your public surface an API?
+
+Two of the config's keys decide how much of `--api-changes` applies
+without the flag, and they are worth keeping apart, because they gate
+two different risks.
+
+```json
+{ "publicApi": false }
+```
+
+F# makes a declaration public by default, so `public` in a parse tree is
+usually the absence of a decision rather than one. The scope-gated rules —
+the ones whose fix changes a declaration's compiled SHAPE in place,
+`[<Struct>]`, `[<Literal>]`, named union fields, a field's `option`
+becoming `voption` — hold back on public declarations because a consumer
+in another assembly would see the change and nothing here can check it.
+`"publicApi": false` says there is no such consumer: an application, an
+internal tool, a leaf project. Those rules then treat public as internal,
+in the apply tool AND in the editors, where `--api-changes` has never been
+reachable. It licenses no edit outside the file being analysed.
+
+**With no setting, the compilation answers.** An `OutputType` of `Exe` or
+`WinExe` has no external linker — nothing can reference its public
+declarations — so it is read as a leaf and the gate opens by itself. A
+library is not, and stays closed. Write `"publicApi": true` to overrule
+that: an executable that serializes its own public types, or loads plugins
+by reflection, wants the conservative behaviour back.
+
+Scripts are answered file by file rather than as a whole compilation. A
+`.fsx` is the ultimate leaf — it links to nothing and nothing links to it —
+so its own declarations are in scope. What it `#load`s is not: that source
+belongs to whatever project owns it, quite possibly a library, and a script
+reading it says nothing about who else compiles it.
+
+The scripts that get a vote are the `.fsx` under the solution or project
+folders being run, and their subfolders - not the whole drive, and not a
+path `ignorePaths` excludes: a path this repository has told the tool to
+ignore is external code, and external code does not decide how this
+repository's declarations are shaped. So the guarantee is that no script
+INSIDE the tree this run is responsible for is left calling a name that
+moved.
+
+```json
+{ "apiChanges": true }
+```
+
+The other risk: a fix that must edit OTHER FILES — currying a function
+(FR0090) or reordering its parameters (FR0091) and rewriting every call
+site in the project. This is `--api-changes` as a standing decision, for a
+repository where it is always the right answer; it covers everything the
+flag does and so implies `publicApi: false`. A run started with the flag
+is unaffected, and the config can only ever widen, never take the flag
+away. The run says so when it picks the setting up.
+
+A companion `.fsi` still wins over both: a signature file is the author's
+own statement of what is exported — including the `val private` it is free
+to write — so a shape change beside one stands down for any name the
+signature declares. And FR0092 (constant `failwith` messages) is not a
+visibility rule at all — its risk is a test or a caller reading the text —
+so it stays behind the flag alone.
+
+**What the gate holds back is reported, not hidden.** A run ends with, say
+
+```
+  7 finding(s) held back by scope: 4 FR0070, 3 FR0022 — public declarations
+  this run may not reshape. Set "publicApi": false in fsharprefactor.json if
+  nothing outside this assembly links to them or serializes them.
+```
+
+so the decision is a decision, not something to guess at. Answer it once
+and the tool applies all of them; nobody should be retyping by hand what
+the tool could have written.
+
+**Editors offer them anyway, with the caveat attached.** A light bulb is
+per-site consent from the one person who can actually answer the question,
+and it costs a click rather than a manual edit, so in an editor these
+findings appear on public declarations too:
+
+> Union 'Shape' holds only small value types; `[<Struct>]` avoids a heap
+> allocation per value. **CHANGES THE PUBLIC SHAPE: safe only if nothing
+> outside this assembly links to it or serializes it (JSON, XML, protobuf —
+> the tool cannot tell).**
+
+That last clause is not modesty. Serialization cannot be detected:
+System.Text.Json, Newtonsoft, `XmlSerializer`, `DataContract`, protobuf,
+MessagePack and whatever a *consumer* wired up by reflection all read the
+compiled shape, and a guard that enumerated some of them would break the
+rest silently. So the tool never infers that a shape change is safe to
+serialize — it says what changes and leaves the judgement to the reader.
+The apply tool, having nobody to ask, only counts them.
 
 A disabled rule skips its analysis entirely, so the file also works as a
 performance lever on large codebases. Internally all analyzers share one

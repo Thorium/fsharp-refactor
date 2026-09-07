@@ -348,10 +348,18 @@ let rec stripAbbreviations (t: FSharpType) =
 
 /// The symbol's FullName, or "" where FCS has none to give.
 let fullNameOf (symbol: FSharpSymbol) =
-    try
-        symbol.FullName
-    with FcsSymbolFailure ->
+    // "" is the contract, and a NULL FullName has to honour it too: callers
+    // reach straight for .StartsWith and .Length, so handing one back turns
+    // a missing name into a NullReferenceException inside the analyzer.
+    if isNull (box symbol) then
         ""
+    else
+        try
+            match symbol.FullName with
+            | null -> ""
+            | name -> name
+        with FcsSymbolFailure ->
+            ""
 
 /// True when the ident at this location resolves to a union case whose
 /// FullName starts with the given FSharp.Core prefix. Shared with other
@@ -374,6 +382,7 @@ let enclosingFullName (value: FSharpMemberOrFunctionOrValue) =
     try
         value.ApparentEnclosingEntity
         |> Option.bind (fun e -> e.TryFullName)
+        |> Option.filter (isNull >> not)
         |> Option.defaultValue ""
     with FcsSymbolFailure ->
         ""

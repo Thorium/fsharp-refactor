@@ -53,6 +53,96 @@ the extension dll if you bundle one. The bundled `analyzers\` folder
 carries both SDK builds of the analyzers; FSAC loads the one its
 FSharp.Analyzers.SDK version pairs with and log-skips the other.
 
+## The menu, and why it was invisible for a day
+
+The compiled command table has to be embedded INSIDE a managed `.resources`
+set. Not as a standalone manifest resource:
+
+```xml
+<!-- WRONG. Looks perfect, reads back fine, merges NOTHING. -->
+<EmbeddedResource Include="$(IntermediateOutputPath)FSharpRefactor.cto"
+                  LogicalName="Menus.ctmenu" />
+```
+
+`PackageRegistration(UseManagedResourcesOnly = true)` makes the shell resolve
+`ProvideMenuResource("Menus.ctmenu", 1)` as an ENTRY INSIDE the package's
+resource set â€” which is what the VSSDK's `MergeWithCTO=true` on a `.resx`
+produces, and the one thing the VSSDK does for you that this hand-rolled
+packaging did not. Nothing ever looks in the standalone stream, and the miss
+is completely silent: no error, no warning, no ActivityLog entry.
+
+So `EmbedCto.ps1` writes `VSPackage.resources` and
+`FSharpRefactorPackage.resources`, each holding one entry `Menus.ctmenu` whose
+value is the `.cto` bytes, and both are embedded. Its target uses
+`DependsOnTargets="CompileCommandTable"` â€” with `AfterTargets` MSBuild ran it
+BEFORE VSCT and cheerfully embedded a 0-byte table.
+
+There were TWO faults, and fixing either alone changed nothing visible. The
+second: a `<Menu type="Menu">` needs
+
+```xml
+<CommandFlag>AlwaysCreate</CommandFlag>
+```
+
+or the shell declines to create the submenu when it cannot see children at
+merge time. With merging fixed but this missing, a probe button parented into
+a built-in group appeared while our submenu still did not â€” which is exactly
+how the two faults were told apart.
+
+Placement matters separately: do not parent a submenu to
+`IDG_VS_TOOLS_EXT_TOOLS`. That is the EXTERNAL TOOLS group, which the shell
+fills dynamically. Use a group of your own under `IDM_VS_MENU_TOOLS`, the
+shape the VSSDK samples use.
+
+### If the menu is missing again, read this before you start guessing
+
+A package that loads is NOT evidence of anything. Menu merging happens at
+configuration time and package loading at solution time; they share nothing.
+Ours logged `Begin/End package load [FSharp.Refactor]` cleanly and registered
+all seven commands while contributing nothing whatsoever to the menus.
+
+What is worth doing, roughly in order:
+
+- **Drop a probe button** into a built-in group that certainly renders, e.g.
+  `IDG_VS_TOOLS_OPTIONS` (where `Options...` lives). One launch then splits
+  "the table does not merge at all" from "the table merges and our placement
+  is wrong". This is the single highest-value hour in the whole exercise.
+- **Instrument the loader.** `InitializeAsync` traces entry, the number of
+  commands registered, the concrete type when the `IMenuCommandService` match
+  falls through, and any exception. A silent loader makes "loads fine" and
+  "registers nothing" indistinguishable.
+- **Read the Exp private registry** without admin: `RegLoadAppKey` in
+  advapi32 plus `RegistryKey.FromHandle`. `reg load` needs privileges you do
+  not have. Look at `<hive>_Config\Packages\{pkg guid}` (is `$PackageFolder$`
+  substituted?) and `<hive>_Config\Menus`.
+
+And what is NOT worth doing, all of it tried:
+
+- `1033\devenv.CTM` is a COMPRESSED CFCT v5. VSCT 17.9 refuses it
+  (`VSCTCompressionReadUInt32 returned failure`) and grep finds nothing in it
+  â€” not our strings, not our GUIDs, not even built-in menu names. Only its
+  SIZE carries any signal.
+- `Error loading UI library ... HrLoadNativeUILibrary failed with 0x800a006f`
+  is noise. XamlLanguagePackage, TypeScriptPackage and friends log it too,
+  with working menus.
+- The `language="en-GB"` on a decompiled `.cto` is the decompiler stamping the
+  machine's culture into its own output. It survives `-Len-US` on both compile
+  and decompile and says nothing about the stored table.
+
+### Two traps that cost real time
+
+`devenv /log` takes an OPTIONAL FILENAME. `devenv /rootSuffix Exp /log
+<path>` does not open `<path>`, it OVERWRITES it with the activity log. Put
+`/log` last, with nothing after it.
+
+`CreatePkgDef.exe` still cannot run here (`ReflectionTypeLoadException` on
+`IAsyncServiceProvider3`), so the pkgdef stays hand-written â€” including the
+`[$RootKey$\BindingPaths\{pkg guid}]` block that `[<ProvideBindingPath>]`
+would have generated.
+
+F#, unrelated but adjacent: `base.InitializeAsync(...)` cannot be called from
+inside `task { }` (FS0491 â€” the CE body is a closure). Start it outside the
+builder and `do!` the resulting task.
 ## Status
 
 **Working end to end, verified live in VS 2026** (squiggles, light bulb,

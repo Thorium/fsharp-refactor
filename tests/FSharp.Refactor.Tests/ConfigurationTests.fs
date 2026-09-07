@@ -328,3 +328,218 @@ let ``ordinary source is not mistaken for generated`` () =
         Assert.False(Configuration.isGeneratedFile path)
     finally
         File.Delete path
+
+// ---- publicApi / apiChanges: the two halves of --api-changes ----
+
+[<Fact>]
+let ``publicApi is unset by default, and unset is the conservative reading`` () =
+    Assert.Equal<bool option>(None, Configuration.parsePublicApi "{}")
+    Assert.False(Configuration.parseApiChanges "{}")
+
+[<Fact>]
+let ``publicApi false says the assembly is a leaf`` () =
+    Assert.Equal<bool option>(Some false, Configuration.parsePublicApi """{ "publicApi": false }""")
+    Assert.Equal<bool option>(Some true, Configuration.parsePublicApi """{ "publicApi": true }""")
+
+[<Fact>]
+let ``apiChanges true is the flag as a standing decision`` () =
+    Assert.True(Configuration.parseApiChanges """{ "apiChanges": true }""")
+
+[<Fact>]
+let ``a non-boolean publicApi reads as unset rather than as true`` () =
+    Assert.Equal<bool option>(None, Configuration.parsePublicApi """{ "publicApi": "yes" }""")
+    Assert.False(Configuration.parseApiChanges """{ "apiChanges": 1 }""")
+
+[<Fact>]
+let ``run-level keys at the root are not read as rules`` () =
+    // rule keys may sit at the root, so publicApi/apiChanges/suppressions
+    // have to be excluded there or a future rule of that name collides
+    let rules =
+        Configuration.parse """{ "publicApi": false, "apiChanges": true, "FR0001": false }"""
+
+    Assert.False(rules.ContainsKey "publicapi")
+    Assert.False(rules.ContainsKey "apichanges")
+    Assert.True(rules.ContainsKey "fr0001")
+
+[<Fact>]
+let ``a rule named publicApi inside the rules wrapper is still a rule`` () =
+    let rules = Configuration.parse """{ "rules": { "publicApi": false } }"""
+    Assert.True(rules.ContainsKey "publicapi")
+
+// ---- --create-config ----
+
+[<Fact>]
+let ``the generated config parses, and every rule in it carries its own default`` () =
+    // the file's whole promise is that it changes nothing until edited: a
+    // value that did not match the default would silently reconfigure the
+    // repository that ran --create-config
+    let text = FSharp.Refactor.Tool.Program.defaultConfigText ()
+    let rules = Configuration.parse text
+
+    Assert.NotEmpty rules
+
+    for code, _ in RuleCatalog.allRules do
+        Assert.Equal(Configuration.isEnabledIn Map.empty code "", Configuration.isEnabledIn rules code "")
+
+[<Fact>]
+let ``the generated config lists every rule the catalog knows`` () =
+    let rules = Configuration.parse (FSharp.Refactor.Tool.Program.defaultConfigText ())
+
+    let missing =
+        RuleCatalog.allRules
+        |> List.map fst
+        |> List.filter (fun code -> not (rules.ContainsKey(code.ToLowerInvariant())))
+
+    Assert.Empty missing
+
+[<Fact>]
+let ``the generated config's run-level keys read back at their defaults`` () =
+    let text = FSharp.Refactor.Tool.Program.defaultConfigText ()
+
+    // publicApi is commented out on purpose: its default is not a fixed
+    // value but the compilation's own answer, so writing one would be the
+    // one line in the file that changed something
+    Assert.Equal<bool option>(None, Configuration.parsePublicApi text)
+    Assert.False(Configuration.parseApiChanges text)
+    Assert.Equal("all", Configuration.parseSuppressions text)
+    Assert.Empty(Configuration.parseIgnorePaths text)
+    Assert.Empty(Configuration.parseHints text)
+
+[<Theory>]
+[<InlineData("{}", false)>]
+[<InlineData("""{ "publicApi": true }""", false)>]
+[<InlineData("""{ "publicApi": false }""", true)>]
+[<InlineData("""{ "apiChanges": true }""", true)>]
+// apiChanges is the wider of the two and wins over a publicApi that says
+// the surface matters
+[<InlineData("""{ "publicApi": true, "apiChanges": true }""", true)>]
+let ``publicApi false and apiChanges each open the shape-change scope`` (json: string) (expected: bool) =
+    // a directory per case: the parsed config is cached against the file's
+    // last-write time, and two writes inside one filesystem tick would
+    // read back as the first one
+    let root = Path.Combine(Path.GetTempPath(), $"fsref-cfg-{Path.GetRandomFileName()}")
+
+    Directory.CreateDirectory root |> ignore
+    let source = Path.Combine(root, "Thing.fs")
+    File.WriteAllText(source, "module Thing\n\nlet x = 1\n")
+    File.WriteAllText(Path.Combine(root, Configuration.ConfigFileName), json)
+
+    try
+        Assert.Equal(expected, Configuration.publicSurfaceOpen source)
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+// ---- the compilation's own answer, when the config is silent ----
+
+[<Theory>]
+// an executable has no external linker: its public surface is not an API
+[<InlineData("Thing.fs", "--target:exe", true)>]
+[<InlineData("Thing.fs", "--target:winexe", true)>]
+// fsc takes the single-dash spelling too
+[<InlineData("Thing.fs", "-target:exe", true)>]
+[<InlineData("Thing.fs", "--target:library", false)>]
+// no target flag at all reads as a library, the conservative answer
+[<InlineData("Thing.fs", "--nowarn:64", false)>]
+let ``the target flag decides for a project`` (file: string) (flag: string) (expected: bool) =
+    let leaf = Visibility.compilationIsLeaf [ file ] [ flag; "--noframework" ]
+    Assert.Equal(expected, Visibility.isApplication file leaf)
+
+[<Fact>]
+let ``a script is a leaf, and what it loads is not`` () =
+    // a script compilation is the script plus everything it #loads. The
+    // script links to nothing and nothing links to it; a #loaded .fs
+    // belongs to whatever project owns it, which a script reading it says
+    // nothing about
+    let leaf = Visibility.compilationIsLeaf [ "Helper.fs"; "loader.fsx" ] []
+
+    Assert.True(Visibility.isApplication "loader.fsx" leaf)
+    Assert.False(Visibility.isApplication "Helper.fs" leaf)
+
+[<Fact>]
+let ``a script compilation ignores the target flag for its loaded sources`` () =
+    // whatever a host reports for a script's target, a #loaded file's
+    // assembly is not the script's
+    let leaf =
+        Visibility.compilationIsLeaf [ "Helper.fs"; "loader.fsx" ] [ "--target:exe" ]
+
+    Assert.False(Visibility.isApplication "Helper.fs" leaf)
+
+[<Fact>]
+let ``the executable test reads the argument without allocating`` () =
+    // it runs against every compiler argument of every compilation, and a
+    // project carries hundreds of -r: references
+    Assert.True(Visibility.compilationIsLeaf [ "A.fs" ] [ "-r:X.dll"; " --TARGET:Exe " ])
+    Assert.False(Visibility.compilationIsLeaf [ "A.fs" ] [ "--target:exemplar" ])
+    Assert.False(Visibility.compilationIsLeaf [ "A.fs" ] [ "-r:target:exe.dll" ])
+
+// ---- a signature file may declare a PRIVATE name ----
+
+[<Fact>]
+let ``a private name the signature declares is not free to change shape`` () =
+    // Deedle's vendored FSharp.Data writes
+    //     val private ( |SubtypePrimitives|_| ) : ... -> (...) option
+    // and FR0011 gave the implementation a voption return alone, which
+    // stopped the project compiling. "Private is the one visibility a
+    // signature never mentions" was the assumption; `val private` is legal
+    // and simply optional, so the gate has to look rather than assume.
+    let root = Path.Combine(Path.GetTempPath(), $"fsref-sig-{Path.GetRandomFileName()}")
+
+    Directory.CreateDirectory root |> ignore
+    let implementation = Path.Combine(root, "Inference.fs")
+
+    try
+        File.WriteAllText(implementation, "module M\n")
+
+        File.WriteAllText(
+            Path.Combine(root, "Inference.fsi"),
+            "module M\n\nval private ( |SubtypePrimitives|_| ) : int -> int option\nval other: int -> int\n"
+        )
+
+        Assert.True(Text.signatureMentions implementation "|SubtypePrimitives|_|")
+        Assert.True(Text.signatureMentions implementation "other")
+        // a name the signature does not declare is hidden behind it, and
+        // the 15 other FR0011 sites in Deedle depend on staying offered
+        Assert.False(Text.signatureMentions implementation "notDeclared")
+        // whole-word: `other` must not match inside `otherwise`
+        Assert.False(Text.signatureMentions implementation "othe")
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``no signature file means nothing is declared`` () =
+    let root = Path.Combine(Path.GetTempPath(), $"fsref-sig-{Path.GetRandomFileName()}")
+
+    Directory.CreateDirectory root |> ignore
+    let implementation = Path.Combine(root, "Lone.fs")
+
+    try
+        File.WriteAllText(implementation, "module M\n")
+        Assert.False(Text.signatureMentions implementation "anything")
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+// ---- what the scope gate holds back ----
+
+[<Fact>]
+let ``the host is told apart by whether it installed a cross-file parser`` () =
+    // editors offer the widened findings as light bulbs, because a light
+    // bulb is per-site consent from the one person who knows whether that
+    // record crosses a wire; a batch run has nobody to ask and only counts
+    // them. The CLI installs a parser, editors do not — no new flag needed
+    ProjectSources.configure None
+    Assert.False(ProjectSources.available ())
+
+    try
+        ProjectSources.configure (Some(fun _ -> None))
+        Assert.True(ProjectSources.available ())
+    finally
+        ProjectSources.configure None

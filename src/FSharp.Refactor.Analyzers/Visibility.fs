@@ -42,7 +42,7 @@ let isConfined (path: SyntaxNode list) (accessibilities: SynAccess option list) 
            | _ -> false)
 
 /// Is the declaration private — by its own modifier, or a private module
-/// around it? Private is the one visibility a signature file never mentions.
+/// around it? NOTE: a signature file CAN mention a private declaration
 let isPrivate (path: SyntaxNode list) (accessibilities: SynAccess option list) =
     let isPrivateModifier (accessibility: SynAccess option) =
         match accessibility with
@@ -75,6 +75,66 @@ let private signatureBound (path: SyntaxNode list) =
         | _ -> None)
     |> Option.exists Text.hasSignatureFile
 
+/// Does this compilation produce an EXECUTABLE rather than a library?
+///
+/// It settles the question the scope gate is really asking. An
+/// application has no external linker: nothing outside it can reference
+/// its public declarations, so `public` there is F#'s default showing
+/// through rather than an exported surface, and reshaping such a
+/// declaration in place changes nothing anyone can see. A library cannot
+/// say the same, which is why the gate exists at all.
+///
+/// `--target:exe` / `--target:winexe` is what MSBuild passes fsc for an
+/// `Exe`/`WinExe` OutputType; fsc accepts the single-dash spelling too. A
+/// library says `--target:library`, and an absent flag reads as a
+/// library — the conservative answer, and what a host that supplies no
+/// target flag at all gets.
+/// Deliberately allocation-free: this runs against every compiler
+/// argument, and a project carries hundreds of `-r:` references. The
+/// obvious `option.Trim().TrimStart('-').ToLowerInvariant()` allocates
+/// three strings per argument, and the caller memoizes this per
+/// compilation precisely because even that adds up.
+let private targetIsExecutable (otherOptions: string seq) =
+    let isTarget (option: string) (value: string) =
+        let option = option.AsSpan().Trim().TrimStart '-'
+        option.Equals(value.AsSpan(), StringComparison.OrdinalIgnoreCase)
+
+    otherOptions
+    |> Seq.exists (fun option -> isTarget option "target:exe" || isTarget option "target:winexe")
+
+/// Is a file a script rather than a compiled source?
+let isScriptFile (path: string) =
+    not (isNull path)
+    && (path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".fsscript", StringComparison.OrdinalIgnoreCase))
+
+/// Is this whole compilation an assembly nothing outside can link
+/// against? See `targetIsExecutable` for why that settles the scope
+/// question.
+///
+/// A compilation containing a SCRIPT is not one assembly's worth of
+/// source, and answers `false` here so that `isApplication` can decide it
+/// file by file instead: `#load` is a walkable tree, but it is the
+/// SCRIPT's tree, not the loaded file's assembly.
+///
+/// Scans every source file and every compiler argument, so callers hold
+/// the answer per compilation rather than asking per rule per file.
+let compilationIsLeaf (sourceFiles: string seq) (otherOptions: string seq) =
+    not (sourceFiles |> Seq.exists isScriptFile) && targetIsExecutable otherOptions
+
+/// Is the file being analyzed part of an assembly nothing outside can
+/// link against? `compilationIsLeaf` is the compilation's own answer,
+/// which the caller has memoized.
+///
+/// The script itself is the ultimate leaf: it links to nothing and
+/// nothing links to it. A `#load`ed .fs is not — it belongs to whatever
+/// project owns it, quite possibly a library, and a script reading it
+/// says nothing about who else compiles it. So a script opens the gate,
+/// and the sources it loads fall back to their compilation's answer,
+/// which for a script compilation is no.
+let isApplication (analyzedFile: string) (compilationIsLeaf: bool) =
+    isScriptFile analyzedFile || compilationIsLeaf
+
 /// The gate itself: fire on contained declarations always, on any
 /// declaration when the caller opted into API changes — except beside a
 /// signature file, where only a private declaration can change shape
@@ -85,6 +145,50 @@ let isInScope (allowApiChanges: bool) (path: SyntaxNode list) (accessibilities: 
     else
         allowApiChanges || isConfined path accessibilities
 
+/// The same gate for a rule that knows the DECLARATION'S NAME, which is
+/// the only way to be sure beside a signature file.
+///
+/// "Private is the one visibility a signature file never mentions" is what
+/// the plain gate assumes, and it is not true: `val private` is legal, and
+/// Deedle's vendored FSharp.Data writes it. A private active pattern
+/// declared in the .fsi took FR0011's `[<return: Struct>]` on the
+/// implementation alone and stopped the project compiling. Rules that can
+/// name what they are about should use this one; the plain gate remains
+/// for the rules whose subject has no single name to look for.
+let isInScopeNamed
+    (allowApiChanges: bool)
+    (path: SyntaxNode list)
+    (accessibilities: SynAccess option list)
+    (name: string)
+    =
+    if signatureBound path then
+        isPrivate path accessibilities
+        && not (
+            path
+            |> List.tryPick (fun node ->
+                match node with
+                | SyntaxNode.SynModuleOrNamespace(SynModuleOrNamespace(range = r)) -> Some r.FileName
+                | _ -> None)
+            |> Option.exists (fun file -> Text.signatureMentions file name)
+        )
+    else
+        allowApiChanges || isConfined path accessibilities
+
+/// `isInScopeNamed` for a declaration named by a dotted path: the LAST
+/// segment is the name a signature writes. An empty path yields an empty
+/// name, which `signatureMentions` reads as "not mentioned" - the same
+/// answer the plain gate would have given.
+let isInScopeNamedPath
+    (allowApiChanges: bool)
+    (path: SyntaxNode list)
+    (accessibilities: SynAccess option list)
+    (ids: Ident list)
+    =
+    isInScopeNamed
+        allowApiChanges
+        path
+        accessibilities
+        (ids |> List.tryLast |> Option.map (fun i -> i.idText) |> Option.defaultValue "")
 /// The gate for a rule that edits the signature IN STEP (see
 /// SignatureFile): the signature is no reason to stand down, because the
 /// rule carries it along, so only the visibility question remains.

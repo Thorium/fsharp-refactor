@@ -2977,3 +2977,181 @@ let ``FR0071: a binding hoisted out of a loop under #if keeps the #if`` () =
         Assert.Contains("let c = a + 3", inserted)
         Assert.EndsWith("#endif\n", inserted)
     | other -> failwithf "Expected exactly one invariant note, got %A" other
+
+// ---- FR0151 ExceptionDetail / FR0152 CachedFailure ----
+
+let private exceptionDetailIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    ExceptionDetail.find tree sourceText checkResults
+
+let private cachedFailureIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    CachedFailure.find tree sourceText checkResults
+
+[<Fact>]
+let ``FR0151: a ReflectionTypeLoadException handler reading only Message gets the loader exceptions`` () =
+    let source =
+        "module M\nopen System.Reflection\nlet run (a: Assembly) =\n    try\n        a.GetTypes() |> Array.length\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        0"
+
+    match exceptionDetailIn source with
+    | [ s ] ->
+        Assert.Equal("ReflectionTypeLoadException", s.ExceptionType)
+        Assert.Equal("Types", s.Carrier)
+
+        match s.Fix with
+        | Some(r, _, replacement) ->
+            Assert.Contains("LoaderExceptions", replacement)
+            // the null filter is the point: on .NET Framework these can be null
+            Assert.Contains("isNull", replacement)
+            let patched = applyEdit source r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected a fix for ReflectionTypeLoadException"
+    | other -> failwithf "Expected one exception-detail suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: a handler already reading LoaderExceptions is left alone`` () =
+    let source =
+        "module M\nopen System.Reflection\nlet run (a: Assembly) =\n    try\n        a.GetTypes() |> Array.length\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%d\" e.LoaderExceptions.Length\n        0"
+
+    Assert.Empty(exceptionDetailIn source)
+
+[<Fact>]
+let ``FR0151: WebException is reported without a fix`` () =
+    // the body needs two `use` bindings and Response can be null, so the
+    // note stands alone
+    let source =
+        "module M\nopen System.Net\nlet run (r: WebRequest) =\n    try\n        r.GetResponse() |> ignore\n        0\n    with :? WebException as wex ->\n        printfn \"%s\" wex.Message\n        1"
+
+    match exceptionDetailIn source with
+    | [ s ] ->
+        Assert.Equal("WebException", s.ExceptionType)
+        Assert.Equal("Response", s.Carrier)
+        Assert.True(s.Fix.IsNone, "WebException must not carry a fix")
+    | other -> failwithf "Expected one WebException suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: an ordinary exception handler is not this rule's business`` () =
+    // FR0120 owns the plain handler, and ex.Message there is a PII choice
+    let source =
+        "module M\nlet run (work: unit -> int) =\n    try\n        work ()\n    with e ->\n        printfn \"%s\" e.Message\n        0"
+
+    Assert.Empty(exceptionDetailIn source)
+
+[<Fact>]
+let ``FR0152: GetOrAdd caching a Task is reported`` () =
+    let source =
+        "module M\nopen System.Threading.Tasks\nopen System.Collections.Concurrent\nlet cache = ConcurrentDictionary<string, Task<int>>()\nlet get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))"
+
+    match cachedFailureIn source with
+    | [ s ] -> Assert.Equal("Task", s.ValueKind)
+    | other -> failwithf "Expected one cached-failure suggestion, got %A" other
+
+[<Fact>]
+let ``FR0152: a plain value cache is fine`` () =
+    // a factory that THROWS caches nothing, so an untyped cache never fires
+    let source =
+        "module M\nopen System.Collections.Concurrent\nlet cache = ConcurrentDictionary<string, int>()\nlet get (k: string) = cache.GetOrAdd(k, (fun _ -> 1))"
+
+    Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0151: a handler already reading Types is left alone`` () =
+    // reading Types IS the informed handler - it carries on with what loaded
+    let source =
+        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        e.Types |> Array.filter (isNull >> not)"
+
+    Assert.Empty(exceptionDetailIn source)
+
+[<Fact>]
+let ``FR0151: a rethrowing GetTypes handler is offered the types that loaded`` () =
+    let source =
+        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        reraise ()"
+
+    match exceptionDetailIn source with
+    | [ s ] ->
+        match s.AlternativeFix with
+        | Some(r, original, replacement) ->
+            Assert.Contains("reraise", original)
+            Assert.Contains("e.Types", replacement)
+            let patched = applyEdit source r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the carry-on alternative fix"
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: a handler guarding on Response is already informed`` () =
+    // the idiomatic shape across the corpus: ClearBank.Common.fs, CarmelNet,
+    // welendus and management-portal all write the guard this way
+    let source =
+        "module M\nopen System.Net\nlet run (r: WebRequest) =\n    try\n        r.GetResponse() |> ignore\n        0\n    with :? WebException as wex when not (isNull wex.Response) ->\n        printfn \"%s\" wex.Message\n        1"
+
+    Assert.Empty(exceptionDetailIn source)
+
+[<Fact>]
+let ``FR0151: a mid-line rethrow gets the fix without a trailing comment`` () =
+    // the comment would swallow the `else` branch and the closing paren
+    let source =
+        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) (fallback: bool) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        (if fallback then Array.empty else reraise ())"
+
+    match exceptionDetailIn source with
+    | [ s ] ->
+        match s.AlternativeFix with
+        | Some(r, _, replacement) ->
+            Assert.DoesNotContain("//", replacement)
+            let patched = applyEdit source r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the carry-on alternative fix"
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: an end-of-line rethrow keeps the TODO comment`` () =
+    let source =
+        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        reraise ()"
+
+    match exceptionDetailIn source with
+    | [ s ] ->
+        match s.AlternativeFix with
+        | Some(r, _, replacement) ->
+            Assert.Contains("// TODO", replacement)
+            let patched = applyEdit source r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> failwith "Expected the carry-on alternative fix"
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: a longer chain off Message must not be swallowed by the fix`` () =
+    // `e.Message.Length` is ONE LongIdent [e; Message; Length] whose range
+    // covers the whole chain - replacing all of it with the join drops
+    // `.Length` and the result no longer typechecks
+    let source =
+        "module M\nopen System.Reflection\nlet run (a: Assembly) =\n    try\n        a.GetTypes() |> Array.length\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%d\" e.Message.Length\n        0"
+
+    match exceptionDetailIn source with
+    | [ s ] ->
+        match s.Fix with
+        | Some(r, _, replacement) ->
+            let patched = applyEdit source r replacement
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | None -> () // declining to fix a chain is the correct answer too
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: the carry-on fix never targets a nested handler's rethrow`` () =
+    // the inner reraise belongs to the INNER exception. Rewriting it to the
+    // outer e.Types still TYPECHECKS - e is in scope and both are Type[] -
+    // so only the range tells us it is wrong
+    let source =
+        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) (b: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        try\n            b.GetTypes()\n        with :? ReflectionTypeLoadException as inner ->\n            reraise ()"
+
+    let nestedStart = source.IndexOf "        try\n"
+
+    for s in exceptionDetailIn source do
+        match s.AlternativeFix with
+        | Some(r, original, _) ->
+            Assert.Equal("reraise ()", original.Trim())
+            // the only acceptable rethrow is the outer one, and in this source
+            // there is no outer rethrow at all
+            Assert.True(false, $"fix targeted a nested rethrow at line %d{r.StartLine}")
+        | None -> ()
+
+    ignore nestedStart

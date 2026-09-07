@@ -21,10 +21,22 @@ let private assertPatched (source: string) (expectedPatched: string) =
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 
 [<Fact>]
-let ``seq-to-list conversion moves past map`` () =
+let ``a length-preserving operation does not move into Seq`` () =
+    // measured: `Seq.map g |> Seq.toList` runs 35% SLOWER than
+    // `Seq.toList |> List.map g` (46k -> 62k ns/op at n=1000) for 12% less
+    // allocation. The intermediate list does disappear, but Seq.toList then
+    // builds the result through an enumerator with a virtual call per
+    // element where List.map walked cons cells in a tight loop, and with a
+    // map there is no smaller output to pay for the indirection
+    assertNoSuggestion "module Test\nlet f g xs = xs |> Seq.toList |> List.map g"
+
+[<Fact>]
+let ``a size-reducing operation still moves into Seq`` () =
+    // filter's output is smaller than its input, and that saving covers the
+    // enumerator cost: -4% time, -13% allocation
     assertPatched
-        "module Test\nlet f g xs = xs |> Seq.toList |> List.map g"
-        "module Test\nlet f g xs = xs |> Seq.map g |> Seq.toList"
+        "module Test\nlet f g xs = xs |> Seq.toList |> List.filter g"
+        "module Test\nlet f g xs = xs |> Seq.filter g |> Seq.toList"
 
 [<Fact>]
 let ``ofSeq spelling is preserved when moved`` () =
@@ -33,10 +45,11 @@ let ``ofSeq spelling is preserved when moved`` () =
         "module Test\nlet f g xs = xs |> Seq.filter g |> List.ofSeq"
 
 [<Fact>]
-let ``seq-to-array conversion moves past map`` () =
-    assertPatched
-        "module Test\nlet f g xs = xs |> Seq.toArray |> Array.map g"
-        "module Test\nlet f g xs = xs |> Seq.map g |> Seq.toArray"
+let ``seq-to-array does not move a map into Seq either`` () =
+    // the destination module makes no difference to this: what costs is
+    // running the map through Seq's enumerator. Measured, the rewrite is
+    // ~6% slower for 2% less allocation
+    assertNoSuggestion "module Test\nlet f g xs = xs |> Seq.toArray |> Array.map g"
 
 [<Fact>]
 let ``an operation is not moved out of Array into List`` () =
@@ -83,20 +96,20 @@ let ``conversion before iter is dropped`` () =
 [<Fact>]
 let ``mid-pipeline segment is rewritten in place`` () =
     assertPatched
-        "module Test\nlet f g h k xs = xs |> h |> Seq.toList |> List.map g |> k"
-        "module Test\nlet f g h k xs = xs |> h |> Seq.map g |> Seq.toList |> k"
+        "module Test\nlet f g h k xs = xs |> h |> Seq.toList |> List.filter g |> k"
+        "module Test\nlet f g h k xs = xs |> h |> Seq.filter g |> Seq.toList |> k"
 
 [<Fact>]
 let ``multi-line pipeline is rewritten and collapses two stages`` () =
     assertPatched
-        "module Test\nlet f g xs =\n    xs\n    |> Seq.toList\n    |> List.map g"
-        "module Test\nlet f g xs =\n    xs\n    |> Seq.map g\n    |> Seq.toList"
+        "module Test\nlet f g xs =\n    xs\n    |> Seq.toList\n    |> List.filter g"
+        "module Test\nlet f g xs =\n    xs\n    |> Seq.filter g\n    |> Seq.toList"
 
 [<Fact>]
 let ``lambda argument text is preserved verbatim`` () =
     assertPatched
-        "module Test\nlet f xs = xs |> Seq.toList |> List.map (fun v -> v + 1)"
-        "module Test\nlet f xs = xs |> Seq.map (fun v -> v + 1) |> Seq.toList"
+        "module Test\nlet f xs = xs |> Seq.toList |> List.filter (fun v -> v > 1)"
+        "module Test\nlet f xs = xs |> Seq.filter (fun v -> v > 1) |> Seq.toList"
 
 [<Fact>]
 let ``operation from a different module is not rewritten`` () =
@@ -113,10 +126,11 @@ let ``groupBy is not rewritten`` () =
     assertNoSuggestion "module Test\nlet f (g: int -> int) xs = xs |> Seq.toList |> List.groupBy g"
 
 [<Fact>]
-let ``sortBy conversion moves`` () =
-    assertPatched
-        "module Test\nlet f (g: int -> int) xs = xs |> Seq.toList |> List.sortBy g"
-        "module Test\nlet f (g: int -> int) xs = xs |> Seq.sortBy g |> Seq.toList"
+let ``sortBy does not move into Seq`` () =
+    // a sort cannot avoid materialising, so moving it into Seq removes no
+    // intermediate at all — it only adds the enumerator on the way out.
+    // Into Array the sort family is refused separately, for stability
+    assertNoSuggestion "module Test\nlet f (g: int -> int) xs = xs |> Seq.toList |> List.sortBy g"
 
 [<Fact>]
 let ``rev conversion moves`` () =
@@ -218,9 +232,11 @@ let ``a local collection under a pure callback moves`` () =
 
 [<Fact>]
 let ``a list literal source is already materialised`` () =
+    // the source being in hand changes nothing about the map's cost through
+    // Seq; a size-reducing operation is what earns the move
     assertPatched
-        "module Test\nlet f g = [ 1; 2; 3 ] |> Seq.toArray |> Array.map g"
-        "module Test\nlet f g = [ 1; 2; 3 ] |> Seq.map g |> Seq.toArray"
+        "module Test\nlet f g = [ 1; 2; 3 ] |> Seq.toArray |> Array.filter g"
+        "module Test\nlet f g = [ 1; 2; 3 ] |> Seq.filter g |> Seq.toArray"
 
 [<Fact>]
 let ``writes BEFORE the pipeline do not stop a pure callback moving`` () =

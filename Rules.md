@@ -11,7 +11,7 @@ has a row, its category and its default state match the code.
 | FR0001 | Idiom | v | | | `match x with true -> a \| false -> b` | `if x then a else b` |
 | FR0002 | Idiom | | | | `match x with Some v -> f v \| None -> None` | `x \|> Option.bind (fun v -> f v)` |
 | FR0003 | Idiom | v | | | `xs \|> List.map (fun x -> g (f x))` | `xs \|> List.map (f >> g)` |
-| FR0004 | Performance | v | | | `xs \|> Seq.toList \|> List.map f` | `xs \|> Seq.map f \|> Seq.toList` |
+| FR0004 | Performance | v | | | `xs \|> Seq.toList \|> List.filter f` | `xs \|> Seq.filter f \|> Seq.toList` |
 | FR0005 | Idiom | v | | | `async { return! comp }` | `comp` |
 | FR0006 | Idiom | v | | | `match n with n when isEven n -> f n \| _ -> g n` | `let private (\|IsEven\|_\|) input = if isEven input then Some input else None` then `match n with IsEven n -> f n \| _ -> g n` |
 | FR0007 | Idiom | v | | | `let mutable x = 0 in printfn "%d" x` | `let x = 0 in printfn "%d" x` |
@@ -56,7 +56,7 @@ has a row, its category and its default state match the code.
 | FR0046 | Correctness | v | | v | `lock "cache" (fun () -> ...)` | `let private bumpLock = obj ()` then `lock bumpLock (fun () -> ...)` (editor) |
 | FR0047 | Correctness | v | | v | `let s = new FileStream(...)<br>interface IDisposable with<br>    member _.Dispose() = ()` | `member _.Dispose() = s.Dispose()` (editor) |
 | FR0048 | Correctness | v | | v | `String.Format("{0} of {1}", x)` | — |
-| FR0049 | Correctness | v | | | `task { let x = t.Result in use x }`, `task { t.Wait() }`, `task { Task.WaitAll(a, b) }` | `task { let! x = t in use x }`, `do! t`, `do! Task.WhenAll(a, b)` |
+| FR0049 | Correctness | v | | | `task { let x = t.Result in use x }`, `task { t.Wait() }`, `task { Task.WaitAll(a, b) }`, `task { let! x = Task.Run(fun () -> c \|> Async.RunSynchronously) }` | `task { let! x = t in use x }`, `do! t`, `do! Task.WhenAll(a, b)`, `task { let! x = c \|> Async.StartAsTask }` |
 | FR0050 | Idiom | v | | | `let mutable total = 0 in for x in xs do total <- total + x` | `let total = xs \|> List.sum` |
 | FR0051 | Performance | v | | | `for x in xs do acc <- acc @ [x]` | — |
 | FR0052 | Performance | v | | | `q.Count = 0` | `q.IsEmpty` |
@@ -157,6 +157,8 @@ has a row, its category and its default state match the code.
 | FR0148 | Correctness | v | | | `type Session() =<br>    member _.Dispose() = inner.Dispose()` | note: implement `IDisposable` (nothing can `use` it otherwise) |
 | FR0149 | Correctness | v | | | `try<br>    async { f () } \|> Async.Start<br>with e -> g e` | `async {<br>    try<br>        f ()<br>    with e -> g e<br>}<br>\|> Async.Start` (editor); otherwise a note — unhandled on a pool thread kills the process |
 | FR0150 | Correctness | v | | | `use cts = new CancellationTokenSource()<br>task { ... cts.Token ... }` | `task {<br>    use cts = ...<br>    ... }` (editor) |
+| FR0151 | Correctness | v | | | `with :? ReflectionTypeLoadException as e -> log e.Message`, `with :? WebException as wex -> log wex.Message` | in place of a `reraise()` under a `GetTypes()` try: `let loaded = ... e.Types filtered of nulls ... in if Array.isEmpty loaded then reraise () else loaded`, plus a `// TODO: log e.LoaderExceptions` where it ends the line (editor, offered FIRST); then the `e.LoaderExceptions \|> ... \|> String.concat "; "` join. Reading EITHER member, in the body or the `when` guard, already counts as handled; WebException note-only |
+| FR0152 | Correctness | v | | | `cache.GetOrAdd(args, addCache)` where the value type is `Task`/`ValueTask`/`Lazy` | note only - a faulted value stays cached and every later reader gets it; remove the entry when it faults |
 
 \*) Enabled by default. A blank cell means the rule is off until
 `fsharprefactor.json` turns it on (`"FR0099": true`) or a run asks for it
@@ -165,7 +167,12 @@ with `--codes`.
 \*\*) The fix changes a public API — a signature, a type's shape, a field
 name, an exception's text that callers may read — and is applied only with
 `--api-changes`; without it the rule reports and, where a declaration is
-private or internal, fixes that. See the README's `--api-changes` section.
+private or internal, fixes that. An assembly nothing links against is the
+exception: an executable or a script has no external consumer, so the
+in-place shape changes among these apply to its public declarations
+anyway — in editors too. A library says the same with `"publicApi": false`
+in `fsharprefactor.json`, and an executable takes it back with `true`. See
+the README's `--api-changes` section.
 
 \*\*\*) Priority: a likely defect too costly to hold back — an N+1 query
 loop, SQL built from strings, a raise inside finally, a regex that cannot

@@ -30,7 +30,7 @@ After wiring and a window reload, open any F# file: suggestions appear as
 `Hint`-severity squiggles with `FR`-prefixed codes, each carrying a
 light-bulb quick fix (`Ctrl+.`).
 
-Two more commands:
+Six more commands:
 
 - `FSharp.Refactor: Status (versions and wiring)` — the extension and
   analyzers versions, whether the analyzers directory is wired into
@@ -44,6 +44,26 @@ Two more commands:
   `Apply fixes with --api-changes`, in the integrated terminal. Every pass
   the tool applies is build-verified and rolled back on error, as on the
   command line; it offers to install the tool when it is missing.
+- `FSharp.Refactor: Run the tool with --api-changes` — the same sweep with
+  the scope gate opened: rules that only fix private or internal
+  declarations by default also rewrite public ones, and cross-file
+  signature changes (FR0090, FR0091) rewrite their call sites project-wide.
+  Asks report-only or apply first.
+- `FSharp.Refactor: Write a SARIF report for this workspace` — a dry run
+  with `--report`, for code scanning or as the `--baseline` of a later run.
+  Asks where to write it; `.csv` and `.html` paths are written in those
+  formats instead.
+- `FSharp.Refactor: Create or open the configuration file` — writes a
+  `fsharprefactor.json` of this build's defaults into the workspace root and
+  opens it, or opens the one already there (an existing config holds your
+  decisions and is never replaced). Every rule, plus `publicApi`,
+  `apiChanges`, `ignorePaths` and `suppressions`, each with a comment. It
+  changes nothing until you edit a line.
+- `FSharp.Refactor: Review advisory notes as a page` — the findings that
+  carry no fix, as a self-contained HTML page opened in your browser.
+  Unlike everything else the tool does, these are only worth anything if a
+  person reads them; the SARIF report is for CI, this is for you. Runs
+  `--notes only` and writes nothing to your code.
 
 Alternative without this extension: reference the
 `FSharp.Refactor.Analyzers` NuGet package and point `FSharp.analyzersPath`

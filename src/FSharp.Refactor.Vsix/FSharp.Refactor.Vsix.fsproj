@@ -20,6 +20,16 @@
     <Compile Include="BufferSessions.fs" />
     <Compile Include="ErrorTagger.fs" />
     <Compile Include="SuggestedActions.fs" />
+    <Compile Include="Commands.fs" />
+    <!-- produced by CompileCommandTable below, before resources are gathered -->
+    <EmbeddedResource Include="$(IntermediateOutputPath)FSharpRefactor.cto" LogicalName="Menus.ctmenu" />
+    <!-- and the same table INSIDE a managed resource set, which is the form
+         UseManagedResourcesOnly actually makes the shell look for; written by
+         EmbedCtoResources below -->
+    <EmbeddedResource Include="$(IntermediateOutputPath)VSPackage.resources" LogicalName="VSPackage.resources" />
+    <EmbeddedResource Include="$(IntermediateOutputPath)FSharpRefactorPackage.resources" LogicalName="FSharpRefactorPackage.resources" />
+    <None Include="FSharpRefactor.vsct" />
+    <None Include="FSharp.Refactor.Vsix.pkgdef" />
     <None Include="source.extension.vsixmanifest" />
     <None Include="CreateVsix.ps1" />
     <None Include="README.md" />
@@ -38,8 +48,37 @@
     <PackageReference Include="Microsoft.VisualStudio.Language.Intellisense" Version="17.14.249" />
     <PackageReference Include="Microsoft.VisualStudio.Imaging.Interop.14.0.DesignTime" Version="17.14.39777" />
     <PackageReference Include="Microsoft.VisualStudio.Threading" Version="17.14.15" />
+    <!-- the ONE shell dependency: menu commands need a registered package -->
+    <PackageReference Include="Microsoft.VisualStudio.Shell.15.0" Version="17.14.40264" />
+    <!-- VSCT.exe and CreatePkgDef.exe for CreateVsix.ps1; ExcludeAssets keeps
+         its MSBuild targets out, which is what fights SDK-style fsproj -->
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.9.3184" ExcludeAssets="all" GeneratePathProperty="true" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <PackageReference Include="System.ComponentModel.Composition" Version="8.0.0" />
   </ItemGroup>
+
+
+  <!-- The command table, compiled and embedded.
+       `UseManagedResourcesOnly = true` on the package attribute means
+       Visual Studio looks for the compiled table as a MANAGED resource
+       named Menus.ctmenu inside this assembly, which is why this is an
+       EmbeddedResource with a LogicalName rather than a file in the vsix.
+       VSCT.exe comes from the tools-only VSSDK.BuildTools reference; its
+       MSBuild targets are excluded because those are what fight SDK-style
+       fsproj. -->
+  <!-- The VSSDK does this with MergeWithCTO on a .resx; we have no .resx and
+       its targets fight SDK-style fsproj, so the set is written directly. -->
+  <Target Name="EmbedCtoResources" DependsOnTargets="CompileCommandTable" BeforeTargets="PrepareResources" Inputs="$(IntermediateOutputPath)FSharpRefactor.cto" Outputs="$(IntermediateOutputPath)VSPackage.resources;$(IntermediateOutputPath)FSharpRefactorPackage.resources">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\EmbedCto.ps1&quot; -Cto &quot;$(MSBuildProjectDirectory)\$(IntermediateOutputPath)FSharpRefactor.cto&quot; -OutDir &quot;$(MSBuildProjectDirectory)\$(IntermediateOutputPath.TrimEnd('\'))&quot;" />
+  </Target>
+
+  <Target Name="CompileCommandTable" BeforeTargets="PrepareResources" Inputs="FSharpRefactor.vsct" Outputs="$(IntermediateOutputPath)FSharpRefactor.cto">
+    <PropertyGroup>
+      <VsctBin>$(PkgMicrosoft_VSSDK_BuildTools)\tools\vssdk\bin</VsctBin>
+    </PropertyGroup>
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <Exec Command="&quot;$(VsctBin)\VSCT.exe&quot; &quot;$(MSBuildProjectDirectory)\FSharpRefactor.vsct&quot; &quot;$(MSBuildProjectDirectory)\$(IntermediateOutputPath)FSharpRefactor.cto&quot; &quot;-I$(VsctBin)\..\inc&quot; -Len-US" />
+  </Target>
+
 
 </Project>

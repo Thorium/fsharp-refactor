@@ -75,6 +75,12 @@ let private measure iters (f: unit -> int) =
 /// honest tolerance, while their B/op is deterministic. These keep the
 /// strict allocation gate and take the idiom-grade time gate instead —
 /// judged on what they promise, held loosely on what they don't.
+///
+/// FR0004 was briefly here, when its gate still measured a `map` moving
+/// into Seq — 35% slower for 12% less allocation. The right answer turned
+/// out to be that the rule should not offer that move at all, so it does
+/// not, and the gate follows the rule to `filter`, where the strict Perf
+/// tolerance is met honestly.
 let private allocIsTheClaim = set [ "FR0011"; "FR0106" ]
 
 /// The symmetric set: advice that TRADES a stated one-time allocation
@@ -224,12 +230,15 @@ let compAsync = async { return 1 }
 let cases =
     [
       // ================= performance rules =================
+      // the map form is no longer emitted — measuring it was what showed
+      // the move into Seq is only worth it for an operation that SHRINKS
+      // its input, so the gate follows the rule to `filter`
       { Code = "FR0004"
-        Name = "Seq.toList|>List.map -> Seq.map|>Seq.toList"
+        Name = "Seq.toList|>List.filter -> Seq.filter|>Seq.toList"
         Cat = Perf
         Iters = 10_000
-        Before = fun () -> (sq |> Seq.toList |> List.map (fun x -> x + 1)).Length
-        After = fun () -> (sq |> Seq.map (fun x -> x + 1) |> Seq.toList).Length }
+        Before = fun () -> (sq |> Seq.toList |> List.filter (fun x -> x % 2 = 0)).Length
+        After = fun () -> (sq |> Seq.filter (fun x -> x % 2 = 0) |> Seq.toList).Length }
 
       { Code = "FR0137"
         Name = "Array.map fst|>Array.map f -> Array.map (fst >> f)"

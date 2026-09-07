@@ -495,6 +495,42 @@ let hasSignatureFile (fileName: string) =
     with _ -> // an unreadable path simply is not a signature; fsharpanalyzer: ignore-line FR0055
         false
 
+/// Does the companion .fsi name this declaration?
+///
+/// The scope gate lets a PRIVATE declaration change shape even beside a
+/// signature, on the reasoning that a signature declares every internal
+/// and public name but never a private one. That reasoning is wrong: F#
+/// signature files may write `val private`, and Deedle's vendored
+/// FSharp.Data does —
+///
+///     val private ( |SubtypePrimitives|_| ) : ... -> (...) option
+///
+/// so FR0011 gave the implementation a `voption` return the signature
+/// still declared as `option`, and the project stopped compiling. The
+/// build check put it back; an editor's light bulb has no such check.
+///
+/// Deliberately TEXTUAL, and deliberately over-eager. Parsing the .fsi
+/// needs the host's cross-file parser, which editors do not install — and
+/// this has to hold in the editor, which is where the unverified fix
+/// lands. A name that merely appears in the signature stands the rewrite
+/// down; the cost of that is a fix not offered, against a project that
+/// does not compile.
+let signatureMentions (fileName: string) (name: string) =
+    try
+        if System.String.IsNullOrEmpty fileName || System.String.IsNullOrEmpty name then
+            false
+        else
+            let signature = System.IO.Path.ChangeExtension(fileName, ".fsi")
+
+            System.IO.File.Exists signature
+            && (let text = System.IO.File.ReadAllText signature
+                // whole-word: `Value` must not match `ValueKind`
+                let escaped = System.Text.RegularExpressions.Regex.Escape name
+
+                System.Text.RegularExpressions.Regex.IsMatch(text, $@"(?<![\w'`]){escaped}(?![\w'])"))
+    with _ -> // an unreadable signature is treated as declaring it; fsharpanalyzer: ignore-line FR0055
+        true
+
 /// Every name a pattern binds: `x`, the `a` and `b` of `(a, b)`, the `f`
 /// and its parameters of `f (x: int) y`, the `v` of `Some v as v`.
 [<TailCall>]

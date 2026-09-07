@@ -1,0 +1,40 @@
+// Registration for the menu commands, written by hand.
+//
+// CreatePkgDef.exe would normally generate this from the attributes on
+// FSharpRefactorPackage, but it has to LOAD the freshly built assembly to
+// read them, and Application Control on the build machine denies that
+// (UnauthorizedAccessException out of its assembly-resolve handler). The
+// rest of this VSIX is assembled by hand for a related reason — the VSSDK
+// packaging targets predate SDK-style fsproj — so one more hand-written
+// file is in keeping rather than a new exception.
+//
+// It must agree with three other places, and nothing checks that for us:
+//   - the package GUID here == [<Guid>] on FSharpRefactorPackage
+//                           == guidFSharpRefactorPackage in the .vsct
+//   - "Menus.ctmenu" here   == [<ProvideMenuResource>] on the type
+//                           == the EmbeddedResource LogicalName in the fsproj
+//   - the class name here   == the type's full name (top-level, not nested)
+//
+// $RootKey$ and $PackageFolder$ are substituted by the extension manager.
+
+[$RootKey$\Packages\{bb3ca01c-1bbf-44bb-8417-fed850034c4a}]
+@="FSharp.Refactor"
+"InprocServer32"="$WinDir$\SYSTEM32\MSCOREE.DLL"
+"Class"="FSharp.Refactor.Vsix.FSharpRefactorPackage"
+"CodeBase"="$PackageFolder$\FSharp.Refactor.Vsix.dll"
+"AllowsBackgroundLoad"=dword:00000001
+
+[$RootKey$\Menus]
+"{bb3ca01c-1bbf-44bb-8417-fed850034c4a}"=", Menus.ctmenu, 1"
+
+// UICONTEXT_SolutionExists; 2 = load in the background rather than
+// blocking the UI thread, which is what AllowsBackgroundLoading promises
+[$RootKey$\AutoLoadPackages\{f1536ef8-92ec-443c-9ed7-fdadf150da82}]
+"{bb3ca01c-1bbf-44bb-8417-fed850034c4a}"=dword:00000002
+
+// What [<ProvideBindingPath>] would emit. The payload dlls sit beside
+// the package (FSharp.Core, Newtonsoft.Json), and without this the shell
+// resolves them only through the package CodeBase probe; on the binding
+// path they resolve for anything the extension loads later too.
+[$RootKey$\BindingPaths\{bb3ca01c-1bbf-44bb-8417-fed850034c4a}]
+"$PackageFolder$"=""

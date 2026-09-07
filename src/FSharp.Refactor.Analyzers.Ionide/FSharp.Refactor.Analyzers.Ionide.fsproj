@@ -114,6 +114,8 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\RecordFields.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\QualifiedNames.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CatchLogException.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\ExceptionDetail.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\CachedFailure.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DateTimeRules.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\MonitorLock.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LogTemplates.fs" />

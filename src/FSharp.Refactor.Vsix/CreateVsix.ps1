@@ -30,6 +30,14 @@ foreach ($dll in "FSharp.Refactor.Vsix.dll", "FSharp.Core.dll", "Newtonsoft.Json
     Copy-Item (Join-Path $bin $dll) $staging
 }
 
+# the menu commands' registration. Hand-written rather than produced by
+# CreatePkgDef.exe, which has to load the freshly built assembly to read
+# its attributes and is denied that by Application Control here; see the
+# file's own header. The compiled command table is not staged at all — it
+# rides inside the assembly as the Menus.ctmenu managed resource, which is
+# what UseManagedResourcesOnly on the package attribute means.
+Copy-Item (Join-Path $here "FSharp.Refactor.Vsix.pkgdef") $staging
+
 # analyzers for the FSAC sidecar (it skips the SDK flavor it cannot load)
 $analyzerDir = Join-Path $staging "analyzers"
 New-Item -ItemType Directory -Force $analyzerDir | Out-Null
@@ -87,10 +95,11 @@ $manifest = $manifest -replace '<\?xml[^>]*\?>\s*', ''
 $repoVersion = [regex]::Match(
     [IO.File]::ReadAllText((Join-Path $repo "Directory.Build.props")),
     '<Version>([^<]+)</Version>').Groups[1].Value
-if ($repoVersion) {
-    $manifest = $manifest -replace '(<Identity [^>]*Version=")[^"]+(")', "`${1}$repoVersion`${2}"
-    Write-Host "Stamped vsix version $repoVersion"
+if (-not $repoVersion) {
+    throw "No <Version> in Directory.Build.props; refusing to ship the manifest's 0.0.0 placeholder."
 }
+$manifest = $manifest -replace '(<Identity [^>]*Version=")[^"]+(")', "`${1}$repoVersion`${2}"
+Write-Host "Stamped vsix version $repoVersion"
 
 [IO.File]::WriteAllText((Join-Path $staging "extension.vsixmanifest"), $manifest)
 

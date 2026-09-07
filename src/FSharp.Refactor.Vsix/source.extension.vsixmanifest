@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Id="FSharp.Refactor.Vsix.9c1f4a76-2f5e-4f5d-9a41-1f8f6d9b2c31" Version="0.7.1" Language="en-US" Publisher="Tuomas Hietanen" />
+    <!-- Version is a PLACEHOLDER: CreateVsix.ps1 stamps the real one from
+         Directory.Build.props, the single version source for the repo, and
+         fails if it cannot. Bump it there, never here. -->
+    <Identity Id="FSharp.Refactor.Vsix.9c1f4a76-2f5e-4f5d-9a41-1f8f6d9b2c31" Version="0.0.0" Language="en-US" Publisher="Tuomas Hietanen" />
     <DisplayName>FSharp.Refactor</DisplayName>
     <Description xml:space="preserve">Functional refactoring hints and one-click quick fixes for F#, rendered from the FSharp.Refactor analyzers via an FsAutoComplete sidecar.</Description>
     <MoreInfo>https://github.com/Thorium/fsharp-refactor</MoreInfo>
@@ -26,6 +29,8 @@
     <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.0,)" DisplayName="Visual Studio core editor" />
   </Prerequisites>
   <Assets>
+    <!-- the menu commands: a registered package, which the MEF parts are not -->
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="File" Path="FSharp.Refactor.Vsix.pkgdef" />
     <Asset Type="Microsoft.VisualStudio.MefComponent" d:Source="Project" d:ProjectName="%CurrentProject%" Path="FSharp.Refactor.Vsix.dll" />
   </Assets>
 </PackageManifest>

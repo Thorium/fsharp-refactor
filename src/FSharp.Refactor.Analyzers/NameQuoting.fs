@@ -181,7 +181,20 @@ let find
                       && (not mustProveInFile
                           || (match projectCheck with
                               | Some pc ->
-                                  pc.GetUsesOfSymbol symbolUse.Symbol
+                                  // Not an --api-changes rule: it renames only
+                                  // where every use is in this file, and stands
+                                  // down otherwise. But the PROOF has the same
+                                  // blind spot the migrations do — a `#load`ing
+                                  // script's call is in no project symbol table
+                                  // and in no build check — so a use invisible
+                                  // here would read as "confined" and leave the
+                                  // script calling a name that no longer exists.
+                                  // The script is not rewritten; the rename
+                                  // simply stands down, which is this rule's own
+                                  // answer to a use it cannot reach.
+                                  Array.append
+                                      (pc.GetUsesOfSymbol symbolUse.Symbol)
+                                      (ProjectSources.outsideUsesOf symbolUse.Symbol)
                                   |> Array.forall (fun u ->
                                       System.IO.Path.GetFullPath(u.Range.FileName).ToLowerInvariant() = thisFile)
                               | None -> false))

@@ -429,3 +429,62 @@ let ``a comment trailing a bare awaitable test survives the upcast`` () =
         (scaffold
          + "[<Fact>]\nlet ``bare`` () =\n    work () |> Async.RunSynchronously // one shot")
         "work () |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task // one shot"
+
+// ---- state that outlives a test ----
+
+[<Fact>]
+let ``a test assigning a module-level mutable is left alone`` () =
+    // the shape the maintainer named: a global testContext each test sets
+    // its own way. Freeing the thread lets collections that always COULD
+    // have raced actually do so
+    Assert.Empty(
+        findIn (
+            scaffold
+            + "let mutable testContext = 0\n\n[<Fact>]\nlet ``t`` () =\n    testContext <- 1\n    let r = load () |> Async.RunSynchronously\n    ignore r\n"
+        )
+    )
+
+[<Fact>]
+let ``a test merely reading a module-level mutable is left alone`` () =
+    // a reader races a writer just as a writer races a writer
+    Assert.Empty(
+        findIn (
+            scaffold
+            + "let mutable testContext = 0\n\n[<Fact>]\nlet ``t`` () =\n    let r = load () |> Async.RunSynchronously\n    ignore (r, testContext)\n"
+        )
+    )
+
+[<Fact>]
+let ``a test assigning its OWN mutable still converts`` () =
+    // a local dies with the test; nothing outside can observe it
+    match
+        findIn (
+            scaffold
+            + "[<Fact>]\nlet ``t`` () =\n    let mutable seen = 0\n    let r = load () |> Async.RunSynchronously\n    seen <- r.X\n    ignore seen\n"
+        )
+    with
+    | [ _ ] -> ()
+    | other -> failwithf "Expected the rewrite, got %A" other
+
+[<Fact>]
+let ``a file that installs global state by reflection converts nothing`` () =
+    // MpDataTests: a harness swaps a library's private static holders and
+    // puts them back on Dispose. There is no assignment to find and no name
+    // this file declares — the state lives in another assembly, reached
+    // through a string — and the tests never mention the machinery, so the
+    // question is asked of the whole file
+    Assert.Empty(
+        findIn (
+            scaffold
+            + "open System.Reflection\n\ntype Mock() =\n    do typeof<R>.GetProperty(\"x\", BindingFlags.NonPublic ||| BindingFlags.Static) |> ignore\n\n[<Fact>]\nlet ``t`` () =\n    let r = load () |> Async.RunSynchronously\n    ignore r\n"
+        )
+    )
+
+[<Fact>]
+let ``a test setting an environment variable is left alone`` () =
+    Assert.Empty(
+        findIn (
+            scaffold
+            + "[<Fact>]\nlet ``t`` () =\n    Environment.SetEnvironmentVariable(\"K\", \"v\")\n    let r = load () |> Async.RunSynchronously\n    ignore r\n"
+        )
+    )

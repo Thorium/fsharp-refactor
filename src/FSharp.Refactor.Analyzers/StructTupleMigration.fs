@@ -259,7 +259,10 @@ let migrateProject
                     c
 
             let classified =
-                projectCheck.GetUsesOfSymbol symbol
+                // a `#load`ing script is a real call site the project
+                // cannot see, and no build check covers it: missing one is
+                // the single thing this migration cannot survive
+                Array.append (projectCheck.GetUsesOfSymbol symbol) (ProjectSources.outsideUsesOf symbol)
                 |> Array.filter (fun u -> not u.IsFromDefinition)
                 |> Array.map (fun u ->
                     match classifierForFile u.Range.FileName with

@@ -126,7 +126,10 @@ let find
                     isPartialActivePatternName nameIdent.idText
                     // `let private (|P|_|)` parses its modifier onto the
                     // pattern, not the binding — check both
-                    && Visibility.isInScope allowApiChanges path [ bindingAccess; patAccess ]
+                    // named, not plain: a signature file may write
+                    // `val private ( |P|_| ) : ... option`, and giving the
+                    // implementation a voption return alone does not compile
+                    && Visibility.isInScopeNamed allowApiChanges path [ bindingAccess; patAccess ] nameIdent.idText
                     && not (invokedAsFunction nameIdent.idText)
                     ->
                     let results = ResizeArray<range * string>()

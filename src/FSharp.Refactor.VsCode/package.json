@@ -2,7 +2,7 @@
     "name": "fsharp-refactor-vscode",
     "displayName": "FSharp.Refactor",
     "description": "140 functional refactoring hints with one-click fixes for F# — wires the FSharp.Refactor analyzers into Ionide.",
-    "version": "0.8.4",
+    "version": "0.8.5",
     "publisher": "TuomasHietanen",
     "license": "Unlicense",
     "icon": "icon.png",
@@ -51,12 +51,28 @@
             {
                 "command": "fsharpRefactor.run",
                 "title": "FSharp.Refactor: Run the tool on this workspace"
+            },
+            {
+                "command": "fsharpRefactor.runApiChanges",
+                "title": "FSharp.Refactor: Run the tool with --api-changes (rewrites the public surface)"
+            },
+            {
+                "command": "fsharpRefactor.report",
+                "title": "FSharp.Refactor: Write a SARIF report for this workspace"
+            },
+            {
+                "command": "fsharpRefactor.createConfig",
+                "title": "FSharp.Refactor: Create or open the configuration file"
+            },
+            {
+                "command": "fsharpRefactor.reviewNotes",
+                "title": "FSharp.Refactor: Review advisory notes as a page"
             }
         ]
     },
     "fsharpRefactorBuild": {
-        "analyzers": "0.8.4",
-        "built": "2026-09-06 21:50 UTC"
+        "analyzers": "0.8.5",
+        "built": "2026-09-07 18:05 UTC"
     },
     "scripts": {
         "compile": "tsc -p ."

@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The command table: a "FSharp.Refactor" submenu under Tools, holding the
+     same commands the VS Code extension puts in its palette.
+
+     Compiled to FSharpRefactor.cto by VSCT.exe (from the
+     Microsoft.VSSDK.BuildTools package, tools/vssdk/bin) in CreateVsix.ps1
+     — the VSSDK's own MSBuild targets predate SDK-style fsproj and fight
+     it, which is why the whole VSIX is assembled by hand there.
+
+     Command ids are also the ORDER within the menu, via priority. -->
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+
+  <Commands package="guidFSharpRefactorPackage">
+
+    <Menus>
+      <!-- a submenu of Tools rather than a top-level menu: this is a tool
+           you reach for occasionally, not a mode you work in -->
+      <Menu guid="guidFSharpRefactorCmdSet" id="TopMenu" priority="0x0700" type="Menu">
+        <Parent guid="guidFSharpRefactorCmdSet" id="ToolsMenuGroup" />
+        <!-- without this the shell can decline to create a submenu whose
+             children it cannot see at merge time, and it simply never appears -->
+        <CommandFlag>AlwaysCreate</CommandFlag>
+        <Strings>
+          <ButtonText>FSharp.Refactor</ButtonText>
+          <CommandName>FSharp.Refactor</CommandName>
+        </Strings>
+      </Menu>
+    </Menus>
+
+    <Groups>
+      <!-- Our own group in the Tools menu, rather than hanging the submenu
+           off IDG_VS_TOOLS_EXT_TOOLS: that is the EXTERNAL TOOLS group, which
+           Visual Studio fills dynamically from the user's configured external
+           tools, and a static submenu placed in it does not show. A group of
+           our own under IDM_VS_MENU_TOOLS is the shape the VSSDK samples use
+           and depends on nothing but the Tools menu existing. -->
+      <Group guid="guidFSharpRefactorCmdSet" id="ToolsMenuGroup" priority="0x0700">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
+      </Group>
+      <!-- the running commands -->
+      <Group guid="guidFSharpRefactorCmdSet" id="RunGroup" priority="0x0100">
+        <Parent guid="guidFSharpRefactorCmdSet" id="TopMenu" />
+      </Group>
+      <!-- configuration and reports, separated by a line -->
+      <Group guid="guidFSharpRefactorCmdSet" id="ConfigGroup" priority="0x0200">
+        <Parent guid="guidFSharpRefactorCmdSet" id="TopMenu" />
+      </Group>
+      <!-- diagnostics, at the bottom where they belong -->
+      <Group guid="guidFSharpRefactorCmdSet" id="AboutGroup" priority="0x0300">
+        <Parent guid="guidFSharpRefactorCmdSet" id="TopMenu" />
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidRun" priority="0x0100" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="RunGroup" />
+        <Strings>
+          <ButtonText>Run the tool on this solution...</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidRunApiChanges" priority="0x0200" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="RunGroup" />
+        <Strings>
+          <ButtonText>Run with --api-changes (rewrites the public surface)...</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidReviewNotes" priority="0x0300" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="RunGroup" />
+        <Strings>
+          <ButtonText>Review advisory notes as a page</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidReport" priority="0x0100" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="ConfigGroup" />
+        <Strings>
+          <ButtonText>Write a SARIF report</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidCreateConfig" priority="0x0200" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="ConfigGroup" />
+        <Strings>
+          <ButtonText>Create or open the configuration file</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidStatus" priority="0x0100" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="AboutGroup" />
+        <Strings>
+          <ButtonText>Status (versions and wiring)</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFSharpRefactorCmdSet" id="cmdidAbout" priority="0x0200" type="Button">
+        <Parent guid="guidFSharpRefactorCmdSet" id="AboutGroup" />
+        <Strings>
+          <ButtonText>About FSharp.Refactor</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+
+  </Commands>
+
+  <Symbols>
+    <GuidSymbol name="guidFSharpRefactorPackage" value="{bb3ca01c-1bbf-44bb-8417-fed850034c4a}" />
+
+    <GuidSymbol name="guidFSharpRefactorCmdSet" value="{295a52d6-afe3-414f-ad26-14b36f327d99}">
+      <IDSymbol name="TopMenu" value="0x1000" />
+      <IDSymbol name="ToolsMenuGroup" value="0x1040" />
+      <IDSymbol name="RunGroup" value="0x1010" />
+      <IDSymbol name="ConfigGroup" value="0x1020" />
+      <IDSymbol name="AboutGroup" value="0x1030" />
+      <IDSymbol name="cmdidRun" value="0x0100" />
+      <IDSymbol name="cmdidRunApiChanges" value="0x0101" />
+      <IDSymbol name="cmdidReport" value="0x0102" />
+      <IDSymbol name="cmdidCreateConfig" value="0x0103" />
+      <IDSymbol name="cmdidReviewNotes" value="0x0104" />
+      <IDSymbol name="cmdidStatus" value="0x0105" />
+      <IDSymbol name="cmdidAbout" value="0x0106" />
+    </GuidSymbol>
+  </Symbols>
+
+</CommandTable>
