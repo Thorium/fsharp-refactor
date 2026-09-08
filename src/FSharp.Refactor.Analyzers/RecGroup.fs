@@ -228,7 +228,7 @@ let private annotatedHeaderLine
                                     // backticked name keeps its backticks
                                     let written = textOfRange source p.Range
 
-                                    if t.Contains '\'' || written.Trim() = "" then
+                                    if t.Contains '\'' || System.String.IsNullOrWhiteSpace written then
                                         None
                                     else
                                         Some(Some(p.Range.StartColumn, p.Range.EndColumn, $"({written}: {t})"))

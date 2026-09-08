@@ -246,7 +246,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                           // an int32 literal only: an int64 expression has
                           // nowhere wider to go, and narrowing it back to int
                           // would be the wrong type
-                          | Some _ when not (text.EndsWith "L" || text.EndsWith "l") ->
+                          | Some _ when not (text.EndsWith 'L' || text.EndsWith 'l') ->
                               // the chain must widen as a whole: a float or
                               // decimal operand anywhere means it is not int
                               // arithmetic

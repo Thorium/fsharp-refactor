@@ -85,6 +85,85 @@ let rec private passesAddress (arg: SynExpr) =
     | SynExpr.Typed(expr = inner) -> passesAddress inner
     | _ -> false
 
+/// What one `let rec` binding's verification needs: the source it reads
+/// spans from, the function's own name, the arity a self-call must reach,
+/// and the accumulator counting the qualifying self-calls found so far.
+type private Ctx =
+    { Source: ISourceText
+      Fid: Ident
+      Arity: int
+      SelfCalls: int ref }
+
+/// No mention of the function's own name anywhere in `r`. This runs on nearly
+/// every subexpression of the body, which is why it goes through
+/// mentionsIdentifier and not a Regex — see there.
+let private mentionFree (c: Ctx) (r: range) =
+    not (mentionsIdentifier (textOfRange c.Source r) c.Fid.idText)
+
+/// One application in the body: a fully-applied self-call in tail position
+/// (which the accumulator counts), or any other application, which is
+/// verified only by never naming the function. `e` is the whole application
+/// the head and args came from.
+let private selfCall (c: Ctx) (isTail: bool) (e: SynExpr) (head: SynExpr) (args: SynExpr list) =
+    match head with
+    | SynExpr.Ident id when id.idText = c.Fid.idText ->
+        if
+            isTail
+            && args.Length = c.Arity
+            && args |> List.forall (fun a -> mentionFree c a.Range)
+            // a self-call handing over an address
+            // (`f key t &v`) is one the compiler's own
+            // tail-call checker refuses (FS3569)
+            && not (args |> List.exists passesAddress)
+        then
+            c.SelfCalls.Value <- c.SelfCalls.Value + 1
+            true
+        else
+            false
+    | _ -> mentionFree c e.Range
+
+let rec private ok (c: Ctx) (isTail: bool) (e: SynExpr) : bool =
+    match e with
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.Typed(expr = inner) -> ok c isTail inner
+    | SynExpr.Match(expr = scrut; clauses = cs) ->
+        mentionFree c scrut.Range
+        && cs
+           |> List.forall (fun (SynMatchClause(whenExpr = w; resultExpr = r)) ->
+               (match w with
+                | Some g -> mentionFree c g.Range
+                | None -> true)
+               && ok c isTail r)
+    | SynExpr.IfThenElse(ifExpr = cond; thenExpr = t; elseExpr = els) ->
+        mentionFree c cond.Range
+        && ok c isTail t
+        && (match els with
+            | Some e2 -> ok c isTail e2
+            | None -> true)
+    | LetOrUseE lou when not (lou.IsUse || lou.IsBang) ->
+        lou.Bindings
+        |> List.forall (fun (SynBinding _ as inner) -> mentionFree c inner.RangeOfBindingWithRhs)
+        && ok c isTail lou.Body
+    | SynExpr.Sequential(expr1 = e1; expr2 = e2) -> mentionFree c e1.Range && ok c isTail e2
+    // `x |> f args` is `f args x` — pipes are inlined
+    // (the operator parses as a one-segment LongIdent)
+    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = opE; argExpr = lhs); argExpr = rhs) when
+        (match opE with
+         | SynExpr.Ident i -> i.idText = "op_PipeRight"
+         | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ i ])) -> i.idText = "op_PipeRight"
+         | _ -> false)
+        && mentionFree c lhs.Range
+        ->
+        let head, args = spine [] rhs
+        selfCall c isTail e head (args @ [ lhs ])
+    | SynExpr.App(isInfix = false) ->
+        let head, args = spine [] e
+        selfCall c isTail e head args
+    // anything unverified — lambdas, try/with, CEs,
+    // `use` scopes, loops, arguments — passes only by
+    // never naming the function
+    | _ -> mentionFree c e.Range
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if not (coreHasAttribute check) then
         []
@@ -101,11 +180,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ fid ]); argPats = SynArgPats.Pats pats)
                       expr = body
                       trivia = trivia) when not (pats.IsEmpty || hasByrefParameter source pats) ->
-                      let namePattern = identifierPattern fid.idText
-
-                      let mentionFree (r: range) =
-                          not (Regex.IsMatch(textOfRange source r, namePattern))
-
                       // `let rec f acc = function ...` compiles as one more
                       // curried parameter; its clause bodies ARE the tail
                       let arity, tailBodies, guardsAndScrutinees =
@@ -119,76 +193,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     | None -> () ]
                           | _ -> pats.Length, [ body ], []
 
-                      let mutable selfCalls = 0
-
-                      let rec ok (isTail: bool) (e: SynExpr) : bool =
-                          let selfCall (head: SynExpr) (args: SynExpr list) =
-                              match head with
-                              | SynExpr.Ident id when id.idText = fid.idText ->
-                                  if
-                                      isTail
-                                      && args.Length = arity
-                                      && args |> List.forall (fun a -> mentionFree a.Range)
-                                      // a self-call handing over an address
-                                      // (`f key t &v`) is one the compiler's own
-                                      // tail-call checker refuses (FS3569)
-                                      && not (args |> List.exists passesAddress)
-                                  then
-                                      selfCalls <- selfCalls + 1
-                                      true
-                                  else
-                                      false
-                              | _ ->
-                                  // not a self-call at all: verified iff the
-                                  // whole application never names the function
-                                  mentionFree e.Range
-
-                          match e with
-                          | SynExpr.Paren(expr = inner)
-                          | SynExpr.Typed(expr = inner) -> ok isTail inner
-                          | SynExpr.Match(expr = scrut; clauses = cs) ->
-                              mentionFree scrut.Range
-                              && cs
-                                 |> List.forall (fun (SynMatchClause(whenExpr = w; resultExpr = r)) ->
-                                     (match w with
-                                      | Some g -> mentionFree g.Range
-                                      | None -> true)
-                                     && ok isTail r)
-                          | SynExpr.IfThenElse(ifExpr = cond; thenExpr = t; elseExpr = els) ->
-                              mentionFree cond.Range
-                              && ok isTail t
-                              && (match els with
-                                  | Some e2 -> ok isTail e2
-                                  | None -> true)
-                          | LetOrUseE lou when not (lou.IsUse || lou.IsBang) ->
-                              lou.Bindings
-                              |> List.forall (fun (SynBinding _ as inner) -> mentionFree inner.RangeOfBindingWithRhs)
-                              && ok isTail lou.Body
-                          | SynExpr.Sequential(expr1 = e1; expr2 = e2) -> mentionFree e1.Range && ok isTail e2
-                          // `x |> f args` is `f args x` — pipes are inlined
-                          // (the operator parses as a one-segment LongIdent)
-                          | SynExpr.App(funcExpr = SynExpr.App(funcExpr = opE; argExpr = lhs); argExpr = rhs) when
-                              (match opE with
-                               | SynExpr.Ident i -> i.idText = "op_PipeRight"
-                               | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ i ])) -> i.idText = "op_PipeRight"
-                               | _ -> false)
-                              && mentionFree lhs.Range
-                              ->
-                              let head, args = spine [] rhs
-                              selfCall head (args @ [ lhs ])
-                          | SynExpr.App(isInfix = false) ->
-                              let head, args = spine [] e
-                              selfCall head args
-                          // anything unverified — lambdas, try/with, CEs,
-                          // `use` scopes, loops, arguments — passes only by
-                          // never naming the function
-                          | _ -> mentionFree e.Range
+                      let c =
+                          { Source = source
+                            Fid = fid
+                            Arity = arity
+                            SelfCalls = ref 0 }
 
                       let allTail =
-                          guardsAndScrutinees |> List.forall mentionFree
-                          && tailBodies |> List.forall (ok true)
+                          guardsAndScrutinees |> List.forall (mentionFree c)
+                          && tailBodies |> List.forall (ok c true)
 
-                      if allTail && selfCalls > 0 then
+                      if allTail && c.SelfCalls.Value > 0 then
                           let kw = trivia.LeadingKeyword.Range
 
                           let ownLine =

@@ -192,7 +192,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText
                 | _ -> ""
 
-            let partialActivePattern = headName.StartsWith "|" && headName.EndsWith "|_|"
+            let partialActivePattern = headName.StartsWith '|' && headName.EndsWith "|_|"
 
             let declaredOption =
                 match returnInfo, headPat with

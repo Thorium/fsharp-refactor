@@ -415,7 +415,7 @@ let private wrapBody (source: ISourceText) (bodyRange: range) (edits: Edit list)
         |> Array.mapi (fun i line ->
             // lines after the first carry their original leading columns;
             // the first sits at the body column, which the text lost
-            if line.Trim() = "" then ""
+            if System.String.IsNullOrWhiteSpace line then ""
             elif i = 0 then inner + line
             else "    " + line)
 

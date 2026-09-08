@@ -265,8 +265,8 @@ let private taskRunOfRunSync (check: FSharpCheckFileResults) (source: ISourceTex
 let private asArgument (text: string) =
     // one pair of parentheses around the whole text is atomic already
     let parenthesized =
-        text.StartsWith "("
-        && text.EndsWith ")"
+        text.StartsWith '('
+        && text.EndsWith ')'
         && (let mutable depth = 0
             let mutable closedEarly = false
 

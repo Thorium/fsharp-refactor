@@ -79,7 +79,7 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
                   && (let between =
                           textOfRange source (Range.mkRange elseKw.FileName elseKw.End ifKw.Start)
 
-                      between.Trim() = "")
+                      System.String.IsNullOrWhiteSpace between)
                   ->
                   // the nested if's block — its then-body, elif chain and
                   // else — sat one level deeper than the `else` that owned
@@ -104,7 +104,8 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
                       && lines
                          |> Array.skip 1
                          |> Array.forall (fun l ->
-                             l.Trim() = "" || (l.Length >= dedent && l.Substring(0, dedent).Trim() = ""))
+                             System.String.IsNullOrWhiteSpace l
+                             || (l.Length >= dedent && System.String.IsNullOrWhiteSpace(l.Substring(0, dedent))))
                       && not (
                           multiLineLiterals
                           |> Array.exists (fun r -> Range.rangeContainsRange innerIf.Range r)

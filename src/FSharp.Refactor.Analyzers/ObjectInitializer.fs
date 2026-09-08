@@ -241,7 +241,7 @@ let private withNamedArgs (ctorText: string) (startColumn: int) (letColumn: int)
     /// enough here: `T( )` does not end with "()" and the naive branch
     /// emitted `T( , Age = 42)`, which does not compile.
     let openIndex =
-        if not (trimmed.EndsWith ")") then
+        if not (trimmed.EndsWith ')') then
             -1
         else
             let mutable depth = 0

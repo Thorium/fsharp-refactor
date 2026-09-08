@@ -117,14 +117,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                 if
                     shift < 0
-                    && continuation |> Array.exists (fun l -> l.Trim() <> "" && leading l < -shift)
+                    && continuation
+                       |> Array.exists (fun l -> not (System.String.IsNullOrWhiteSpace l) && leading l < -shift)
                 then
                     None
                 else
                     let moved =
                         continuation
                         |> Array.map (fun l ->
-                            if l.Trim() = "" then ""
+                            if System.String.IsNullOrWhiteSpace l then ""
                             elif shift >= 0 then System.String(' ', shift) + l
                             else l.Substring(-shift))
 

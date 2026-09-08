@@ -52,7 +52,7 @@ type Suggestion =
 
 let private ceBuilders = set [ "async"; "task"; "backgroundTask" ]
 
-let private isBlank (line: string) = line.Trim() = ""
+let private isBlank (line: string) = System.String.IsNullOrWhiteSpace line
 
 let private leadingSpaces (line: string) =
     line.Length - line.TrimStart(' ').Length

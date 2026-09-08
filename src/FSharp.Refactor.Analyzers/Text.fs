@@ -296,11 +296,26 @@ let rec patBoundNamesLoop (acc: string list) (pending: SynPat list) =
             | SynPat.Ands(pats = ps) -> acc, ps @ rest
             | SynPat.As(lhsPat = l; rhsPat = r)
             | SynPat.Or(lhsPat = l; rhsPat = r) -> acc, l :: r :: rest
+            // `a :: rest` is its own node, not a LongIdent application - without
+            // it the whole cons pattern bound nothing and its sub-patterns were
+            // never reached
+            | SynPat.ListCons(lhsPat = l; rhsPat = r) -> acc, l :: r :: rest
+            // `{ Field = p }` binds through its field patterns
+            | SynPat.Record(fieldPats = fields) ->
+                acc, (fields |> List.map (fun (f: NamePatPairField) -> f.Pattern)) @ rest
+            | SynPat.OptionalVal(ident = id) -> id.idText :: acc, rest
             // a no-argument lone identifier (the uppercase binder's parse
             // shape) BINDS the name — record it like Named
             | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
                 id.idText :: acc, rest
             | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> acc, ps @ rest
+            // union-case fields named rather than positional -
+            // `SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))` binds
+            // `ids` exactly as a positional pattern would. Missing this made
+            // every such binder invisible to callers that ask what a match arm
+            // rebinds per iteration (LoopPerf.loopBinders, and so FR0102)
+            | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs(pats = ps)) ->
+                acc, (ps |> List.map (fun (fieldPat: NamePatPairField) -> fieldPat.Pattern)) @ rest
             | _ -> acc, rest
 
         patBoundNamesLoop acc next
@@ -463,6 +478,34 @@ let opensNamespace (source: ISourceText) (ns: string) =
 let identifierPattern (name: string) =
     @"(?<![\w'])" + Regex.Escape name + @"(?![\w'])"
 
+/// A char `\w` matches, plus the `'` identifierPattern guards alongside it.
+let private isIdentifierChar (c: char) =
+    System.Char.IsLetterOrDigit c || c = '_' || c = '\''
+
+/// `text` names `name` as a whole identifier: the hand-rolled equal of
+/// `Regex.IsMatch(text, identifierPattern name)`, for the callers that ask it
+/// per AST node. A Regex there costs either a per-name instance cached for the
+/// life of a process that outlives the sweep (Ionide and the VS extension host
+/// these analyzers for days), or a pattern-cache lookup on every call; two
+/// boundary checks around an ordinal IndexOf need neither.
+let mentionsIdentifier (text: string) (name: string) =
+    if System.String.IsNullOrEmpty name then
+        false
+    else
+        let mutable i = text.IndexOf(name, System.StringComparison.Ordinal)
+        let mutable found = false
+
+        while not found && i >= 0 do
+            let openedBefore = i = 0 || not (isIdentifierChar text.[i - 1])
+            let ended = i + name.Length
+
+            if openedBefore && (ended >= text.Length || not (isIdentifierChar text.[ended])) then
+                found <- true
+            else
+                i <- text.IndexOf(name, i + 1, System.StringComparison.Ordinal)
+
+        found
+
 /// Every comment in a parse tree, as (range, text) — shared by the apply
 /// layer's comment guard and its editor-side twin.
 let commentsWithText (parseTree: ParsedInput) (source: ISourceText) =
@@ -616,14 +659,15 @@ let reindentBlock (target: int) (firstColumn: int) (text: string) : string optio
 
         if
             shift < 0
-            && continuation |> Array.exists (fun l -> l.Trim() <> "" && leading l < -shift)
+            && continuation
+               |> Array.exists (fun l -> not (System.String.IsNullOrWhiteSpace l) && leading l < -shift)
         then
             None
         else
             let moved =
                 continuation
                 |> Array.map (fun l ->
-                    if l.Trim() = "" then ""
+                    if System.String.IsNullOrWhiteSpace l then ""
                     elif shift >= 0 then System.String(' ', shift) + l
                     else l.Substring(-shift))
 

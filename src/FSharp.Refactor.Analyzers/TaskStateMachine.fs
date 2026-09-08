@@ -121,7 +121,7 @@ let private startsOwnLine (source: ISourceText) (r: range) =
 let private leadingSpaces (line: string) =
     line.Length - line.TrimStart(' ').Length
 
-let private isBlank (line: string) = line.Trim() = ""
+let private isBlank (line: string) = System.String.IsNullOrWhiteSpace line
 
 /// Lines of the file from `startLine` to `endLine` inclusive (1-based).
 let private linesOf (source: ISourceText) (startLine: int) (endLine: int) =

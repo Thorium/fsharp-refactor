@@ -107,7 +107,7 @@ let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) 
                             // expects 1 expression argument(s) and a pattern
                             // argument" (FsAutoComplete's
                             // ConvertPositionalDUToNamed)
-                            && not (ident.idText.StartsWith "|")
+                            && not (ident.idText.StartsWith '|')
                             ->
                             candidates.Add
                                 { Ident = ident

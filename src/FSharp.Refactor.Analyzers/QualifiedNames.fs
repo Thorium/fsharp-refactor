@@ -149,14 +149,62 @@ let private symbolPath (symbol: FSharpSymbol) =
 
     path |> Option.map (fun (ns, chain) -> ns, List.ofArray (ns.Split '.') @ chain)
 
+/// The referenced assemblies of the project a file belongs to, held for the
+/// project currently being swept: they cannot change while one project is
+/// analysed, so asking FCS again for every file is 129 redundant round-trips
+/// out of 130.
+///
+/// It does NOT make a sweep faster, and the reason is worth keeping: a
+/// stopwatch around the call reports ~28 ms per file, but that is a thread
+/// BLOCKING on FCS's internal locks, not work being done — 20 threads against
+/// a service that serialises them (a sweep gets 1.68x on 20 cores). Remove the
+/// calls and the same wait reappears elsewhere; measured before and after,
+/// three runs each, the rule's time did not move. Kept anyway because the
+/// redundancy is real and the single-file IDE path has no contention to hide
+/// it. Do not read a per-thread stopwatch here as a measure of work.
+///
+/// One slot rather than a dictionary: a sweep moves project by project, so a
+/// slot hits on every file after the first, while keeping every project's list
+/// alive would pin its assembly signatures for the rest of a run that can last
+/// hours. Interleaved projects merely miss, never answer wrongly. The pair is
+/// swapped as one reference so a reader cannot see a new key beside an old
+/// list.
+let mutable private cachedAssemblies: (string * FSharpAssembly list) option = None
+
+let private referencedAssemblies (check: FSharpCheckFileResults) =
+    let read () =
+        try
+            check.ProjectContext.GetReferencedAssemblies()
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            []
+
+    let key =
+        try
+            check.ProjectContext.ProjectOptions.ProjectFileName
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            ""
+
+    if key = "" then
+        read ()
+    else
+        match cachedAssemblies with
+        | Some(cachedKey, assemblies) when cachedKey = key -> assemblies
+        | _ ->
+            let assemblies = read ()
+            cachedAssemblies <- Some(key, assemblies)
+            assemblies
+
 /// Namespaces conventionally spelled out.
 let private keptLong (ns: string) =
     ns.StartsWith "Microsoft.FSharp" || ns.StartsWith "FSharp.Core"
 
-/// The top-level names a namespace exports, per namespace and reference
-/// set — enumerating every referenced assembly's entities is the one
-/// expensive step of the clash check, and a sweep asks the same question
-/// in every file.
+/// The top-level names a namespace exports, per namespace and reference set.
+/// Worth caching — a sweep asks the same question in every file — but NOT the
+/// rule's bottleneck, whatever its cost looks like: enumerating every
+/// referenced assembly's entities and bucketing all 502 scopes of this
+/// project's reference set measures 143 ms once, against ~7 s of FR0147 in the
+/// same sweep. The time is in the per-file work, so measure there before
+/// rewriting anything here.
 let private exportedNamesCache =
     System.Collections.Concurrent.ConcurrentDictionary<string, Map<string, bool>>()
 
@@ -394,7 +442,7 @@ let find
                 let indent =
                     seq { region .. source.GetLineCount() - 1 }
                     |> Seq.map source.GetLineString
-                    |> Seq.tryFind (fun l -> l.Trim() <> "")
+                    |> Seq.tryFind (fun l -> not (System.String.IsNullOrWhiteSpace l))
                     |> Option.map (fun l -> l.Substring(0, l.Length - l.TrimStart().Length))
                     |> Option.defaultValue ""
 
@@ -418,11 +466,7 @@ let find
         // asks the same question in every file) and this project's own, up
         // to this file (FsAutoComplete's Utils.Utils.Expect beside
         // Expecto.Expect: that clash lived in the project itself)
-        let assemblies =
-            try
-                check.ProjectContext.GetReferencedAssemblies()
-            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                []
+        let assemblies = referencedAssemblies check
 
         let assemblyKey =
             assemblies |> List.map (fun a -> a.SimpleName) |> String.concat ";"
@@ -466,7 +510,7 @@ let find
                         // an active pattern displays as `(|Ident|_|)`
                         let name = v.DisplayName.TrimStart('(').TrimEnd ')'
 
-                        if name.StartsWith "|" then
+                        if name.StartsWith '|' then
                             name.Split '|' |> Array.filter (fun p -> p <> "" && p <> "_") |> Array.toList
                         else
                             [ name ])

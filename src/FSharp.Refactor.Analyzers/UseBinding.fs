@@ -1108,13 +1108,17 @@ let findEscapingUse
 
         // the tail expression of a statement chain, and the statements
         // passed on the way — `let a = ... in let b = ... in tail`
+        // acc is built REVERSED and turned once at the base case: appending
+        // (`acc @ rhss`) copied the whole accumulator at every step, which is
+        // O(n2) down a long statement chain
         let rec tailOf (acc: SynExpr list) (e: SynExpr) =
             match e with
             | LetOrUseE lou when not lou.IsBang ->
                 let rhss = lou.Bindings |> List.map (fun (SynBinding(expr = rhs)) -> rhs)
-                tailOf (acc @ rhss) lou.Body
-            | SynExpr.Sequential(expr1 = a; expr2 = b) -> tailOf (acc @ [ a ]) b
-            | tail -> acc, tail
+                tailOf (List.rev rhss @ acc) lou.Body
+            | SynExpr.Sequential(expr1 = a; expr2 = b) -> tailOf (a :: acc) b
+            | tail -> List.rev acc, tail
+
 
         [ for _, expr in index.Exprs do
               match expr with

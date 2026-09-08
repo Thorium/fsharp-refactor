@@ -223,7 +223,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               line
 
                       Some(String.replicate targetColumn " " + line)
-                  elif line.Trim() = "" then
+                  elif System.String.IsNullOrWhiteSpace line then
                       Some ""
                   elif delta >= 0 then
                       Some(String.replicate delta " " + line)
