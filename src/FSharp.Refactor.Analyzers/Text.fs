@@ -478,9 +478,17 @@ let opensNamespace (source: ISourceText) (ns: string) =
 let identifierPattern (name: string) =
     @"(?<![\w'])" + Regex.Escape name + @"(?![\w'])"
 
-/// A char `\w` matches, plus the `'` identifierPattern guards alongside it.
+/// A char regex `\w` matches — `[\p{L}\p{Mn}\p{Nd}\p{Pc}]`, the nonspacing
+/// marks included so a decomposed `naive` + combining acute reads as one
+/// identifier rather than as a mention of `naive` — plus the `'` that
+/// identifierPattern guards alongside it.
 let private isIdentifierChar (c: char) =
-    System.Char.IsLetterOrDigit c || c = '_' || c = '\''
+    System.Char.IsLetterOrDigit c
+    || c = '''
+    || (match System.Char.GetUnicodeCategory c with
+        | System.Globalization.UnicodeCategory.NonSpacingMark
+        | System.Globalization.UnicodeCategory.ConnectorPunctuation -> true
+        | _ -> false)
 
 /// `text` names `name` as a whole identifier: the hand-rolled equal of
 /// `Regex.IsMatch(text, identifierPattern name)`, for the callers that ask it
