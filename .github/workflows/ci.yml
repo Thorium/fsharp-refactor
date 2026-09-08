@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -59,10 +59,19 @@ jobs:
 
       # both shipped projects, not just the analyzers: the apply tool is F#
       # we ship too, and it went a long time unchecked
+      # Launched exactly like the linter above, and for the same reason: the
+      # CLI reaches MSBuild through Ionide.ProjInfo, those assemblies want
+      # System.Runtime 10.0.0.0, and the tool ships as net8 so it binds a net8
+      # runtime whenever one is installed - an exact match beats roll-forward.
+      # `"rollForward": true` in dotnet-tools.json does NOT reach this; only
+      # the host flag does.
       - name: Self-analyze (dogfood)
+        shell: bash
         run: |
-          dotnet fsharp-analyzers --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis.sarif
-          dotnet fsharp-analyzers --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis-apply.sarif
+          CLI=$(find ~/.nuget/packages/fsharp-analyzers -name FSharp.Analyzers.Cli.dll | sort | tail -1)
+          echo "analyzing with $CLI"
+          dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis.sarif
+          dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis-apply.sarif
 
       - name: Pack
         run: |

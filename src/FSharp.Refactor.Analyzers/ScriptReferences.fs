@@ -210,7 +210,7 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
               // `#r "nuget: ..."`, `#r "System.Net.Http"`: not paths
               let isPath =
                   (d.Ident = "r" || d.Ident = "I")
-                  && not (d.Value.Contains ':' && not (d.Value.Length > 1 && d.Value.[1] = ':'))
+                  && not (d.Value.Contains ':' && not (Path.IsPathRooted d.Value))
                   && (d.Value.Contains '/' || d.Value.Contains '\\')
 
               if isPath then
@@ -252,10 +252,24 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                                   if done' || piece = "" || piece.[0] = '\\' || piece.[0] = '/' then
                                       piece
                                   else
+                                      // The root is skipped so that piece
+                                      // indices line up with segment indices.
+                                      // A DRIVE-LETTER test only recognises
+                                      // one: on POSIX the leading piece is
+                                      // just `@"`, which was then counted as
+                                      // segment 0 and shifted everything by
+                                      // one, so `seen = index` never met the
+                                      // missing segment and the whole fix was
+                                      // silently dropped - FR0144 never
+                                      // re-pointed a rooted path on Linux or
+                                      // macOS. Compare against the root
+                                      // itself, which is "C:" there and ""
+                                      // here.
                                       let isRoot =
                                           seen = -1
                                           && Path.IsPathRooted d.Value
-                                          && piece.TrimStart('@', '"').Contains ':'
+                                          && piece.TrimStart('@', '"') = (Path.GetPathRoot d.Value)
+                                              .TrimEnd('/', char 92)
 
                                       if isRoot then
                                           piece
