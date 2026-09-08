@@ -159,13 +159,11 @@ let rec private printsUsefully (depth: int) (t: FSharpType) =
             let d = t.TypeDefinition
 
             match d.TryFullName with
-            | Some("System.String" | "System.Boolean" | "System.Char" | "System.Guid" | "System.Uri" | "System.Version") ->
-                true
-            | Some("System.Int32" | "System.Int64" | "System.Int16" | "System.Byte" | "System.SByte") -> true
-            | Some("System.UInt32" | "System.UInt64" | "System.UInt16" | "System.IntPtr" | "System.UIntPtr") -> true
-            | Some("System.Double" | "System.Single" | "System.Decimal") -> true
-            | Some("System.DateTime" | "System.DateTimeOffset" | "System.TimeSpan" | "System.DateOnly" | "System.TimeOnly") ->
-                true
+            | Some("System.String" | "System.Boolean" | "System.Char" | "System.Guid" | "System.Uri" | "System.Version")
+            | Some("System.Int32" | "System.Int64" | "System.Int16" | "System.Byte" | "System.SByte")
+            | Some("System.UInt32" | "System.UInt64" | "System.UInt16" | "System.IntPtr" | "System.UIntPtr")
+            | Some("System.Double" | "System.Single" | "System.Decimal")
+            | Some("System.DateTime" | "System.DateTimeOffset" | "System.TimeSpan" | "System.DateOnly" | "System.TimeOnly") -> true
             | Some fullName when
                 fullName.StartsWith "Microsoft.FSharp.Core.FSharpOption`"
                 || fullName.StartsWith "Microsoft.FSharp.Core.FSharpValueOption`"
@@ -232,8 +230,8 @@ let private wildcardArmOf (path: SyntaxNode list) (body: SynExpr) (throwRange: r
         Range.equals bodyRange body.Range
         && Range.rangeContainsRange (stripParens result).Range throwRange
         ->
-        Some wild.Range
-    | _ -> None
+        ValueSome wild.Range
+    | _ -> ValueNone
 
 /// The names of the modules and types enclosing an expression.
 let private enclosingNames (path: SyntaxNode list) =
@@ -371,7 +369,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               match f.Implicit with
                               | Some(nameId, body) ->
                                   match wildcardArmOf path body expr.Range with
-                                  | Some wildRange when
+                                  | ValueSome wildRange when
                                       implicitArgType check source nameId |> Option.exists (printsUsefully 0)
                                       ->
                                       freshNameIn f.BindingRange

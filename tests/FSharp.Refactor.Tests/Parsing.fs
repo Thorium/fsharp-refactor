@@ -6,6 +6,7 @@ module FSharp.Refactor.Tests.Parsing
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
+open System.IO
 
 let private checker = FSharpChecker.Create()
 
@@ -117,17 +118,17 @@ let applyEdit (source: string) (range: range) (newText: string) : string =
 /// can classify uses in the sibling file.
 let parseAndCheckPair (sourceA: string) (sourceB: string) =
     let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
+        Path.Combine(Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
 
-    System.IO.Directory.CreateDirectory dir |> ignore
-    let pathA = System.IO.Path.Combine(dir, "A.fs")
-    let pathB = System.IO.Path.Combine(dir, "B.fs")
-    System.IO.File.WriteAllText(pathA, sourceA)
-    System.IO.File.WriteAllText(pathB, sourceB)
+    Directory.CreateDirectory dir |> ignore
+    let pathA = Path.Combine(dir, "A.fs")
+    let pathB = Path.Combine(dir, "B.fs")
+    File.WriteAllText(pathA, sourceA)
+    File.WriteAllText(pathB, sourceB)
 
     let probeOptions, _ =
         checker.GetProjectOptionsFromScript(
-            System.IO.Path.Combine(dir, "probe.fsx"),
+            Path.Combine(dir, "probe.fsx"),
             SourceText.ofString "",
             assumeDotNetFramework = false
         )
@@ -135,7 +136,7 @@ let parseAndCheckPair (sourceA: string) (sourceB: string) =
 
     let options =
         { probeOptions with
-            ProjectFileName = System.IO.Path.Combine(dir, "Pair.fsproj")
+            ProjectFileName = Path.Combine(dir, "Pair.fsproj")
             SourceFiles = [| pathA; pathB |] }
 
     let projectResults = checker.ParseAndCheckProject options |> Async.RunSynchronously
@@ -156,14 +157,14 @@ let parseAndCheckPair (sourceA: string) (sourceB: string) =
 
     FSharp.Refactor.ProjectSources.configure (
         Some(fun path ->
-            let text = SourceText.ofString (System.IO.File.ReadAllText path)
+            let text = SourceText.ofString (File.ReadAllText path)
             let r = checker.ParseFile(path, text, parsingOptions) |> Async.RunSynchronously
             Some(r.ParseTree, text))
     )
 
     let recheck (patchedA: string) (patchedB: string) =
-        System.IO.File.WriteAllText(pathA, patchedA)
-        System.IO.File.WriteAllText(pathB, patchedB)
+        File.WriteAllText(pathA, patchedA)
+        File.WriteAllText(pathB, patchedB)
 
         let results =
             checker.ParseAndCheckProject { options with Stamp = Some 1L }
@@ -178,17 +179,17 @@ let parseAndCheckPair (sourceA: string) (sourceB: string) =
 /// definitions the way a later file of a project sees the earlier ones.
 let parseAndCheckSecond (sourceA: string) (sourceB: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
     let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
+        Path.Combine(Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
 
-    System.IO.Directory.CreateDirectory dir |> ignore
-    let pathA = System.IO.Path.Combine(dir, "A.fs")
-    let pathB = System.IO.Path.Combine(dir, "B.fs")
-    System.IO.File.WriteAllText(pathA, sourceA)
-    System.IO.File.WriteAllText(pathB, sourceB)
+    Directory.CreateDirectory dir |> ignore
+    let pathA = Path.Combine(dir, "A.fs")
+    let pathB = Path.Combine(dir, "B.fs")
+    File.WriteAllText(pathA, sourceA)
+    File.WriteAllText(pathB, sourceB)
 
     let probeOptions, _ =
         checker.GetProjectOptionsFromScript(
-            System.IO.Path.Combine(dir, "probe.fsx"),
+            Path.Combine(dir, "probe.fsx"),
             SourceText.ofString "",
             assumeDotNetFramework = false
         )
@@ -196,7 +197,7 @@ let parseAndCheckSecond (sourceA: string) (sourceB: string) : ParsedInput * ISou
 
     let options =
         { probeOptions with
-            ProjectFileName = System.IO.Path.Combine(dir, "Second.fsproj")
+            ProjectFileName = Path.Combine(dir, "Second.fsproj")
             SourceFiles = [| pathA; pathB |] }
 
     let sourceTextB = SourceText.ofString sourceB
@@ -216,17 +217,17 @@ let parseAndCheckSecond (sourceA: string) (sourceB: string) : ParsedInput * ISou
 /// project's error messages.
 let parseAndCheckSigned (signature: string) (implementation: string) =
     let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
+        Path.Combine(Path.GetTempPath(), "fsref-tests", System.Guid.NewGuid().ToString "N")
 
-    System.IO.Directory.CreateDirectory dir |> ignore
-    let pathSig = System.IO.Path.Combine(dir, "M.fsi")
-    let pathImpl = System.IO.Path.Combine(dir, "M.fs")
-    System.IO.File.WriteAllText(pathSig, signature)
-    System.IO.File.WriteAllText(pathImpl, implementation)
+    Directory.CreateDirectory dir |> ignore
+    let pathSig = Path.Combine(dir, "M.fsi")
+    let pathImpl = Path.Combine(dir, "M.fs")
+    File.WriteAllText(pathSig, signature)
+    File.WriteAllText(pathImpl, implementation)
 
     let probeOptions, _ =
         checker.GetProjectOptionsFromScript(
-            System.IO.Path.Combine(dir, "probe.fsx"),
+            Path.Combine(dir, "probe.fsx"),
             SourceText.ofString "",
             assumeDotNetFramework = false
         )
@@ -234,7 +235,7 @@ let parseAndCheckSigned (signature: string) (implementation: string) =
 
     let options =
         { probeOptions with
-            ProjectFileName = System.IO.Path.Combine(dir, "Signed.fsproj")
+            ProjectFileName = Path.Combine(dir, "Signed.fsproj")
             SourceFiles = [| pathSig; pathImpl |] }
 
     let projectErrors (results: FSharpCheckProjectResults) =
@@ -254,10 +255,10 @@ let parseAndCheckSigned (signature: string) (implementation: string) =
     let check =
         match answer with
         | FSharpCheckFileAnswer.Succeeded c -> c
-        | FSharpCheckFileAnswer.Aborted -> failwith "signed typecheck aborted"
+        | FSharpCheckFileAnswer.Aborted -> failwith $"signed typecheck aborted, calling parseAndCheckSigned with signature: {signature}, implementation: {implementation}"
 
     let recheck (patched: string) =
-        System.IO.File.WriteAllText(pathImpl, patched)
+        File.WriteAllText(pathImpl, patched)
 
         checker.ParseAndCheckProject { options with Stamp = Some 1L }
         |> Async.RunSynchronously

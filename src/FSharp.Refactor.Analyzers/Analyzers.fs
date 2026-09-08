@@ -539,7 +539,7 @@ let private catchLogMessages
         // MEL and Serilog, an addExn stage for a Logary pipeline
         let insert (exception': string) =
             match s.Family with
-            | "Logary" when exception'.Contains "." -> $" |> Message.addExn ({exception'})"
+            | "Logary" when exception'.Contains '.' -> $" |> Message.addExn ({exception'})"
             | "Logary" -> $" |> Message.addExn {exception'}"
             | _ -> $"{exception'}, "
 
@@ -3032,7 +3032,7 @@ let private argNamesMessages (offerRename: bool) (parseTree: ParsedInput) (sourc
         // offers it; with several the author picks
         let fixes =
             match s.ParameterNames with
-            | [ only ] when offerRename -> [ fix s.Range (Text.textOfRange source s.Range) ("\"" + only + "\"") ]
+            | [ only ] when offerRename -> [ fix s.Range (Text.textOfRange source s.Range) ($"\"{only}\"") ]
             | _ -> []
 
         hint
@@ -4247,7 +4247,7 @@ let private useBindingMessages (parseTree: ParsedInput) (source: ISourceText) ch
 
             hint
                 "FR0075"
-                $"'%s{s.Name}' is a locally constructed disposable that nothing here disposes; {escape}, so decide the owner — 'use' here if the value only gets borrowed, or disposal at the destination.%s{context}"
+                $"'%s{s.Name}' is a locally constructed disposable that nothing here disposes; %s{escape}, so decide the owner — 'use' here if the value only gets borrowed, or disposal at the destination.%s{context}"
                 s.Range
                 []
             |> weigh)

@@ -155,7 +155,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 // `| Some tok , nstate ->` was left by a space before the comma
                 let separates (c: char option) =
                     c
-                    |> Option.exists (fun c -> not (Char.IsWhiteSpace c) && not (",;)]}".Contains c))
+                    |> Option.exists (fun c -> not (Char.IsWhiteSpace c || ",;)]}".Contains c))
 
                 let lead = if separates charBefore then " " else ""
                 let trail = if separates charAfter then " " else ""

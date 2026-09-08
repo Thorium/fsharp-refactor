@@ -28,6 +28,7 @@ open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
 open FSharp.Analyzers.SDK.ASTCollecting
 open FSharp.Refactor.Text
+open System.Collections.Generic
 
 /// A single text edit: range, original text, replacement text.
 type Edit =
@@ -127,7 +128,7 @@ let private findCandidates (parseTree: ParsedInput) : Candidate list =
 /// is marked unsafe: currying it would lose the atomic grouping.
 let private collectApplications (parseTree: ParsedInput) =
     let apps =
-        System.Collections.Generic.Dictionary<int * int, SynExpr * SynExpr * bool>()
+        Dictionary<int * int, SynExpr * SynExpr * bool>()
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -156,7 +157,7 @@ let private collectApplications (parseTree: ParsedInput) =
 /// a scan over every application in the file.
 let private callEdit
     (source: ISourceText)
-    (apps: System.Collections.Generic.Dictionary<int * int, SynExpr * SynExpr * bool>)
+    (apps: Dictionary<int * int, SynExpr * SynExpr * bool>)
     (arity: int)
     (useRange: range)
     : Edit option =
@@ -215,9 +216,9 @@ let findApiChanges
         | candidates ->
             // per-file application indexes, built lazily as uses arrive
             let appsByFile =
-                System.Collections.Generic.Dictionary<
+                Dictionary<
                     string,
-                    (System.Collections.Generic.Dictionary<int * int, SynExpr * SynExpr * bool> * ISourceText) option
+                    (Dictionary<int * int, SynExpr * SynExpr * bool> * ISourceText) option
                  >()
 
             let appsFor (fileName: string) =

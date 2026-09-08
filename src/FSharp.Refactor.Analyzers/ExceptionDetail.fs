@@ -72,6 +72,7 @@ let private carriers =
            "A WebException's .Message never carries the server's error body - that is only in Response.GetResponseStream(). Read it with a StreamReader inside the handler, guarded by a Response null check, which is how the idiomatic handler spells it.") ]
 
 /// `:? T as name` - the type tested for, and the name it binds.
+[<TailCall>]
 let rec private typedHandler (p: SynPat) =
     match p with
     | SynPat.Paren(pat = inner) -> typedHandler inner
@@ -89,9 +90,9 @@ let private getTypesIdent (e: SynExpr) =
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when
             not ids.IsEmpty && (List.last ids).idText = "GetTypes"
             ->
-            Some(List.last ids)
-        | _ -> None
-    | _ -> None
+            ValueSome(List.last ids)
+        | _ -> ValueNone
+    | _ -> ValueNone
 
 /// `reraise()` or `raise e` - throwing away what already loaded.
 let private isRethrow (e: SynExpr) =
@@ -244,7 +245,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                           if
                                               typeId.idText = "ReflectionTypeLoadException"
                                               && (match getTypesIdent (stripParens tried) with
-                                                  | Some id ->
+                                                  | ValueSome id ->
                                                       // Assembly.GetTypes, not a
                                                       // user method of that name:
                                                       // the fix only typechecks
@@ -252,7 +253,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                       // Type[]
                                                       (entityMemberOwner id)
                                                           .StartsWith "System.Reflection.Assembly"
-                                                  | None -> false)
+                                                  | ValueNone -> false)
                                           then
                                               index.Exprs
                                               |> Array.tryPick (fun (_, inner) ->

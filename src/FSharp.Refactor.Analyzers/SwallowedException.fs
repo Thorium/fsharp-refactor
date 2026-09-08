@@ -208,9 +208,9 @@ let private parseCall (e: SynExpr) =
     | _ -> None
 
 let private ioSmell =
-    System.Text.RegularExpressions.Regex(
+    Regex(
         @"\b(File|Directory|Path|FileInfo|DirectoryInfo|FileStream|StreamReader|StreamWriter|BinaryReader|BinaryWriter)\b",
-        System.Text.RegularExpressions.RegexOptions.Compiled
+        RegexOptions.Compiled
     )
 
 /// The logging idiom this file already uses: the receiver of an MEL call
@@ -391,6 +391,24 @@ let private acknowledged (source: ISourceText) (clause: SynMatchClause) (result:
 
     commented clause.Range.StartLine || commented result.Range.EndLine
 
+/// A slot that IS a default: bare, or a union case wrapping one
+/// (`Completed None`).
+let private carriesDefault (e: SynExpr) =
+    match stripParens e with
+    | IsDefaultFallback _ -> true
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident case; argExpr = arg) when
+        case.idText.Length > 0 && System.Char.IsUpper case.idText.[0]
+        ->
+        isDefaultFallback (stripParens arg)
+    | _ -> false
+
+/// One slot of a tuple or record fallback: a default, or a name.
+let private isValueSlot (e: SynExpr) =
+    match stripParens e with
+    | SynExpr.Ident _
+    | SynExpr.LongIdent _ -> true
+    | other -> carriesDefault other
+
 /// A fallback that hands back a value in place of the failure: a default
 /// literal, a variable (`with _ -> path` returns the input as if the work
 /// had succeeded — fsi), or a tuple or record carrying a default in one of
@@ -406,23 +424,7 @@ let rec private isValueFallback (e: SynExpr) =
         values |> List.forall isValueSlot && values |> List.exists carriesDefault
     | _ -> false
 
-/// A slot that IS a default: bare, or a union case wrapping one
-/// (`Completed None`).
-and private carriesDefault (e: SynExpr) =
-    match stripParens e with
-    | IsDefaultFallback _ -> true
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident case; argExpr = arg) when
-        case.idText.Length > 0 && System.Char.IsUpper case.idText.[0]
-        ->
-        isDefaultFallback (stripParens arg)
-    | _ -> false
 
-/// One slot of a tuple or record fallback: a default, or a name.
-and private isValueSlot (e: SynExpr) =
-    match stripParens e with
-    | SynExpr.Ident _
-    | SynExpr.LongIdent _ -> true
-    | other -> carriesDefault other
 
 /// Teardown methods: a best-effort release whose failure the caller has
 /// nowhere to report.
@@ -557,6 +559,10 @@ let private continuationRaises (path: SyntaxNode list) (tryRange: range) =
         raises e2
     | _ -> false
 
+[<return: Struct>]
+let inline private (|IsValueFallback|_|) input =
+    if isValueFallback input then ValueSome input else ValueNone
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults option) : Suggestion list =
     let index = AstIndex.ofTree parseTree
     let idiom = lazy (logIdiomOf index source)
@@ -595,7 +601,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           // a tuple keeps its parentheses: `(istate, Completed None)`
                           | SynExpr.Tuple _ as body when isValueFallback body ->
                               Some(Some(textOfRange source result.Range))
-                          | body when isValueFallback body -> Some(Some(textOfRange source body.Range))
+                          | IsValueFallback body -> Some(Some(textOfRange source body.Range))
                           | _ -> None
 
                       match fallback with

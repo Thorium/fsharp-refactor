@@ -701,7 +701,7 @@ let ``FR0029: a loop body that re-awaits is not a tail and the note sits on the 
         Assert.Equal(TaskStateMachine.AdviceKind.ExtractTail 5, s.Kind)
 
         Assert.Equal(
-            source.Split('\n')
+            source.Split '\n'
             |> Array.findIndex (fun l -> l.Contains "let b = x1 + 1")
             |> (+) 1,
             s.Range.StartLine

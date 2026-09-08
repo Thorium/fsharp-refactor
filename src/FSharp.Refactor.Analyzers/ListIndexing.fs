@@ -79,6 +79,7 @@ let private isConstIndex (e: SynExpr) =
 /// table) never walks past the modulus, and a loop `for i in 0 .. 3` over
 /// the index never walks past its literal end. A bounded walk is a
 /// constant cost, not the quadratic the rule hunts.
+[<Literal>]
 let private smallBound = 64
 
 let private isSmallInt (e: SynExpr) =

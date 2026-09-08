@@ -284,7 +284,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       match targetType with
                       | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
                       | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)); typeArgs = args) when
-                          not ids.IsEmpty && not (args |> List.exists staticArgument)
+                          not (ids.IsEmpty || args |> List.exists staticArgument)
                           ->
                           Some(List.last ids)
                       | _ -> None

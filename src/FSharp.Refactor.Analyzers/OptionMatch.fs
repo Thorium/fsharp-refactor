@@ -240,7 +240,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       | None -> ()
                   | _ -> ()
               | SynExpr.IfThenElse(ifExpr = OptionTest(x, negated); thenExpr = t; elseExpr = els; trivia = trivia) when
-                  not trivia.IsElif && not (insideQuotedCode path)
+                  not (trivia.IsElif || insideQuotedCode path)
                   ->
                   let someArm, noneArm = if negated then els, Some t else Some t, els
 

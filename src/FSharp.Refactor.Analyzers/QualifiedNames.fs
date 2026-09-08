@@ -377,7 +377,7 @@ let find
                 familyOpens |> List.filter (fun (name, _) -> ordinal name < 0) |> List.tryLast
 
             let before =
-                familyOpens |> List.filter (fun (name, _) -> ordinal name > 0) |> List.tryHead
+                familyOpens |> List.tryFind (fun (name, _) -> ordinal name > 0)
 
             match after, before, List.tryLast opened, blocks.[block].InsertAt with
             | Some(_, r), _, _, _ ->
@@ -465,7 +465,7 @@ let find
                     e.MembersFunctionsAndValues
                     |> Seq.collect (fun v ->
                         // an active pattern displays as `(|Ident|_|)`
-                        let name = v.DisplayName.TrimStart('(').TrimEnd(')')
+                        let name = v.DisplayName.TrimStart('(').TrimEnd ')'
 
                         if name.StartsWith "|" then
                             name.Split '|' |> Array.filter (fun p -> p <> "" && p <> "_") |> Array.toList
@@ -529,7 +529,7 @@ let find
         let scopeNames (openedName: string) : Map<string, bool> =
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
-                    openedName + "|" + assemblyKey,
+                    $"{openedName}|{assemblyKey}",
                     fun _ ->
                         try
                             assemblies
@@ -556,11 +556,11 @@ let find
         // spells
         let moduleFullName (e: FSharpEntity) =
             match e.Namespace with
-            | Some p when p <> "" -> p + "." + e.DisplayName
+            | Some p when p <> "" -> $"{p}.{e.DisplayName}"
             | _ -> e.DisplayName
 
         let moduleNamed (ns: string) =
-            let key = "module:" + ns + "|" + assemblyKey
+            let key = $"module:{ns}|{assemblyKey}"
 
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
@@ -698,7 +698,7 @@ let find
 
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
-                    "abbreviations:" + ns + "|" + assemblyKey,
+                    $"abbreviations:{ns}|{assemblyKey}",
                     fun _ ->
                         try
                             assemblies

@@ -226,7 +226,7 @@ let ``run apply tool from env`` () : unit =
 
         let code =
             try
-                FSharp.Refactor.Tool.Program.main argv
+                Program.main argv
             finally
                 Console.SetOut oldOut
                 Console.SetError oldErr

@@ -58,7 +58,7 @@ let private lineOpensInsideCommentOrString (source: ISourceText) : bool[] =
             (match state with
              | Lex.BlockComment _
              | Lex.String -> true
-             | _ -> false)
+             | Lex.Code | Lex.LineComment -> false)
 
         let line = source.GetLineString i
         let n = line.Length

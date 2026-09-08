@@ -459,7 +459,7 @@ let find
                         |> List.exists (fun m ->
                             match m with
                             | SynMemberDefn.Member(memberDefn = SynBinding(expr = body)) ->
-                                (textOfRange source body.Range).Contains($"{fieldName}.Dispose")
+                                (textOfRange source body.Range).Contains $"{fieldName}.Dispose"
                             | _ -> false)
 
                     // the members' indentation and the last member's end:

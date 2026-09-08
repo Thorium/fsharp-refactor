@@ -124,7 +124,7 @@ let private argumentText (pieces: ArgumentPiece list) =
     match pieces with
     | [ Literal text ] -> "\"" + escape text + "\""
     | [ Hole expr ] ->
-        if System.Text.RegularExpressions.Regex.IsMatch(expr, @"^[A-Za-z_][\w'.]*$") then
+        if Regex.IsMatch(expr, @"^[A-Za-z_][\w'.]*$") then
             expr
         else
             $"({expr})"
@@ -137,7 +137,7 @@ let private argumentText (pieces: ArgumentPiece list) =
                 | Hole expr -> "{" + expr + "}")
             |> String.concat ""
 
-        "$\"" + body + "\""
+        $"$\"{body}\""
 
 /// Executables that take a COMMAND LINE by design — the string is the
 /// program, not its arguments — where an argument list would change
@@ -501,8 +501,8 @@ let find
                         parts
                         |> List.forall (fun p ->
                             match p with
-                            | SynInterpolatedStringPart.String(text, _) -> not (text.Contains "\"")
-                            | _ -> true)
+                            | SynInterpolatedStringPart.String(text, _) -> not (text.Contains '"')
+                            | SynInterpolatedStringPart.FillExpr _ -> true)
                         ->
                         argumentsOf source parts
                         |> Option.map (fun args ->
@@ -572,8 +572,8 @@ let find
                             parts
                             |> List.exists (fun p ->
                                 match p with
-                                | SynInterpolatedStringPart.String(text, _) -> text.Contains "\""
-                                | _ -> false)
+                                | SynInterpolatedStringPart.String(text, _) -> text.Contains '"'
+                                | SynInterpolatedStringPart.FillExpr _ -> false)
 
                         if isShell || (not known && quoted) then
                             None

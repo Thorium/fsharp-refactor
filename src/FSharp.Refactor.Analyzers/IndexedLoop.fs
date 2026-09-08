@@ -220,7 +220,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                 let element =
                     Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
-                    |> Seq.find (fun name -> not (taken name))
+                    |> Seq.find (taken >> not)
 
                 let headerRange =
                     Range.mkRange expr.Range.FileName expr.Range.Start enumExpr.Range.End

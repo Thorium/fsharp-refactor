@@ -100,7 +100,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       isInline = false
                       headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ fid ]); argPats = SynArgPats.Pats pats)
                       expr = body
-                      trivia = trivia) when not pats.IsEmpty && not (hasByrefParameter source pats) ->
+                      trivia = trivia) when not (pats.IsEmpty || hasByrefParameter source pats) ->
                       let namePattern = identifierPattern fid.idText
 
                       let mentionFree (r: range) =

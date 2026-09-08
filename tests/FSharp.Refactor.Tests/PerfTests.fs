@@ -67,68 +67,72 @@ let ``every analyzer stays fast on a large file`` () =
     // a dedicated checker: analyzers may read the typed tree
     let checker = FSharpChecker.Create(keepAssemblyContents = true)
 
-    let options, _ =
-        checker.GetProjectOptionsFromScript("Test.fsx", sourceText, assumeDotNetFramework = false)
-        |> Async.RunSynchronously
+    task {
+        let! options, _ =
+            checker.GetProjectOptionsFromScript("Test.fsx", sourceText, assumeDotNetFramework = false)
+             |> Async.StartImmediateAsTask
 
-    let projectResults = checker.ParseAndCheckProject options |> Async.RunSynchronously
+        let! projectResults = checker.ParseAndCheckProject options |> Async.StartImmediateAsTask
 
-    let parseResults, answer =
-        checker.ParseAndCheckFileInProject("Test.fsx", bigSource.GetHashCode(), sourceText, options)
-        |> Async.RunSynchronously
+        let! parseResults, answer =
+            checker.ParseAndCheckFileInProject("Test.fsx", bigSource.GetHashCode(), sourceText, options)
+             |> Async.StartImmediateAsTask
 
-    let checkResults =
-        match answer with
-        | FSharpCheckFileAnswer.Succeeded r -> r
-        | FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
+        let checkResults =
+            match answer with
+            | FSharpCheckFileAnswer.Succeeded r -> r
+            | FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
 
-    let context: CliContext =
-        { FileName = "Test.fsx"
-          SourceText = sourceText
-          ParseFileResults = parseResults
-          CheckFileResults = checkResults
-          TypedTree = checkResults.ImplementationFile
-          CheckProjectResults = projectResults
-          ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
-          AnalyzerIgnoreRanges = Map.empty }
+        let context: CliContext =
+            { FileName = "Test.fsx"
+              SourceText = sourceText
+              ParseFileResults = parseResults
+              CheckFileResults = checkResults
+              TypedTree = checkResults.ImplementationFile
+              CheckProjectResults = projectResults
+              ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
+              AnalyzerIgnoreRanges = Map.empty }
 
-    let analyzers =
-        [ for t in typeof<FSharp.Refactor.RedundantParens.Suggestion>.Assembly.GetTypes() do
-              for m in t.GetMethods(BindingFlags.Static ||| BindingFlags.Public) do
-                  if m.GetCustomAttributes(typeof<CliAnalyzerAttribute>, false).Length > 0 then
-                      m ]
+        let analyzers =
+            [ for t in typeof<FSharp.Refactor.RedundantParens.Suggestion>.Assembly.GetTypes() do
+                  for m in t.GetMethods(BindingFlags.Static ||| BindingFlags.Public) do
+                      if m.GetCustomAttributes(typeof<CliAnalyzerAttribute>, false).Length > 0 then
+                          m ]
 
-    let runOne (m: MethodInfo) =
-        m.Invoke(null, [| box context |]) :?> Async<Message list>
-        |> Async.RunSynchronously
+        let runOne (m: MethodInfo) =
+            m.Invoke(null, [| box context |]) :?> Async<Message list>
+            |> Async.RunSynchronously
 
-    // warmup: JIT + the shared AstIndex memoization
-    for m in analyzers do
-        runOne m |> ignore
+        // warmup: JIT + the shared AstIndex memoization
+        for m in analyzers do
+            runOne m |> ignore
 
-    let timings =
-        [ for m in analyzers do
-              let sw = Stopwatch.StartNew()
-              let messages = runOne m
-              sw.Stop()
-              m.Name, sw.Elapsed.TotalMilliseconds, messages.Length ]
-        |> List.sortByDescending (fun (_, ms, _) -> ms)
+        let timings =
+            [ for m in analyzers do
+                  let sw = Stopwatch.StartNew()
+                  let messages = runOne m
+                  sw.Stop()
+                  m.Name, sw.Elapsed.TotalMilliseconds, messages.Length ]
+            |> List.sortByDescending (fun (_, ms, _) -> ms)
 
-    let report =
-        [ yield $"lines: {sourceText.GetLineCount()}, analyzers: {analyzers.Length}"
-          for name, ms, hits in timings do
-              yield $"%-45s{name} %8.1f{ms} ms  %d{hits} hits" ]
-        |> String.concat "\n"
+        let report =
+            [ yield $"lines: {sourceText.GetLineCount()}, analyzers: {analyzers.Length}"
+              for name, ms, hits in timings do
+                  yield $"%-45s{name} %8.1f{ms} ms  %d{hits} hits" ]
+            |> String.concat "\n"
 
-    File.WriteAllText(Path.Combine(Path.GetTempPath(), "fsref-perf.txt"), report)
+        do! File.WriteAllTextAsync(Path.Combine(Path.GetTempPath(), "fsref-perf.txt"), report)
 
-    let slow = timings |> List.filter (fun (_, ms, _) -> ms > 2000.0)
+        let runTail () =
+            let slow = timings |> List.filter (fun (_, ms, _) -> ms > 2000.0)
 
-    Assert.True(
-        slow.IsEmpty,
-        "Pathologically slow analyzers:\n"
-        + String.concat "\n" (slow |> List.map (fun (n, ms, _) -> $"%s{n}: %.0f{ms} ms"))
-    )
+            Assert.True(
+                slow.IsEmpty,
+                "Pathologically slow analyzers:\n"
+                + String.concat "\n" (slow |> List.map (fun (n, ms, _) -> $"%s{n}: %.0f{ms} ms"))
+            )
+        runTail ()
+    } :> System.Threading.Tasks.Task
 
 // ---- FR0106 SubstringSpan ----
 

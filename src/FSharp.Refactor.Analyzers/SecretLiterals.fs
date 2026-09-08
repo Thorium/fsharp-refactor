@@ -76,12 +76,12 @@ let private isTestFixture (text: string) =
 
 let private providerOf (text: string) =
     if isTestFixture text then
-        None
+        ValueNone
     else
         match patterns |> List.tryFind (fun (_, rx) -> rx.IsMatch text) with
-        | Some(provider, _) -> Some provider
-        | None when connectionStringLeak text -> Some "connection-string password"
-        | None -> None
+        | Some(provider, _) -> ValueSome provider
+        | None when connectionStringLeak text -> ValueSome "connection-string password"
+        | None -> ValueNone
 
 let find (parseTree: ParsedInput) : Suggestion list =
     let index = AstIndex.ofTree parseTree
@@ -91,8 +91,8 @@ let find (parseTree: ParsedInput) : Suggestion list =
               match e with
               | SynExpr.Const(SynConst.String(text, _, _), r) ->
                   match providerOf text with
-                  | Some provider -> { Range = r; Provider = provider }
-                  | None -> ()
+                  | ValueSome provider -> { Range = r; Provider = provider }
+                  | ValueNone -> ()
               // the literal parts of an interpolated string: a key with a
               // hole in its middle is still a key
               | SynExpr.InterpolatedString(contents = parts) ->
@@ -100,9 +100,9 @@ let find (parseTree: ParsedInput) : Suggestion list =
                       match part with
                       | SynInterpolatedStringPart.String(text, r) ->
                           match providerOf text with
-                          | Some provider -> { Range = r; Provider = provider }
-                          | None -> ()
-                      | _ -> ()
+                          | ValueSome provider -> { Range = r; Provider = provider }
+                          | ValueNone -> ()
+                      | SynInterpolatedStringPart.FillExpr _ -> ()
               | _ -> () ]
 
     // type-provider static arguments: `SqlDataProvider<ConnectionString = "...">`
@@ -117,7 +117,7 @@ let find (parseTree: ParsedInput) : Suggestion list =
         [ for _, t in index.Types do
               for text, r in staticStrings t do
                   match providerOf text with
-                  | Some provider -> { Range = r; Provider = provider }
-                  | None -> () ]
+                  | ValueSome provider -> { Range = r; Provider = provider }
+                  | ValueNone -> () ]
 
     fromExprs @ fromTypes |> List.distinctBy (fun s -> s.Range)

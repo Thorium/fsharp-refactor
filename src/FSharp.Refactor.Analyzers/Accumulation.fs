@@ -298,7 +298,7 @@ let find
                                     // double-pipe form hands the tuple over first, so both
                                     // types are known inside the lambda; the mutable loop
                                     // it replaces knew them from `let mutable acc = init`
-                                    if body.Contains($"{acc.idText}.") then
+                                    if body.Contains $"{acc.idText}." then
                                         $"({atomicText source init}, {srcText}) ||> {m}.fold (fun {acc.idText} {patText} -> {body})"
                                     else
                                         $"{srcText} |> {m}.fold (fun {acc.idText} {patText} -> {body}) {atomicText source init}"

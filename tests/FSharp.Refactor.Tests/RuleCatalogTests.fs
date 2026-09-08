@@ -1,5 +1,6 @@
 module FSharp.Refactor.Tests.RuleCatalogTests
 
+open System.IO
 open System.Text.RegularExpressions
 open Xunit
 open FSharp.Refactor
@@ -8,8 +9,8 @@ open FSharp.Refactor
 /// rules, so it is the right thing to hold the catalog against.
 let private documentedCodes () =
     let readme =
-        System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md")
-        |> System.IO.File.ReadAllText
+        Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md")
+        |> File.ReadAllText
 
     Regex.Matches(readme, @"^\| (FR\d{4}) \|", RegexOptions.Multiline)
     |> Seq.map (fun m -> m.Groups.[1].Value)
@@ -66,8 +67,8 @@ let ``the README's kind summary matches the rules it lists`` () =
     // count and left the summary behind, which is exactly the drift this
     // catches
     let readme =
-        System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md")
-        |> System.IO.File.ReadAllText
+        Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md")
+        |> File.ReadAllText
 
     let actual =
         Regex.Matches(
@@ -96,8 +97,8 @@ let ``the README's kind summary matches the rules it lists`` () =
 // ---- Rules.md: the quick-reference table ----
 
 let private repoFile name =
-    System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", name)
-    |> System.IO.File.ReadAllText
+    Path.Combine(__SOURCE_DIRECTORY__, "..", "..", name)
+    |> File.ReadAllText
 
 /// The table's rows: code, category, enabled flag, api flag. An empty flag
 /// cell renders as a single space between its pipes.

@@ -267,5 +267,5 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         ConstantText = text
                         WidenFix = widen
                         CheckedFix = checkedFix }
-                  | _ -> ()
+                  | ValueNone -> ()
               | _ -> () ]

@@ -5,6 +5,7 @@ module FSharp.Refactor.Text
 
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
+open System.Text.RegularExpressions
 
 /// The exact source text covered by a range.
 let textOfRange (source: ISourceText) (r: range) : string =
@@ -222,7 +223,7 @@ let (|SingleIdent|_|) (e: SynExpr) =
 /// is not itself escaped (`%%`) — the shape a typed interpolation hole has
 /// in the literal part preceding its `{`.
 let endsWithFormatSpecifier (text: string) =
-    System.Text.RegularExpressions.Regex.IsMatch(text, @"%[-+0# ]*[0-9]*(\.[0-9]+)?[a-zA-Z]$")
+    Regex.IsMatch(text, @"%[-+0# ]*[0-9]*(\.[0-9]+)?[a-zA-Z]$")
     && (let idx = text.LastIndexOf '%'
         let mutable run = 0
         let mutable i = idx - 1
@@ -460,7 +461,7 @@ let opensNamespace (source: ISourceText) (ns: string) =
 /// `visit' exp` at all, which let a recursive reference slip past a
 /// membership check (caught adversarially on Linq.Expression.Optimizer).
 let identifierPattern (name: string) =
-    @"(?<![\w'])" + System.Text.RegularExpressions.Regex.Escape name + @"(?![\w'])"
+    @"(?<![\w'])" + Regex.Escape name + @"(?![\w'])"
 
 /// Every comment in a parse tree, as (range, text) — shared by the apply
 /// layer's comment guard and its editor-side twin.
@@ -525,9 +526,9 @@ let signatureMentions (fileName: string) (name: string) =
             System.IO.File.Exists signature
             && (let text = System.IO.File.ReadAllText signature
                 // whole-word: `Value` must not match `ValueKind`
-                let escaped = System.Text.RegularExpressions.Regex.Escape name
+                let escaped = Regex.Escape name
 
-                System.Text.RegularExpressions.Regex.IsMatch(text, $@"(?<![\w'`]){escaped}(?![\w'])"))
+                Regex.IsMatch(text, $@"(?<![\w'`]){escaped}(?![\w'])"))
     with _ -> // an unreadable signature is treated as declaring it; fsharpanalyzer: ignore-line FR0055
         true
 

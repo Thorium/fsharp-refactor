@@ -238,7 +238,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       if i = 0 then
                                           text
                                       elif leaf.Line > leaves.[i - 1].Line then
-                                          "\n" + indent + text
+                                          $"\n{indent}{text}"
                                       else
                                           "; " + text)
                                   |> String.concat ""

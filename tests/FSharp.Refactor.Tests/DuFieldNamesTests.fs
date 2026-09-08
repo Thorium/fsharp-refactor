@@ -4,6 +4,7 @@ module FSharp.Refactor.Tests.DuFieldNamesTests
 open Xunit
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
+open System.IO
 
 let private fieldNamesIn (source: string) =
     let tree, sourceText = parse source
@@ -110,19 +111,19 @@ let ``FR0022 stands down where a signature declares the case`` () =
     // alone gives "The names differ" and the project stops compiling
     // (found on fcs-fable's TipFormatter)
     let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-du-" + System.Guid.NewGuid().ToString "N")
+        Path.Combine(Path.GetTempPath(), "fsref-du-" + System.Guid.NewGuid().ToString "N")
 
-    System.IO.Directory.CreateDirectory dir |> ignore
+    Directory.CreateDirectory dir |> ignore
 
     try
         let source =
             "module internal M\n\ntype Shape =\n    | Box of int * int\n\nlet area s =\n    match s with\n    | Box(width, height) -> width * height\n"
 
-        let impl = System.IO.Path.Combine(dir, "M.fs")
-        System.IO.File.WriteAllText(impl, source)
+        let impl = Path.Combine(dir, "M.fs")
+        File.WriteAllText(impl, source)
 
-        System.IO.File.WriteAllText(
-            System.IO.Path.Combine(dir, "M.fsi"),
+        File.WriteAllText(
+            Path.Combine(dir, "M.fsi"),
             "module internal M\n\ntype Shape =\n    | Box of int * int\n\nval area: Shape -> int\n"
         )
 
@@ -130,9 +131,9 @@ let ``FR0022 stands down where a signature declares the case`` () =
         Assert.Empty(DuFieldNames.find false tree sourceText)
 
         // the same source with no signature beside it still qualifies
-        let lone = System.IO.Path.Combine(dir, "N.fs")
-        System.IO.File.WriteAllText(lone, source)
+        let lone = Path.Combine(dir, "N.fs")
+        File.WriteAllText(lone, source)
         let loneTree, loneText = parseNamed lone source
         Assert.NotEmpty(DuFieldNames.find false loneTree loneText)
     finally
-        System.IO.Directory.Delete(dir, true)
+        Directory.Delete(dir, true)

@@ -251,6 +251,44 @@ let private returnsUnit (check: FSharpCheckFileResults) (source: ISourceText) (i
 /// One edit inside the body: (range, replacement).
 type private Edit = range * string
 
+/// A statement position: a discarded blocking call becomes `let! _ =`, a
+/// unit-typed one `do!`. In FINAL position the blocking result IS the
+/// test's result: `do!` when the test returns unit, otherwise there is no
+/// bind shape and the rewrite stops.
+let private statementEdit
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (bodyIsUnit: bool)
+    (e: SynExpr)
+    (isLast: bool)
+    =
+    // a prefix in front of the expression moves its first line right; its
+    // continuation lines — a pipe opening a new line at the statement's own
+    // column — must follow, or the operator lands offside (Fuuga)
+    let prefixed (prefix: string) (text: string) =
+        prefix + text.Replace("\n", "\n" + String(' ', prefix.Length))
+
+    match e with
+    | Ignored inner ->
+        match blockingOf check source inner with
+        // a discarded result the typed tree proves unit is a `do!`; any
+        // other stays `let! _ =` — no `Async.Ignore` to read past
+        | Some b when b.NoBind -> Some [ (b.Site, b.Awaitable) ]
+        | Some b when b.UnitResult -> Some [ (e.Range, prefixed "do! " b.DoText) ]
+        // a block cannot end on a bind: a final discarded site gets the
+        // `()` the `ignore` used to supply, at the statement's own column
+        | Some b when isLast ->
+            Some [ (e.Range, prefixed "let! _ = " b.Awaitable + $"\n{String(' ', e.Range.StartColumn)}()") ]
+        | Some b -> Some [ (e.Range, prefixed "let! _ = " b.Awaitable) ]
+        | None -> Some []
+    | _ ->
+        match blockingOf check source e with
+        | Some b when b.NoBind -> Some [ (b.Site, b.Awaitable) ]
+        | Some b when b.UnitResult || (isLast && bodyIsUnit) -> Some [ (e.Range, prefixed "do! " b.DoText) ]
+        | Some _ when isLast -> None
+        | Some b -> Some [ (e.Range, prefixed "let! _ = " b.Awaitable) ]
+        | None -> Some []
+
 /// Walk the body's statement spine collecting the edits that turn each
 /// blocking statement into a bind. None when a blocking site sits where a
 /// bind cannot go (a final expression whose result is not unit).
@@ -309,43 +347,7 @@ let rec private spineEdits
         | None -> Some []
     | last -> statementEdit last true
 
-/// A statement position: a discarded blocking call becomes `let! _ =`, a
-/// unit-typed one `do!`. In FINAL position the blocking result IS the
-/// test's result: `do!` when the test returns unit, otherwise there is no
-/// bind shape and the rewrite stops.
-and private statementEdit
-    (check: FSharpCheckFileResults)
-    (source: ISourceText)
-    (bodyIsUnit: bool)
-    (e: SynExpr)
-    (isLast: bool)
-    =
-    // a prefix in front of the expression moves its first line right; its
-    // continuation lines — a pipe opening a new line at the statement's own
-    // column — must follow, or the operator lands offside (Fuuga)
-    let prefixed (prefix: string) (text: string) =
-        prefix + text.Replace("\n", "\n" + String(' ', prefix.Length))
 
-    match e with
-    | Ignored inner ->
-        match blockingOf check source inner with
-        // a discarded result the typed tree proves unit is a `do!`; any
-        // other stays `let! _ =` — no `Async.Ignore` to read past
-        | Some b when b.NoBind -> Some [ (b.Site, b.Awaitable) ]
-        | Some b when b.UnitResult -> Some [ (e.Range, prefixed "do! " b.DoText) ]
-        // a block cannot end on a bind: a final discarded site gets the
-        // `()` the `ignore` used to supply, at the statement's own column
-        | Some b when isLast ->
-            Some [ (e.Range, prefixed "let! _ = " b.Awaitable + $"\n{String(' ', e.Range.StartColumn)}()") ]
-        | Some b -> Some [ (e.Range, prefixed "let! _ = " b.Awaitable) ]
-        | None -> Some []
-    | _ ->
-        match blockingOf check source e with
-        | Some b when b.NoBind -> Some [ (b.Site, b.Awaitable) ]
-        | Some b when b.UnitResult || (isLast && bodyIsUnit) -> Some [ (e.Range, prefixed "do! " b.DoText) ]
-        | Some _ when isLast -> None
-        | Some b -> Some [ (e.Range, prefixed "let! _ = " b.Awaitable) ]
-        | None -> Some []
 
 /// A body holding a lock or a thread-bound handle across the work: after
 /// a bind the rest may run on another thread, and `Monitor.Exit` or
@@ -543,7 +545,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                                   yield
                                       suggestion
-                                          ((wrapBody source bodyRange edits).Substring(body.Range.StartColumn))
+                                          ((wrapBody source bodyRange edits).Substring body.Range.StartColumn)
                                           sites
                               | _ -> ()
                   | None -> ()

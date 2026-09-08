@@ -164,10 +164,11 @@ let dotMember (source: ISourceText) (e: SynExpr) =
     | _ -> None
 
 /// `recv.M()` — a member call with a unit argument, in either shape.
+[<return: Struct>]
 let (|UnitCall|_|) (e: SynExpr) =
     match e with
-    | SynExpr.App(isInfix = false; funcExpr = f; argExpr = SynExpr.Const(SynConst.Unit, _)) -> Some f
-    | _ -> None
+    | SynExpr.App(isInfix = false; funcExpr = f; argExpr = SynExpr.Const(SynConst.Unit, _)) -> ValueSome f
+    | _ -> ValueNone
 
 /// A blocking expression and the awaitable to bind instead.
 type Blocking =
@@ -194,10 +195,11 @@ type Blocking =
         NoBind: bool
     }
 
+[<return: Struct>]
 let (|AsyncModule|_|) (e: SynExpr) =
     match e with
-    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when m.idText = "Async" -> Some f
-    | _ -> None
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when m.idText = "Async" -> ValueSome f
+    | _ -> ValueNone
 
 let private blocking site awaitable =
     { Site = site
@@ -209,11 +211,12 @@ let private blocking site awaitable =
       NoBind = false }
 
 /// `<blocking> |> ignore` — the result was thrown away.
+[<return: Struct>]
 let (|Ignored|_|) (e: SynExpr) =
     match stripParens e with
-    | PipeApp(inner, SynExpr.Ident id) when id.idText = "ignore" -> Some inner
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = inner) when id.idText = "ignore" -> Some inner
-    | _ -> None
+    | PipeApp(inner, SynExpr.Ident id) when id.idText = "ignore" -> ValueSome inner
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = inner) when id.idText = "ignore" -> ValueSome inner
+    | _ -> ValueNone
 
 /// The text of `whole` with each (range, replacement) spliced in; the
 /// ranges lie inside `whole` and do not overlap.
@@ -222,7 +225,7 @@ let private splice (source: ISourceText) (whole: range) (edits: (range * string)
     let mutable at = whole.Start
 
     for r, replacement in edits |> List.sortBy (fun (r, _) -> r.StartLine, r.StartColumn) do
-        parts.Append(textOfRange source (Range.mkRange whole.FileName at r.Start)).Append(replacement)
+        parts.Append(textOfRange source (Range.mkRange whole.FileName at r.Start)).Append replacement
         |> ignore
 
         at <- r.End
@@ -267,7 +270,7 @@ let rec assertThrows (check: FSharpCheckFileResults) (source: ISourceText) (e: S
         | Some m when m.idText = "Throws" || m.idText = "ThrowsAny" || m.idText = "ThrowsException" ->
             let framework =
                 match declaringEntityName check source m with
-                | Some "Xunit.Assert" -> Some false
+                | Some "Xunit.Assert"
                 | Some "Microsoft.VisualStudio.TestTools.UnitTesting.Assert" -> Some false
                 | Some "NUnit.Framework.Assert" -> Some true
                 | _ -> None

@@ -32,7 +32,7 @@ type Reading =
     /// cross-file parser — so a fix that needs it cannot be completed.
     | Unreadable
     /// The signature's tree, with its own source for rendering edits.
-    | Read of ParsedInput * ISourceText
+    | Read of tree: ParsedInput * sigSource: ISourceText
 
 /// Read the signature beside an implementation file, if there is one.
 let read (implFile: string) =

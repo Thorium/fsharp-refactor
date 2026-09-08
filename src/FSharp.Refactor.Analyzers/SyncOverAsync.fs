@@ -712,7 +712,7 @@ let findWith
             | e ->
                 BlockingSites.receiverIdent e
                 |> Option.bind (BlockingSites.valueTypeOf check source)
-                |> Option.exists (fun t -> not (isTaskLike t))
+                |> Option.exists (isTaskLike >> not)
 
         [ for path, expr in index.Exprs do
               let blocking =

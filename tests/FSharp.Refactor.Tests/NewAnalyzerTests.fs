@@ -4,6 +4,7 @@ module FSharp.Refactor.Tests.NewAnalyzerTests
 open Xunit
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
+open System.IO
 
 // ---- FR0015 RegexUsage ----
 
@@ -307,20 +308,20 @@ let ``a shape-changing fix beside a signature file fires only on private declara
     // representation mismatch. Only private escapes the signature. The gate
     // is Visibility.isInScope, shared by FR0011, FR0016 and FR0134
     let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-sig-" + System.Guid.NewGuid().ToString "N")
+        Path.Combine(Path.GetTempPath(), "fsref-sig-" + System.Guid.NewGuid().ToString "N")
 
-    System.IO.Directory.CreateDirectory dir |> ignore
+    Directory.CreateDirectory dir |> ignore
 
     try
         let du name =
             $"module internal M\n\ntype {name} Shape =\n    | Box of side: int\n    | Ball of radius: int\n"
 
-        System.IO.File.WriteAllText(
-            System.IO.Path.Combine(dir, "M.fsi"),
+        File.WriteAllText(
+            Path.Combine(dir, "M.fsi"),
             "module internal M\n\ntype Shape =\n    | Box of side: int\n    | Ball of radius: int\n"
         )
 
-        let impl = System.IO.Path.Combine(dir, "M.fs")
+        let impl = Path.Combine(dir, "M.fs")
 
         // without the cross-file parser (an editor) the signature is
         // unreadable, and the internal fix is withheld; with it, the
@@ -333,11 +334,11 @@ let ``a shape-changing fix beside a signature file fires only on private declara
         Assert.NotEmpty(StructDu.find false privateTree privateText)
 
         // no signature beside it: internal is in scope as before
-        let lone = System.IO.Path.Combine(dir, "N.fs")
+        let lone = Path.Combine(dir, "N.fs")
         let loneTree, loneText = parseNamed lone (du "internal")
         Assert.NotEmpty(StructDu.find false loneTree loneText)
     finally
-        System.IO.Directory.Delete(dir, true)
+        Directory.Delete(dir, true)
 
 // ---- FR0017: ValueTask discarded, interface members ----
 

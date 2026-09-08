@@ -297,7 +297,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               { Range = r
                                 Problem = TemplateProblem.Interpolated
                                 LogMethod = eventId.idText }
-                          | SynExpr.Const(SynConst.String(text, _, _), r) when not filled.IsEmpty && not unreadable ->
+                          | SynExpr.Const(SynConst.String(text, _, _), r) when not (filled.IsEmpty || unreadable) ->
                               let names = placeholdersOf text
 
                               let missing =

@@ -4,7 +4,7 @@
        fsharp-refactorings-apply tool embed each other's behavior, so they
        release in lockstep. Bump HERE (and only here) before tagging. -->
   <PropertyGroup>
-    <Version>0.8.5</Version>
+    <Version>0.8.6</Version>
   </PropertyGroup>
 
 </Project>

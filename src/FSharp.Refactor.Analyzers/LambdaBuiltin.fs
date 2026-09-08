@@ -151,8 +151,8 @@ let private droppableParens (source: ISourceText) (path: SyntaxNode list) (lambd
             else
                 endLine.[pr.EndColumn]
 
-        if glued before || glued after then None else Some pr
-    | _ -> None
+        if glued before || glued after then ValueNone else ValueSome pr
+    | _ -> ValueNone
 
 /// Find lambdas that are just `id`, `fst` or `snd`.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
@@ -178,8 +178,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // the replacement is a bare identifier
                         let range =
                             match droppableParens source path expr with
-                            | Some parenRange -> parenRange
-                            | None -> expr.Range
+                            | ValueSome parenRange -> parenRange
+                            | ValueNone -> expr.Range
 
                         suggestions.Add
                             { Range = range

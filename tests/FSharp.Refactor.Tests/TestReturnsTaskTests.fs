@@ -304,9 +304,11 @@ let ``a static member test and a whole-body member are rewritten`` () =
 let private frameworks =
     "namespace Xunit\ntype FactAttribute() =\n    inherit System.Attribute()\n    member val Skip = \"\" with get, set\ntype TheoryAttribute() =\n    inherit System.Attribute()\ntype InlineDataAttribute(n: int) =\n    inherit System.Attribute()\nnamespace NUnit.Framework\ntype TestAttribute() =\n    inherit System.Attribute()\ntype TestCaseAttribute(n: int) =\n    inherit System.Attribute()\nnamespace Microsoft.VisualStudio.TestTools.UnitTesting\ntype TestClassAttribute() =\n    inherit System.Attribute()\ntype TestMethodAttribute() =\n    inherit System.Attribute()\nnamespace Tests\ntype R = { X: int }\nmodule Support =\n    let load () = async { return { X = 1 } }\n"
 
+[<Literal>]
 let private body =
     "\n        let res = load () |> Async.RunSynchronously\n        if res.X <> 1 then failwith \"wrong\""
 
+[<Literal>]
 let private expectedMember =
     "task {\n            let! res = load () |> Async.StartImmediateAsTask\n            if res.X <> 1 then failwith \"wrong\"\n        } :> System.Threading.Tasks.Task"
 

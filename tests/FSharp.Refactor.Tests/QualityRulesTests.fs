@@ -6,6 +6,7 @@ module FSharp.Refactor.Tests.QualityRulesTests
 open Xunit
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
+open System.IO
 
 // ---- FR0061 ArgNames ----
 
@@ -1640,7 +1641,7 @@ let ``an internal option field migrates across files`` () =
             // edits span both files
             let byFile =
                 edits
-                |> List.groupBy (fun (r, _, _) -> System.IO.Path.GetFileName r.FileName)
+                |> List.groupBy (fun (r, _, _) -> Path.GetFileName r.FileName)
                 |> Map.ofList
 
             Assert.True(byFile.ContainsKey "A.fs")
@@ -2469,27 +2470,27 @@ let ``FR0130 withholds where a signature declares the value and cannot be read``
     // (SignatureCoEditTests); without one, as in an editor, the fix for a
     // non-private value is withheld rather than offered half-done
     let dir =
-        System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fsref-fsi-" + System.Guid.NewGuid().ToString "N")
+        Path.Combine(Path.GetTempPath(), "fsref-fsi-" + System.Guid.NewGuid().ToString "N")
 
-    System.IO.Directory.CreateDirectory dir |> ignore
+    Directory.CreateDirectory dir |> ignore
 
     try
-        let impl = System.IO.Path.Combine(dir, "M.fs")
-        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "M.fsi"), "module M\n\nval internal version: string\n")
+        let impl = Path.Combine(dir, "M.fs")
+        File.WriteAllText(Path.Combine(dir, "M.fsi"), "module M\n\nval internal version: string\n")
         let source = "module M\n\nlet internal version = \"1.0\"\n"
-        System.IO.File.WriteAllText(impl, source)
+        File.WriteAllText(impl, source)
 
         ProjectSources.configure None
         let tree, sourceText = parseNamed impl source
         Assert.Empty(LiteralConst.find false tree sourceText)
 
         // ...and the same source without a signature beside it still qualifies
-        let lone = System.IO.Path.Combine(dir, "N.fs")
-        System.IO.File.WriteAllText(lone, source)
+        let lone = Path.Combine(dir, "N.fs")
+        File.WriteAllText(lone, source)
         let loneTree, loneText = parseNamed lone source
         Assert.NotEmpty(LiteralConst.find false loneTree loneText)
     finally
-        System.IO.Directory.Delete(dir, true)
+        Directory.Delete(dir, true)
 
 [<Fact>]
 let ``FR0070 keeps a record a class when its fields are read inside a quotation`` () =
@@ -2651,6 +2652,7 @@ let ``FR0146: a literal statement with no parameter marker is suspicious, a para
         Assert.Equal("CommandText", s.Sink)
     | other -> failwithf "Expected one unparametrized finding, got %A" other
 
+[<Literal>]
 let private logaryScaffold =
     "namespace Logary\nmodule Message =\n    let eventInfo (template: string) = template\n    let eventWarn (template: string) = template\n    let setField (name: string) (value: obj) (message: string) = ignore (name, value); message\nnamespace Test\nopen Logary\n"
 

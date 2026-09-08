@@ -134,7 +134,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               v.idText = loopVar.idText
                               ->
                               match rangeSource with
-                              | Some range -> Some($"{receiverText}.AddRange [| {range} |]")
+                              | Some range -> Some $"{receiverText}.AddRange [| {range} |]"
                               // argumentText parenthesises a non-atomic
                               // source exactly once (`acc.AddRange (List.rev
                               // xs)`) and never wraps one that is already

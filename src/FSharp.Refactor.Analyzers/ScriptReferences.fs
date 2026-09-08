@@ -148,7 +148,7 @@ let private candidates (isDirectory: bool) (scriptDir: string) (segments: string
                 Some(prefix, index, segment, tail)
 
     match firstMissing scriptDir 0 segments with
-    | None -> None
+    | None -> ValueNone
     | Some(parent, index, missing, tail) when Directory.Exists parent ->
         let siblings =
             try
@@ -187,8 +187,8 @@ let private candidates (isDirectory: bool) (scriptDir: string) (segments: string
                 |> List.map snd
             | None, None -> []
 
-        if ranked.IsEmpty then None else Some(index, ranked)
-    | Some _ -> None
+        if ranked.IsEmpty then ValueNone else ValueSome(index, ranked)
+    | Some _ -> ValueNone
 
 let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOptions: string seq) : Suggestion list =
     if not (script.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)) then
@@ -225,7 +225,7 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                       |> List.ofArray
 
                   match candidates isDirectory root segments sdkMajor with
-                  | Some(index, best :: others) ->
+                  | ValueSome(index, best :: others) ->
                       let original = textOfRange source d.ArgumentRange
                       let missing = List.item index segments
 

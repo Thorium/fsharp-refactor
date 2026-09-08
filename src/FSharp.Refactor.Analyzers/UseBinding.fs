@@ -279,9 +279,9 @@ let private constructsDisposable (check: FSharpCheckFileResults) (source: ISourc
 
 let private typeIdent (t: SynType) =
     match t with
-    | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
-    | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty -> Some(List.last ids)
-    | _ -> None
+    | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
+    | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty -> ValueSome(List.last ids)
+    | _ -> ValueNone
 
 /// Where a bare mention of the binder sends the value.
 type private Escape =
@@ -337,6 +337,7 @@ let private operatorName (op: SynExpr) =
 /// the identifier, whether it was spelled bare (a single segment, so a
 /// same-file binding of that name is the callee), and how many arguments
 /// the chain has already applied.
+[<TailCall>]
 let rec private chainHead (f: SynExpr) (applied: int) =
     match f with
     | SynExpr.App(isInfix = false; funcExpr = g) -> chainHead g (applied + 1)
@@ -417,9 +418,9 @@ let rec private classifyLoop
         classifyLoop check source holds mention true element rest
     | SyntaxNode.SynExpr(SynExpr.New(targetType = t)) :: _ ->
         match typeIdent t with
-        | Some id when constructsDisposable check source id -> Adopted
-        | Some id -> Handed(Some id.idText)
-        | None -> Handed None
+        | ValueSome id when constructsDisposable check source id -> Adopted
+        | ValueSome id -> Handed(Some id.idText)
+        | ValueNone -> Handed None
     // `x <- v`: a field, a module value, or a local
     | SyntaxNode.SynExpr(SynExpr.LongIdentSet(longDotId = SynLongIdent(id = [ target ]))) :: _ -> storedIn target
     | SyntaxNode.SynExpr(SynExpr.Set(targetExpr = SynExpr.Ident target; rhsExpr = v)) :: _ when

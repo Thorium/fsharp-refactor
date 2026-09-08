@@ -59,6 +59,7 @@ let private processWideRoots =
 /// The dotted names a publisher expression starts with: `System.AppDomain`
 /// of `System.AppDomain.CurrentDomain.ProcessExit`, `src` of
 /// `src.Fired`, `(x.Inner)` of `(x.Inner).Changed`.
+[<TailCall>]
 let rec private leadingIds (e: SynExpr) =
     match e with
     | SynExpr.Ident id -> [ id.idText ]
