@@ -70,13 +70,13 @@ let ``every analyzer stays fast on a large file`` () =
     task {
         let! options, _ =
             checker.GetProjectOptionsFromScript("Test.fsx", sourceText, assumeDotNetFramework = false)
-             |> Async.StartImmediateAsTask
+            |> Async.StartImmediateAsTask
 
         let! projectResults = checker.ParseAndCheckProject options |> Async.StartImmediateAsTask
 
         let! parseResults, answer =
             checker.ParseAndCheckFileInProject("Test.fsx", bigSource.GetHashCode(), sourceText, options)
-             |> Async.StartImmediateAsTask
+            |> Async.StartImmediateAsTask
 
         let checkResults =
             match answer with
@@ -131,8 +131,10 @@ let ``every analyzer stays fast on a large file`` () =
                 "Pathologically slow analyzers:\n"
                 + String.concat "\n" (slow |> List.map (fun (n, ms, _) -> $"%s{n}: %.0f{ms} ms"))
             )
+
         runTail ()
-    } :> System.Threading.Tasks.Task
+    }
+    :> System.Threading.Tasks.Task
 
 // ---- FR0106 SubstringSpan ----
 

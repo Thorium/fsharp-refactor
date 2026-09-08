@@ -187,7 +187,10 @@ let private candidates (isDirectory: bool) (scriptDir: string) (segments: string
                 |> List.map snd
             | None, None -> []
 
-        if ranked.IsEmpty then ValueNone else ValueSome(index, ranked)
+        if ranked.IsEmpty then
+            ValueNone
+        else
+            ValueSome(index, ranked)
     | Some _ -> ValueNone
 
 let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOptions: string seq) : Suggestion list =

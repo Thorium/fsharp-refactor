@@ -255,7 +255,9 @@ let parseAndCheckSigned (signature: string) (implementation: string) =
     let check =
         match answer with
         | FSharpCheckFileAnswer.Succeeded c -> c
-        | FSharpCheckFileAnswer.Aborted -> failwith $"signed typecheck aborted, calling parseAndCheckSigned with signature: {signature}, implementation: {implementation}"
+        | FSharpCheckFileAnswer.Aborted ->
+            failwith
+                $"signed typecheck aborted, calling parseAndCheckSigned with signature: {signature}, implementation: {implementation}"
 
     let recheck (patched: string) =
         File.WriteAllText(pathImpl, patched)

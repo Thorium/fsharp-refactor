@@ -350,11 +350,13 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
     for path, decl in index.Decls do
         match decl with
         | SynModuleDecl.Types(typeDefns = defns) ->
-            for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds; accessibility = typeAcc); typeRepr = repr) in defns do
+            for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds; accessibility = typeAcc); typeRepr = repr) in
+                defns do
                 match repr with
                 | SynTypeDefnRepr.Simple(
                     simpleRepr = SynTypeDefnSimpleRepr.Union(accessibility = reprAcc; unionCases = cases)) ->
-                    let confined = Visibility.isInScopeNamedPath allowApiChanges path [ typeAcc; reprAcc ] typeIds
+                    let confined =
+                        Visibility.isInScopeNamedPath allowApiChanges path [ typeAcc; reprAcc ] typeIds
 
                     for SynUnionCase(ident = SynIdent(ident = caseId); caseType = kind; range = caseRange) in cases do
                         caseNameCounts.[caseId.idText] <-

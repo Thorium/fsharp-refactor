@@ -127,8 +127,7 @@ let private findCandidates (parseTree: ParsedInput) : Candidate list =
 /// An application directly under a projection (`f(1, 2).Length`, `f(1, 2).[0]`)
 /// is marked unsafe: currying it would lose the atomic grouping.
 let private collectApplications (parseTree: ParsedInput) =
-    let apps =
-        Dictionary<int * int, SynExpr * SynExpr * bool>()
+    let apps = Dictionary<int * int, SynExpr * SynExpr * bool>()
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -216,10 +215,7 @@ let findApiChanges
         | candidates ->
             // per-file application indexes, built lazily as uses arrive
             let appsByFile =
-                Dictionary<
-                    string,
-                    (Dictionary<int * int, SynExpr * SynExpr * bool> * ISourceText) option
-                 >()
+                Dictionary<string, (Dictionary<int * int, SynExpr * SynExpr * bool> * ISourceText) option>()
 
             let appsFor (fileName: string) =
                 match appsByFile.TryGetValue fileName with

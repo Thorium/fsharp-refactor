@@ -108,7 +108,9 @@ type FrTagger(buffer: ITextBuffer, filePath: string) as this =
                 // per diagnostic: a diagnostic outside the window is rejected
                 // by integer comparison, without touching the snapshot at all.
                 let firstLine = snapshot.GetLineNumberFromPosition spans[0].Start.Position
-                let lastLine = snapshot.GetLineNumberFromPosition spans[spans.Count - 1].End.Position
+
+                let lastLine =
+                    snapshot.GetLineNumberFromPosition spans[spans.Count - 1].End.Position
 
                 let tags = ResizeArray<ITagSpan<IErrorTag>>()
 

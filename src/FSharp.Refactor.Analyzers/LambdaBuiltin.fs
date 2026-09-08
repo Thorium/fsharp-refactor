@@ -151,7 +151,10 @@ let private droppableParens (source: ISourceText) (path: SyntaxNode list) (lambd
             else
                 endLine.[pr.EndColumn]
 
-        if glued before || glued after then ValueNone else ValueSome pr
+        if glued before || glued after then
+            ValueNone
+        else
+            ValueSome pr
     | _ -> ValueNone
 
 /// Find lambdas that are just `id`, `fst` or `snd`.

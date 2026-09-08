@@ -189,6 +189,7 @@ let isInScopeNamedPath
         path
         accessibilities
         (ids |> List.tryLast |> Option.map (fun i -> i.idText) |> Option.defaultValue "")
+
 /// The gate for a rule that edits the signature IN STEP (see
 /// SignatureFile): the signature is no reason to stand down, because the
 /// rule carries it along, so only the visibility question remains.

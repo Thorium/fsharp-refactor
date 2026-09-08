@@ -76,9 +76,9 @@ let private carriers =
 let rec private typedHandler (p: SynPat) =
     match p with
     | SynPat.Paren(pat = inner) -> typedHandler inner
-    | SynPat.As(lhsPat = SynPat.IsInst(SynType.LongIdent(SynLongIdent(id = ids)), _)
-                rhsPat = SynPat.Named(ident = SynIdent(ident = bound))) when not ids.IsEmpty ->
-        ValueSome(List.last ids, bound)
+    | SynPat.As(
+        lhsPat = SynPat.IsInst(SynType.LongIdent(SynLongIdent(id = ids)), _)
+        rhsPat = SynPat.Named(ident = SynIdent(ident = bound))) when not ids.IsEmpty -> ValueSome(List.last ids, bound)
     | _ -> ValueNone
 
 /// `<something>.GetTypes()` - the call whose partial result is worth keeping.
@@ -87,9 +87,7 @@ let private getTypesIdent (e: SynExpr) =
     | SynExpr.App(isInfix = false; funcExpr = f) ->
         match f with
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when
-            not ids.IsEmpty && (List.last ids).idText = "GetTypes"
-            ->
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty && (List.last ids).idText = "GetTypes" ->
             ValueSome(List.last ids)
         | _ -> ValueNone
     | _ -> ValueNone
@@ -214,8 +212,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               // only a read that ENDS at .Message can be
                               // rewritten in place; a longer chain is reported
                               // and left alone
-                              let fixable =
-                                  reads |> Array.tryFind (fun (n, _, exact) -> n = "Message" && exact)
+                              let fixable = reads |> Array.tryFind (fun (n, _, exact) -> n = "Message" && exact)
 
                               match mentionsCarrier, thrownAway with
                               | false, Some(_, r, _) ->
@@ -251,8 +248,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                       // the fix only typechecks
                                                       // because the result is
                                                       // Type[]
-                                                      (entityMemberOwner id)
-                                                          .StartsWith "System.Reflection.Assembly"
+                                                      (entityMemberOwner id).StartsWith "System.Reflection.Assembly"
                                                   | ValueNone -> false)
                                           then
                                               index.Exprs
@@ -279,8 +275,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                       // not at all.
                                                       let endsTheLine =
                                                           try
-                                                              let line =
-                                                                  source.GetLineString(inner.Range.EndLine - 1)
+                                                              let line = source.GetLineString(inner.Range.EndLine - 1)
 
                                                               inner.Range.EndColumn >= line.Length
                                                               || System.String.IsNullOrWhiteSpace(

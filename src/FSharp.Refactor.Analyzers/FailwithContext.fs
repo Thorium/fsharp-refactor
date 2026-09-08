@@ -163,7 +163,8 @@ let rec private printsUsefully (depth: int) (t: FSharpType) =
             | Some("System.Int32" | "System.Int64" | "System.Int16" | "System.Byte" | "System.SByte")
             | Some("System.UInt32" | "System.UInt64" | "System.UInt16" | "System.IntPtr" | "System.UIntPtr")
             | Some("System.Double" | "System.Single" | "System.Decimal")
-            | Some("System.DateTime" | "System.DateTimeOffset" | "System.TimeSpan" | "System.DateOnly" | "System.TimeOnly") -> true
+            | Some("System.DateTime" | "System.DateTimeOffset" | "System.TimeSpan" | "System.DateOnly" | "System.TimeOnly") ->
+                true
             | Some fullName when
                 fullName.StartsWith "Microsoft.FSharp.Core.FSharpOption`"
                 || fullName.StartsWith "Microsoft.FSharp.Core.FSharpValueOption`"

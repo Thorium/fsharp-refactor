@@ -83,8 +83,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     match symbolUse.Symbol with
                     | :? FSharpMemberOrFunctionOrValue as m ->
                         let onConcurrentDictionary =
-                            (OptionModule.enclosingFullName m)
-                                .StartsWith "System.Collections.Concurrent.ConcurrentDictionary"
+                            (OptionModule.enclosingFullName m).StartsWith
+                                "System.Collections.Concurrent.ConcurrentDictionary"
 
                         if onConcurrentDictionary then
                             capturedFailureKind m.ReturnParameter.Type
@@ -110,6 +110,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                   not ids.IsEmpty && (List.last ids).idText = "GetOrAdd"
                   ->
                   match valueKind (List.last ids) with
-                  | Some kind -> yield { Range = (List.last ids).idRange; ValueKind = kind }
+                  | Some kind ->
+                      yield
+                          { Range = (List.last ids).idRange
+                            ValueKind = kind }
                   | None -> ()
               | _ -> () ]

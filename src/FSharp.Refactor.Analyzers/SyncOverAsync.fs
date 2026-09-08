@@ -248,8 +248,10 @@ let private taskRunOfRunSync (check: FSharpCheckFileResults) (source: ISourceTex
 
             match stripParens body with
             | RunSyncApplication comp -> ValueSome(comp, false)
-            | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = pipeOp; argExpr = inner)
-                          argExpr = SynExpr.Ident ign) when isPipeRight pipeOp && ign.idText = "ignore" ->
+            | SynExpr.App(
+                funcExpr = SynExpr.App(isInfix = true; funcExpr = pipeOp; argExpr = inner); argExpr = SynExpr.Ident ign) when
+                isPipeRight pipeOp && ign.idText = "ignore"
+                ->
                 match stripParens inner with
                 | RunSyncApplication comp -> ValueSome(comp, true)
                 | _ -> ValueNone

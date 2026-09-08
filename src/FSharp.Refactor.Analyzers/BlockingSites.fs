@@ -215,7 +215,8 @@ let private blocking site awaitable =
 let (|Ignored|_|) (e: SynExpr) =
     match stripParens e with
     | PipeApp(inner, SynExpr.Ident id) when id.idText = "ignore" -> ValueSome inner
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = inner) when id.idText = "ignore" -> ValueSome inner
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = inner) when id.idText = "ignore" ->
+        ValueSome inner
     | _ -> ValueNone
 
 /// The text of `whole` with each (range, replacement) spliced in; the

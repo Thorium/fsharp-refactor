@@ -37,16 +37,22 @@ module internal Commands =
     module Ids =
         [<Literal>]
         let Run = 0x0100
+
         [<Literal>]
         let RunApiChanges = 0x0101
+
         [<Literal>]
         let Report = 0x0102
+
         [<Literal>]
         let CreateConfig = 0x0103
+
         [<Literal>]
         let ReviewNotes = 0x0104
+
         [<Literal>]
         let Status = 0x0105
+
         [<Literal>]
         let About = 0x0106
 
@@ -192,7 +198,9 @@ module internal Commands =
 
             try
                 let info =
-                    ProcessStartInfo(Tool, arguments,
+                    ProcessStartInfo(
+                        Tool,
+                        arguments,
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         RedirectStandardOutput = true,
@@ -230,11 +238,14 @@ module internal Commands =
     let private toolVersion () =
         try
             let info =
-                ProcessStartInfo(Tool, "--version",
+                ProcessStartInfo(
+                    Tool,
+                    "--version",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true
                 )
+
             use proc = Process.Start info
             let text = proc.StandardOutput.ReadToEnd()
             proc.WaitForExit()
@@ -255,6 +266,7 @@ module internal Commands =
             task {
                 do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
                 let! _ = ensurePane (package :> IAsyncServiceProvider) |> Async.StartAsTask
+
                 match! solutionFile (package :> IAsyncServiceProvider) |> Async.StartAsTask with
                 | None -> box' "FSharp.Refactor" "Open a solution first - the tool runs on a solution or a project."
                 | Some(dir, file) ->
@@ -267,15 +279,17 @@ module internal Commands =
                         showPane ()
                         saveDirtyDocuments ()
 
-                        do!
-                            (runTool arguments dir |> Async.StartAsTask) :> Task
+                        do! (runTool arguments dir |> Async.StartAsTask) :> Task
             }
             :> Task)
         |> ignore
 
     let runCommand (package: AsyncPackage) =
         onSolution package (fun file ->
-            match askApply "Run fsharp-refactor on this solution?\r\n\r\nIf this repository's fsharprefactor.json sets \"apiChanges\", the run rewrites the public surface and call sites too, exactly as the --api-changes command does." with
+            match
+                askApply
+                    "Run fsharp-refactor on this solution?\r\n\r\nIf this repository's fsharprefactor.json sets \"apiChanges\", the run rewrites the public surface and call sites too, exactly as the --api-changes command does."
+            with
             | ValueNone -> None
             | ValueSome true -> Some $"\"%s{file}\""
             | ValueSome false -> Some $"\"%s{file}\" --dry-run")
@@ -305,6 +319,7 @@ module internal Commands =
             task {
                 do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
                 let! _ = ensurePane (package :> IAsyncServiceProvider) |> Async.StartAsTask
+
                 match! solutionFile (package :> IAsyncServiceProvider) |> Async.StartAsTask with
                 | None -> box' "FSharp.Refactor" "Open a solution first."
                 | Some(dir, file) ->
@@ -312,7 +327,8 @@ module internal Commands =
                     showPane ()
 
                     let! code =
-                        runTool $"\"%s{file}\" --dry-run --notes only --report \"%s{out}\"" dir |> Async.StartAsTask
+                        runTool $"\"%s{file}\" --dry-run --notes only --report \"%s{out}\"" dir
+                        |> Async.StartAsTask
 
                     do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
 
@@ -337,6 +353,7 @@ module internal Commands =
             task {
                 do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
                 let! _ = ensurePane (package :> IAsyncServiceProvider) |> Async.StartAsTask
+
                 match! solutionFile (package :> IAsyncServiceProvider) |> Async.StartAsTask with
                 | None -> box' "FSharp.Refactor" "Open a solution first."
                 | Some(dir, _) ->
@@ -345,8 +362,7 @@ module internal Commands =
                     if not (File.Exists config) then
                         showPane ()
 
-                        let! _ =
-                            runTool $"--create-config \"%s{dir}\"" dir |> Async.StartAsTask
+                        let! _ = runTool $"--create-config \"%s{dir}\"" dir |> Async.StartAsTask
 
                         do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
 

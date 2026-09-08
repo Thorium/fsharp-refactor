@@ -154,8 +154,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 // punctuation that closes or separates needs no space either:
                 // `| Some tok , nstate ->` was left by a space before the comma
                 let separates (c: char option) =
-                    c
-                    |> Option.exists (fun c -> not (Char.IsWhiteSpace c || ",;)]}".Contains c))
+                    c |> Option.exists (fun c -> not (Char.IsWhiteSpace c || ",;)]}".Contains c))
 
                 let lead = if separates charBefore then " " else ""
                 let trail = if separates charAfter then " " else ""

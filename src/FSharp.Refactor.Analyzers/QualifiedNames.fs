@@ -376,8 +376,7 @@ let find
             let after =
                 familyOpens |> List.filter (fun (name, _) -> ordinal name < 0) |> List.tryLast
 
-            let before =
-                familyOpens |> List.tryFind (fun (name, _) -> ordinal name > 0)
+            let before = familyOpens |> List.tryFind (fun (name, _) -> ordinal name > 0)
 
             match after, before, List.tryLast opened, blocks.[block].InsertAt with
             | Some(_, r), _, _, _ ->

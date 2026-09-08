@@ -216,7 +216,8 @@ let find
                   | SynPat.Named(ident = SynIdent(ident = id); accessibility = patAcc)
                   | SynPat.LongIdent(
                       longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []; accessibility = patAcc) ->
-                      let confined = Visibility.isInScopeNamed allowApiChanges path [ bindingAcc; patAcc ] id.idText
+                      let confined =
+                          Visibility.isInScopeNamed allowApiChanges path [ bindingAcc; patAcc ] id.idText
 
                       yield id.idText, (id, decl.Range, rhs, confined)
                   | _ -> ()
