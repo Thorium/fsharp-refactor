@@ -895,4 +895,3 @@ let ``a use ahead of the branch still hoists - it stays CE code`` () =
     Assert.NotEmpty hoists
     let patched = applyEdits source hoists
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
-
