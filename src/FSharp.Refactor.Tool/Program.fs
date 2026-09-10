@@ -1207,6 +1207,34 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
             else
                 run $"msbuild \"{projectPath}\" -t:Build{tfmArg}"
 
+        // FS3511 is emitted at CODEGEN, so no analyzer can see it — but this
+        // build just did, and the warning carries the builder's own position
+        // ("SignalRHubs.fs(2583,16): warning FS3511: This state machine is not
+        // statically compilable"). Handing those lines to the analyzers lets
+        // FR0029's tail extraction fire where the fallback is REAL rather than
+        // wherever a size threshold guesses at one. Nothing here when the
+        // build compiled nothing because it was already up to date; the
+        // Rebuild below cleans, so the next run's build does compile.
+        let fallbackPattern =
+            Text.RegularExpressions.Regex(
+                @"^\s*(?<file>[^\r\n(]+)\((?<line>\d+),\d+\):\s*warning FS3511",
+                Text.RegularExpressions.RegexOptions.Multiline
+            )
+
+        for m in fallbackPattern.Matches($"{buildOut}\n{buildErr}") do
+            let file: string = m.Groups.["file"].Value.Trim()
+
+            match Int32.TryParse m.Groups.["line"].Value with
+            | true, line ->
+                let full =
+                    if Path.IsPathRooted file then
+                        file
+                    else
+                        Path.Combine(Path.GetDirectoryName(Path.GetFullPath projectPath), file)
+
+                Configuration.setDynamicFallbackSites [ full, line ]
+            | _ -> ()
+
         if buildExit <> 0 then
             // the raw MSBuild transcript buries the compile errors under
             // restore chatter and MSB warnings; show just the error lines

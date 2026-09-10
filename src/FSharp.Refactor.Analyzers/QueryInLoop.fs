@@ -95,6 +95,48 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     Range.rangeContainsRange r e.Range
                 | _ -> false)
 
+        // ...and the same when the chunking was BOUND first, which is how it
+        // is usually written:
+        //     let chunkedLoanIds = Array.chunkBySize 200 loanIdsAll
+        //     for loanIds in chunkedLoanIds do
+        // The outer loop's enumeration expression is then a bare identifier
+        // whose range holds no call at all (management-portal DomainShared.fs).
+        // Matching by NAME can suppress a note through shadowing, which is the
+        // safe direction for advice that has no fix.
+        let chunkedNames =
+            let named (SynBinding(headPat = pat; range = r) as binding) =
+                let range =
+                    try
+                        binding.RangeOfBindingWithRhs
+                    with _ -> // fsharpanalyzer: ignore-line FR0055
+                        r
+
+                match pat with
+                | SynPat.Named(ident = SynIdent(ident = id)) when mentionsChunking range -> Some id.idText
+                | _ -> None
+
+            Set.union
+                (index.Decls
+                 |> Array.collect (fun (_, d) ->
+                     match d with
+                     | SynModuleDecl.Let(bindings = bs) -> bs |> List.choose named |> Array.ofList
+                     | _ -> [||])
+                 |> Set.ofArray)
+                (index.Exprs
+                 |> Array.collect (fun (_, e) ->
+                     match e with
+                     | LetOrUseE lou -> lou.Bindings |> List.choose named |> Array.ofList
+                     | _ -> [||])
+                 |> Set.ofArray)
+
+        let enumeratesChunks (e: SynExpr) =
+            mentionsChunking e.Range
+            || (match e with
+                | SynExpr.Ident id -> chunkedNames.Contains id.idText
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    chunkedNames.Contains (List.last ids).idText
+                | _ -> false)
+
         [ for path, expr in index.Exprs do
               match expr with
               | SynExpr.ForEach(enumExpr = SourcePathLastIdent sourceId as enumExpr) ->
@@ -144,7 +186,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       outerLoops
                       |> List.exists (fun enum ->
                           match enum with
-                          | Some(outerEnum: SynExpr) -> mentionsChunking outerEnum.Range
+                          | Some(outerEnum: SynExpr) -> enumeratesChunks outerEnum
                           | None -> false)
 
                   // inside `query { }` a nested `for` is a JOIN the provider

@@ -25,6 +25,34 @@ let private assertRegexFix (source: string) (expectedReplacement: string) =
         | other -> failwithf "Expected exactly one edit, got %A" other
     | other -> failwithf "Expected exactly one regex suggestion, got %d: %A" (List.length other) other
 
+[<Fact>]
+let ``FR0015: a literal-pattern Regex.Replace becomes String.Replace`` () =
+    assertRegexFix
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.Replace(s, \"abcd\", \"x\")"
+        "s.Replace(\"abcd\", \"x\")"
+
+[<Fact>]
+let ``FR0015: Regex.Replace keeps the engine wherever the swap would differ`` () =
+    // each of these was MEASURED against String.Replace before being excluded:
+    //   "$&!"   Regex -> "xxabcd!yy"   String -> "xx$&!yy"
+    //   "a$$b"  Regex -> "xxa$byy"     String -> "xxa$$byy"
+    //   ""      Regex inserts between every char; String THROWS
+    let unchanged (body: string) =
+        let source =
+            "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = " + body
+
+        Assert.Empty(
+            regexIn source
+            |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.StringOperation)
+        )
+
+    unchanged "Regex.Replace(s, \"[a-z]+\", \"x\")" // a real pattern
+    unchanged "Regex.Replace(s, \"abcd\", \"$&!\")" // substitution syntax
+    unchanged "Regex.Replace(s, \"abcd\", \"a$$b\")" // $$ is one $ to Regex
+    unchanged "Regex.Replace(s, \"\", \"-\")" // String.Replace would throw
+    unchanged "Regex.Replace(s, \"^abcd\", \"x\")" // an anchor Replace cannot carry
+    unchanged "Regex.Replace(s, \"abcd\", \"x\", RegexOptions.IgnoreCase)" // different operation
+
 /// Apply a hoist suggestion's edits bottom-up and verify the patched text.
 let private assertRegexHoist (source: string) (expectedPatched: string) =
     match regexIn source with

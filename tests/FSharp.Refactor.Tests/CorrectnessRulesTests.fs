@@ -361,7 +361,7 @@ let ``FR0046: a lock in a nested module gets its lock object in that module, ind
 
 let private processSinksIn (source: string) =
     let tree, sourceText = parse source
-    let _, _, sinks = SecurityRules.find tree sourceText
+    let _, _, sinks = SecurityRules.find tree sourceText (fun _ -> false)
     sinks
 
 [<Fact>]

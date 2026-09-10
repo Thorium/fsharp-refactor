@@ -84,6 +84,11 @@ let private BangThreshold = 8
 [<Literal>]
 let private LineThreshold = 60
 
+/// Where the compiler WARNED, a shorter tail already earns the extraction:
+/// the cause is established, only the shed has to be worth making.
+[<Literal>]
+let private WarnedTailThreshold = 10
+
 let private isBangExpr (e: SynExpr) =
     match e with
     | LetOrUseE lou -> lou.IsBang
@@ -216,11 +221,24 @@ let private freshName (source: ISourceText) (baseName: string) =
     |> List.tryFind (fun candidate -> not (Regex.IsMatch(full, identifierPattern candidate)))
 
 /// Advice for tasks that provably (let rec) or plausibly (size) hit FS3511.
+///
 /// `tailLines`: how many non-awaiting lines after the last await earn the
-/// tail extraction. Configurable because the shed is a judgement call -
-/// four lines is a small win for a new function, ten is a clear one:
-///     { "FR0029": { "tailLines": 10 } }
-let find (parseTree: ParsedInput) (source: ISourceText) (tailLines: int) (hoistReturnOnAsync: bool) : Suggestion list =
+/// tail extraction WHEN THE COMPILER DID NOT WARN. `runTail` invents a name
+/// for code whose only sin was sitting after the last await, so on a task
+/// with no problem it is worth neither a fix nor a note - a bar set where
+/// the shape is genuinely unwieldy on its own:
+///     { "FR0029": { "tailLines": 40 } }
+///
+/// `dynamicFallbackLines` carries the lines FS3511 named, read off the build
+/// the apply tool already ran. A task the compiler warned about drops to
+/// `WarnedTailThreshold`, because there the extraction has a cause.
+let find
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (tailLines: int)
+    (hoistReturnOnAsync: bool)
+    (dynamicFallbackLines: Set<int>)
+    : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
     let containsBang (r: range) =
@@ -370,6 +388,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (tailLines: int) (hoistR
 
               let withhold (edits: (range * string) list) = if handTuned then [] else edits
 
+              // The tail extraction alone INVENTS something: a `runTail` that
+              // names no business idea, wrapping code whose only sin was
+              // sitting after the last await. What it buys is a smaller
+              // resumable body, and that is not a goal in itself - only
+              // FS3511 makes it one, the way a cyclomatic-complexity limit of
+              // 1 would make every codebase worse. So it advises by default
+              // and fixes only where a repository has decided it is worth it.
+              //
+              // Its two neighbours are not in the same position: hoisting
+              // plain lets and splitting branches move code that already
+              // existed, name nothing new, and leave the result open to
+              // extension - they stay fixes.
               // sub-ranges whose contents are not this task's resumable code
               let opaqueRanges =
                   index.Exprs
@@ -803,7 +833,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) (tailLines: int) (hoistR
                           | SynExpr.YieldOrReturn(flags = (false, true)) -> true
                           | _ -> false
 
-                      if tailLineCount >= tailLines && not tailIsSingleReturn then
+                      // The compiler ITSELF says when the fallback is real:
+                      // FS3511 carries the builder's own position, and the
+                      // apply tool builds before it rewrites, so that warning
+                      // can be read off the transcript. Where it names this
+                      // task the extraction has a cause and a short tail
+                      // already earns it; where it does not, only a tail
+                      // unwieldy on its own does. Below that bar the rule says
+                      // NOTHING - `runTail` invents a name for code whose only
+                      // sin was sitting after the last await, and telling
+                      // someone without a problem about it helps no one.
+                      let earnsExtraction =
+                          if dynamicFallbackLines.Contains fe.Range.StartLine then
+                              min tailLines WarnedTailThreshold
+                          else
+                              tailLines
+
+                      if tailLineCount >= earnsExtraction && not tailIsSingleReturn then
                           let tailEdits =
                               // a tail reached through a branch stays
                               // advice: the wrap is proven on the spine only
@@ -858,8 +904,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (tailLines: int) (hoistR
                                       | Some tr ->
                                           let i = tr.StartLine - tail.Range.StartLine
                                           let line = List.item i tailLines
+                                          let afterKeyword = line.Substring tr.StartColumn
 
-                                          if line.Substring(tr.StartColumn).StartsWith "return " then
+                                          if afterKeyword.StartsWith "return " then
                                               tailLines
                                               |> List.mapi (fun j l ->
                                                   if j = i then
@@ -867,6 +914,29 @@ let find (parseTree: ParsedInput) (source: ISourceText) (tailLines: int) (hoistR
                                                   else
                                                       l)
                                               |> Some
+                                          // `return` ALONE on its line, the value beneath
+                                          // it. Deleting the keyword would leave that value
+                                          // indented past the `let` it now follows ("the
+                                          // body of the expression must be indented to the
+                                          // same column"), so it comes back to the keyword's
+                                          // column. Without this the tail fell through to
+                                          // the task-returning variant and bought a second
+                                          // state machine for nothing (management-portal's
+                                          // APIs.fs)
+                                          elif afterKeyword.TrimEnd() = "return" then
+                                              let before = tailLines |> List.take i
+                                              let payload = tailLines |> List.skip (i + 1)
+
+                                              match payload |> List.tryFind (isBlank >> not) with
+                                              | Some first ->
+                                                  let delta = leadingSpaces first - tr.StartColumn
+
+                                                  if delta < 0 then
+                                                      None
+                                                  else
+                                                      dedentBy delta payload
+                                                      |> Option.map (fun dedented -> before @ dedented)
+                                              | None -> None
                                           else
                                               None
                                       | None -> Some tailLines

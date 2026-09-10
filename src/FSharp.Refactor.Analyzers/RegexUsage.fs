@@ -106,6 +106,37 @@ let private literalPattern (pattern: string) : (string * string) option =
         // culture-sensitivity question makes that a different rewrite — skip
         | true, true -> None
 
+/// A pattern that is PURE literal text - no metacharacters at all, anchors
+/// included. `literalPattern` above tolerates a leading `^` / trailing `$`
+/// because StartsWith/EndsWith carry that meaning; a plain string Replace
+/// carries none, so an anchored pattern is not the same operation.
+let private plainLiteral (pattern: string) : string option =
+    if
+        pattern.Length = 0
+        || pattern |> Seq.exists regexMetaChars.Contains
+        || pattern |> Seq.exists (fun c -> c = '"' || Char.IsControl c)
+    then
+        None
+    else
+        Some pattern
+
+/// A replacement string `String.Replace` would read differently from
+/// `Regex.Replace`, which treats `$` as SUBSTITUTION syntax:
+///
+///     Regex.Replace("xxabcdyy", "abcd", "$&!")  =  "xxabcd!yy"
+///     "xxabcdyy".Replace("abcd", "$&!")         =  "xx$&!yy"
+///
+/// measured, along with `$$` meaning a literal `$` to one and two characters
+/// to the other. Any `$` at all disqualifies the swap.
+let private plainReplacement (replacement: string) : string option =
+    if
+        replacement.Contains '$'
+        || replacement |> Seq.exists (fun c -> c = '"' || Char.IsControl c)
+    then
+        None
+    else
+        Some replacement
+
 /// An identifier-friendly name derived from the pattern text.
 let private nameFromPattern (pattern: string) =
     let letters =
@@ -163,6 +194,31 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                   Kind = RegexSuggestionKind.StringOperation
                                   Edits = [ expr.Range, textOfRange source expr.Range, replacement ] }
                         | None -> ()
+                    | _ -> ()
+
+                    // rule 1b: Replace(input, "literal", "literal") is a plain
+                    // string Replace - no engine, no pattern parse. Three
+                    // arguments only: a RegexOptions or MatchEvaluator
+                    // argument is a different operation entirely
+                    match methodName, args with
+                    | "Replace", [ input; StringLiteral pattern; StringLiteral replacement ] when
+                        isSingleLine input.Range
+                        ->
+                        match plainLiteral pattern, plainReplacement replacement with
+                        | Some literal, Some literalReplacement ->
+                            let text =
+                                sprintf
+                                    "%s.Replace(\"%s\", \"%s\")"
+                                    (argumentText source input)
+                                    literal
+                                    literalReplacement
+
+                            suggestions.Add
+                                { Range = expr.Range
+                                  OriginalText = textOfRange source expr.Range
+                                  Kind = RegexSuggestionKind.StringOperation
+                                  Edits = [ expr.Range, textOfRange source expr.Range, text ] }
+                        | _ -> ()
                     | _ -> ()
 
                     // rule 2: a static Regex call with a literal pattern inside

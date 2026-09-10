@@ -6,12 +6,12 @@ open FSharp.Refactor.Tests.Parsing
 
 let private adviceIn (source: string) =
     let tree, sourceText = parse source
-    TaskStateMachine.find tree sourceText 4 false
+    TaskStateMachine.find tree sourceText 4 false Set.empty
 
 /// The same, with the `hoistReturnOnAsync` knob turned on.
 let private adviceInAsyncOn (source: string) =
     let tree, sourceText = parse source
-    TaskStateMachine.find tree sourceText 4 true
+    TaskStateMachine.find tree sourceText 4 true Set.empty
 
 
 /// n `let! xi = Task.FromResult i` lines, enough to cross the size gate.
@@ -808,7 +808,7 @@ let ``the tail threshold is a parameter, not a constant`` () =
     let tree, sourceText = parse source
 
     let kindsAt threshold =
-        TaskStateMachine.find tree sourceText threshold false
+        TaskStateMachine.find tree sourceText threshold false Set.empty
         |> List.choose (fun s ->
             match s.Kind with
             | TaskStateMachine.AdviceKind.ExtractTail n -> Some n
@@ -895,3 +895,65 @@ let ``a use ahead of the branch still hoists - it stays CE code`` () =
     Assert.NotEmpty hoists
     let patched = applyEdits source hoists
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``a tail closing on a bare return extracts as a plain closure`` () =
+    // management-portal's APIs.fs: `return` alone on its line with the value
+    // beneath it. The strip only handled `return <value>` on ONE line, so this
+    // fell through to the task-returning variant and bought a second state
+    // machine for a tail that awaits nothing
+    let source =
+        "module Test\nlet f () =\n    task {\n"
+        + (awaits 8).Replace("    let!", "        let!")
+        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        let s4 = s3 + 4\n        return\n            s4,\n            s3\n    }"
+
+    let edits =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.ExtractTail _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty edits
+    let patched = applyEdits source edits
+    Assert.DoesNotContain("runTail () = task {", patched)
+    Assert.Contains("return runTail ()", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+
+[<Fact>]
+let ``the tail extraction is a quickfix or nothing, never a note`` () =
+    // `runTail` invents a name for code whose only sin was sitting after the
+    // last await. Telling someone WITHOUT a problem about it helps no one, so
+    // below the bar the rule says nothing at all; above it, it fixes. The
+    // compiler settles which bar applies: FS3511 names the task or it does not
+    let source =
+        "module Test\nlet f () =\n    task {\n"
+        + (awaits 8).Replace("    let!", "        let!")
+        + "\n"
+        + ([ for i in 1..12 -> $"        let s%d{i} = x1 + %d{i}" ] |> String.concat "\n")
+        + "\n        return s12\n    }"
+
+    let tree, sourceText = parse source
+
+    let tails threshold warnedLines =
+        TaskStateMachine.find tree sourceText threshold false warnedLines
+        |> List.choose (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.ExtractTail _ -> Some s.Edits
+            | _ -> None)
+
+    // the tail is twelve lines; a high bar and no warning means SILENCE, not a note
+    Assert.Empty(tails 40 Set.empty)
+
+    // the compiler warned about this task (`task {` is on line 3): it fixes
+    match tails 40 (Set.singleton 3) with
+    | [ edits ] -> Assert.NotEmpty edits
+    | other -> failwithf "Expected one tail fix, got %A" other
+
+    // a warning about a DIFFERENT task licenses nothing here
+    Assert.Empty(tails 40 (Set.singleton 99))
+
+    // and a repository that lowers the bar itself gets the fix, unwarned
+    match tails 4 Set.empty with
+    | [ edits ] -> Assert.NotEmpty edits
+    | other -> failwithf "Expected one tail fix, got %A" other

@@ -194,6 +194,66 @@ let private siblingUnionCases (entity: FSharpEntity) =
     with _ -> // fsharpanalyzer: ignore-line FR0055
         Set.empty
 
+/// A function or value declared BESIDE the type and spelled like it. The
+/// same-file check below cannot see one that lives in another file, and the
+/// two hazards differ sharply: a same-named function of an incompatible
+/// signature makes the bare form a TYPE ERROR, which the build check catches
+/// and puts back, while one that swallows any argument — generic, like
+/// `let Widget (_: 'a) = Widget(0, 0)` — typechecks and silently calls the
+/// function instead of the constructor. Nothing downstream sees that, so the
+/// name is refused here whatever the signature.
+let private siblingValues (entity: FSharpEntity) =
+    try
+        match entity.DeclaringEntity with
+        | Some parent ->
+            parent.MembersFunctionsAndValues
+            |> Seq.choose (fun value ->
+                try
+                    if value.IsConstructor then None else Some value.DisplayName
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    None)
+            |> Set.ofSeq
+        | None -> Set.empty
+    with _ -> // fsharpanalyzer: ignore-line FR0055
+        Set.empty
+
+/// Function and value names the file's `open` declarations bring into scope.
+///
+/// `siblingValues` sees only the module DECLARING the type; a same-named
+/// function in ANOTHER module, opened here, captures the bare name just as
+/// surely. `type Parse` in one module, `let Parse (_: 'a)` in a second, both
+/// opened: `new Parse()` builds the class, `Parse()` calls the function —
+/// measured, the tag went from "ctor" to "function", compiling cleanly at
+/// every step.
+///
+/// Only F# modules carry values, so opening a namespace contributes nothing
+/// and costs one lookup. Collected once per file, lazily.
+let private openedValueNames (signatures: Lazy<FSharpAssemblySignature list>) (index: AstIndex.Index) =
+    [ for _, decl in index.Decls do
+          match decl with
+          | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
+              let path = ids |> List.map (fun i -> i.idText)
+
+              for signature in signatures.Value do
+                  let entity =
+                      try
+                          signature.FindEntityByPath path
+                      with _ -> // fsharpanalyzer: ignore-line FR0055
+                          None
+
+                  match entity with
+                  | Some entity ->
+                      yield!
+                          (try
+                              entity.MembersFunctionsAndValues
+                              |> Seq.choose (fun v -> if v.IsConstructor then None else Some v.DisplayName)
+                              |> List.ofSeq
+                           with _ -> // fsharpanalyzer: ignore-line FR0055
+                               [])
+                  | None -> ()
+          | _ -> () ]
+    |> Set.ofList
+
 /// Values and functions this file binds by name, at any level: a `let`
 /// spelled like a type takes the bare name over the constructor.
 let private boundValueNames (index: AstIndex.Index) =
@@ -213,19 +273,60 @@ let private boundValueNames (index: AstIndex.Index) =
           | _ -> () ]
     |> Set.ofList
 
-/// Would the bare name mean something else — a union case, or a type of
-/// another arity — once `new` no longer forces the constructor path?
+/// Names FSharp.Core binds as CONVERSION FUNCTIONS in every scope, where a
+/// type abbreviation of the same name also lives. In expression position the
+/// function wins, and it takes ONE argument — so a multi-argument
+/// construction silently becomes the function applied to a TUPLE:
+///
+///     new string (output, index + 1, 12 - index)   →  "bcd"
+///         string (output, index + 1, 12 - index)   →  "(System.Char[], 1, 3)"
+///
+/// Both are `string`, so this typechecks and no build check can see it.
+/// management-portal's id generator was rewritten this way and every id it
+/// handed out became that literal; its uniqueness test failed. `new` is the
+/// only thing forcing the constructor. Written-case sensitive on purpose:
+/// `new String(...)` names the type, not the function, and still drops.
+let private conversionFunctions =
+    set
+        [ "string"
+          "decimal"
+          "nativeint"
+          "unativeint"
+          "int"
+          "int8"
+          "uint8"
+          "int16"
+          "uint16"
+          "int32"
+          "uint32"
+          "int64"
+          "uint64"
+          "byte"
+          "sbyte"
+          "char"
+          "float"
+          "float32"
+          "single"
+          "double"
+          "enum" ]
+
+/// Would the bare name mean something else — a conversion function, a union
+/// case, a value bound here, or a type of another arity — once `new` no
+/// longer forces the constructor path?
 let private bareNameCaptured
     (check: FSharpCheckFileResults)
     (source: ISourceText)
     (fileCases: Lazy<Set<string>>)
     (fileValues: Lazy<Set<string>>)
+    (openedValues: Lazy<Set<string>>)
     (signatures: Lazy<FSharpAssemblySignature list>)
     (memo: Dictionary<string, Set<string>>)
     (ident: Ident)
     =
-    fileCases.Value.Contains ident.idText
+    conversionFunctions.Contains ident.idText
+    || fileCases.Value.Contains ident.idText
     || fileValues.Value.Contains ident.idText
+    || openedValues.Value.Contains ident.idText
     || (let r = ident.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
@@ -247,6 +348,7 @@ let private bareNameCaptured
         match constructed with
         | Some entity ->
             (siblingUnionCases entity).Contains ident.idText
+            || (siblingValues entity).Contains ident.idText
             || hasSameNamedSibling signatures memo entity
         | None -> false)
 
@@ -263,6 +365,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let fileUnionCases = lazy (capturingUnionCases check)
         let fileValues = lazy (boundValueNames index)
         let signatures = lazy (assemblySignatures check)
+        let openedValues = lazy (openedValueNames signatures index)
         let ambiguousByNamespace = Dictionary<string, Set<string>>()
 
         [ for _, expr in index.Exprs do
@@ -298,6 +401,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               source
                               fileUnionCases
                               fileValues
+                              openedValues
                               signatures
                               ambiguousByNamespace
                               typeIdent

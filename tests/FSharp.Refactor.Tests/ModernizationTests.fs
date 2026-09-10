@@ -1696,6 +1696,62 @@ let ``FR0147: an open inside a nested module does not count for the file`` () =
 // ---- FR0085: a function spelled like the type keeps the `new` ----
 
 [<Fact>]
+let ``FR0085: a same-named function brought by open keeps new`` () =
+    // `type Parse` in one module, `let Parse (_: 'a)` in a second, both opened:
+    // `new Parse()` builds the class and `Parse()` calls the function. Measured
+    // on a running probe - the tag went from "ctor" to "function" - and it
+    // compiles either way, so nothing downstream would have caught it
+    let clashing =
+        "module Test\nmodule A =\n    type Parse(tag: string) =\n        new() = Parse \"ctor\"\n        member _.Tag = tag\nmodule B =\n    let Parse (_: 'a) = A.Parse \"function\"\nmodule C =\n    open A\n    open B\n    let make () = new Parse()"
+
+    let tree, sourceText, checkResults = parseAndCheck clashing
+    Assert.Empty(RedundantNew.find tree sourceText checkResults)
+
+    // the same file without B opened: nothing captures the name, `new` goes
+    let clean =
+        "module Test\nmodule A =\n    type Parse(tag: string) =\n        new() = Parse \"ctor\"\n        member _.Tag = tag\nmodule C =\n    open A\n    let make () = new Parse()"
+
+    let tree, sourceText, checkResults = parseAndCheck clean
+    Assert.Single(RedundantNew.find tree sourceText checkResults) |> ignore
+
+[<Fact>]
+let ``FR0085: a same-named function declared beside the type keeps new`` () =
+    // the same-file guard cannot see a function in ANOTHER file. Where its
+    // signature disagrees the bare form is a type error and the build check
+    // puts it back; where it is GENERIC it typechecks and quietly calls the
+    // function instead of the constructor, which nothing downstream catches
+    let generic =
+        "module Test\ntype Widget(a: int, b: int) =\n    member _.Sum = a + b\nlet Widget (_: 'a) = Widget(0, 0)\nlet make () = new Widget(1, 2)"
+
+    let tree, sourceText, checkResults = parseAndCheck generic
+    Assert.Empty(RedundantNew.find tree sourceText checkResults)
+
+    // no sibling of that name: the `new` still goes
+    let plain =
+        "module Test\ntype Widget(a: int, b: int) =\n    member _.Sum = a + b\nlet make () = new Widget(1, 2)"
+
+    let tree, sourceText, checkResults = parseAndCheck plain
+    Assert.Single(RedundantNew.find tree sourceText checkResults) |> ignore
+
+[<Fact>]
+let ``FR0085: new string keeps its new - the bare name is the conversion function`` () =
+    // management-portal's id generator. `string (chars, i, n)` is FSharp.Core's
+    // `string` applied to a TUPLE - it yields "(System.Char[], 1, 3)", typechecks
+    // as string either way, and every generated id became that literal
+    let lowercase =
+        "module Test\nlet take (output: char[]) (index: int) = new string (output, index + 1, 12 - index)"
+
+    let tree, sourceText, checkResults = parseAndCheck lowercase
+    Assert.Empty(RedundantNew.find tree sourceText checkResults)
+
+    // the TYPE spelling names no function, so it still drops
+    let uppercase =
+        "module Test\nlet take (output: char[]) (index: int) = new System.String (output, index + 1, 12 - index)"
+
+    let tree, sourceText, checkResults = parseAndCheck uppercase
+    Assert.Single(RedundantNew.find tree sourceText checkResults) |> ignore
+
+[<Fact>]
 let ``FR0085: a function bound with the type's name keeps new`` () =
     // TypeProviders SDK: `let SharedRow(elems) = new SharedRow(elems, hash)`;
     // without `new` the bare name is the function, called with the wrong arguments

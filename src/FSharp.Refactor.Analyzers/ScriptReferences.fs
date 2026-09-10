@@ -216,6 +216,15 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
         let scriptDir = Path.GetDirectoryName(Path.GetFullPath script)
         let sdkMajor = sdkMajorOf compilerOptions
 
+        // A net4x asset normally says the script runs on the .NET Framework
+        // fsi.exe, which resolves no package references - but a script ALREADY
+        // carrying a working `#r "nuget: ..."` has settled that question
+        // itself, whatever its assets target. management-portal Program.fsx
+        // references net45 and net472 dlls beside `nuget: FSharp.Data`
+        let packageRefsWork =
+            ScriptLoads.directives tree
+            |> List.exists (fun d -> d.Ident = "r" && d.Value.TrimStart().StartsWith "nuget:")
+
         [ for d in ScriptLoads.directives tree do
               let isDirectory =
                   match d.Ident with
@@ -350,7 +359,7 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                               | Some(NetFramework _) -> true
                               | _ -> false)
 
-                      if not isDirectory && not framework then
+                      if not isDirectory && (packageRefsWork || not framework) then
                           let full = segments |> List.fold (fun p s -> Path.Combine(p, s)) root
 
                           if not (exists isDirectory full) then

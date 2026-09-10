@@ -119,7 +119,7 @@ let ``FR0064: two arms raising the same reserved type are no table`` () =
 
 let private securityIn (source: string) =
     let tree, sourceText = parse source
-    SecurityRules.find tree sourceText
+    SecurityRules.find tree sourceText (fun _ -> false)
 
 [<Fact>]
 let ``MD5 Create is noted as weak`` () =
@@ -2149,7 +2149,7 @@ let ``the WebSocket handshake's SHA-1 is the protocol, not a choice`` () =
         parse
             "module Test\nopen System.Security.Cryptography\nlet magicGUID = \"258EAFA5-E914-47DA-95CA-C5AB0DC85B11\"\nlet sha1 (x: string) =\n    let algo = SHA1.Create()\n    algo.ComputeHash(System.Text.Encoding.ASCII.GetBytes x)"
 
-    let crypto, _, _ = SecurityRules.find tree sourceText
+    let crypto, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
     Assert.Empty crypto
 
     // without the GUID the same SHA1 is a choice
@@ -2157,7 +2157,7 @@ let ``the WebSocket handshake's SHA-1 is the protocol, not a choice`` () =
         parse
             "module Test\nopen System.Security.Cryptography\nlet sha1 (x: string) =\n    let algo = SHA1.Create()\n    algo.ComputeHash(System.Text.Encoding.ASCII.GetBytes x)"
 
-    let crypto2, _, _ = SecurityRules.find tree2 sourceText2
+    let crypto2, _, _ = SecurityRules.find tree2 sourceText2 (fun _ -> false)
     Assert.NotEmpty crypto2
 
 [<Fact>]
@@ -2168,7 +2168,7 @@ let ``SHA-1 in a match arm whose sibling constructs SHA-256 is a format option``
         parse
             "module Test\nopen System.Security.Cryptography\ntype Checksum =\n    | Sha1\n    | Sha256\nlet algorithm (c: Checksum) : HashAlgorithm =\n    match c with\n    | Sha1 -> SHA1.Create() :> HashAlgorithm\n    | Sha256 -> SHA256.Create() :> HashAlgorithm"
 
-    let crypto, _, _ = SecurityRules.find tree sourceText
+    let crypto, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
     Assert.Empty crypto
 
     // a match whose arms all pick weak hashes has no strong sibling
@@ -2176,7 +2176,7 @@ let ``SHA-1 in a match arm whose sibling constructs SHA-256 is a format option``
         parse
             "module Test\nopen System.Security.Cryptography\nlet algorithm (md5: bool) : HashAlgorithm =\n    match md5 with\n    | true -> MD5.Create() :> HashAlgorithm\n    | false -> SHA1.Create() :> HashAlgorithm"
 
-    let crypto2, _, _ = SecurityRules.find tree2 sourceText2
+    let crypto2, _, _ = SecurityRules.find tree2 sourceText2 (fun _ -> false)
     Assert.Equal(2, crypto2.Length)
 
 [<Fact>]
@@ -2185,7 +2185,7 @@ let ``the weak protocol constant swaps to Tls12`` () =
         parse
             "module Test\nopen System.Net\nlet setup () =\n    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls11"
 
-    let crypto, _, _ = SecurityRules.find tree sourceText
+    let crypto, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
 
     match crypto with
     | [ s ] ->
@@ -2434,7 +2434,7 @@ let ``a single return-bang arm is never wrapped`` () =
 
     let taskAdviceIn (src: string) =
         let tree, sourceText = parse src
-        TaskStateMachine.find tree sourceText 4 false
+        TaskStateMachine.find tree sourceText 4 false Set.empty
 
     let splits =
         taskAdviceIn source
@@ -3212,3 +3212,24 @@ let ``FR0151: the carry-on fix never targets a nested handler's rethrow`` () =
         | None -> ()
 
     ignore nestedStart
+
+[<Fact>]
+let ``FR0065: a protocol the framework marks obsolete is flagged beyond the curated list`` () =
+    // the framework marks its own inconsistently - SslProtocols.Tls11 carries
+    // [<Obsolete>], SecurityProtocolType.Tls11 does not, a decade on - so the
+    // curated list catches today and the attribute catches whatever a later
+    // .NET retires. Neither signal alone is enough
+    let tree, sourceText =
+        parse
+            "module Test\nlet f (p: System.Security.Authentication.SslProtocols) = p = System.Security.Authentication.SslProtocols.Tls13"
+
+    // nothing curated here, and nothing marked: silence
+    let quiet, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
+    Assert.Empty quiet
+
+    // the same call site once the framework HAS marked it
+    let flagged, _, _ = SecurityRules.find tree sourceText (fun _ -> true)
+
+    match flagged with
+    | [ s ] -> Assert.Equal(SecurityRules.WeakKind.Protocol "Tls13", s.Kind)
+    | other -> failwithf "Expected one protocol note, got %A" other

@@ -1837,11 +1837,16 @@ let queryInLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0029 TaskStateMachine ----
 
 let private taskStateMachineMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    // ten non-awaiting lines is a clear shed for a new function; four was a
-    // thin trade. Configurable per repository:
-    //     { "FR0029": { "tailLines": 4 } }
+    // How long a non-awaiting tail must be before `runTail` is offered on a
+    // task the compiler did NOT warn about. It invents a name for code whose
+    // only sin was sitting after the last await, so on a healthy task it is
+    // worth neither a fix nor a note: forty lines is a shape unwieldy enough
+    // to stand on its own, where ten was a state-machine-size argument that
+    // only FS3511 makes. A warned task drops to ten - there the cause is
+    // established. Configurable per repository:
+    //     { "FR0029": { "tailLines": 25 } }
     let tailLines =
-        Configuration.parameterInt fileName "FR0029" "TaskStateMachine" "tailLines" 10
+        Configuration.parameterInt fileName "FR0029" "TaskStateMachine" "tailLines" 40
 
     // `async { }` has no resumable state machine, so none of the FS3511
     // advice applies to it; only the return hoist does, and its payoff there
@@ -1853,7 +1858,11 @@ let private taskStateMachineMessages (fileName: string) (parseTree: ParsedInput)
     let hoistReturnOnAsync =
         Configuration.parameterBool fileName "FR0029" "TaskStateMachine" "hoistReturnOnAsync" false
 
-    TaskStateMachine.find parseTree source tailLines hoistReturnOnAsync
+    // the compiler's own verdict, read off the build the apply tool already
+    // ran; empty in the IDE, where nothing compiled
+    let dynamicFallbackLines = Configuration.dynamicFallbackLines fileName
+
+    TaskStateMachine.find parseTree source tailLines hoistReturnOnAsync dynamicFallbackLines
     |> List.map (fun s ->
         let message =
             match s.Kind with
@@ -3131,8 +3140,19 @@ let private securityRulesMessages
     (parseTree: ParsedInput)
     (source: ISourceText)
     (offerAlternatives: bool)
+    (checkResults: FSharpCheckFileResults option)
     : Message list =
     let cryptoEnabled = Configuration.isRuleEnabled fileName "FR0065" "WeakCrypto"
+
+    // Retiring Ssl3/Tls/Tls11 changes what the process will negotiate with a
+    // REMOTE endpoint - a wire-behaviour change, not an API one, so
+    // `--api-changes` is the wrong permission to borrow for it: that flag is
+    // about callers needing a recompile. A repository that knows no ancient
+    // endpoint depends on the legacy protocol says so itself:
+    //     { "FR0065": { "dropLegacyProtocols": true } }
+    let dropLegacyProtocols =
+        Configuration.parameterBool fileName "FR0065" "WeakCrypto" "dropLegacyProtocols" false
+
     let sqlEnabled = Configuration.isRuleEnabled fileName "FR0066" "SqlStrings"
 
     let unparametrizedEnabled =
@@ -3143,7 +3163,43 @@ let private securityRulesMessages
     if not (cryptoEnabled || sqlEnabled || unparametrizedEnabled || processEnabled) then
         []
     else
-        let crypto, sql, processSinks = SecurityRules.find parseTree source
+        // whatever the framework HAS marked, beside the curated list: an
+        // enum member carrying [<Obsolete>] is the runtime saying the same
+        // thing, and a later .NET retiring more needs no release from us
+        let isObsoleteProtocol (r: range) =
+            match checkResults with
+            | None -> false
+            | Some check ->
+                try
+                    let lineText = source.GetLineString(r.EndLine - 1)
+
+                    match
+                        check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ Text.textOfRange source r ])
+                    with
+                    | Some symbolUse ->
+                        let attributes =
+                            match symbolUse.Symbol with
+                            // an enum member carries its attributes as a FIELD,
+                            // not a property - reading only the latter found
+                            // nothing on a deliberately obsoleted case
+                            | :? FSharp.Compiler.Symbols.FSharpField as field ->
+                                Seq.toList field.FieldAttributes @ Seq.toList field.PropertyAttributes
+                            | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as value ->
+                                Seq.toList value.Attributes
+                            | _ -> []
+
+                        attributes
+                        |> List.exists (fun a ->
+                            try
+                                a.AttributeType.TryFullName = Some "System.ObsoleteAttribute"
+                            with _ -> // fsharpanalyzer: ignore-line FR0055
+                                false)
+                    | None -> false
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    false
+
+        let crypto, sql, processSinks =
+            SecurityRules.find parseTree source isObsoleteProtocol
 
         let processMessages =
             if processEnabled then
@@ -3191,16 +3247,57 @@ let private securityRulesMessages
                               "Alternative: switch to SHA512 (mind persisted hashes and interop — the output size changes)."
                               s.Range
                               [ fix algo weak "SHA512" ] ]
-                    // flags-OR is idempotent, so the swap is safe even in a
-                    // `Tls ||| Tls12` chain — but dropping a legacy protocol
-                    // can still surprise an ancient endpoint, so it stays an
-                    // editor action
-                    | SecurityRules.WeakKind.Protocol proto, Some ident when offerAlternatives ->
-                        [ hint
-                              "FR0065"
-                              $"Alternative: replace {proto} with Tls12 (mind endpoints that only speak the legacy protocol)."
-                              s.Range
-                              [ fix ident proto "Tls12" ] ]
+                    // Retiring a protocol changes what the process negotiates
+                    // with a remote endpoint, so the edit is made VISIBLE:
+                    // commenting the dead operand out leaves the diff saying
+                    // what was retired, where a deletion says only that
+                    // something changed. Two offers, because the note asks for
+                    // two different things - keep Tls12 and drop the rest, or
+                    // set nothing at all and let the OS negotiate
+                    | SecurityRules.WeakKind.Protocol proto, Some ident when offerAlternatives || dropLegacyProtocols ->
+                        let commentOperand =
+                            s.ObsoleteOperand
+                            |> Option.map (fun operand ->
+                                let original = Text.textOfRange source operand
+
+                                hint
+                                    "FR0065"
+                                    $"Alternative: comment {proto} out of the flags, keeping the protocols beside it."
+                                    s.Range
+                                    [ fix operand original $"(* {original} *)" ])
+
+                        let commentSetting =
+                            s.AssignmentRange
+                            |> Option.map (fun assignment ->
+                                let original = Text.textOfRange source assignment
+
+                                hint
+                                    "FR0065"
+                                    "Alternative: comment the whole setting out and let the framework default stand (the OS negotiates the strongest protocol both ends share)."
+                                    s.Range
+                                    [ fix assignment original $"(* {original} *)" ])
+
+                        let swap =
+                            hint
+                                "FR0065"
+                                $"Alternative: replace {proto} with Tls12 (mind endpoints that only speak the legacy protocol)."
+                                s.Range
+                                [ fix ident proto "Tls12" ]
+
+                        // the editor shows every way out and a person picks;
+                        // an unattended run has to CHOOSE, and the narrowest
+                        // edit wins on its own when three overlap - which is
+                        // the swap, leaving `Tls12 ||| Tls12`. Retiring the
+                        // operand says what happened and keeps the live
+                        // protocol, so that is the one a `dropLegacyProtocols`
+                        // run applies; the whole-setting and swap variants
+                        // stay a person's call
+                        if offerAlternatives then
+                            [ yield! Option.toList commentOperand
+                              yield! Option.toList commentSetting
+                              yield swap ]
+                        else
+                            [ defaultArg commentOperand swap ]
                     | _ -> [])
                 |> List.append (
                     crypto
@@ -3257,7 +3354,12 @@ let securityRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
         return
             DeepStack.run (fun () ->
-                securityRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText true)
+                securityRulesMessages
+                    ctx.FileName
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText
+                    true
+                    ctx.CheckFileResults)
     }
 
 [<CliAnalyzer("SecurityRules", "Weak crypto and string-built SQL", HelpBase)>]
@@ -3265,7 +3367,12 @@ let securityRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
         return
             DeepStack.run (fun () ->
-                securityRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText false)
+                securityRulesMessages
+                    ctx.FileName
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText
+                    false
+                    (Some ctx.CheckFileResults))
     }
 
 // ---- FR0125 UnicodeHygiene ----

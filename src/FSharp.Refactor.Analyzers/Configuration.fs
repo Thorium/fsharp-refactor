@@ -611,6 +611,38 @@ let parameterBool (analyzedFile: string) (code: string) (analyzerName: string) (
     parameterInt analyzedFile code analyzerName knob (if fallback then 1 else 0)
     <> 0
 
+/// `task { }` blocks the COMPILER said fell back to a dynamic state machine,
+/// as file path -> the lines its `task`/`backgroundTask` keywords sit on.
+///
+/// FS3511 is emitted at codegen, so no analyzer can see it — but the apply
+/// tool builds the project before it rewrites anything, and the warning
+/// carries the builder's own position ("R.fs(7,5): warning FS3511"). That
+/// makes it advice a rule can act on: the tail extraction invents a
+/// `runTail` that earns its keep only where the fallback is real, so it can
+/// wait to be told. An empty map (the IDE, or a build that compiled nothing
+/// because it was already up to date) simply means no site is known.
+let private dynamicFallback =
+    System.Collections.Concurrent.ConcurrentDictionary<string, Set<int>>(StringComparer.OrdinalIgnoreCase)
+
+let setDynamicFallbackSites (sites: (string * int) seq) =
+    for file, line in sites do
+        let key = System.IO.Path.GetFullPath file
+
+        dynamicFallback.AddOrUpdate(key, Set.singleton line, (fun _ existing -> existing.Add line))
+        |> ignore
+
+/// Lines in this file where the compiler reported FS3511.
+let dynamicFallbackLines (analyzedFile: string) : Set<int> =
+    let key =
+        try
+            System.IO.Path.GetFullPath analyzedFile
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            analyzedFile
+
+    match dynamicFallback.TryGetValue key with
+    | true, lines -> lines
+    | _ -> Set.empty
+
 /// The effective suppression-comment policy for a file:
 /// "all" | "no-correctness" | "none".
 let suppressionPolicy (analyzedFile: string) : string = (configFor analyzedFile).Suppressions

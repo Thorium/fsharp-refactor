@@ -485,15 +485,32 @@ the rule simply declines to merge past either limit:
 ```
 
 A few entries are on/off switches rather than thresholds, and read a JSON
-bool as happily as `1`. FR0029 takes `tailLines` (default 10), how many
-non-awaiting lines after the last await earn a tail extraction, and
-`hoistReturnOnAsync` (default false), which extends just the return hoist
-— not the FS3511 advice, which cannot apply — to `async { }`:
+bool as happily as `1`. FR0029 takes `tailLines` (default 40), how many
+non-awaiting lines after the last await earn a tail extraction on a task
+the compiler did NOT warn about — where FS3511 names the task, the apply
+tool reads that off the build and the extraction is offered regardless —
+and `hoistReturnOnAsync` (default false), which extends just the return
+hoist, not the FS3511 advice, to `async { }`:
 
 ```json
 {
   "rules": {
-    "FR0029": { "tailLines": 12, "hoistReturnOnAsync": true }
+    "FR0029": { "tailLines": 25, "hoistReturnOnAsync": true }
+  }
+}
+```
+
+FR0065 takes `dropLegacyProtocols` (default false). Retiring `Ssl3`/`Tls`/
+`Tls11` changes what the process negotiates with a remote endpoint, so it
+is an editor offer by default; setting this lets an unattended run comment
+the dead protocol out of the flags. `--api-changes` deliberately does not
+grant it — that flag is about callers needing a recompile, which is a
+different risk:
+
+```json
+{
+  "rules": {
+    "FR0065": { "dropLegacyProtocols": true }
   }
 }
 ```

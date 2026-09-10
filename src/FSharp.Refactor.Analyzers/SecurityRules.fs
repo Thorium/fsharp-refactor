@@ -44,6 +44,16 @@ type WeakCryptoSuggestion =
         Kind: WeakKind
         /// The algorithm identifier itself, when a swap fix can target it.
         AlgoRange: range option
+        /// The deprecated operand TOGETHER with the `|||` joining it to the
+        /// rest — `Tls12 ||| Tls11` yields the ` ||| Tls11` span. Commenting
+        /// that out retires the protocol while leaving the live one alone,
+        /// and leaves the diff saying what was retired. None when the
+        /// constant is not one operand of a flags-OR.
+        ObsoleteOperand: range option
+        /// The whole `X.SecurityProtocol <- ...` assignment, so the other
+        /// offer can comment the setting out entirely and let the framework
+        /// default (the OS negotiating the strongest protocol) stand.
+        AssignmentRange: range option
     }
 
 /// A dynamically built string reaching a process-execution sink — the
@@ -228,13 +238,23 @@ let private bindsName (name: string) (SynBinding(headPat = p)) =
     | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> id.idText = name
     | _ -> false
 
+/// Protocol constants known to be broken or deprecated on the wire. A
+/// CURATED list, because the framework marks its own inconsistently:
+/// `SslProtocols.Tls11` carries [<Obsolete>] while
+/// `SecurityProtocolType.Tls11` — the one real code actually sets — does not,
+/// a decade after TLS 1.1 was deprecated. `isObsoleteProtocol` adds whatever
+/// the framework HAS marked, so a release that retires more needs none of
+/// ours; neither signal alone is enough.
+let private legacyProtocols = set [ "Ssl2"; "Ssl3"; "Tls"; "Tls11" ]
+
 /// Find weak cryptography, string-built SQL, and string-built process
 /// execution.
 let find
     (parseTree: ParsedInput)
     (source: ISourceText)
+    (isObsoleteProtocol: range -> bool)
     : WeakCryptoSuggestion list * SqlStringSuggestion list * ProcessSinkSuggestion list =
-    ignore source
+
     let index = AstIndex.ofTree parseTree
     let crypto = ResizeArray<WeakCryptoSuggestion>()
     let sql = ResizeArray<SqlStringSuggestion>()
@@ -381,12 +401,16 @@ let find
                     crypto.Add
                         { Range = e.Range
                           Kind = WeakKind.Hash owner
-                          AlgoRange = Some ownerId.idRange }
+                          AlgoRange = Some ownerId.idRange
+                          ObsoleteOperand = None
+                          AssignmentRange = None }
                 elif weakCiphers.Contains owner then
                     crypto.Add
                         { Range = e.Range
                           Kind = WeakKind.Cipher owner
-                          AlgoRange = Some ownerId.idRange }
+                          AlgoRange = Some ownerId.idRange
+                          ObsoleteOperand = None
+                          AssignmentRange = None }
             | _ -> ()
         // new MD5CryptoServiceProvider() and friends
         | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
@@ -398,12 +422,16 @@ let find
                 crypto.Add
                     { Range = e.Range
                       Kind = WeakKind.Hash name
-                      AlgoRange = None }
+                      AlgoRange = None
+                      ObsoleteOperand = None
+                      AssignmentRange = None }
             elif weakCipherTypes.Contains name then
                 crypto.Add
                     { Range = e.Range
                       Kind = WeakKind.Cipher name
-                      AlgoRange = None }
+                      AlgoRange = None
+                      ObsoleteOperand = None
+                      AssignmentRange = None }
             elif commandTypes.Contains name then
                 // new SqlCommand(sql, ...)
                 match e with
@@ -488,7 +516,9 @@ let find
                 crypto.Add
                     { Range = e.Range
                       Kind = WeakKind.CertificateBypass
-                      AlgoRange = None }
+                      AlgoRange = None
+                      ObsoleteOperand = None
+                      AssignmentRange = None }
             // psi.Arguments <- dynamic: the argument-injection sink;
             // FileName is any DTO's field and stays out
             | "Arguments" when isDynamicString rhs ->
@@ -530,7 +560,9 @@ let find
                 crypto.Add
                     { Range = e.Range
                       Kind = WeakKind.CertificateBypass
-                      AlgoRange = None }
+                      AlgoRange = None
+                      ObsoleteOperand = None
+                      AssignmentRange = None }
             | "Arguments" when isDynamicString rhs ->
                 processSinks.Add
                     { Range = e.Range
@@ -594,12 +626,66 @@ let find
         // NOTHING and let the OS negotiate
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
             match (ids |> List.item (ids.Length - 2)).idText, (List.last ids).idText with
-            | ("SecurityProtocolType" | "SslProtocols"), ("Ssl2" | "Ssl3" | "Tls" | "Tls11" as proto) ->
+            | ("SecurityProtocolType" | "SslProtocols"), proto when
+                legacyProtocols.Contains proto || isObsoleteProtocol (List.last ids).idRange
+                ->
+                // The `|||` joining this constant to the rest, taken from the
+                // SOURCE: it sits immediately beside the constant by
+                // definition, and reading the token beats guessing at how FCS
+                // shapes an infix application. The span carries the operator
+                // with it so commenting it out leaves valid F# either way:
+                //     Tls12 (* ||| Tls11 *)      (* Tls11 ||| *) Tls12
+                let obsoleteOperand =
+                    let startLine = source.GetLineString(e.Range.StartLine - 1)
+                    let endLine = source.GetLineString(e.Range.EndLine - 1)
+
+                    let before =
+                        if e.Range.StartColumn <= startLine.Length then
+                            startLine.Substring(0, e.Range.StartColumn).TrimEnd()
+                        else
+                            ""
+
+                    let after =
+                        if e.Range.EndColumn <= endLine.Length then
+                            endLine.Substring(e.Range.EndColumn).TrimStart()
+                        else
+                            ""
+
+                    if before.EndsWith "|||" then
+                        Some(
+                            Range.mkRange
+                                e.Range.FileName
+                                (Position.mkPos e.Range.StartLine (before.Length - 3))
+                                e.Range.End
+                        )
+                    elif after.StartsWith "|||" then
+                        Some(
+                            Range.mkRange
+                                e.Range.FileName
+                                e.Range.Start
+                                (Position.mkPos e.Range.EndLine (endLine.Length - after.Length + 3))
+                        )
+                    else
+                        None
+
+                let assignmentRange =
+                    index.Exprs
+                    |> Array.choose (fun (_, candidate) ->
+                        match candidate with
+                        | SynExpr.LongIdentSet _
+                        | SynExpr.DotSet _
+                        | SynExpr.Set _ when Range.rangeContainsRange candidate.Range e.Range -> Some candidate.Range
+                        | _ -> None)
+                    |> Array.sortBy (fun r -> r.EndLine - r.StartLine, r.EndColumn)
+                    |> Array.tryHead
+
                 crypto.Add
                     { Range = e.Range
                       Kind = WeakKind.Protocol proto
                       // the constant ident itself: the Tls12 swap's target
-                      AlgoRange = Some (List.last ids).idRange }
+                      AlgoRange = Some (List.last ids).idRange
+                      ObsoleteOperand = obsoleteOperand
+                      AssignmentRange = assignmentRange }
             | _ -> ()
         | _ -> ()
 

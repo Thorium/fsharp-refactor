@@ -50,6 +50,23 @@ let ``chunkBySize batching suppresses the note`` () =
     )
 
 [<Fact>]
+let ``chunkBySize bound to a let before the loop suppresses the note`` () =
+    // management-portal DomainShared.fs writes it this way, and the guard
+    // scanned only the loop header - where the enumeration expression is a
+    // bare identifier holding no call at all. Chunking IS the accepted
+    // mitigation for N+1; flagging it reports the cure as the disease
+    Assert.Empty(
+        queriesIn
+            "open System.Linq\nlet q = [ 1; 2 ].AsQueryable()\nlet f (xs: int list) =\n    let chunked = xs |> List.chunkBySize 100\n    for chunk in chunked do\n        for p in q do\n            printfn \"%d %d\" (List.sum chunk) p"
+    )
+
+    // without chunking anywhere, the note stands
+    Assert.NotEmpty(
+        queriesIn
+            "open System.Linq\nlet q = [ 1; 2 ].AsQueryable()\nlet f (xs: int list) =\n    let plain = xs\n    for x in plain do\n        for p in q do\n            printfn \"%d %d\" x p"
+    )
+
+[<Fact>]
 let ``while loop around a queryable is also noted`` () =
     let suggestions =
         queriesIn
