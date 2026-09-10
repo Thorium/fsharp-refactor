@@ -325,12 +325,16 @@ let parseParameters (json: string) : Map<string, Map<string, int>> =
                 let knobs =
                     property.Value.EnumerateObject()
                     |> Seq.choose (fun knob ->
-                        if knob.Value.ValueKind = JsonValueKind.Number then
+                        match knob.Value.ValueKind with
+                        | JsonValueKind.Number ->
                             match knob.Value.TryGetInt32() with
                             | true, v -> Some(knob.Name.ToLowerInvariant(), v)
                             | _ -> None
-                        else
-                            None)
+                        // an on/off knob reads naturally as a JSON bool; it is
+                        // stored as 0/1 so one map serves both kinds
+                        | JsonValueKind.True -> Some(knob.Name.ToLowerInvariant(), 1)
+                        | JsonValueKind.False -> Some(knob.Name.ToLowerInvariant(), 0)
+                        | _ -> None)
                     |> Map.ofSeq
 
                 if knobs.IsEmpty then
@@ -600,6 +604,12 @@ let parameterInt (analyzedFile: string) (code: string) (analyzerName: string) (k
     lookup code
     |> Option.orElseWith (fun () -> lookup analyzerName)
     |> Option.defaultValue fallback
+
+/// A rule's on/off knob. Written as a JSON bool or as 0/1 - both land in
+/// the same map - and looked up exactly like `parameterInt`.
+let parameterBool (analyzedFile: string) (code: string) (analyzerName: string) (knob: string) (fallback: bool) : bool =
+    parameterInt analyzedFile code analyzerName knob (if fallback then 1 else 0)
+    <> 0
 
 /// The effective suppression-comment policy for a file:
 /// "all" | "no-correctness" | "none".

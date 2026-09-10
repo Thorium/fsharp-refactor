@@ -5,13 +5,15 @@ open System.Text.RegularExpressions
 open Xunit
 open FSharp.Refactor
 
-/// Every code the README documents. That table is the user-facing list of
-/// rules, so it is the right thing to hold the catalog against.
+/// Every code Rules.md documents in full — one `### FRnnnn` section per rule.
+/// That file is the user-facing list, so it is the right thing to hold the
+/// catalog against. Its quick table is checked separately, below: a rule can
+/// be in one and missing from the other, and both are worth catching.
 let private documentedCodes () =
-    let readme =
-        Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md") |> File.ReadAllText
+    let rules =
+        Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "Rules.md") |> File.ReadAllText
 
-    Regex.Matches(readme, @"^\| (FR\d{4}) \|", RegexOptions.Multiline)
+    Regex.Matches(rules, @"^### (FR\d{4}) ", RegexOptions.Multiline)
     |> Seq.map (fun m -> m.Groups.[1].Value)
     |> Set.ofSeq
 
@@ -32,7 +34,7 @@ let ``the catalog invents no rules`` () =
 
     Assert.True(
         Set.isEmpty unknown,
-        sprintf "The catalog lists rules the README does not: %s" (String.concat ", " unknown)
+        sprintf "The catalog lists rules Rules.md does not document: %s" (String.concat ", " unknown)
     )
 
 [<Fact>]
@@ -62,20 +64,17 @@ let ``an unknown category does not parse`` () =
 
 [<Fact>]
 let ``the README's kind summary matches the rules it lists`` () =
-    // the summary table states a count per kind; adding a rule moved the real
-    // count and left the summary behind, which is exactly the drift this
-    // catches
+    // the summary table states a count per kind, and adding a rule used to
+    // move the real count and leave the summary behind. The rules themselves
+    // now live in Rules.md, so the count is held against the CATALOG rather
+    // than against a second copy of the list in prose
     let readme =
         Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md") |> File.ReadAllText
 
     let actual =
-        Regex.Matches(
-            readme,
-            @"^\| FR\d{4} \|.*\| (correctness|performance|idiom|cosmetic) \|$",
-            RegexOptions.Multiline
-        )
-        |> Seq.countBy (fun m -> m.Groups.[1].Value)
-        |> Map.ofSeq
+        RuleCatalog.allRules
+        |> List.countBy (fun (_, category) -> RuleCatalog.name category)
+        |> Map.ofList
 
     let claimed =
         Regex.Matches(
@@ -90,7 +89,7 @@ let ``the README's kind summary matches the rules it lists`` () =
 
     for KeyValue(kind, stated) in claimed do
         let counted = actual.TryFind kind |> Option.defaultValue 0
-        Assert.True((stated = counted), $"README says %d{stated} %s{kind} rules; it lists %d{counted}")
+        Assert.True((stated = counted), $"README says %d{stated} %s{kind} rules; the catalog has %d{counted}")
 
 // ---- Rules.md: the quick-reference table ----
 

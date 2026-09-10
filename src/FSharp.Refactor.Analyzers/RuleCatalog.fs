@@ -253,6 +253,7 @@ let private categories =
       Category.Correctness,
       "an exception handler reading only .Message from a type whose diagnosis is elsewhere"
       "FR0152", Category.Correctness, "GetOrAdd caching a Task or Lazy, so one failure is cached for every later reader"
+      "FR0153", Category.Correctness, "a credential in a [<Literal>], which should be a development one"
       "FR0073",
       Category.Idiom,
       "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -372,7 +373,8 @@ let advisory =
           "FR0124"
           "FR0126"
           "FR0127"
-          "FR0141" ]
+          "FR0141"
+          "FR0153" ]
 
 /// The rules worth looking at first — a likely defect too costly to hold
 /// back: an N+1 query loop, SQL built from strings, a raise inside finally,

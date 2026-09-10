@@ -48,6 +48,9 @@ type Suggestion =
         OriginalText: string
         ReplacementText: string
         Message: string
+        /// The replacement is a package reference, not a re-pointed path:
+        /// it needs F# 5 resolution, which the .NET Framework fsi.exe has not.
+        IsNugetReference: bool
     }
 
 /// A parsed target-framework folder name.
@@ -126,6 +129,19 @@ let sdkMajorOf (compilerOptions: string seq) =
         let m = Regex.Match(o, @"[\\/]ref[\\/]net(\d+)\.0[\\/]")
 
         if m.Success then Some(int m.Groups.[1].Value) else None)
+
+/// The package a `packages/` path names, and its version when the folder
+/// carries one: nuget.exe writes `packages/Sql.1.2.3/lib/net451/Sql.dll`,
+/// paket writes `packages/Sql/lib/net451/Sql.dll`. Read off the path only —
+/// no lock file is opened to find a version that is not written down here.
+let private packageOf (segments: string list) =
+    segments
+    |> List.tryFindIndex (fun s -> String.Equals(s, "packages", StringComparison.OrdinalIgnoreCase))
+    |> Option.bind (fun i -> List.tryItem (i + 1) segments |> Option.map (fun folder -> i + 1, folder))
+    |> Option.map (fun (index, folder) ->
+        match parseVersioned folder with
+        | Some(name, version) -> index, name, Some(version |> List.map string |> String.concat ".")
+        | None -> index, folder, None)
 
 let private exists (isDirectory: bool) (path: string) =
     if isDirectory then
@@ -310,6 +326,59 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                               { Range = d.ArgumentRange
                                 OriginalText = original
                                 ReplacementText = replacement
+                                IsNugetReference = false
                                 Message =
                                   $"#{d.Ident} path does not exist: '{missing}' is gone, and '{best}' is what the package has now{alternatives}. The fix re-points the directive." }
-                  | _ -> () ]
+                  | _ ->
+                      // no sibling works, so there is nothing on disk to
+                      // re-point to: the package was never restored here at
+                      // all. Paket's `storage: none` — the default now —
+                      // leaves it in the nuget cache and writes no
+                      // `packages/` copy, and the script's paths date from
+                      // when it did. A package reference resolves it without
+                      // one. `#r` only: `#I` names a search directory and a
+                      // package reference is not one
+                      // a net4x asset says the script runs on the .NET
+                      // Framework's fsi.exe, which has no package-reference
+                      // resolution at all — rewriting it there would swap a
+                      // path that is merely missing for a directive that
+                      // runtime cannot read
+                      let framework =
+                          segments
+                          |> List.exists (fun s ->
+                              match parseFramework s with
+                              | Some(NetFramework _) -> true
+                              | _ -> false)
+
+                      if not isDirectory && not framework then
+                          let full = segments |> List.fold (fun p s -> Path.Combine(p, s)) root
+
+                          if not (exists isDirectory full) then
+                              match packageOf segments with
+                              | Some(index, id, version) when
+                                  // the PACKAGE has to be the thing that is
+                                  // absent. A path that fails because the file
+                                  // name is misspelled, or the framework folder
+                                  // is, still has the package on disk - and a
+                                  // local path can be pointed at a debug build
+                                  // where a package reference cannot
+                                  (let packageDir =
+                                      segments
+                                      |> List.truncate (index + 1)
+                                      |> List.fold (fun p s -> Path.Combine(p, s)) root
+
+                                   not (Directory.Exists packageDir))
+                                  ->
+                                  let spec =
+                                      match version with
+                                      | Some v -> $"nuget: {id}, {v}"
+                                      | None -> $"nuget: {id}"
+
+                                  yield
+                                      { Range = d.ArgumentRange
+                                        OriginalText = textOfRange source d.ArgumentRange
+                                        ReplacementText = "\"" + spec + "\""
+                                        IsNugetReference = true
+                                        Message =
+                                          $"#r path does not exist and no other folder under the package has it — nothing on disk to re-point to. `#r \"{spec}\"` resolves it from nuget instead; that needs `dotnet fsi` (F# 5+), as the .NET Framework fsi.exe does not resolve package references." }
+                              | _ -> () ]

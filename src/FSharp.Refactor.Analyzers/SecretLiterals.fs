@@ -32,7 +32,14 @@ open System.Text.RegularExpressions
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 
-type Suggestion = { Range: range; Provider: string }
+type Suggestion =
+    {
+        Range: range
+        Provider: string
+        /// the value is a [<Literal>]: a compile-time constant a type provider
+        /// reads before the program runs
+        DesignTimeLiteral: bool
+    }
 
 let private patterns =
     [ "Anthropic", Regex(@"\bsk-ant-[A-Za-z0-9_-]{12,}", RegexOptions.Compiled)
@@ -62,8 +69,23 @@ let private placeholderPassword =
         RegexOptions.Compiled
     )
 
+
+/// A connection string whose SERVER is the loopback host is a development
+/// one whatever its password looks like, and that is a far better signal
+/// than guessing at the password's shape: `p4ssw0rd` reads as a sample and
+/// `Hunter2Real9x` does not, yet both are equally local. Covers the spellings
+/// a .NET connection string actually uses — `localhost`, `127.0.0.1`, `::1`,
+/// `(local)`, `(localdb)\...`, and the bare `.` — each optionally followed by
+/// an instance (`\SQLEXPRESS`) or a port (`,1433`).
+let private loopbackServer =
+    Regex(
+        @"(?i)\b(?:Data Source|Server|Host|Address|Addr|Network Address)\s*=\s*(?:\(local(?:db)?\)|localhost|127\.0\.0\.1|::1|\.)(?=[;,\\""\s]|$)",
+        RegexOptions.Compiled
+    )
+
 let private connectionStringLeak (text: string) =
     connectionKey.IsMatch text
+    && not (loopbackServer.IsMatch text)
     && (let m = connectionPassword.Match text
         m.Success && not (placeholderPassword.IsMatch m.Groups.[2].Value))
 
@@ -83,15 +105,50 @@ let private providerOf (text: string) =
         | None when connectionStringLeak text -> ValueSome "connection-string password"
         | None -> ValueNone
 
+/// A `[<Literal>]` binding's value is a compile-time constant, baked into
+/// every use site and read by a type provider before the program runs. It
+/// cannot move to configuration, so FR0127's remedy does not apply to it —
+/// but the value still ships in source, and the provider only ever needs a
+/// SCHEMA, so what belongs there is a development credential and never a
+/// production one. Reported under its own lower-priority code because that
+/// is a different thing to check.
+let private isLiteralBinding (attrs: SynAttributeList list) =
+    attrs
+    |> List.exists (fun list ->
+        list.Attributes
+        |> List.exists (fun a ->
+            match a.TypeName with
+            | SynLongIdent(id = ids) when not ids.IsEmpty ->
+                match (List.last ids).idText with
+                | "Literal"
+                | "LiteralAttribute" -> true
+                | _ -> false
+            | _ -> false))
+
 let find (parseTree: ParsedInput) : Suggestion list =
     let index = AstIndex.ofTree parseTree
+
+    let literalRanges =
+        [ for _, decl in index.Decls do
+              match decl with
+              | SynModuleDecl.Let(bindings = bindings) ->
+                  for SynBinding(attributes = attrs; expr = rhs) in bindings do
+                      if isLiteralBinding attrs then
+                          yield rhs.Range
+              | _ -> () ]
+
+    let designTime (r: range) =
+        literalRanges |> List.exists (fun lr -> Range.rangeContainsRange lr r)
 
     let fromExprs =
         [ for _, e in index.Exprs do
               match e with
               | SynExpr.Const(SynConst.String(text, _, _), r) ->
                   match providerOf text with
-                  | ValueSome provider -> { Range = r; Provider = provider }
+                  | ValueSome provider ->
+                      { Range = r
+                        Provider = provider
+                        DesignTimeLiteral = designTime r }
                   | ValueNone -> ()
               // the literal parts of an interpolated string: a key with a
               // hole in its middle is still a key
@@ -100,7 +157,10 @@ let find (parseTree: ParsedInput) : Suggestion list =
                       match part with
                       | SynInterpolatedStringPart.String(text, r) ->
                           match providerOf text with
-                          | ValueSome provider -> { Range = r; Provider = provider }
+                          | ValueSome provider ->
+                              { Range = r
+                                Provider = provider
+                                DesignTimeLiteral = designTime r }
                           | ValueNone -> ()
                       | SynInterpolatedStringPart.FillExpr _ -> ()
               | _ -> () ]
@@ -113,11 +173,16 @@ let find (parseTree: ParsedInput) : Suggestion list =
         | SynType.App(typeName = name; typeArgs = args) -> staticStrings name @ List.collect staticStrings args
         | _ -> []
 
+    // a static argument is design-time by construction: it is spelled into
+    // the type itself, so it is resolved before the program runs
     let fromTypes =
         [ for _, t in index.Types do
               for text, r in staticStrings t do
                   match providerOf text with
-                  | ValueSome provider -> { Range = r; Provider = provider }
+                  | ValueSome provider ->
+                      { Range = r
+                        Provider = provider
+                        DesignTimeLiteral = true }
                   | ValueNone -> () ]
 
     fromExprs @ fromTypes |> List.distinctBy (fun s -> s.Range)

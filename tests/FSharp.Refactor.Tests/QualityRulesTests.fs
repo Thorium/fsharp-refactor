@@ -2434,7 +2434,7 @@ let ``a single return-bang arm is never wrapped`` () =
 
     let taskAdviceIn (src: string) =
         let tree, sourceText = parse src
-        TaskStateMachine.find tree sourceText
+        TaskStateMachine.find tree sourceText 4 false
 
     let splits =
         taskAdviceIn source
@@ -2590,6 +2590,61 @@ let ``FR0127: a type provider's connection-string argument and a three-segment J
         |> List.sort
 
     Assert.Equal<string list>([ "JWT"; "connection-string password" ], found)
+
+[<Fact>]
+let ``FR0153: a credential in a Literal on a remote server still fires, as a design-time one`` () =
+    // the instance suffix is spelled with a doubled backslash so the ANALYSED
+    // source carries the single one a connection string really has
+    match
+        secretsIn
+            "module Test\n[<Literal>]\nlet connstr = \"Data Source=157.24.1.223\\SQL2017;User Id=sa;Password=Password12!; Initial Catalog=sqlprovider;TrustServerCertificate=true;\""
+    with
+    | [ s ] ->
+        Assert.Equal("connection-string password", s.Provider)
+        Assert.True(s.DesignTimeLiteral, "a [<Literal>] binding is a design-time credential")
+    | other -> failwithf "Expected exactly one leak on a remote server, got %A" other
+
+[<Fact>]
+let ``FR0153: a public IP is not the loopback, however dotted`` () =
+    for host in
+        [ "157.24.1.223"
+          "157.24.6.126"
+          "127.0.0.100"
+          "10.0.0.5"
+          "localhost.evil.com"
+          "notlocalhost" ] do
+        let source =
+            $"module Test\nlet cs = \"Data Source=%s{host};Initial Catalog=x;User Id=sa;Password=W3lf0rd9Prod\""
+
+        match secretsIn source with
+        | [ s ] -> Assert.Equal("connection-string password", s.Provider)
+        | other -> failwithf "Expected %s to report a leak, got %A" host other
+
+[<Fact>]
+let ``FR0153: a loopback server is a developer's own machine, whatever the password looks like`` () =
+    for host in
+        [ "localhost"
+          "127.0.0.1"
+          "127.0.0.1,1433"
+          "localhost\\SQLEXPRESS"
+          "(local)"
+          "(localdb)\\MSSQLLocalDB"
+          "."
+          ".\\SQLEXPRESS"
+          "::1" ] do
+        let source =
+            $"module Test\nlet cs = \"Data Source=%s{host};Initial Catalog=x;User Id=sa;Password=Hunter2Real9x\""
+
+        Assert.Empty(secretsIn source)
+
+[<Fact>]
+let ``FR0153: the same credential outside a Literal is not design-time`` () =
+    match
+        secretsIn
+            "module Test\nlet cs = \"Data Source=db.corp.example.com;Initial Catalog=x;User Id=sa;Password=W3lf0rd9Prod\""
+    with
+    | [ s ] -> Assert.False(s.DesignTimeLiteral, "a plain let is not a design-time literal")
+    | other -> failwithf "Expected exactly one leak, got %A" other
 
 [<Fact>]
 let ``FR0124: a template spelled as a chain of literals is read whole`` () =

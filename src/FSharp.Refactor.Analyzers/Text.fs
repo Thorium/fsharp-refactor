@@ -432,6 +432,25 @@ let spansDirective (source: ISourceText) (r: range) =
 
         text.StartsWith "#if" || text.StartsWith "#else" || text.StartsWith "#endif")
 
+/// Does a directive open on the first non-blank line AFTER the range? The
+/// parse tree ends at the last construct the ACTIVE defines leave visible,
+/// so a `#if` block starting just below it can hold further match arms that
+/// another configuration compiles. Rewriting only the visible arms strands
+/// those, and the build check never sees it - it compiles the one
+/// configuration in front of it, where the file is still valid.
+let directiveFollows (source: ISourceText) (r: range) =
+    let rec scan line =
+        if line > source.GetLineCount() then
+            false
+        else
+            let text = (source.GetLineString(line - 1)).TrimStart()
+
+            if text = "" then scan (line + 1)
+            elif text.StartsWith "#" then true
+            else false
+
+    scan (r.EndLine + 1)
+
 /// Total line accessor: a stale or synthetic FCS range can point outside the
 /// current source snapshot. Out-of-bounds yields "" via a bounds check —
 /// nothing is caught, so real failures still propagate.

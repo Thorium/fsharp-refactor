@@ -1836,8 +1836,24 @@ let queryInLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0029 TaskStateMachine ----
 
-let private taskStateMachineMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    TaskStateMachine.find parseTree source
+let private taskStateMachineMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    // ten non-awaiting lines is a clear shed for a new function; four was a
+    // thin trade. Configurable per repository:
+    //     { "FR0029": { "tailLines": 4 } }
+    let tailLines =
+        Configuration.parameterInt fileName "FR0029" "TaskStateMachine" "tailLines" 10
+
+    // `async { }` has no resumable state machine, so none of the FS3511
+    // advice applies to it; only the return hoist does, and its payoff there
+    // is generated code size (~27% less IL on a twelve-arm branch), not
+    // speed - measured identical on both time and allocation. Off by
+    // default because that is a smaller claim than the rest of this rule
+    // makes. Per repository:
+    //     { "FR0029": { "hoistReturnOnAsync": true } }
+    let hoistReturnOnAsync =
+        Configuration.parameterBool fileName "FR0029" "TaskStateMachine" "hoistReturnOnAsync" false
+
+    TaskStateMachine.find parseTree source tailLines hoistReturnOnAsync
     |> List.map (fun s ->
         let message =
             match s.Kind with
@@ -1849,13 +1865,14 @@ let private taskStateMachineMessages (parseTree: ParsedInput) (source: ISourceTe
                     count
             | TaskStateMachine.AdviceKind.SplitBranches ->
                 "This task is large enough to risk the dynamic state-machine fallback (FS3511): each branch can become its own smaller task { } — a branch without awaits becomes a trivially static one."
+            | TaskStateMachine.AdviceKind.HoistReturn leaves ->
+                sprintf
+                    "Every one of this branch's %d leaves returns, so one `return` in front of the whole branch hands the builder a value once instead of %d times — the branch becomes an ordinary expression rather than an exit per arm. Nothing moves: the branch stays where it is and gains an indent level."
+                    leaves
+                    leaves
             | TaskStateMachine.AdviceKind.ExtractTail lines ->
                 sprintf
                     "This task is large enough to risk the dynamic state-machine fallback (FS3511): %d lines of non-awaiting code follow the last await and can extract into a plain function."
-                    lines
-            | TaskStateMachine.AdviceKind.ExtractAwaitingSuffix lines ->
-                sprintf
-                    "This task is large enough to risk the dynamic state-machine fallback (FS3511): its closing %d lines await in shapes a plain function cannot carry, but they can become their own task-returning function consumed with return! — two smaller state machines instead of one large."
                     lines
 
         hint "FR0029" message s.Range (s.Edits |> List.map (fun (r, t) -> fix r (Text.textOfRange source r) t)))
@@ -1863,13 +1880,13 @@ let private taskStateMachineMessages (parseTree: ParsedInput) (source: ISourceTe
 [<EditorAnalyzer("TaskStateMachine", "Advice for shrinking oversized task expressions", HelpBase)>]
 let taskStateMachineEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0029" "TaskStateMachine" (fun () ->
-        taskStateMachineMessages ctx.ParseFileResults.ParseTree ctx.SourceText
+        taskStateMachineMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText
         |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("TaskStateMachine", "Advice for shrinking oversized task expressions", HelpBase)>]
 let taskStateMachineCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0029" "TaskStateMachine" (fun () ->
-        taskStateMachineMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        taskStateMachineMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0030 AddRange ----
 
@@ -3282,17 +3299,28 @@ let unicodeCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private secretMessages (parseTree: ParsedInput) : Message list =
     SecretLiterals.find parseTree
     |> List.map (fun s ->
-        let text =
-            match s.Provider with
-            | "connection-string password" ->
-                "This connection string carries its password in source — a leaked credential until proven otherwise; rotate it and move the string to configuration or a secret store."
-            | "JWT"
-            | "bearer token" ->
-                $"This literal is a signed {s.Provider} — a leaked credential until proven otherwise; revoke it and move it to configuration or a secret store."
-            | provider ->
-                $"This literal matches {provider}'s documented credential format — a leaked key until proven otherwise; rotate it and move it to configuration or a secret store."
+        // a literal cannot move to configuration, so the check is a different
+        // one: the value should be a development credential
+        if s.DesignTimeLiteral then
+            let what =
+                match s.Provider with
+                | "connection-string password" -> "This connection string carries its password"
+                | provider -> $"This literal matches {provider}'s credential format and holds it"
 
-        hint "FR0127" text s.Range [])
+            hint "FR0153" $"{what} in a literal — it should be a development credential." s.Range []
+        else
+
+            let text =
+                match s.Provider with
+                | "connection-string password" ->
+                    "This connection string carries its password in source — a leaked credential until proven otherwise; rotate it and move the string to configuration or a secret store."
+                | "JWT"
+                | "bearer token" ->
+                    $"This literal is a signed {s.Provider} — a leaked credential until proven otherwise; revoke it and move it to configuration or a secret store."
+                | provider ->
+                    $"This literal matches {provider}'s documented credential format — a leaked key until proven otherwise; rotate it and move it to configuration or a secret store."
+
+            hint "FR0127" text s.Range [])
 
 [<EditorAnalyzer("SecretLiterals", "Provider-format API keys in string literals", HelpBase)>]
 let secretsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -4440,6 +4468,10 @@ let private scriptReferencesMessages
     (options: AnalyzerProjectOptions)
     : Message list =
     ScriptReferences.find fileName parseTree source options.OtherOptions
+    // a package reference is resolved by F# 5's `#r "nuget: ..."`, which the
+    // .NET Framework fsi.exe does not have: offered only where the script is
+    // checked against a language version that can run it
+    |> List.filter (fun s -> not s.IsNugetReference || langVersionAtLeast 5.0 options)
     |> List.map (fun s -> hint "FR0144" s.Message s.Range [ fix s.Range s.OriginalText s.ReplacementText ])
 
 // existence on disk is the input, so this runs on a script that does not

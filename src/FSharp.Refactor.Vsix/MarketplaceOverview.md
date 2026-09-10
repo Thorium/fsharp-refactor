@@ -16,7 +16,7 @@ FSharp.Refactor Hint*), and `Ctrl+.` applies the fix:
 - a fixed lookup list probed in a loop → converted to a `Set`
 - blocking `.Result` inside `task { }` → `let!`
 - …and 130 more, every fix engineered to preserve behavior — the full
-  rule table is in the [project README](https://github.com/Thorium/fsharp-refactor).
+  rule list is in [Rules.md](https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md).
 
 The same rules run in VS Code (Ionide) via the
 [FSharp.Refactor.Analyzers](https://www.nuget.org/packages/FSharp.Refactor.Analyzers)

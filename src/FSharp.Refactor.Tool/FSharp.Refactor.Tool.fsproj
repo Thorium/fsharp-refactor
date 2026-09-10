@@ -39,6 +39,11 @@
 
   <ItemGroup>
     <PackageReference Update="FSharp.Core" Version="10.1.201" />
+    <!-- FSharp.Analyzers.SDK drags in 6.0.0, which is OLDER than the 8.0.0.0 a
+         SQLProvider type provider asks for: its MySqlConnector fails to
+         initialise against ours and the whole project reports as broken.
+         Pinned forward so the provider's own reference resolves. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
     <ProjectReference Include="..\FSharp.Refactor.Analyzers\FSharp.Refactor.Analyzers.fsproj" />
   </ItemGroup>
 

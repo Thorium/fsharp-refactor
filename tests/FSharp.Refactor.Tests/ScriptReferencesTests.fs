@@ -164,3 +164,72 @@ let ``a rooted path is walked from its root`` () =
             Directory.Delete(root, true)
         with _ ->
             ()
+
+[<Fact>]
+let ``a package that is not on disk at all becomes a package reference`` () =
+    // paket's `storage: none` keeps the package in the nuget cache and writes
+    // no `packages/` copy, so no sibling folder can be re-pointed to
+    withPackage
+        [ "packages/Other.9.9.9/lib/net48" ]
+        "#r @\"../packages/Sql.1.2.3/lib/netstandard2.0/Sql.dll\""
+        None
+        (fun suggestions ->
+            let s = single suggestions
+            Assert.True(s.IsNugetReference, "the package is absent, so the fix is a package reference")
+            Assert.Equal("\"nuget: Sql, 1.2.3\"", s.ReplacementText))
+
+[<Fact>]
+let ``a version-less package folder gives a package reference without one`` () =
+    // paket's layout is `packages/Sql/lib/...` - the path carries no version,
+    // and no lock file is opened to find one
+    withPackage
+        [ "packages/Other/lib/net48" ]
+        "#r @\"../packages/Sql/lib/netstandard2.0/Sql.dll\""
+        None
+        (fun suggestions ->
+            let s = single suggestions
+            Assert.True(s.IsNugetReference, "expected a package reference")
+            Assert.Equal("\"nuget: Sql\"", s.ReplacementText))
+
+[<Fact>]
+let ``a re-pointable reference stays a path, never a package reference`` () =
+    withPackage
+        [ "packages/Sql.1.2.3/lib/net461" ]
+        "#r @\"../packages/Sql.1.2.3/lib/net45/Sql.dll\""
+        None
+        (fun suggestions ->
+            let s = single suggestions
+            Assert.False(s.IsNugetReference, "a sibling exists, so the path is re-pointed instead")
+            Assert.Equal("@\"../packages/Sql.1.2.3/lib/net461/Sql.dll\"", s.ReplacementText))
+
+[<Fact>]
+let ``an #I search directory gets no package reference`` () =
+    // a package reference is not a search path, so there is nothing to offer
+    withPackage [ "packages/Other/lib/net48" ] "#I @\"../packages/Sql/lib/net451\"" None (fun suggestions ->
+        Assert.Empty suggestions)
+
+[<Fact>]
+let ``a reference that resolves is left alone`` () =
+    withPackage
+        [ "packages/Sql.1.2.3/lib/net451" ]
+        "#r @\"../packages/Sql.1.2.3/lib/net451/Sql.dll\""
+        None
+        (fun suggestions -> Assert.Empty suggestions)
+
+[<Fact>]
+let ``a net4x asset gets no package reference`` () =
+    // a net451 asset says the script runs on the .NET Framework's fsi.exe,
+    // which cannot resolve `#r "nuget: ..."` at all
+    withPackage [ "packages/Other/lib/net48" ] "#r @\"../packages/Sql/lib/net451/Sql.dll\"" None (fun suggestions ->
+        Assert.Empty suggestions)
+
+[<Fact>]
+let ``a package that IS on disk gets no package reference, whatever else is wrong`` () =
+    // only the file name is misspelled here. The package is present, so a
+    // local path is still the better reference - it can be pointed at a debug
+    // build, where a package reference downloads to a cache and cannot
+    withPackage
+        [ "packages/Sql.1.2.3/lib/netstandard2.0" ]
+        "#r @\"../packages/Sql.1.2.3/lib/netstandard2.0/Sqll.dll\""
+        None
+        (fun suggestions -> Assert.Empty suggestions)

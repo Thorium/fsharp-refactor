@@ -6,7 +6,13 @@ open FSharp.Refactor.Tests.Parsing
 
 let private adviceIn (source: string) =
     let tree, sourceText = parse source
-    TaskStateMachine.find tree sourceText
+    TaskStateMachine.find tree sourceText 4 false
+
+/// The same, with the `hoistReturnOnAsync` knob turned on.
+let private adviceInAsyncOn (source: string) =
+    let tree, sourceText = parse source
+    TaskStateMachine.find tree sourceText 4 true
+
 
 /// n `let! xi = Task.FromResult i` lines, enough to cross the size gate.
 let private awaits n =
@@ -42,6 +48,81 @@ let ``leading plain lets in an oversized task are counted`` () =
     match suggestions with
     | [ s ] -> Assert.Equal(TaskStateMachine.AdviceKind.HoistPlainLets 2, s.Kind)
     | other -> failwithf "Expected exactly one hoist advice, got %A" other
+
+[<Fact>]
+let ``a directive block below the branch blocks the hoist`` () =
+    // the parse tree stops at the last arm the ACTIVE defines leave visible.
+    // A `#if` opening right below it can hold further arms that another
+    // configuration compiles, and the build check never sees them: it
+    // compiles the one configuration in front of it, where the file is fine
+    let source =
+        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n\n        match c with\n        | 1 -> return x\n        | _ -> return -1\n#if EXTRA\n        | 2 -> return x + 100\n#endif\n    }"
+
+    Assert.Empty(
+        adviceIn source
+        |> List.filter (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+    )
+
+[<Fact>]
+let ``a plain let under a try is never hoisted out of the handler`` () =
+    // `let x = 4 / i` throws, and the handler is the whole point of writing it
+    // there: lifting it above the builder would let the exception escape past
+    // `with`. Only lets the try does not cover may travel
+    let source =
+        "module Test\nlet i = 0\nlet f () =\n    task {\n        try\n            let x = 4 / i\n"
+        + (awaits 8).Replace("    let!", "            let!")
+        + "\n            return x1 + x\n        with _ -> return 42\n    }"
+
+    Assert.Empty(
+        adviceIn source
+        |> List.filter (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.HoistPlainLets _ -> true
+            | _ -> false)
+    )
+
+[<Fact>]
+let ``hoisting stops at the try, taking only the lets above it`` () =
+    let source =
+        "module Test\nlet i = 0\nlet f () =\n    task {\n        let p = 1\n        try\n            let x = 4 / i\n"
+        + (awaits 8).Replace("    let!", "            let!")
+        + "\n            return x1 + x + p\n        with _ -> return 42\n    }"
+
+    match
+        adviceIn source
+        |> List.choose (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.HoistPlainLets n -> Some(n, s.Edits)
+            | _ -> None)
+    with
+    | [ (1, edits) ] ->
+        // `p` moves, `x` stays under the handler
+        let moved = edits |> List.map snd |> String.concat ""
+        Assert.Contains("let p = 1", moved)
+        Assert.DoesNotContain("4 / i", moved)
+    | other -> failwithf "Expected one hoist of exactly one let, got %A" other
+
+[<Fact>]
+let ``a let whose own rhs is a try still hoists - the handler travels too`` () =
+    let source =
+        "module Test\nlet i = 0\nlet f () =\n    task {\n        let r = try 4 / i with _ -> 0\n"
+        + (awaits 8).Replace("    let!", "        let!")
+        + "\n        return x1 + r\n    }"
+
+    match
+        adviceIn source
+        |> List.choose (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.HoistPlainLets n -> Some(n, s.Edits)
+            | _ -> None)
+    with
+    | [ (1, edits) ] ->
+        let moved = edits |> List.map snd |> String.concat ""
+        Assert.Contains("try 4 / i with _ -> 0", moved)
+    | other -> failwithf "Expected one hoist of exactly one let, got %A" other
 
 [<Fact>]
 let ``oversized branching where both arms await suggests a split`` () =
@@ -280,23 +361,45 @@ let ``a tail holding a use never becomes a plain closure`` () =
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
-let ``a tail with branch returns extracts as a task-returning function`` () =
-    // once the old hands-off case: branch returns cannot ride a plain
-    // closure, but the task-returning wrapper carries them
+let ``a tail whose branches all return hoists the return instead of extracting`` () =
+    // this was the task-returning wrapper's case. The hoist is the better
+    // answer to the same tail: one keyword moves, no function is invented,
+    // and the branches stop being separate exits through the builder
     let source =
         "module Test\nlet f (c: bool) =\n    task {\n"
         + (awaits 8).Replace("    let!", "        let!")
         + "\n        if c then\n            return 0\n        else\n            let s2 = x1 + 2\n            let s3 = s2 + 3\n            return s3\n    }"
 
-    for s in adviceIn source do
-        match s.Kind with
-        | TaskStateMachine.AdviceKind.ExtractTail _ ->
-            Assert.NotEmpty s.Edits
-            let patched = applyEdits source s.Edits
-            Assert.Contains("let runTail () = task {", patched)
-            Assert.Contains("return! runTail ()", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
-        | _ -> ()
+    let hoists =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty hoists
+    let patched = applyEdits source hoists
+    Assert.DoesNotContain("let runTail () = task {", patched)
+    Assert.Contains("return\n", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``a one-line branch keeps its hoisted return on the same line`` () =
+    // CompanyHub.fs had thirteen of these. The closing `}` shares the
+    // branch's line, so `return` alone with the payload underneath left the
+    // brace inside the payload's offside context and the file stopped parsing
+    let source =
+        "module Test\nlet g (c: bool) : System.Threading.Tasks.Task<bool> = task { return c }\nlet f (c: bool) =\n    task {\n        let! r =\n            task {\n                let! result = g c\n                if result then return None else return (Some \"failed\") }\n        return r\n    }"
+
+    let hoists =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty hoists
+    let patched = applyEdits source hoists
+    Assert.Contains("return if result then None else (Some \"failed\") }", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
 let ``an oversized if split produces two tasks and typechecks`` () =
@@ -428,60 +531,26 @@ let ``the embedding-generator shape splits`` () =
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
-let ``an awaiting try-finally suffix becomes its own task function`` () =
-    let source =
-        "module Test\nopen System.Threading\nopen System.Threading.Tasks\n"
-        + "let gate = new SemaphoreSlim(1)\nlet lockSlots = 4\nlet inferenceLock = new SemaphoreSlim(4)\n"
-        + "let f (xs: int[]) (ct: CancellationToken) : Task<int> =\n    task {\n        do! gate.WaitAsync ct\n        let mutable acquired = 0\n        try\n            while acquired < lockSlots do\n                do! inferenceLock.WaitAsync ct\n                acquired <- acquired + 1\n            do! Task.Delay(10, ct)\n            do! Task.Delay(11, ct)\n            do! Task.Delay(12, ct)\n            do! Task.Delay(13, ct)\n            do! Task.Delay(14, ct)\n            do! Task.Delay(15, ct)\n            let a1 = xs.Length + 1\n            let a2 = a1 + 2\n            return a2\n        finally\n            if acquired > 0 then inferenceLock.Release acquired |> ignore\n            gate.Release() |> ignore\n    }"
-
-    let edits =
-        adviceIn source
-        |> editsOfKind (function
-            | TaskStateMachine.AdviceKind.ExtractAwaitingSuffix _ -> true
-            | _ -> false)
-
-    Assert.NotEmpty edits
-    let patched = applyEdits source edits
-    Assert.Contains("let runRest () =", patched)
-    Assert.Contains("return! runRest ()", patched)
-    // the mutable moves WITH the block, so the closure never captures a
-    // foreign one; early returns stay legal inside the new task body
-    Assert.Contains("let mutable acquired = 0", patched.Substring(patched.IndexOf "runRest"))
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
-
-[<Fact>]
-let ``a suffix referencing a prefix let-bang binding stays advice`` () =
-    // `r` is bound by the remaining prefix; the extracted function would
-    // live outside the CE and could not see it
-    let source =
-        "module Test\nopen System.Threading.Tasks\n"
-        + "let f () : Task<int> =\n    task {\n        let! r = Task.FromResult 1\n        do! Task.Delay 1\n        do! Task.Delay 2\n        do! Task.Delay 3\n        do! Task.Delay 4\n        do! Task.Delay 5\n        do! Task.Delay 6\n        do! Task.Delay 7\n        try\n            do! Task.Delay 8\n            do! Task.Delay 9\n            let a1 = r + 1\n            let a2 = a1 + 2\n            let a3 = a2 + 3\n            let a4 = a3 + 4\n            return a4\n        finally\n            ignore r\n    }"
-
-    for s in adviceIn source do
-        match s.Kind with
-        | TaskStateMachine.AdviceKind.ExtractAwaitingSuffix _ -> Assert.Empty s.Edits
-        | _ -> ()
-
-[<Fact>]
-let ``an early-return tail extracts as a task-returning local function`` () =
-    // branch-shaped returns rule out the plain-closure wrap (a closure has
-    // no `return`); the task-returning variant keeps them legal and the
-    // outer machine still sheds the lines
+let ``an early-return tail hoists its return ahead of the branch`` () =
+    // the branch returns rule out a plain closure, and used to earn the
+    // task-returning wrapper. Hoisting the return is cheaper: the lets stay
+    // where they are and only the branch stops being an exit per arm
     let source =
         "module Test\nlet f (flag: bool) =\n    task {\n"
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        if flag then\n            return s1\n        else\n            return s1 + s2\n    }"
+        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        if flag then\n            return s1\n        else\n            return s2\n    }"
 
-    let edits =
+    let hoists =
         adviceIn source
         |> editsOfKind (function
-            | TaskStateMachine.AdviceKind.ExtractTail _ -> true
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
             | _ -> false)
 
-    Assert.NotEmpty edits
-    let patched = applyEdits source edits
-    Assert.Contains("let runTail () = task {", patched)
-    Assert.Contains("return! runTail ()", patched)
+    Assert.NotEmpty hoists
+    let patched = applyEdits source hoists
+    // the bindings before the branch are untouched - nothing moved
+    Assert.Contains("let s1 = x1 + 1", patched)
+    Assert.DoesNotContain("let runTail () = task {", patched)
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
@@ -726,3 +795,104 @@ let ``FR0029: a tail inside the arm that holds the last await is advice only`` (
         Assert.Empty s.Edits
         Assert.Equal(8, s.Range.StartColumn)
     | other -> failwithf "Expected one tail advice, got %A" other
+
+[<Fact>]
+let ``the tail threshold is a parameter, not a constant`` () =
+    // five non-awaiting lines: extracted at a threshold of four, left alone at
+    // ten. The default is ten - four lines is a thin trade for a new function
+    let source =
+        "module Test\nlet f () =\n    task {\n"
+        + (awaits 8).Replace("    let!", "        let!")
+        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        let s4 = s3 + 4\n        return s4\n    }"
+
+    let tree, sourceText = parse source
+
+    let kindsAt threshold =
+        TaskStateMachine.find tree sourceText threshold false
+        |> List.choose (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.ExtractTail n -> Some n
+            | _ -> None)
+
+    Assert.NotEmpty(kindsAt 4)
+    Assert.Empty(kindsAt 10)
+
+[<Fact>]
+let ``async is left alone unless hoistReturnOnAsync is turned on`` () =
+    let source =
+        "module Test\nlet f (c: int) =\n    async {\n        let! x = async { return 1 }\n\n        match c with\n        | 1 -> return x\n        | _ -> return -1\n    }"
+
+    Assert.Empty(adviceIn source)
+
+[<Fact>]
+let ``hoistReturnOnAsync hoists the return in an async block`` () =
+    let source =
+        "module Test\nlet f (c: int) =\n    async {\n        let! x = async { return 1 }\n\n        match c with\n        | 1 -> return x\n        | _ -> return -1\n    }"
+
+    let hoists =
+        adviceInAsyncOn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty hoists
+    let patched = applyEdits source hoists
+    Assert.Contains("return\n", patched)
+    Assert.DoesNotContain("| 1 -> return x", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``hoistReturnOnAsync brings only the hoist, never the FS3511 advice`` () =
+    // async has no resumable state machine, so nothing here may claim the
+    // dynamic fallback: no let-rec advice, no let hoist, no branch split and
+    // no tail extraction, however oversized the block is
+    let source =
+        "module Test\nlet f (c: int) =\n    async {\n        let a = 1\n        let b = 2\n"
+        + (awaits 8)
+            .Replace("System.Threading.Tasks.Task.FromResult", "async.Return")
+            .Replace("    let!", "        let!")
+        + "\n        let rec loop (n: int) = if n = 0 then 0 else loop (n - 1)\n        let s1 = x1 + a + b\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        let s4 = s3 + 4\n        return s4 + loop c\n    }"
+
+    let kinds = adviceInAsyncOn source |> List.map (fun s -> s.Kind)
+
+    Assert.All(
+        kinds,
+        fun k ->
+            match k with
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> ()
+            | other -> failwithf "async should only ever get the hoist, got %A" other
+    )
+
+[<Fact>]
+let ``a use inside the branch blocks the hoist`` () =
+    // hoisting makes the branch the payload of one `return`, so it stops
+    // being CE code and a `use` in it re-binds from the builder's Using to
+    // the language's. A type offering both logged "async" before the hoist
+    // and "sync" after it, compiling clean either way - nothing would have
+    // caught this at build time
+    let source =
+        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n\n        match c with\n        | 1 ->\n            use ms = new System.IO.MemoryStream()\n            return int ms.Length + x\n        | _ -> return x\n    }"
+
+    Assert.Empty(
+        adviceIn source
+        |> List.filter (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+    )
+
+[<Fact>]
+let ``a use ahead of the branch still hoists - it stays CE code`` () =
+    let source =
+        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        use ms = new System.IO.MemoryStream()\n\n        match c with\n        | 1 -> return int ms.Length + x\n        | _ -> return x\n    }"
+
+    let hoists =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty hoists
+    let patched = applyEdits source hoists
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+

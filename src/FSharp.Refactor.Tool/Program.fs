@@ -1861,21 +1861,48 @@ let private readScript (checker: FSharpChecker) (script: string) =
             | Some text when text.Contains "#load" ->
                 let sourceText = SourceText.ofString text
 
-                let scriptOptions, _ =
-                    checker.GetProjectOptionsFromScript(
-                        script,
-                        sourceText,
-                        assumeDotNetFramework = false,
-                        useFsiAuxLib = true
-                    )
-                    |> Async.RunSynchronously
+                // FCS has to be told which reference set the script wants. .NET Core is
+                // right for modern scripts, but a script targeting .NET Framework (bare
+                // GAC `#r`s, net4x assemblies, System.Configuration.Install) cannot
+                // typecheck against it at all: mscorlib resolves to the Core facade, so
+                // even `open System.IO` reports DirectorySecurity as missing and every
+                // file the script #loads is written off. Try Core, and when that does not
+                // resolve retry as Framework, keeping whichever typechecks.
+                // PethostBackup/backend/Program.fsx: 160 errors as Core, 0 as Framework.
+                let attempt assumeDotNetFramework =
+                    let options, _ =
+                        checker.GetProjectOptionsFromScript(
+                            script,
+                            sourceText,
+                            assumeDotNetFramework = assumeDotNetFramework,
+                            useFsiAuxLib = true
+                        )
+                        |> Async.RunSynchronously
 
-                let scriptOptions = withFsiAuxLib script scriptOptions
-                let results = checker.ParseAndCheckProject scriptOptions |> Async.RunSynchronously
+                    let options = withFsiAuxLib script options
+                    let results = checker.ParseAndCheckProject options |> Async.RunSynchronously
 
-                let broken =
-                    results.Diagnostics
-                    |> Array.exists (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                    let errors =
+                        results.Diagnostics
+                        |> Array.filter (fun d ->
+                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+
+                    options, results, errors
+
+                let scriptOptions, results, errors =
+                    let (_, _, coreErrors) as asCore = attempt false
+
+                    if Array.isEmpty coreErrors then
+                        asCore
+                    else
+                        let (_, _, frameworkErrors) as asFramework = attempt true
+
+                        if frameworkErrors.Length < coreErrors.Length then
+                            asFramework
+                        else
+                            asCore
+
+                let broken = not (Array.isEmpty errors)
 
                 let loaded = scriptOptions.SourceFiles |> Array.map Path.GetFullPath
 
@@ -1966,6 +1993,29 @@ let rec private applyEditGroupsCheckingScripts
     (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
     (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
     : int * AppliedFile list =
+    // which of the scripts about to be edited were typechecking BEFORE the
+    // edit. The check below asks whether a rewritten script still has a
+    // context, and a script that never had one — it does not resolve its
+    // `#r`s, or it has no `#load` at all and so is never given one — would
+    // fail that test no matter what was written, so every fix to it was
+    // applied and put back on every run, forever. Only a script this pass
+    // actually broke may take its group down.
+    let contextBefore =
+        if dryRun then
+            System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        else
+            let checkable =
+                System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+            for path in editsByFile.Keys do
+                if
+                    path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
+                    && (readScript checker path).Context.IsSome
+                then
+                    checkable.Add path |> ignore
+
+            checkable
+
     let applied, changed = applyEditGroups dryRun suppressed editsByFile
 
     let brokenGroups =
@@ -1973,9 +2023,7 @@ let rec private applyEditGroupsCheckingScripts
             Set.empty
         else
             changed
-            |> List.filter (fun cf ->
-                cf.Path.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase)
-                && (readScript checker cf.Path).Context.IsNone)
+            |> List.filter (fun cf -> contextBefore.Contains cf.Path && (readScript checker cf.Path).Context.IsNone)
             |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
             |> Set.ofList
 
@@ -2777,7 +2825,7 @@ let private writeSarifReport (path: string) (target: string) (findings: Reported
                   "shortDescription", box (dict [ "text", box description ])
                   "fullDescription", box (dict [ "text", box $"{description} ({category} rule of fsharp-refactor)" ])
                   "helpUri", box "https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md"
-                  "help", box (dict [ "text", box $"See {code} in Rules.md and the README's rule table." ])
+                  "help", box (dict [ "text", box $"See {code} in Rules.md." ])
                   "defaultConfiguration", box (dict [ "level", box (reportLevel code Severity.Hint) ])
                   "properties",
                   box (dict [ "category", box category; "tags", box [ category; "fsharp"; "refactoring" ] ]) ])
@@ -3966,6 +4014,30 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
                 Error
                     $"Don't know what to do with '{Path.GetFileName raw}' — pass a .fsproj, .fsx, solution, directory or glob."
 
+/// A script's own compilation, as FCS resolves it.
+///
+/// `assumeDotNetFramework` picks the reference set, and it is not a mere
+/// preference: a .NET Framework script resolved against .NET Core's gets
+/// mscorlib as the Core facade, so `open System.IO` reports DirectorySecurity
+/// as missing and every file the script `#load`s is written off. Callers try
+/// Core and retry as Framework.
+let private scriptProjectOptions (checker: FSharpChecker) (path: string) (assumeDotNetFramework: bool) =
+    let sourceText = SourceText.ofString (File.ReadAllText path)
+
+    let options, diagnostics =
+        // useFsiAuxLib: scripts run under fsi get the fsi object
+        // (fsi.CommandLineArgs and friends); resolving without it
+        // reported "'fsi' is not defined" on perfectly good scripts
+        checker.GetProjectOptionsFromScript(
+            path,
+            sourceText,
+            assumeDotNetFramework = assumeDotNetFramework,
+            useFsiAuxLib = true
+        )
+        |> Async.RunSynchronously
+
+    withFsiAuxLib path options, diagnostics
+
 /// The compilation to analyze, from either input kind.
 ///
 /// A script needs no MSBuild at all — FCS resolves a script's own
@@ -3977,14 +4049,11 @@ let private optionsFor (checker: FSharpChecker) (parseOnly: bool) (chosenFramewo
     match target with
     | Target.Script script ->
         let path = Path.GetFullPath script
-        let sourceText = SourceText.ofString (File.ReadAllText path)
 
-        let options, diagnostics =
-            // useFsiAuxLib: scripts run under fsi get the fsi object
-            // (fsi.CommandLineArgs and friends); resolving without it
-            // reported "'fsi' is not defined" on perfectly good scripts
-            checker.GetProjectOptionsFromScript(path, sourceText, assumeDotNetFramework = false, useFsiAuxLib = true)
-            |> Async.RunSynchronously
+        // .NET Core first — right for modern scripts, and the caller retries
+        // as .NET Framework when this reference set does not resolve (the
+        // retry lives beside baselineErrorList, where the typecheck is)
+        let options, diagnostics = scriptProjectOptions checker path false
 
         // a reference the script host could not resolve leaves the script
         // half-typed, and most rules then stay silent; say so rather than
@@ -3992,7 +4061,7 @@ let private optionsFor (checker: FSharpChecker) (parseOnly: bool) (chosenFramewo
         for d in diagnostics |> List.truncate 5 do
             eprintfn $"  (script reference: {d.Message})"
 
-        Ok(withFsiAuxLib path options)
+        Ok options
     | Target.Project(project, _) ->
         // announced BEFORE it starts: this step can take a minute, and a
         // line that only appears afterwards is no help while you are
@@ -4635,6 +4704,55 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                    |> Array.forall (fun f ->
                        sweptFiles.Contains(Path.GetFullPath(f).ToLowerInvariant(), fileSweepKey (definesKey options) f)))
 
+        // Which reference set a script wants is not knowable before it is
+        // typechecked, and getting it wrong loses not a reference but the
+        // whole compilation: a .NET Framework script resolved against .NET
+        // Core's mscorlib facade reports DirectorySecurity missing from
+        // `open System.IO` and writes off every file it `#load`s — 158
+        // errors on PethostBackup/backend/Program.fsx, 0 as Framework. So
+        // typecheck what optionsFor chose and retry as Framework when that
+        // did not resolve, keeping whichever set resolves better. This IS
+        // the typecheck baselineErrorList would run, handed on rather than
+        // repeated. readScript chooses the same way for the scripts the
+        // --api-changes pass discovers.
+        let options, scriptBaseline =
+            match target with
+            | Target.Script script when not (skipCompilationCheck || opts.ParseOnly) ->
+                Out.dimPart "typechecking the script... "
+                Console.Out.Flush()
+                let sw = Stopwatch.StartNew()
+                let asCore = projectErrors checker options
+
+                let retried =
+                    if Array.isEmpty asCore then
+                        None
+                    else
+                        let frameworkOptions, _ =
+                            scriptProjectOptions checker (Path.GetFullPath script) true
+
+                        let asFramework = projectErrors checker frameworkOptions
+
+                        // fewer, not zero: a Framework script can still have
+                        // a genuine error, and the only question here is
+                        // which reference set it was written against
+                        if asFramework.Length < asCore.Length then
+                            Some(frameworkOptions, asFramework)
+                        else
+                            None
+
+                sw.Stop()
+
+                match retried with
+                | Some(frameworkOptions, errors) ->
+                    Out.dim
+                        $"{sw.ElapsedMilliseconds} ms (.NET Framework reference set: {asCore.Length} error(s) as .NET Core, {errors.Length} as .NET Framework)"
+
+                    frameworkOptions, Some errors
+                | None ->
+                    Out.dim $"{sw.ElapsedMilliseconds} ms"
+                    options, Some asCore
+            | _ -> options, None
+
         let snapshot =
             if opts.DryRun || skipCompilationCheck then
                 Map.empty
@@ -4650,13 +4768,18 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 printfn "  (every source file already swept in an earlier compilation — project check skipped)"
                 [||]
             else
-                Out.dimPart "typechecking the project... "
-                Console.Out.Flush()
-                let baselineSw = Stopwatch.StartNew()
-                let errors = projectErrors checker options
-                baselineSw.Stop()
-                Out.dim $"{baselineSw.ElapsedMilliseconds} ms"
-                errors
+                match scriptBaseline with
+                // the script's reference set was chosen by typechecking it;
+                // that is this same compilation, so it is the baseline
+                | Some errors -> errors
+                | None ->
+                    Out.dimPart "typechecking the project... "
+                    Console.Out.Flush()
+                    let baselineSw = Stopwatch.StartNew()
+                    let errors = projectErrors checker options
+                    baselineSw.Stop()
+                    Out.dim $"{baselineSw.ElapsedMilliseconds} ms"
+                    errors
 
         let baselineErrors = baselineErrorList.Length
 
