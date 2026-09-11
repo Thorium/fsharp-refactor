@@ -55,7 +55,6 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\TrailingSemicolon.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\UnimplementedBranch.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DictTryGet.fs" />
-    <Compile Include="..\FSharp.Refactor.Analyzers\RegexUsage.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\StructDu.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DuFieldNames.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ParamOrder.fs" />
@@ -70,6 +69,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\ObjectDesign.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\OptionMatch.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LoopPerf.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\RegexUsage.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\IndexedLoop.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ListIndexing.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\TypeTestChain.fs" />

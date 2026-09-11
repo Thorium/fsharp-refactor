@@ -643,6 +643,129 @@ let dynamicFallbackLines (analyzedFile: string) : Set<int> =
     | true, lines -> lines
     | _ -> Set.empty
 
+/// The repository root above a file: the nearest ancestor holding `.git` or
+/// a solution. None when the file is not inside one.
+let private repositoryRoot (analyzedFile: string) =
+    let rec up (dir: System.IO.DirectoryInfo) =
+        if isNull dir then
+            None
+        elif
+            System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, ".git"))
+            || System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, ".git"))
+            || System.IO.Directory.EnumerateFiles(dir.FullName, "*.sln*") |> Seq.isEmpty |> not
+        then
+            Some dir.FullName
+        else
+            up dir.Parent
+
+    try
+        up (System.IO.FileInfo(System.IO.Path.GetFullPath analyzedFile).Directory)
+    with _ -> // fsharpanalyzer: ignore-line FR0055
+        None
+
+/// Every test source of the repository, read once: (path, text) for each
+/// `.fs`/`.fsx` whose path carries "test", build output excluded.
+let private testSources =
+    System.Collections.Concurrent.ConcurrentDictionary<string, (string * string)[]>(StringComparer.OrdinalIgnoreCase)
+
+/// A path below the root, forward-slashed and lower-cased, for the "is this
+/// a test file" question. Asked of the ABSOLUTE path, a repository under
+/// `C:\git\contest-app` or `...\latest\...` would make every file a test
+/// source and no file a production one.
+let private relativeLower (root: string) (p: string) =
+    let full = p.Replace('\\', '/')
+    let rootSlash = root.Replace('\\', '/').TrimEnd('/') + "/"
+
+    (if full.StartsWith(rootSlash, StringComparison.OrdinalIgnoreCase) then
+         full.Substring rootSlash.Length
+     else
+         full)
+        .ToLowerInvariant()
+
+let private readTestSources (root: string) =
+    testSources.GetOrAdd(
+        root,
+        fun root ->
+            try
+                System.IO.Directory.EnumerateFiles(root, "*.fs*", System.IO.SearchOption.AllDirectories)
+                |> Seq.filter (fun p ->
+                    let lower = relativeLower root p
+
+                    (lower.EndsWith ".fs" || lower.EndsWith ".fsx")
+                    && lower.Contains "test"
+                    && not (
+                        lower.Contains "/obj/"
+                        || lower.Contains "/bin/"
+                        || lower.Contains "/node_modules/"
+                    ))
+                |> Seq.choose (fun p ->
+                    try
+                        Some(p, System.IO.File.ReadAllText p)
+                    with _ -> // fsharpanalyzer: ignore-line FR0055
+                        None)
+                |> Array.ofSeq
+            with _ -> // fsharpanalyzer: ignore-line FR0055
+                [||]
+    )
+
+/// Every test source in this file's repository that carries the literal
+/// VERBATIM, quotes included: (path, text). The text of an exception is
+/// observable behaviour, and a test pinning it is the observer: enriching
+/// the message under such a test breaks the test (Fuuga's
+/// DraftAndRefineTests, FSharp.Data's XmlProvider), and nothing at build
+/// time says so.
+let testFilesMentioning (analyzedFile: string) (literal: string) : (string * string) list =
+    match repositoryRoot analyzedFile with
+    | None -> []
+    | Some root ->
+        readTestSources root
+        |> Array.filter (fun (_, text) -> text.Contains literal)
+        |> List.ofArray
+
+/// The string literals thrown by `failwith` in the repository's PRODUCTION
+/// sources, read once. Projects are analysed in name order, not dependency
+/// order, so a test project can come before the code it tests: the assertion
+/// side cannot wait to be told which messages this run enriched. Instead it
+/// asks the question the other way round - is the text I pin a production
+/// throw at all? - which gives the same answer whichever project goes first.
+let private productionThrows =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string list>(StringComparer.OrdinalIgnoreCase)
+
+let productionFailwithLiterals (analyzedFile: string) : string list =
+    match repositoryRoot analyzedFile with
+    | None -> []
+    | Some root ->
+        productionThrows.GetOrAdd(
+            root,
+            fun root ->
+                try
+                    // a plain string literal handed straight to failwith
+                    let pattern =
+                        System.Text.RegularExpressions.Regex(@"\bfailwith\s+(""(?:[^""\\]|\\.)*"")")
+
+                    System.IO.Directory.EnumerateFiles(root, "*.fs", System.IO.SearchOption.AllDirectories)
+                    |> Seq.filter (fun p ->
+                        let lower = relativeLower root p
+
+                        not (lower.Contains "test")
+                        && not (
+                            lower.Contains "/obj/"
+                            || lower.Contains "/bin/"
+                            || lower.Contains "/node_modules/"
+                        ))
+                    |> Seq.collect (fun p ->
+                        try
+                            pattern.Matches(System.IO.File.ReadAllText p)
+                            |> Seq.map (fun m -> m.Groups.[1].Value)
+                        with _ -> // fsharpanalyzer: ignore-line FR0055
+                            Seq.empty)
+                    |> Seq.distinct
+                    |> List.ofSeq
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    []
+        )
+
+
 /// The effective suppression-comment policy for a file:
 /// "all" | "no-correctness" | "none".
 let suppressionPolicy (analyzedFile: string) : string = (configFor analyzedFile).Suppressions

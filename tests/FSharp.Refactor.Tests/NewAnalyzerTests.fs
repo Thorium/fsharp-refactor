@@ -143,6 +143,113 @@ let ``instance regex call outside a loop is not flagged`` () =
             "module Test\nopen System.Text.RegularExpressions\nlet r = Regex \"a.c\"\nlet f (s: string) = r.IsMatch s"
     )
 
+[<Fact>]
+let ``regex call in a List.filter lambda is hoisted like a loop`` () =
+    // a lambda handed to a collection function runs once per element
+    assertRegexHoist
+        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> Regex.IsMatch(s, \"a.c\"))"
+        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> acRegex.IsMatch s)"
+
+[<Fact>]
+let ``regex call in a lambda given to a non-collection function is not a loop`` () =
+    // `lock` runs its callback once; only List/Seq/Array callbacks iterate
+    Assert.Empty(
+        regexIn
+            "module Test\nopen System.Text.RegularExpressions\nlet f (o: obj) (s: string) =\n    lock o (fun () -> Regex.IsMatch(s, \"a.c\"))"
+    )
+
+/// Apply a construction hoist's edits bottom-up and verify the patched text.
+let private assertRegexConstructionHoist (source: string) (expectedPatched: string) =
+    match regexIn source with
+    | [ s ] ->
+        Assert.Equal(RegexUsage.RegexSuggestionKind.HoistConstruction, s.Kind)
+
+        let patched =
+            s.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, t) -> applyEdit acc r t) source
+
+        Assert.Equal(expectedPatched, patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one construction hoist, got %d: %A" (List.length other) other
+
+[<Fact>]
+let ``regex constructed in a for loop is hoisted and the binding becomes an alias`` () =
+    assertRegexConstructionHoist
+        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
+        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex \"a+\"\nlet f (xs: string list) =\n    for x in xs do\n        let r = aRegex\n        r.IsMatch x |> ignore"
+
+[<Fact>]
+let ``regex constructed in a List.map lambda is hoisted with the Split chain intact`` () =
+    // FSharp.Analyzers.SDK's expandMultiProperties (commit 6dd6679), where
+    // the author hoisted by hand: only the construction moves, the `let
+    // regex =` and the `.Split(v)` after it stay as they were
+    assertRegexConstructionHoist
+        "module Test\nopen System.Text.RegularExpressions\nlet expandMultiProperties (properties: (string * string) list) =\n    properties |> List.map (fun (k, v) ->\n        let regex = Regex(\";([a-z,A-Z,0-9,_,-]*)=\")\n        let splits = regex.Split(v)\n        k, splits)"
+        "module Test\nopen System.Text.RegularExpressions\nlet private azAZ09Regex = Regex(\";([a-z,A-Z,0-9,_,-]*)=\")\nlet expandMultiProperties (properties: (string * string) list) =\n    properties |> List.map (fun (k, v) ->\n        let regex = azAZ09Regex\n        let splits = regex.Split(v)\n        k, splits)"
+
+[<Fact>]
+let ``regex constructed with constant RegexOptions keeps them in the hoisted binding`` () =
+    assertRegexConstructionHoist
+        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.map (fun x -> Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.Multiline).IsMatch x)"
+        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.Multiline)\nlet f (xs: string list) =\n    xs |> List.map (fun x -> aRegex.IsMatch x)"
+
+[<Fact>]
+let ``a qualified regex construction hoists without the open`` () =
+    assertRegexConstructionHoist
+        "module Test\nlet f (xs: string list) =\n    for x in xs do\n        let r = new System.Text.RegularExpressions.Regex(\"a+\")\n        r.IsMatch x |> ignore"
+        "module Test\nlet private aRegex = new System.Text.RegularExpressions.Regex(\"a+\")\nlet f (xs: string list) =\n    for x in xs do\n        let r = aRegex\n        r.IsMatch x |> ignore"
+
+[<Fact>]
+let ``a declined regex construction stays silent here and remains FR0037's note`` () =
+    // a non-literal pattern, options naming a local, a bare `Regex` without
+    // the open: each could differ per iteration or not be the Regex type
+    // at all. This rule adds nothing, and LoopPerf's note still fires
+    let declined (source: string) =
+        let tree, sourceText = parse source
+        Assert.Empty(RegexUsage.find tree sourceText)
+        Assert.Empty(RegexUsage.hoistedConstructions tree sourceText)
+        let _, constructions = LoopPerf.find false tree sourceText
+        Assert.Equal(1, constructions.Length)
+
+    declined
+        "module Test\nopen System.Text.RegularExpressions\nlet f (pattern: string) (xs: string list) =\n    for x in xs do\n        let r = Regex pattern\n        r.IsMatch x |> ignore"
+
+    declined
+        "module Test\nopen System.Text.RegularExpressions\nlet f (opts: RegexOptions) (xs: string list) =\n    for x in xs do\n        let r = Regex(\"a+\", opts)\n        r.IsMatch x |> ignore"
+
+    declined
+        "module Test\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
+
+    // and where this rule DOES fix, the range it hands FR0037 is the one
+    // LoopPerf reports, so the note can stand down on exactly that node
+    let tree, sourceText =
+        parse
+            "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
+
+    let _, constructions = LoopPerf.find false tree sourceText
+
+    match RegexUsage.hoistedConstructions tree sourceText, constructions with
+    | [ hoisted ], [ noted ] -> Assert.Equal(noted.Range, hoisted)
+    | other -> failwithf "Expected one hoist matching one note, got %A" other
+
+[<Fact>]
+let ``a hoisted regex binding lands above the declaration's doc comment`` () =
+    // a declaration's range starts at its `///` block, so the binding goes
+    // above it and the doc stays on the function; a plain `//` line above
+    // the declaration is outside the range and is walked over the same way
+    assertRegexHoist
+        "module Test\nopen System.Text.RegularExpressions\n\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a+\") then ()"
+        "module Test\nopen System.Text.RegularExpressions\n\nlet private aRegex = Regex \"a+\"\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch x then ()"
+
+    assertRegexHoist
+        "module Test\nopen System.Text.RegularExpressions\nlet g = 1\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a+\") then ()"
+        "module Test\nopen System.Text.RegularExpressions\nlet g = 1\nlet private aRegex = Regex \"a+\"\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch x then ()"
+
+    assertRegexConstructionHoist
+        "module Test\nopen System.Text.RegularExpressions\n/// Counts the a-runs.\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
+        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex \"a+\"\n/// Counts the a-runs.\nlet f (xs: string list) =\n    for x in xs do\n        let r = aRegex\n        r.IsMatch x |> ignore"
+
 // ---- FR0016 StructDu ----
 
 let private structDuIn (source: string) =

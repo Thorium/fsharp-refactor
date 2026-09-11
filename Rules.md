@@ -242,7 +242,7 @@ Redundant parentheses around single atomic arguments to a *function*: `List.max(
 
 ### FR0015 — performance
 
-Literal regex patterns → `StartsWith`/`EndsWith`/`Contains`, and a literal-pattern `Regex.Replace(s, "abcd", "x")` → `s.Replace("abcd", "x")` (declined wherever the two differ, each case measured: a `$` in the replacement is substitution syntax to Regex and plain text to String, an empty pattern makes String.Replace throw where Regex inserts between every character, an anchor is meaning Replace cannot carry, and the RegexOptions / MatchEvaluator overloads are different operations); static `Regex` calls inside loops are hoisted to a `let private xRegex = Regex "..."` module binding (advice-only when the `open` is missing or the name is taken; a call under `#if` hoists under the same `#if`)
+Literal regex patterns → `StartsWith`/`EndsWith`/`Contains`, and a literal-pattern `Regex.Replace(s, "abcd", "x")` → `s.Replace("abcd", "x")` (declined wherever the two differ, each case measured: a `$` in the replacement is substitution syntax to Regex and plain text to String, an empty pattern makes String.Replace throw where Regex inserts between every character, an anchor is meaning Replace cannot carry, and the RegexOptions / MatchEvaluator overloads are different operations); static `Regex` calls inside loops — `for`/`while`, or a lambda handed to a `List`/`Seq`/`Array` function, which runs once per element — are hoisted to a `let private xRegex = Regex "..."` module binding (advice-only when the `open` is missing or the name is taken; a call under `#if` hoists under the same `#if`; the binding lands above the declaration's doc comment, not between it and the `let`); a `Regex` CONSTRUCTED with a literal pattern inside such a loop — `Regex("lit")`, `new Regex("lit", RegexOptions.IgnoreCase ||| RegexOptions.Multiline)`, the qualified spelling too — is hoisted the same way, source text and all, and only the construction is replaced by the hoisted name: `let regex = Regex(";([a-z]*)=")` followed by `regex.Split(v)` (FSharp.Analyzers.SDK's `expandMultiProperties`, hoisted by hand there) becomes `let regex = azAZRegex` with the `Split` untouched; declined for a non-literal pattern, options naming a local, or a multi-line construction, in which case FR0037 keeps its note
 
 ### FR0016 — performance
 
@@ -330,7 +330,7 @@ Fragile runtime type comparisons (notes): `GetType().Name = "..."` breaks silent
 
 ### FR0037 — performance
 
-Build-once types constructed inside a loop: `ConcurrentDictionary`, `HttpClient`, `JsonSerializerOptions` (CA1869), `Regex`, `SearchValues.Create` (CA1870) — all expensive by design; note suggests hoisting out or making static. `HttpClient` gets its own wording: per-iteration construction exhausts sockets under load, and the right lifetime (a shared instance, or `IHttpClientFactory` under DI) is the author's call
+Build-once types constructed inside a loop: `ConcurrentDictionary`, `HttpClient`, `JsonSerializerOptions` (CA1869), `Regex`, `SearchValues.Create` (CA1870) — all expensive by design; note suggests hoisting out or making static. A `Regex` construction FR0015 can hoist (literal pattern, constant options) gets FR0015's fix instead and no note here; where FR0015 declines the note still fires. `HttpClient` gets its own wording: per-iteration construction exhausts sockets under load, and the right lifetime (a shared instance, or `IHttpClientFactory` under DI) is the author's call
 
 ### FR0038 — performance
 
@@ -766,7 +766,7 @@ A SQL command whose text carries no parameter at all — a full-table statement,
 
 ### FR0147 — idiom
 
-A namespace spelled out at every use — six times, or four when three segments deep, tunable with `{ "FR0147": { "uses": 6, "deepUses": 4 } }` — becomes one `open` after the file's last open, and every use loses the prefix; namespaces only, by the symbol's own namespace, so `System.IO.File.Exists` shortens to `File.Exists` and the longest namespace wins; a namespace whose open would clash with a name the file defines or already uses unqualified is noted, never fixed — the note names the clashing identifiers and where they come from (the file's own definition, another open, an FSharp.Core abbreviation, an unqualified use)
+A namespace spelled out at every use — six times, or four when three segments deep, tunable with `{ "FR0147": { "uses": 6, "deepUses": 4 } }` — becomes one `open` after the file's last open, and every use loses the prefix; namespaces only, by the symbol's own namespace, so `System.IO.File.Exists` shortens to `File.Exists` and the longest namespace wins; a namespace whose open would clash with a name the file defines or already uses unqualified is noted, never fixed — the note names the clashing identifiers and where they come from (the file's own definition, another open, an FSharp.Core abbreviation, an unqualified use); likewise when the namespace exports an extension member named like a method the file calls with a tupled argument — `seen.Contains (e, ct)` under an `open System.Linq` would hand the tuple to `Enumerable.Contains(value, comparer)` as two arguments — checked against every namespace by mechanism, not by name, and only when a fresh open is about to go in
 
 ### FR0148 — correctness
 

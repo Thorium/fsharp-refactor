@@ -1422,6 +1422,8 @@ let private regexUsageMessages (parseTree: ParsedInput) (source: ISourceText) : 
                 "This literal regex pattern is a plain string operation."
             | RegexUsage.RegexSuggestionKind.HoistFromLoop ->
                 "This Regex call re-parses its pattern on every loop iteration; construct one Regex before the loop and reuse it."
+            | RegexUsage.RegexSuggestionKind.HoistConstruction ->
+                "This Regex is constructed - its pattern parsed and compiled - on every loop iteration; the fix hoists the construction to a module-level binding built once."
 
         hint "FR0015" message s.Range (s.Edits |> List.map (fun (r, o, t) -> fix r o t)))
 
@@ -2173,7 +2175,22 @@ let private loopPerfMessages
 
         let constructionMessages =
             if constructionEnabled then
+                // a Regex construction FR0015 can hoist (literal pattern,
+                // constant options, a free name, the open in place) gets
+                // its FIX there; a note here on the same range would only
+                // repeat the finding. Wherever FR0015 declines - or is off
+                // - the construction still deserves the note
+                let hoistedByRegexUsage =
+                    if
+                        constructions |> List.exists (fun s -> s.TypeName = "Regex")
+                        && Configuration.isRuleEnabled fileName "FR0015" "RegexUsage"
+                    then
+                        RegexUsage.hoistedConstructions parseTree source
+                    else
+                        []
+
                 constructions
+                |> List.filter (fun s -> not (hoistedByRegexUsage |> List.exists (Range.equals s.Range)))
                 |> List.map (fun s ->
                     let message =
                         if s.TypeName = "HttpClient" then
@@ -4467,23 +4484,81 @@ let mapIgnoreCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // the sweep that rewrote an `internal` function's message) and callers
 // match on it. So the fix applies only under --api-changes, where the user
 // owns the callers and runs the tests; otherwise this is an advisory note.
-let private failwithContextMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+let private failwithContextMessages
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
     let applies = Visibility.apiChangesAllowed ()
+    let index = AstIndex.ofTree parseTree
 
-    FailwithContext.find parseTree source checkResults
-    |> List.map (fun s ->
-        hint
-            "FR0092"
-            $"This failure message is a constant: every occurrence in the log reads the same. Interpolating %s{s.FunctionName}'s arguments says which call produced it — check the values are safe to log first, and that no test asserts on the text."
-            s.Range
-            (if applies then
-                 [ fix s.Range s.OriginalText s.ReplacementText
-                   // `let f = function ... | _ -> failwith`: the wildcard
-                   // arm is named in the same fix
-                   for r, original, replacement in Option.toList s.PatternEdit do
-                       fix r original replacement ]
-             else
-                 []))
+    if SwallowedException.isTestFile index source then
+        // the test side: an assertion pinning the text of a PRODUCTION throw
+        // loosens to a prefix check, so it stays true once that throw gains
+        // its arguments - whichever of the two projects is analysed first.
+        // Only under --api-changes, the only mode that enriches
+        if applies then
+            // only a literal the production side WILL enrich: one whose every
+            // mention, in every test file, the rewrite can loosen
+            let enriched =
+                Configuration.productionFailwithLiterals fileName
+                |> List.filter (fun literal ->
+                    Configuration.testFilesMentioning fileName literal
+                    |> List.forall (fun (_, text) -> FailwithContext.everyMentionRewritable text literal))
+
+            FailwithContext.findAssertions source fileName enriched
+            |> List.map (fun (r, original, replacement) ->
+                hint
+                    "FR0092"
+                    "This assertion pins the exact text of a message that now carries its call's arguments; a prefix check keeps the assertion true to its intent."
+                    r
+                    [ fix r original replacement ])
+        else
+            []
+    else
+        FailwithContext.find parseTree source checkResults
+        |> List.map (fun s ->
+            // a test pinning the exact text is the observer of this
+            // behaviour. Without --api-changes that is the end of it: the
+            // note says where. With it, the message is enriched here and
+            // the assertion loosened to a prefix check when the test file
+            // is analysed - in whichever order the projects come
+            let assertedIn = Configuration.testFilesMentioning fileName s.OriginalText
+
+            // a mention the loosening cannot rewrite - another assertion
+            // dialect, or a test stub throwing the same text - keeps the
+            // enrichment out even under --api-changes: the test would go red
+            let unrewritable =
+                assertedIn
+                |> List.tryFind (fun (_, text) -> not (FailwithContext.everyMentionRewritable text s.OriginalText))
+
+            match assertedIn, unrewritable with
+            | (testFile, _) :: _, _ when not applies ->
+                hint
+                    "FR0092"
+                    $"This failure message is a constant, but a test pins its exact text ({System.IO.Path.GetFileName testFile}), so it is left alone. Under --api-changes it would be interpolated with %s{s.FunctionName}'s arguments and the assertion loosened to a prefix check."
+                    s.Range
+                    []
+            | _, Some(testFile, _) ->
+                hint
+                    "FR0092"
+                    $"This failure message is a constant, but {System.IO.Path.GetFileName testFile} mentions its exact text in a form the rewrite cannot loosen to a prefix check (only FsUnit `should equal` and xUnit `Assert.Equal` are), so it is left alone."
+                    s.Range
+                    []
+            | _ ->
+                hint
+                    "FR0092"
+                    $"This failure message is a constant: every occurrence in the log reads the same. Interpolating %s{s.FunctionName}'s arguments says which call produced it — check the values are safe to log first, and that no test asserts on the text."
+                    s.Range
+                    (if applies then
+                         [ fix s.Range s.OriginalText s.ReplacementText
+                           // `let f = function ... | _ -> failwith`: the wildcard
+                           // arm is named in the same fix
+                           for r, original, replacement in Option.toList s.PatternEdit do
+                               fix r original replacement ]
+                     else
+                         []))
 
 // The fix is an interpolated string, which needs the F# 5 syntax AND an
 // FSharp.Core that backs it: on PethostBackup's net48 project with
@@ -4494,7 +4569,7 @@ let private failwithContextMessages (parseTree: ParsedInput) (source: ISourceTex
 let failwithContextEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0092" "FailwithContext" (fun () ->
         if canInterpolate ctx.ProjectOptions then
-            whenChecked ctx (failwithContextMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+            whenChecked ctx (failwithContextMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
         else
             [])
 
@@ -4502,7 +4577,7 @@ let failwithContextEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let failwithContextCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0092" "FailwithContext" (fun () ->
         if canInterpolate ctx.ProjectOptions then
-            failwithContextMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+            failwithContextMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         else
             [])
 

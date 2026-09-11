@@ -53,6 +53,7 @@
 /// `--api-changes`; a plain sweep reports it as an advisory note.
 module FSharp.Refactor.FailwithContext
 
+open System
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
@@ -416,3 +417,65 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 PatternEdit = implicitArm |> Option.map snd }
                       | _ -> ()
                   | _ -> () ]
+
+/// The other half of the contract, in the TEST file. An enrichment appends
+/// to the message, so an assertion pinning the exact text has to become a
+/// prefix check to keep saying what it said. Two dialects are recognised:
+///
+///     ex.Message |> should equal "model inference failed"
+///                    → should startWith "model inference failed"
+///     Assert.Equal("model inference failed", ex.Message)
+///                    → Assert.StartsWith("model inference failed", ex.Message)
+///
+/// The literals come from `Configuration.productionFailwithLiterals` - the
+/// text a production `failwith` throws - so an assertion on any other text
+/// is someone else's contract. The production side enriches only where
+/// `everyMentionRewritable` holds for every test file that mentions the
+/// literal, and this side loosens under the same condition: the two halves
+/// then agree whichever project is analysed first.
+let private assertionForms (literal: string) : (Regex * string) list =
+    let escaped = Regex.Escape literal
+
+    [ // FsUnit
+      Regex($@"should\s+equal\s+{escaped}"), "should startWith " + literal
+      // xUnit
+      Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,"), "Assert.StartsWith(" + literal + "," ]
+
+/// Every occurrence of the literal in this test text sits inside an
+/// assertion form the rewrite knows. An NUnit `Assert.AreEqual`, an Expecto
+/// `Expect.equal`, an Unquote `=!`, or a test-side stub throwing the same
+/// text (Fuuga's DraftAndRefineTests) is a mention the rewrite cannot
+/// loosen, and enriching the production message under it turns the test
+/// red - so it vetoes the enrichment instead.
+let everyMentionRewritable (text: string) (literal: string) : bool =
+    let covered =
+        assertionForms literal
+        |> List.collect (fun (pattern, _) ->
+            [ for m in pattern.Matches text -> m.Index, m.Index + m.Length ])
+
+    let rec mentions (from: int) =
+        match text.IndexOf(literal, from, StringComparison.Ordinal) with
+        | -1 -> []
+        | i -> i :: mentions (i + literal.Length)
+
+    mentions 0
+    |> List.forall (fun i -> covered |> List.exists (fun (s, e) -> s <= i && i + literal.Length <= e))
+
+let findAssertions
+    (source: ISourceText)
+    (fileName: string)
+    (enrichedLiterals: string list)
+    : (range * string * string) list =
+    [ for literal in enrichedLiterals do
+          for line in 0 .. source.GetLineCount() - 1 do
+              let text = source.GetLineString line
+
+              for pattern, replacement in assertionForms literal do
+                  for m in pattern.Matches text do
+                      let r =
+                          Range.mkRange
+                              fileName
+                              (Position.mkPos (line + 1) m.Index)
+                              (Position.mkPos (line + 1) (m.Index + m.Length))
+
+                      yield r, m.Value, replacement ]

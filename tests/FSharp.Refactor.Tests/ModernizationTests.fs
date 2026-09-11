@@ -1227,6 +1227,56 @@ let ``FR0147: a namespace spelled three times becomes an open after the existing
     | other -> failwithf "Expected one qualified-names finding, got %A" other
 
 [<Fact>]
+let ``FR0147: an open whose extension member would split a tupled call is declined`` () =
+    // F#'s method-call syntax hands `x.M (a, b)` over as TWO arguments once
+    // a two-parameter overload of M is in scope, and an open can bring one:
+    // SQLProvider's `seen.Contains (entity, ct)` was the tuple argument of
+    // List<T>.Contains until `open System.Linq` arrived, then stopped
+    // compiling sixty lines from the edit. Three spellings would normally
+    // earn the open; here they earn a note that names the mechanism
+    let source =
+        "module Test\nopen System.Collections.Generic\nlet seen = List<string * int>()\nlet check (e: string) (ct: int) = if not (seen.Contains (e, ct)) then seen.Add(e, ct)\nlet a (xs: int[]) = System.Linq.Enumerable.Sum xs\nlet b (xs: int[]) = System.Linq.Enumerable.Max xs\nlet c (xs: int[]) = System.Linq.Enumerable.Min xs"
+
+    match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System.Linq") with
+    | [ s ] ->
+        Assert.Empty s.Edits
+        Assert.Contains("'Contains'", s.Reason.Value)
+        Assert.Contains("tupled argument", s.Reason.Value)
+    | other -> failwithf "Expected a declined System.Linq finding, got %A" other
+
+[<Fact>]
+let ``FR0147: the same file without a tupled call gets its System.Linq open`` () =
+    // the guard is about the calls in the file, not about the namespace
+    let source =
+        "module Test\nopen System.Collections.Generic\nlet seen = List<string * int>()\nlet check (e: string) (ct: int) = if not (seen.Contains((e, ct))) then seen.Add(e, ct)\nlet a (xs: int[]) = System.Linq.Enumerable.Sum xs\nlet b (xs: int[]) = System.Linq.Enumerable.Max xs\nlet c (xs: int[]) = System.Linq.Enumerable.Min xs"
+
+    match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System.Linq") with
+    | [ s ] ->
+        Assert.Equal(None, s.Reason)
+        let patched = applyAll source s.Edits
+        Assert.Contains("open System.Linq", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected an offered System.Linq finding, got %A" other
+
+[<Fact>]
+let ``FR0147: the tupled-call guard holds for any namespace with the extension, not System.Linq alone`` () =
+    // a project's own namespace exporting a generic `Contains` extension, from
+    // another of its files, does exactly what Enumerable's does
+    let extensions =
+        "namespace Ext\nopen System.Runtime.CompilerServices\n[<Extension>]\ntype ListExt =\n    [<Extension>]\n    static member Contains(xs: System.Collections.Generic.List<'T>, a: 'T, b: int) = b > 0\n    [<Extension>]\n    static member Sum(xs: int[]) = Array.sum xs\n    [<Extension>]\n    static member Max(xs: int[]) = Array.max xs\n    [<Extension>]\n    static member Min(xs: int[]) = Array.min xs"
+
+    let source =
+        "module Test\nopen System.Collections.Generic\nlet seen = List<string * int>()\nlet check (e: string) (ct: int) = if not (seen.Contains (e, ct)) then seen.Add(e, ct)\nlet a (xs: int[]) = Ext.ListExt.Sum xs\nlet b (xs: int[]) = Ext.ListExt.Max xs\nlet c (xs: int[]) = Ext.ListExt.Min xs"
+
+    let tree, sourceText, checkResults = parseAndCheckSecond extensions source
+
+    match QualifiedNames.find 3 2 tree sourceText checkResults |> List.filter (fun s -> s.Namespace = "Ext") with
+    | [ s ] ->
+        Assert.Empty s.Edits
+        Assert.Contains("'Contains'", s.Reason.Value)
+    | other -> failwithf "Expected a declined Ext finding, got %A" other
+
+[<Fact>]
 let ``FR0147: only the namespace part goes, a type stays qualified by its name`` () =
     let source =
         "module Test\nlet a (p: string) = System.IO.File.Exists p\nlet b (p: string) = System.IO.File.ReadAllText p\nlet c (p: string) = System.IO.Path.GetFileName p"
@@ -2458,3 +2508,69 @@ let ``FR0150: a computation the scope consumes itself is not escaping`` () =
         escapingUsesIn
             "open System.Threading\nopen System.Threading.Tasks\nlet start () =\n    use cts = new CancellationTokenSource()\n\n    let t =\n        task {\n            do! Task.Delay(1000, cts.Token)\n            return 1\n        }\n\n    t.Result"
     )
+
+[<Fact>]
+let ``FR0092: an assertion pinning a production throw's text loosens to a prefix check`` () =
+    // the enrichment APPENDS to the message; `should equal` would go false,
+    // `should startWith` stays true to the assertion's intent. Only a literal
+    // that is a production throw qualifies: the stub's own message is left
+    let source =
+        "module Tests\nopen FsUnit.Xunit\nopen Xunit\nlet a (ex: exn) = ex.Message |> should equal \"model inference failed\"\nlet b (ex: exn) = Assert.Equal(\"model inference failed\", ex.Message)\nlet c (ex: exn) = ex.Message |> should equal \"stub failed\""
+
+    let _, sourceText = parse source
+
+    let edits =
+        FailwithContext.findAssertions sourceText "Tests.fs" [ "\"model inference failed\"" ]
+        |> List.map (fun (r, original, replacement) -> r.StartLine, original, replacement)
+        |> List.sort
+
+    Assert.Equal<(int * string * string) list>(
+        [ 4, "should equal \"model inference failed\"", "should startWith \"model inference failed\""
+          5, "Assert.Equal(\"model inference failed\",", "Assert.StartsWith(\"model inference failed\"," ],
+        edits
+    )
+
+[<Fact>]
+let ``FR0092: a mention the loosening cannot rewrite vetoes the enrichment`` () =
+    // both halves read this one predicate, so they agree whichever project
+    // is analysed first: the production throw is enriched only where every
+    // test mention is a form that becomes a prefix check
+    let literal = "\"model inference failed\""
+
+    Assert.True(
+        FailwithContext.everyMentionRewritable
+            "ex.Message |> should equal \"model inference failed\"\nAssert.Equal(\"model inference failed\", ex.Message)"
+            literal
+    )
+
+    // NUnit's dialect is not recognised
+    Assert.False(FailwithContext.everyMentionRewritable "Assert.AreEqual(\"model inference failed\", ex.Message)" literal)
+
+    // a test-side stub throwing the same text (Fuuga) is not an assertion at all
+    Assert.False(
+        FailwithContext.everyMentionRewritable
+            "let stub () = failwith \"model inference failed\"\nex.Message |> should equal \"model inference failed\""
+            literal
+    )
+
+    // no mention at all is trivially fine
+    Assert.True(FailwithContext.everyMentionRewritable "let x = 1" literal)
+
+[<Fact>]
+let ``FR0147: an F#-style extension in the namespace's AutoOpen module is seen by the tupled-call guard`` () =
+    // `open Ext` opens the AutoOpen module with it, and the optional
+    // extension there splits `seen.Contains (e, ct)` exactly as a C#-style
+    // one does (reproduced: the identical FS0001)
+    let extensions =
+        "namespace Ext\n[<AutoOpen>]\nmodule Exts =\n    type System.Collections.Generic.List<'T> with\n        member xs.Contains(a: 'T, b: int) = b > 0\ntype Helpers =\n    static member Sum(xs: int[]) = Array.sum xs\n    static member Max(xs: int[]) = Array.max xs\n    static member Min(xs: int[]) = Array.min xs"
+
+    let source =
+        "module Test\nopen System.Collections.Generic\nlet seen = List<string * int>()\nlet check (e: string) (ct: int) = if not (seen.Contains (e, ct)) then seen.Add(e, ct)\nlet a (xs: int[]) = Ext.Helpers.Sum xs\nlet b (xs: int[]) = Ext.Helpers.Max xs\nlet c (xs: int[]) = Ext.Helpers.Min xs"
+
+    let tree, sourceText, checkResults = parseAndCheckSecond extensions source
+
+    match QualifiedNames.find 3 2 tree sourceText checkResults |> List.filter (fun s -> s.Namespace = "Ext") with
+    | [ s ] ->
+        Assert.Empty s.Edits
+        Assert.Contains("'Contains'", s.Reason.Value)
+    | other -> failwithf "Expected a declined Ext finding, got %A" other

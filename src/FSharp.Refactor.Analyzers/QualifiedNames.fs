@@ -194,7 +194,9 @@ let private referencedAssemblies (check: FSharpCheckFileResults) =
             cachedAssemblies <- Some(key, assemblies)
             assemblies
 
-/// Namespaces conventionally spelled out.
+/// Namespaces conventionally spelled out. What an open may do to the code
+/// already in the file is a mechanism's property, not a namespace's, and
+/// `clashes` below checks the mechanism against every namespace alike.
 let private keptLong (ns: string) =
     ns.StartsWith "Microsoft.FSharp" || ns.StartsWith "FSharp.Core"
 
@@ -680,6 +682,105 @@ let find
                   | SynType.LongIdent(SynLongIdent(id = [ id ])) -> yield id
                   | _ -> () ]
 
+        // the methods the file calls with a parenthesised tuple — `x.M (a, b)`
+        // — by name. F# hands that tuple over as TWO arguments the moment a
+        // two-parameter overload of M is in scope, and an open can bring one:
+        // SQLProvider's `seen.Contains (entity, ct)` was the tuple argument
+        // of `List<T>.Contains` until `open System.Linq` arrived, then became
+        // `entity` against `Enumerable.Contains(value, comparer)` and stopped
+        // compiling sixty lines from the edit. The same happens under any
+        // namespace that exports an extension member of the name: the check
+        // is on the mechanism, not on System.Linq
+        let tupledMethodCalls =
+            lazy
+                (set
+                    [ for _, e in index.Exprs do
+                          match e with
+                          | SynExpr.App(
+                              funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                              argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false))) when ids.Length >= 2 ->
+                              yield (List.last ids).idText
+                          | SynExpr.App(
+                              funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))
+                              argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false))) ->
+                              yield (List.last ids).idText
+                          | _ -> () ])
+
+        // the extension members a namespace exports, by name: F# type
+        // extensions and `[<Extension>]` functions in its modules, C#
+        // extension methods in its static classes. Cached like the names —
+        // the same enumeration, asked once per namespace and reference set
+        let extensionMembersIn (ns: string) : Set<string> =
+            let isExtension (m: FSharpMemberOrFunctionOrValue) =
+                try
+                    m.IsExtensionMember
+                    || m.Attributes
+                       |> Seq.exists (fun a -> a.AttributeType.DisplayName = "ExtensionAttribute")
+                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                    false
+
+            // an `[<AutoOpen>]` module of the namespace opens with it, and an
+            // F#-style extension (`type List<'T> with member xs.Contains(a,
+            // b)`) lives in exactly such a module - reproduced: the identical
+            // FS0001 through an AutoOpen module
+            let rec withAutoOpened (e: FSharpEntity) =
+                seq {
+                    yield e
+
+                    let nested =
+                        try
+                            if e.IsFSharpModule && autoOpen e then
+                                e.NestedEntities |> List.ofSeq
+                            else
+                                []
+                        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                            []
+
+                    yield! nested |> Seq.collect withAutoOpened
+                }
+
+            let ofEntities (entities: FSharpEntity seq) =
+                entities
+                |> Seq.collect flatten
+                |> Seq.filter (fun e ->
+                    try
+                        e.Namespace = Some ns
+                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                        false)
+                |> Seq.collect withAutoOpened
+                |> Seq.collect (fun e ->
+                    try
+                        e.MembersFunctionsAndValues
+                        |> Seq.filter isExtension
+                        |> Seq.map (fun m -> m.DisplayName)
+                        |> List.ofSeq
+                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                        [])
+
+            let fromAssemblies =
+                exportedNamesCache.GetOrAdd(
+                    $"extensions:{ns}|{assemblyKey}",
+                    fun _ ->
+                        try
+                            assemblies
+                            |> Seq.collect (fun a ->
+                                try
+                                    a.Contents.Entities |> List.ofSeq
+                                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                    [])
+                            |> ofEntities
+                            |> Seq.map (fun name -> name, true)
+                            |> Map.ofSeq
+                        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                            Map.empty
+                )
+
+            fromAssemblies
+            |> Map.toSeq
+            |> Seq.map fst
+            |> Set.ofSeq
+            |> Set.union (ofEntities projectEntities.Value |> Set.ofSeq)
+
         // would the open re-bind this unqualified name? A head that resolves
         // to an F# MODULE merges with a TYPE of that name from the namespace
         // — `String.concat` keeps meaning the F# String module under `open
@@ -824,6 +925,18 @@ let find
                     |> List.tryPick (resolvesOutsideTo ns)
                     |> Option.map (fun other -> name, other))
 
+            // a method the file calls with a tupled argument that the open
+            // would give a same-named extension member: the tuple would
+            // split into separate arguments against it. Only a FRESH open
+            // changes what is in scope; the file's calls are collected once,
+            // and the namespace's extensions only when there is a call to
+            // match them against
+            let reboundCalls () =
+                if alreadyOpen || tupledMethodCalls.Value.IsEmpty then
+                    Set.empty
+                else
+                    Set.intersect tupledMethodCalls.Value (extensionMembersIn ns)
+
             if not ownDefinitions.IsEmpty then
                 Some $"this file defines {quoted ownDefinitions} itself"
             elif not fromOtherOpens.IsEmpty then
@@ -838,20 +951,28 @@ let find
             elif not coreAbbreviations.IsEmpty then
                 Some $"{quoted coreAbbreviations} would shorten to an abbreviation that FSharp.Core spells too"
             else
-                match usedForElse () with
-                | [] -> None
-                | uses ->
-                    let described =
-                        uses
-                        |> List.truncate 4
-                        |> List.map (fun (name, other) ->
-                            if other = "" then
-                                $"'{name}'"
-                            else
-                                $"'{name}' (from {other})")
-                        |> String.concat ", "
+                let rebound = reboundCalls ()
 
-                    Some $"this file already uses {described} unqualified for something else"
+                if not rebound.IsEmpty then
+                    let call = if rebound.Count = 1 then "a call" else "calls"
+
+                    Some
+                        $"it brings extension member(s) {quoted rebound} beside {call} this file makes with a tupled argument, which would then split into separate arguments"
+                else
+                    match usedForElse () with
+                    | [] -> None
+                    | uses ->
+                        let described =
+                            uses
+                            |> List.truncate 4
+                            |> List.map (fun (name, other) ->
+                                if other = "" then
+                                    $"'{name}'"
+                                else
+                                    $"'{name}' (from {other})")
+                            |> String.concat ", "
+
+                        Some $"this file already uses {described} unqualified for something else"
 
         resolved
         |> List.groupBy (fun (ns, r) -> ns, blockOf r)

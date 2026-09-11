@@ -15,9 +15,30 @@
 ///        for line in lines do
 ///            if asdfRegex.IsMatch line then ...
 ///
+///    A lambda handed to a List/Seq/Array function runs once per element,
+///    so `xs |> List.map (fun x -> Regex.IsMatch(x, "asdf"))` is the same
+///    loop (LoopPerf.loopBinders decides, shared with the other loop rules).
+///
 ///    The instance name is derived from the pattern text; when the name is
 ///    taken, the required `open` is missing, or the call shape is unusual,
 ///    the hint is emitted without a fix.
+///
+/// 3. A Regex CONSTRUCTED with a literal pattern inside such a loop is the
+///    same cost spelled differently — FSharp.Analyzers.SDK's
+///    `expandMultiProperties` built `Regex(";([a-z,A-Z,0-9,_,-]*)=")` inside
+///    a `List.map` lambda and its author hoisted it by hand. The fix moves
+///    the construction, source text and all, to a module binding above the
+///    enclosing declaration and leaves whatever followed it in place:
+///
+///        let private azAZ09Regex = Regex(";([a-z,A-Z,0-9,_,-]*)=")
+///        ...
+///        let regex = azAZ09Regex
+///        let splits = regex.Split(v)
+///
+///    Only a literal pattern with, at most, options spelled from
+///    `RegexOptions.X` flags qualifies: a local in the options could vary
+///    per element. Where this rule declines it stays silent and FR0037
+///    notes the construction; where it fixes, that note stands down.
 module FSharp.Refactor.RegexUsage
 
 open System
@@ -34,6 +55,9 @@ type RegexSuggestionKind =
     | StringOperation
     /// Static Regex call inside a loop; Edits may be empty (advice only).
     | HoistFromLoop
+    /// Regex constructed inside a loop; always carries a fix (a declined
+    /// construction is FR0037's note, not this rule's).
+    | HoistConstruction
 
 type Suggestion =
     {
@@ -53,6 +77,56 @@ let private (|StaticRegexCall|_|) (e: SynExpr) =
         ->
         ValueSome((List.last ids).idText, arg)
     | _ -> ValueNone
+
+/// A dotted spelling of the Regex type: `System.Text.RegularExpressions.Regex`
+/// or any shorter suffix of it that an `open` of the prefix would make valid.
+/// Anything else ending in `.Regex` could be a function of that name in
+/// some module, and hoisting a call is not the same as hoisting a
+/// construction.
+let private isRegexTypePath (ids: Ident list) =
+    let full = "System.Text.RegularExpressions.Regex"
+    let text = identText ids
+    ids.Length >= 2 && (text = full || full.EndsWith("." + text))
+
+/// `Regex(...)` / `Regex "..."` / `new Regex(...)` in the bare spelling, or
+/// under the RegularExpressions path — the LoopPerf.ExpensiveCtor shapes,
+/// narrowed to this one type. Yields the constructor argument and whether
+/// the spelling is qualified: a bare `Regex` is the constructor only under
+/// the open, where the dotted one resolves anywhere.
+[<return: Struct>]
+let private (|RegexConstruction|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ id ])); expr = arg) when id.idText = "Regex" ->
+        ValueSome(false, arg)
+    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = arg) when isRegexTypePath ids ->
+        ValueSome(true, arg)
+    | SynExpr.App(isInfix = false; funcExpr = IdentName "Regex"; argExpr = arg) -> ValueSome(false, arg)
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
+        isRegexTypePath ids
+        ->
+        ValueSome(true, arg)
+    | _ -> ValueNone
+
+/// An options argument built only from `RegexOptions.X` flags joined by
+/// `|||`: the one shape that is the same on every iteration. A local name
+/// in there could be a different value per element, and a hoisted binding
+/// would freeze the first.
+let rec private constantOptions (e: SynExpr) =
+    match e with
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+        ids.Length >= 2 && ids.[ids.Length - 2].idText = "RegexOptions"
+    | SynExpr.App(
+        isInfix = false
+        funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_BitwiseOr"; argExpr = left)
+        argExpr = right) -> constantOptions left && constantOptions right
+    | SynExpr.Paren(expr = inner) -> constantOptions inner
+    | _ -> false
+
+/// The constructor / method arguments as a list, tuple or single.
+let private argsOf (arg: SynExpr) =
+    match stripParens arg with
+    | SynExpr.Tuple(exprs = es) -> es
+    | single -> [ single ]
 
 /// Any string literal, however it was written. `@"\d+"` is the ordinary way
 /// to write a regex in F# — restricting this to plain literals quietly missed
@@ -152,13 +226,57 @@ let private nameFromPattern (pattern: string) =
 /// Methods whose static (input, pattern) overloads map onto an instance call.
 let private hoistableMethods = set [ "IsMatch"; "Match"; "Matches"; "Split" ]
 
+/// The module-level `let` a node sits under, when there is one: the
+/// hoisted binding lands above it. Innermost first, so under a nested
+/// module it is that module's own declaration, where the same opens hold.
+let private enclosingLet (path: SyntaxNode list) =
+    path
+    |> List.tryPick (fun node ->
+        match node with
+        | SyntaxNode.SynModule(SynModuleDecl.Let _ as decl) -> Some decl
+        | _ -> None)
+
+/// The line a hoisted binding goes on: the declaration's first line,
+/// extended upward over the plain `//` comment block that describes it —
+/// contiguous comment lines at the declaration's own column, crossing
+/// blank lines only when another comment line sits above them
+/// (TaskStateMachine's extendUpOverComments, plus the column guard). The
+/// `///` doc block needs no such help: a declaration's range already starts
+/// at its XML doc, so the range start is above it. A `// what f does` line
+/// is outside the range, and a binding inserted at the range start would
+/// wedge itself between that comment and the function it describes.
+/// `floorLine` is the previous declaration's last line, so the walk never
+/// claims a comment that trails the declaration above.
+let private hoistLine (source: ISourceText) (floorLine: int) (column: int) (startLine: int) =
+    let line n = source.GetLineString(n - 1)
+    let isBlank (l: string) = String.IsNullOrWhiteSpace l
+
+    let isComment (l: string) =
+        l.Length - l.TrimStart().Length = column && l.TrimStart().StartsWith "//"
+
+    let mutable top = startLine
+    let mutable probe = startLine - 1
+
+    while probe > floorLine && (isComment (line probe) || isBlank (line probe)) do
+        if isComment (line probe) then
+            top <- probe
+
+        probe <- probe - 1
+
+    top
+
+/// The name a hoist's insertion text declares, for the collision check
+/// between two hoists in one file.
+let private hoistedNameIn = Regex(@"let private (\w+) =", RegexOptions.Compiled)
+
 /// Find literal-pattern IsMatch calls and loop-resident static Regex calls.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+    let index = AstIndex.ofTree parseTree
 
     let hasRegexOpen =
         lazy
-            ((AstIndex.ofTree parseTree).Decls
+            (index.Decls
              |> Array.exists (fun (_, decl) ->
                  match decl with
                  | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
@@ -170,15 +288,45 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             ([ for i in 0 .. source.GetLineCount() - 1 -> source.GetLineString i ]
              |> String.concat "\n")
 
+    // the last line of whatever declaration ends above this one (0 at the
+    // top of the file): the comment walk's floor
+    let floorAbove (decl: SynModuleDecl) =
+        index.Decls
+        |> Array.fold
+            (fun acc (_, d) ->
+                if d.Range.EndLine < decl.Range.StartLine then
+                    max acc d.Range.EndLine
+                else
+                    acc)
+            0
+
+    // the insertion edit for `let private <name> = <rhs>` above `decl`,
+    // indented to it; a call under `#if` yields a hoisted instance under
+    // the same `#if`
+    let hoistInsert (decl: SynModuleDecl) (originLine: int) (name: string) (rhs: string) =
+        let indent = String(' ', decl.Range.StartColumn)
+
+        let line =
+            hoistLine source (floorAbove decl) decl.Range.StartColumn decl.Range.StartLine
+
+        let at = Position.mkPos line decl.Range.StartColumn
+        let insertAt = Range.mkRange decl.Range.FileName at at
+
+        let binding =
+            let bare = sprintf "let private %s = %s" name rhs
+
+            match conditionToKeep source originLine insertAt.StartLine with
+            | Some condition -> $"#if {condition}\n{bare}\n#endif"
+            | None -> bare
+
+        insertAt, "", $"{binding}\n{indent}"
+
     let collector =
         { new SyntaxCollectorBase() with
             override _.WalkExpr(path, expr) =
                 match expr with
                 | StaticRegexCall(methodName, arg) ->
-                    let args =
-                        match stripParens arg with
-                        | SynExpr.Tuple(exprs = es) -> es
-                        | single -> [ single ]
+                    let args = argsOf arg
 
                     // rule 1: IsMatch(input, "literal") -> string operation
                     match methodName, args with
@@ -222,61 +370,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     | _ -> ()
 
                     // rule 2: a static Regex call with a literal pattern inside
-                    // a loop re-parses the pattern per iteration
+                    // a loop - or a collection-function lambda, which runs
+                    // once per element - re-parses the pattern per iteration
                     let patternArg =
                         match args with
                         | [ _; (StringLiteral _ as p) ] -> Some p
                         | [ _; (StringLiteral _ as p); _ ] when methodName = "Replace" -> Some p
                         | _ -> None
 
-                    let insideLoop =
-                        path
-                        |> List.exists (fun node ->
-                            match node with
-                            | SyntaxNode.SynExpr(SynExpr.For _)
-                            | SyntaxNode.SynExpr(SynExpr.ForEach _)
-                            | SyntaxNode.SynExpr(SynExpr.While _) -> true
-                            | _ -> false)
-
-                    match patternArg with
-                    | Some patternExpr when insideLoop ->
-                        let enclosingLet =
-                            path
-                            |> List.tryPick (fun node ->
-                                match node with
-                                | SyntaxNode.SynModule decl -> Some decl
-                                | _ -> None)
-                            |> Option.bind (fun decl ->
-                                match decl with
-                                | SynModuleDecl.Let _ -> Some decl
-                                | _ -> None)
-
+                    match patternArg, LoopPerf.loopBinders path with
+                    | Some patternExpr, ValueSome _ ->
                         let name =
                             match patternExpr with
                             | StringLiteral pattern -> nameFromPattern pattern
                             | _ -> "compiledRegex"
 
                         let edits =
-                            match enclosingLet with
+                            match enclosingLet path with
                             | Some decl when
                                 hasRegexOpen.Value
                                 && (hoistableMethods.Contains methodName || methodName = "Replace")
                                 && not (fileText.Value.Contains name)
                                 ->
-                                let indent = String(' ', decl.Range.StartColumn)
-
-                                let insertAt = Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start
-
-                                // a call under `#if` yields a hoisted
-                                // instance under the same `#if`
-                                let binding =
-                                    let bare =
-                                        sprintf "let private %s = Regex %s" name (textOfRange source patternExpr.Range)
-
-                                    match conditionToKeep source expr.Range.StartLine insertAt.StartLine with
-                                    | Some condition -> $"#if {condition}\n{bare}\n#endif"
-                                    | None -> bare
-
                                 let callReplacement =
                                     match methodName, args with
                                     | "Replace", [ input; _; repl ] ->
@@ -291,7 +406,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 if callReplacement = "" then
                                     []
                                 else
-                                    [ insertAt, "", $"{binding}\n{indent}"
+                                    [ hoistInsert
+                                          decl
+                                          expr.Range.StartLine
+                                          name
+                                          (sprintf "Regex %s" (textOfRange source patternExpr.Range))
                                       expr.Range, textOfRange source expr.Range, callReplacement ]
                             | _ -> []
 
@@ -301,6 +420,33 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                               Kind = RegexSuggestionKind.HoistFromLoop
                               Edits = edits }
                     | _ -> ()
+                // rule 3: a Regex constructed inside a loop, pattern literal
+                // and options constant. The construction's own source text
+                // becomes the binding and its name takes the construction's
+                // place; a `let regex = azAZ09Regex` left behind is a
+                // harmless alias and `.Split(v)` after it still reads. A
+                // construction spanning lines would carry its indentation
+                // into the binding, so only a single-line one qualifies
+                | RegexConstruction(qualified, arg) when isSingleLine expr.Range ->
+                    let pattern =
+                        match argsOf arg with
+                        | [ StringLiteral pattern ] -> Some pattern
+                        | [ StringLiteral pattern; options ] when constantOptions options -> Some pattern
+                        | _ -> None
+
+                    match pattern, enclosingLet path, LoopPerf.loopBinders path with
+                    | Some pattern, Some decl, ValueSome _ when qualified || hasRegexOpen.Value ->
+                        let name = nameFromPattern pattern
+
+                        if not (fileText.Value.Contains name) then
+                            suggestions.Add
+                                { Range = expr.Range
+                                  OriginalText = textOfRange source expr.Range
+                                  Kind = RegexSuggestionKind.HoistConstruction
+                                  Edits =
+                                    [ hoistInsert decl expr.Range.StartLine name (textOfRange source expr.Range)
+                                      expr.Range, textOfRange source expr.Range, name ] }
+                    | _ -> ()
                 | _ -> () }
 
     AstIndex.replay collector parseTree
@@ -309,8 +455,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     // a literal IsMatch in a loop produces both suggestions; the string
     // operation subsumes the hoisting advice. Two hoists deriving the same
-    // binding would collide, so only the first keeps its fix.
-    let seenBindings = System.Collections.Generic.HashSet<string>()
+    // NAME would collide (a static call and a construction of one pattern
+    // spell different bindings under the same name), so only the first
+    // keeps its fix - and a construction without a fix is not this rule's
+    // to report, FR0037 notes it
+    let seenNames = System.Collections.Generic.HashSet<string>()
+
+    let hoistedName (s: Suggestion) =
+        match s.Edits with
+        | (_, _, insertText) :: _ ->
+            let m = hoistedNameIn.Match insertText
+            if m.Success then Some m.Groups.[1].Value else None
+        | [] -> None
 
     all
     |> List.filter (fun s ->
@@ -318,11 +474,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         || all
            |> List.exists (fun o -> o.Kind = RegexSuggestionKind.StringOperation && o.Range = s.Range)
            |> not)
-    |> List.map (fun s ->
+    |> List.choose (fun s ->
+        match s.Kind, hoistedName s with
+        | RegexSuggestionKind.HoistFromLoop, Some name when not (seenNames.Add name) -> Some { s with Edits = [] }
+        | RegexSuggestionKind.HoistConstruction, Some name when not (seenNames.Add name) -> None
+        | _ -> Some s)
+
+/// The constructions rule 3 fixes, by range: FR0037 ("Regex built in a
+/// loop") stands down on these, since the fix here already answers its
+/// note. Every construction this rule declines - a pattern that is not a
+/// literal, options naming a local, a taken name, a missing open - is
+/// absent here and stays FR0037's to report.
+let hoistedConstructions (parseTree: ParsedInput) (source: ISourceText) : range list =
+    find parseTree source
+    |> List.choose (fun s ->
         match s.Kind, s.Edits with
-        | RegexSuggestionKind.HoistFromLoop, (_, _, bindingText) :: _ when not (seenBindings.Add bindingText) ->
-            { s with Edits = [] }
-        | _ -> s)
+        | RegexSuggestionKind.HoistConstruction, _ :: _ -> Some s.Range
+        | _ -> None)
 
 // ---- FR0122: the pattern must compile ----
 
@@ -375,11 +543,6 @@ let findInvalidPatterns (parseTree: ParsedInput) : (range * string * string) lis
             with :? ArgumentException as ex ->
                 Some(patternExpr.Range, pattern, ex.Message)
         | _ -> None
-
-    let argsOf (arg: SynExpr) =
-        match stripParens arg with
-        | SynExpr.Tuple(exprs = es) -> es
-        | single -> [ single ]
 
     [ for _, expr in index.Exprs do
           match expr with
