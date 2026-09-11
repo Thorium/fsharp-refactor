@@ -306,7 +306,7 @@ let ``FR0105: the editor's first offer widens to int64 and typechecks, the secon
     | [ s ] ->
         match s.WidenFix, s.CheckedFix with
         | Some(r, _, widened), Some(r2, _, checked') ->
-            Assert.Equal("int64 seconds * 1_000_000L |> Checked.int", widened)
+            Assert.Equal("Checked.int (int64 seconds * 1_000_000L)", widened)
             let patched = applyEdit source r widened
             Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
             Assert.Equal("Checked.( * ) seconds 1_000_000", checked')
@@ -331,7 +331,7 @@ let ``FR0105: the widening rewrites the whole arithmetic expression and narrows 
     | [ s ] ->
         match s.WidenFix with
         | Some(r, _, widened) ->
-            Assert.Equal("(1000000L * 1000000L + 5L) / 100000L |> Checked.int", widened)
+            Assert.Equal("Checked.int ((1000000L * 1000000L + 5L) / 100000L)", widened)
             let patched = applyEdit source r widened
             Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
         | None -> failwith "Expected the widening offer"

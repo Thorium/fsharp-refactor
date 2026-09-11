@@ -10,9 +10,13 @@
 ///
 /// Three tiers, decided by where the bare mentions of the binder send it:
 ///   - FIX (`let` → `use`) when the value provably stays inside the scope:
-///     every mention is a member access (`x.Read ...`) or a comparison
-///     operand, never inside a lambda (which may outlive the scope), and
-///     no result position mentions it at all
+///     every mention is an INVOKED member (`x.Read ...`) or a comparison
+///     operand, never inside a lambda (which may outlive the scope), no
+///     result position mentions it (a plain-valued call excepted), no
+///     local bound to a value reached through it (`let cmd =
+///     conn.CreateCommand()`) escapes either, the object does no work of
+///     its own after the scope (a timer, a watcher, an event it raises),
+///     and an enclosing computation expression's builder has a `Using`
 ///   - NOTHING when an escape is an ownership transfer: the value is the
 ///     scope's result (the caller owns it — the factory pattern; also
 ///     inside a tuple, a record, an upcast or a union case), an argument
@@ -66,6 +70,13 @@ type Destination =
     /// needed after the scope exits (a task, a sequence, an object tied
     /// to it)
     | ReadInResult
+    /// the object does work of its own after the scope returns — a timer,
+    /// a watcher, a listener, an event it raises that the scope subscribed
+    /// to, a callback it was constructed with — which `use` would stop
+    | SelfActive
+    /// the binding sits in a computation expression whose builder defines
+    /// no `Using`, so `use` cannot bind it there (FS0708)
+    | NoBuilderUsing
     /// something this rule cannot read
     | Unknown
 
@@ -97,6 +108,10 @@ let describeEscape (s: Suggestion) =
         "a closure (a lambda, local function or object expression) captures it and may run after the scope has exited"
     | Some Destination.ReadInResult ->
         "the scope's result reads it, so it may still be needed after the scope exits (a task, a sequence, an object tied to it)"
+    | Some Destination.SelfActive ->
+        "it does work of its own after the scope returns (a timer, a watcher, a listener, an event it raises, a callback it was built with), which 'use' would stop"
+    | Some Destination.NoBuilderUsing ->
+        "it sits in a computation expression whose builder defines no 'Using', so 'use' cannot bind it there"
     | Some Destination.Unknown
     | None -> "it also escapes this scope (passed, stored, or captured)"
 
@@ -189,80 +204,102 @@ let private locallyConstructed (check: FSharpCheckFileResults) (source: ISourceT
         | ValueNone -> false
     | _ -> false
 
-/// A stream wrapper built over a stream the scope did not create: its
-/// Dispose closes the caller's stream too (leaveOpen is false by default).
-/// The F# compiler's ilnativeres.fs wraps a caller-owned `resStream` in a
-/// BinaryWriter in a function that appends to it — a `use` there closed the
-/// stream under the caller. Such a wrapper is not this scope's to dispose.
-let private streamWrappers =
-    set
-        [ "BinaryWriter"
-          "BinaryReader"
-          "StreamReader"
-          "StreamWriter"
-          "BufferedStream"
-          "GZipStream"
-          "DeflateStream"
-          "BrotliStream"
-          "CryptoStream"
-          "XmlReader"
-          "XmlWriter" ]
+/// Is the type one of `bases` or derived from one, or does it implement
+/// one of `interfaces`?
+let private typeMatches (bases: Set<string>) (interfaces: Set<string>) (t: FSharpType) =
+    try
+        let t = OptionModule.stripAbbreviations t
 
-let private wrapsForeignStream
+        let rec baseChain (t: FSharpType) =
+            if t.HasTypeDefinition then
+                let entity = t.TypeDefinition
+
+                (entity.TryFullName |> Option.exists bases.Contains)
+                || (entity.BaseType |> Option.exists baseChain)
+            else
+                false
+
+        baseChain t
+        || (not interfaces.IsEmpty
+            && t.HasTypeDefinition
+            && t.TypeDefinition.AllInterfaces
+               |> Seq.exists (fun i ->
+                   i.HasTypeDefinition
+                   && (i.TypeDefinition.TryFullName |> Option.exists interfaces.Contains)))
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        false
+
+/// The type a symbol reads as: a value's own type, a member's or
+/// property's return type, a field's type.
+let private symbolType (symbol: FSharpSymbol) =
+    try
+        match symbol with
+        | :? FSharpMemberOrFunctionOrValue as value ->
+            if value.IsProperty || value.IsMember then
+                Some value.ReturnParameter.Type
+            else
+                Some value.FullType
+        | :? FSharpField as field -> Some field.FieldType
+        | _ -> None
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        None
+
+/// Types a wrapper's constructor takes ownership of: its Dispose closes
+/// the stream, reader, writer or handler too (leaveOpen and disposeHandler
+/// default to owning).
+let private adoptedResourceBases =
+    set
+        [ "System.IO.Stream"
+          "System.IO.TextReader"
+          "System.IO.TextWriter"
+          "System.Net.Http.HttpMessageHandler" ]
+
+/// A wrapper built over a resource the scope did not create: its Dispose
+/// closes that resource too (leaveOpen is false by default, HttpClient
+/// disposes its handler). The F# compiler's ilnativeres.fs wraps a
+/// caller-owned `resStream` in a BinaryWriter in a function that appends
+/// to it — a `use` there closed the stream under the caller; a
+/// `LineSource(stream: Stream)` wrapping its constructor parameter in a
+/// StreamReader per call closed the shared stream after the first line.
+/// Only a value the SAME scope constructed (`isLocal`) is the scope's own:
+/// a parameter, a constructor parameter, a class `let` field, a
+/// module-level value, an outer binding or a property read is foreign.
+/// Such a wrapper is not this scope's to dispose.
+let private wrapsForeignResource
     (check: FSharpCheckFileResults)
     (source: ISourceText)
-    (parameters: Set<string>)
+    (isLocal: string -> bool)
     (rhs: SynExpr)
     =
-    let firstArgument (args: SynExpr) =
+    let arguments (args: SynExpr) =
         match stripParens args with
-        | SynExpr.Tuple(exprs = first :: _) -> Some first
-        | single -> Some single
+        | SynExpr.Tuple(exprs = elements) -> elements
+        | SynExpr.Const(SynConst.Unit, _) -> []
+        | single -> [ single ]
 
-    let wrapper (t: SynType) =
-        match t with
-        | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty ->
-            streamWrappers.Contains (List.last ids).idText
-        | _ -> false
+    // a stream, reader, writer or handler — not a path the wrapper opens
+    // itself, nor a flag; unresolved, the name's suffix decides
+    let resourceLike (id: Ident) =
+        match symbolAt check source id |> Option.bind symbolType with
+        | Some t -> typeMatches adoptedResourceBases Set.empty t
+        | None ->
+            let name = id.idText
 
-    // a stream, reader or writer — not a path the wrapper opens itself
-    let isStreamLike (id: Ident) =
-        match symbolAt check source id with
-        | Some(:? FSharpMemberOrFunctionOrValue as value) ->
-            (try
-                let t = OptionModule.stripAbbreviations value.FullType
+            name.EndsWith "Stream"
+            || name.EndsWith "Reader"
+            || name.EndsWith "Writer"
+            || name.EndsWith "Handler"
 
-                t.HasTypeDefinition
-                && (let name = t.TypeDefinition.DisplayName in
-                    name.EndsWith "Stream" || name.EndsWith "Reader" || name.EndsWith "Writer")
-             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                 false)
-        | _ -> false
-
-    // the caller's: a stream-typed parameter of the enclosing function; a
-    // stream the scope built is the scope's own
-    let isParameter (e: SynExpr) =
-        match stripParens e with
-        | SynExpr.Ident id -> parameters.Contains id.idText && isStreamLike id
-        | SynExpr.LongIdent(longDotId = SynLongIdent(id = head :: _)) -> parameters.Contains head.idText
+    let foreign (arg: SynExpr) =
+        match unwrapped arg with
+        | SynExpr.Ident id -> resourceLike id && not (isLocal id.idText)
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> resourceLike (List.last ids)
         | _ -> false
 
     match rhs with
-    | SynExpr.New(targetType = t; expr = args) when wrapper t -> firstArgument args |> Option.exists isParameter
-    | SynExpr.App(funcExpr = SynExpr.Ident id; argExpr = args) when streamWrappers.Contains id.idText ->
-        firstArgument args |> Option.exists isParameter
+    | SynExpr.New(expr = args)
+    | SynExpr.App(isInfix = false; argExpr = args) -> arguments args |> List.exists foreign
     | _ -> false
-
-/// The names the bindings and lambdas on a path take as parameters.
-let private parametersOn (path: SyntaxNode list) =
-    path
-    |> List.collect (fun node ->
-        match node with
-        | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats pats))) ->
-            pats |> List.collect patNames
-        | SyntaxNode.SynExpr(SynExpr.Lambda(parsedData = Some(pats, _))) -> pats |> List.collect patNames
-        | _ -> [])
-    |> Set.ofList
 
 /// Does the identifier name a constructor of a disposable type — or, as
 /// the type name of a `new T(...)`, a disposable type T?
@@ -307,6 +344,10 @@ type private Escape =
     | StoredLocally of string
     /// captured by a closure that may run after the scope
     | Captured
+    /// a local bound to a value reached through the binder (a task, a
+    /// command, a reader) is the scope's result: the caller still needs
+    /// the binder behind it
+    | ResultReads
 
 /// Collection members that keep their argument.
 let private collectionInserts = set [ "Add"; "TryAdd"; "Enqueue"; "Push"; "Insert" ]
@@ -576,27 +617,29 @@ let private typeIsA
     match symbolAt check source binder with
     | Some(:? FSharpMemberOrFunctionOrValue as value) ->
         (try
-            let t = OptionModule.stripAbbreviations value.FullType
-
-            let rec baseChain (t: FSharpType) =
-                if t.HasTypeDefinition then
-                    let entity = t.TypeDefinition
-
-                    (entity.TryFullName |> Option.exists bases.Contains)
-                    || (entity.BaseType |> Option.exists baseChain)
-                else
-                    false
-
-            baseChain t
-            || (not interfaces.IsEmpty
-                && t.HasTypeDefinition
-                && t.TypeDefinition.AllInterfaces
-                   |> Seq.exists (fun i ->
-                       i.HasTypeDefinition
-                       && (i.TypeDefinition.TryFullName |> Option.exists interfaces.Contains)))
+            typeMatches bases interfaces value.FullType
          with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
              false)
     | _ -> false
+
+/// Types that do work of their own after the scope returns — on a thread
+/// pool callback, an OS notification, an accepted connection — so a `use`
+/// stops them at scope exit: the timer never ticks, the watcher never
+/// raises, the listener closes. Such an object is owned by whoever stops
+/// it, never by the scope that started it.
+let private selfActiveBases =
+    set
+        [ "System.Timers.Timer"
+          "System.Threading.Timer"
+          "System.Threading.PeriodicTimer"
+          "System.IO.FileSystemWatcher"
+          "System.Diagnostics.Process"
+          "System.Net.Sockets.TcpListener"
+          "System.Net.Sockets.Socket"
+          "System.Net.HttpListener" ]
+
+let private selfActiveType check source binder =
+    typeIsA selfActiveBases Set.empty check source binder
 
 let private flushSensitive check source binder =
     typeIsA flushSensitiveBases (set [ "System.Data.IDbTransaction" ]) check source binder
@@ -645,6 +688,17 @@ let private plainValueTypes =
           "Microsoft.FSharp.Core.Unit"
           "Microsoft.FSharp.Core.unit" ]
 
+/// Immutable containers that are fully evaluated when built: plain when
+/// their contents are (a `string option`, an `int list`). A seq is not —
+/// it runs when enumerated.
+let private plainContainerTypes =
+    set
+        [ "Microsoft.FSharp.Core.FSharpOption`1"
+          "Microsoft.FSharp.Core.FSharpValueOption`1"
+          "Microsoft.FSharp.Core.FSharpResult`2"
+          "Microsoft.FSharp.Collections.FSharpList`1"
+          "System.Nullable`1" ]
+
 let rec private isPlainValue (t: FSharpType) =
     let t = OptionModule.stripAbbreviations t
 
@@ -655,7 +709,9 @@ let rec private isPlainValue (t: FSharpType) =
 
         (entity.TryFullName |> Option.exists plainValueTypes.Contains)
         || entity.IsEnum
-        || (entity.IsArrayType && t.GenericArguments |> Seq.forall isPlainValue)
+        || ((entity.IsArrayType
+             || (entity.TryFullName |> Option.exists plainContainerTypes.Contains))
+            && t.GenericArguments |> Seq.forall isPlainValue)
     else
         false
 
@@ -668,6 +724,133 @@ let private plainValued (check: FSharpCheckFileResults) (source: ISourceText) (m
          with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
              false)
     | _ -> false
+
+/// Does the local the identifier names hold a plain value? A local bound
+/// to anything else reached through a disposable (a task, a command, a
+/// reader, a method group) is an alias of it. Unresolved counts as not
+/// plain.
+let private plainValuedLocal (check: FSharpCheckFileResults) (source: ISourceText) (local: Ident) =
+    match symbolAt check source local with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            isPlainValue value.FullType
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             false)
+    | _ -> false
+
+/// Is the member the identifier names a METHOD — one that, mentioned
+/// without being applied, is a method group handed on as a function
+/// (`Seq.map c.Convert xs`, `changed.Add c.Refresh`) rather than a value
+/// read? A property, an event, a field or a value is read where it
+/// stands; unresolved counts as a method.
+let private isMethod (check: FSharpCheckFileResults) (source: ISourceText) (memberId: Ident) =
+    match symbolAt check source memberId with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            value.IsMember
+            && not (
+                value.IsProperty
+                || value.IsPropertyGetterMethod
+                || value.IsPropertySetterMethod
+                || value.IsEvent
+            )
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             true)
+    | Some _ -> false
+    | None -> true
+
+let private isEvent (check: FSharpCheckFileResults) (source: ISourceText) (memberId: Ident) =
+    match symbolAt check source memberId with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            value.IsEvent
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             false)
+    | _ -> false
+
+/// Is the mention at `mention` the function position of an application
+/// (`x.Read buf`, `x.Read(buf, 0, n)`, `x.Get<int>()`)? Anything else —
+/// an argument, a pipe operand, a bare value — is a method group when the
+/// member is a method.
+let private invokedAt (path: SyntaxNode list) (mention: range) =
+    let rec applied (path: SyntaxNode list) (inner: range) =
+        match path with
+        | SyntaxNode.SynExpr(SynExpr.TypeApp(range = r)) :: rest -> applied rest r
+        | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f)) :: _ -> Range.rangeContainsRange f.Range inner
+        | _ -> false
+
+    applied path mention
+
+/// Members whose `unit` call starts self-driven work: `Start()`,
+/// `BeginAccept`-style, `EnableRaisingEvents`.
+let private startsWork (check: FSharpCheckFileResults) (source: ISourceText) (memberId: Ident) =
+    let name = memberId.idText
+
+    (name = "Start" || name.StartsWith "Begin" || name.StartsWith "Enable")
+    && (match symbolAt check source memberId with
+        | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+            (try
+                let t = OptionModule.stripAbbreviations value.ReturnParameter.Type
+
+                t.HasTypeDefinition
+                && (t.TypeDefinition.TryFullName
+                    |> Option.exists (fun n -> n = "Microsoft.FSharp.Core.Unit" || n = "Microsoft.FSharp.Core.unit"))
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 true)
+        | _ -> true)
+
+/// Builders whose `Using` the compiler knows without a symbol: the F#
+/// core computations and `seq`, which is a language form.
+let private usingBuilders = set [ "async"; "task"; "backgroundTask"; "seq" ]
+
+/// Does the builder expression of a `builder { ... }` support `use`: one
+/// of the known builders, or a value (a constructor, a property) whose
+/// type defines a `Using` member, on itself or a base? `query { }` and a
+/// hand-written `maybe { }` without one make `use` an FS0708.
+let private builderDefinesUsing (check: FSharpCheckFileResults) (source: ISourceText) (builder: SynExpr) =
+    let rec definesUsing (entity: FSharpEntity) =
+        entity.MembersFunctionsAndValues
+        |> Seq.exists (fun m -> m.DisplayName = "Using")
+        || (entity.BaseType
+            |> Option.exists (fun b -> b.HasTypeDefinition && definesUsing b.TypeDefinition))
+
+    match headIdent builder with
+    | ValueSome id when usingBuilders.Contains id.idText -> true
+    | ValueSome id ->
+        match symbolAt check source id with
+        | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+            (try
+                let entity =
+                    if value.IsConstructor then
+                        value.DeclaringEntity
+                    else
+                        symbolType value
+                        |> Option.map OptionModule.stripAbbreviations
+                        |> Option.filter (fun t -> t.HasTypeDefinition)
+                        |> Option.map (fun t -> t.TypeDefinition)
+
+                entity |> Option.exists definesUsing
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 false)
+        | _ -> false
+    | ValueNone -> false
+
+/// The computation expression the binding at `path` sits DIRECTLY in —
+/// its `use` binds to that builder's Using — and the builder expression,
+/// when readable. None when a lambda, an object expression or a binding
+/// intervenes: `use` there is the language's own.
+let private enclosingComputation (path: SyntaxNode list) =
+    let rec climb (path: SyntaxNode list) =
+        match path with
+        | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: SyntaxNode.SynExpr(SynExpr.App(
+            isInfix = false; funcExpr = builder)) :: _ -> Some(Some builder)
+        | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: _ -> Some None
+        | SyntaxNode.SynExpr(SynExpr.Lambda _ | SynExpr.ObjExpr _) :: _
+        | SyntaxNode.SynBinding _ :: _
+        | [] -> None
+        | _ :: rest -> climb rest
+
+    climb path
 
 /// The names that hold values beyond a scope at `at`: the instance fields
 /// and properties of the type declaring it, and the file's module-level
@@ -814,6 +997,51 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                | _ -> false)
                        | _ -> false))
 
+        // the names the enclosing scope (a member, a function, a lambda, a
+        // computation) constructs itself: a wrapper over one of these is
+        // the scope's own to dispose. A construction outside the lambda
+        // is shared by every call of it, so it counts as foreign there
+        let localConstructions (declPath: SyntaxNode list) =
+            let scope =
+                declPath
+                |> List.tryPick (fun node ->
+                    match node with
+                    // a binding's own range stops at its `=`: take the rhs in
+                    | SyntaxNode.SynBinding(SynBinding(expr = rhs; range = r)) -> Some(Range.unionRanges r rhs.Range)
+                    | SyntaxNode.SynExpr(SynExpr.Lambda(range = r) | SynExpr.MatchLambda(range = r) | SynExpr.ObjExpr(
+                        range = r) | SynExpr.ComputationExpr(range = r)) -> Some r
+                    | _ -> None)
+
+            index.Exprs
+            |> Array.collect (fun (_, e) ->
+                match e with
+                | LetOrUseE inner when
+                    not inner.IsBang
+                    && (scope |> Option.forall (fun r -> Range.rangeContainsRange r inner.Range))
+                    ->
+                    inner.Bindings
+                    |> List.collect (fun (SynBinding(headPat = p; expr = rhs)) ->
+                        if locallyConstructed check source (unwrapped rhs) then
+                            patNames p
+                        else
+                            [])
+                    |> Array.ofList
+                | _ -> [||])
+            |> Set.ofArray
+
+        // the identifiers a local binding's pattern names — the aliases
+        // a value reached through the binder can be bound to
+        let rec patIdents (p: SynPat) =
+            match p with
+            | SynPat.Named(ident = SynIdent(ident = id)) -> [ id ]
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> [ id ]
+            | SynPat.Paren(inner, _)
+            | SynPat.Typed(pat = inner)
+            | SynPat.Attrib(pat = inner) -> patIdents inner
+            | SynPat.Tuple(elementPats = ps) -> ps |> List.collect patIdents
+            | SynPat.As(lhsPat = lhs; rhsPat = rhs) -> patIdents lhs @ patIdents rhs
+            | _ -> []
+
         [ for declPath, expr in index.Exprs do
               match expr with
               | LetOrUseE lou when not (lou.IsBang || lou.IsUse || lou.IsRecursive) ->
@@ -828,7 +1056,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       (let rhs = unwrapped rhs
 
                        locallyConstructed check source rhs
-                       && not (wrapsForeignStream check source (parametersOn declPath) rhs)
+                       && not (
+                           wrapsForeignResource
+                               check
+                               source
+                               (fun local -> (localConstructions declPath).Contains local)
+                               rhs
+                       )
                        && not (ObjectDesign.ownsNoResource check source rhs))
                       && ObjectDesign.resolvesToDisposable check source binder
                       ->
@@ -836,25 +1070,85 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       let body = lou.Body
                       let holders = holdersOn index declPath expr.Range
 
-                      // classify every mention of the binder in the scope
-                      let mentions =
+                      let mentionsOf (names: Set<string>) =
                           index.Exprs
                           |> Array.filter (fun (_, e) ->
                               match e with
-                              | SynExpr.Ident id when id.idText = name ->
+                              | SynExpr.Ident id when names.Contains id.idText ->
                                   Range.rangeContainsRange body.Range id.idRange
                               | SynExpr.LongIdent(longDotId = SynLongIdent(id = firstId :: _)) when
-                                  firstId.idText = name
+                                  names.Contains firstId.idText
                                   ->
                                   Range.rangeContainsRange body.Range firstId.idRange
                               | _ -> false)
+
+                      // every mention of the binder itself in the scope
+                      let binderMentions = mentionsOf (Set.singleton name)
+
+                      // the locals bound to values reached THROUGH the
+                      // binder — `let pending = client.GetStringAsync url`,
+                      // `let cmd = conn.CreateCommand()`, `let f = c.Convert`
+                      // — and through those in turn: a task, a command, a
+                      // reader, a method group still needs the binder
+                      // behind it, so where such an alias goes is where the
+                      // binder goes. A plain-valued local (`let b =
+                      // stream.ReadByte()`) is evaluated and done
+                      let aliases =
+                          let localBindings =
+                              index.Exprs
+                              |> Array.collect (fun (_, e) ->
+                                  match e with
+                                  | LetOrUseE inner when Range.rangeContainsRange body.Range inner.Range ->
+                                      inner.Bindings
+                                      |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
+                                          match p with
+                                          // a local function: its body's mentions
+                                          // are captures already
+                                          | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> None
+                                          | _ -> Some(patIdents p, rhs.Range))
+                                      |> Array.ofList
+                                  | _ -> [||])
+
+                          let rec grow (tracked: Set<string>) =
+                              let mentioned = mentionsOf tracked
+
+                              let more =
+                                  localBindings
+                                  |> Array.collect (fun (ids, rhsRange) ->
+                                      if
+                                          mentioned
+                                          |> Array.exists (fun (_, m) -> Range.rangeContainsRange rhsRange m.Range)
+                                      then
+                                          ids
+                                          |> List.filter (fun id ->
+                                              not (tracked.Contains id.idText)
+                                              && not (plainValuedLocal check source id))
+                                          |> List.map (fun id -> id.idText)
+                                          |> Array.ofList
+                                      else
+                                          [||])
+
+                              if more.Length = 0 then
+                                  tracked
+                              else
+                                  grow (Set.union tracked (Set.ofArray more))
+
+                          grow (Set.singleton name) |> Set.remove name
+
+                      // classify every mention of the binder and of its
+                      // aliases in the scope
+                      let mentions =
+                          if aliases.IsEmpty then
+                              binderMentions
+                          else
+                              mentionsOf (Set.add name aliases)
 
                       // `x.Dispose()`, `x.Close()` where Close is Dispose
                       // (streams, writers, sockets), and
                       // `(x :> IDisposable).Dispose()` (fantomas's daemon
                       // tests), whose upcast hides the receiver
                       let manuallyDisposed =
-                          mentions
+                          binderMentions
                           |> Array.exists (fun (_, e) ->
                               match e with
                               | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ _; m ])) ->
@@ -869,7 +1163,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                      (m.idText = "Dispose" || m.idText = "DisposeAsync")
                                      && Range.rangeContainsRange body.Range e.Range
                                      ->
-                                     mentions
+                                     binderMentions
                                      |> Array.exists (fun (_, mention) ->
                                          match mention with
                                          | SynExpr.Ident _ -> Range.rangeContainsRange receiver.Range mention.Range
@@ -914,7 +1208,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               |> List.exists (fun node ->
                                   match node with
                                   | SyntaxNode.SynExpr(SynExpr.Lambda _)
-                                  | SyntaxNode.SynExpr(SynExpr.ObjExpr _) -> true
+                                  | SyntaxNode.SynExpr(SynExpr.ObjExpr _)
+                                  // a `lazy` body runs when the caller forces it
+                                  | SyntaxNode.SynExpr(SynExpr.Lazy _) -> true
                                   | SyntaxNode.SynExpr(SynExpr.ComputationExpr(range = r)) ->
                                       // the scope's OWN computation contains the
                                       // binding; one that starts inside it is deferred
@@ -926,18 +1222,41 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                           | _ -> false)
                                   | _ -> false)
 
-                          // where each mention sends the value
+                          // a `x.Member` mention that is not the function
+                          // of an application is a method group handed on
+                          // (`Seq.map c.Convert xs`, `changed.Add c.Refresh`):
+                          // it runs after the scope, on a disposed receiver
+                          let methodGroup (path: SyntaxNode list) (e: SynExpr) =
+                              match e with
+                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                  not (invokedAt path e.Range) && isMethod check source (List.last ids)
+                              | _ -> false
+
+                          // where each mention sends the value. An alias
+                          // returned is the RESULT reading the binder, not
+                          // an ownership transfer of it; an alias adopted or
+                          // held goes somewhere this rule cannot follow
                           let escapes =
                               [ for path, e in mentions do
                                     match e with
-                                    | SynExpr.Ident _ ->
-                                        if inLambda path then
-                                            Captured
-                                        elif isResult e.Range || returnedThrough path then
-                                            Returned
+                                    | SynExpr.Ident id ->
+                                        let escape =
+                                            if inLambda path then
+                                                Captured
+                                            elif isResult e.Range || returnedThrough path then
+                                                Returned
+                                            else
+                                                classifyLoop check source holders.Contains e.Range false None path
+
+                                        if id.idText = name then
+                                            escape
                                         else
-                                            classifyLoop check source holders.Contains e.Range false None path
-                                    | SynExpr.LongIdent _ when inLambda path -> Captured
+                                            match escape with
+                                            | Returned -> ResultReads
+                                            | Adopted
+                                            | Held -> Handed None
+                                            | other -> other
+                                    | SynExpr.LongIdent _ when inLambda path || methodGroup path e -> Captured
                                     | _ -> () ]
                               // a same-file callee is read one hop: disposing
                               // the parameter is an ownership transfer, not
@@ -957,6 +1276,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           // dispose the client under); a plain value
                           // (`md5.ComputeHash bytes`, `reader.ReadToEnd()`) is
                           // computed before the scope exits
+                          // — and only when the member is a property read
+                          // or INVOKED there: a method group's plain return
+                          // type says nothing about when it runs
                           let inResult =
                               mentions
                               |> Array.exists (fun (path, e) ->
@@ -964,10 +1286,60 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   || (results |> List.exists (fun r -> Range.rangeContainsRange r.Range e.Range)
                                       && not (
                                           match e with
-                                          | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
-                                              plainValued check source (List.last ids)
+                                          | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                              let last = List.last ids
+
+                                              (invokedAt path e.Range || not (isMethod check source last))
+                                              && plainValued check source last
                                           | _ -> false
                                       )))
+
+                          // an object that does work of its own after the
+                          // scope returns: a timer, a watcher, a listener by
+                          // type; anything constructed with a callback; an
+                          // event of it the scope subscribes to (`w.Changed.Add
+                          // f`, `t.Elapsed |> Event.add f`, `x.Subscribe o`), a
+                          // token registration, a `Start()`/`Enable...` call.
+                          // `use` would stop it on the way out
+                          let selfActive =
+                              selfActiveType check source binder
+                              || index.Exprs
+                                 |> Array.exists (fun (_, e) ->
+                                     match e with
+                                     | SynExpr.Lambda _
+                                     | SynExpr.MatchLambda _ -> Range.rangeContainsRange rhs.Range e.Range
+                                     | _ -> false)
+                              || binderMentions
+                                 |> Array.exists (fun (path, e) ->
+                                     match e with
+                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = _ :: (_ :: _ as members))) ->
+                                         let last = List.last members
+
+                                         last.idText = "Subscribe"
+                                         || last.idText = "AddHandler"
+                                         || last.idText.StartsWith "add_"
+                                         || (last.idText = "Register"
+                                             && members |> List.exists (fun m -> m.idText = "Token"))
+                                         || members |> List.exists (isEvent check source)
+                                         || (invokedAt path e.Range && startsWork check source last)
+                                     | _ -> false)
+                              || index.Exprs
+                                 |> Array.exists (fun (_, e) ->
+                                     match e with
+                                     | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = first :: (_ :: _ as members))) ->
+                                         first.idText = name
+                                         && Range.rangeContainsRange body.Range e.Range
+                                         && (List.last members).idText.StartsWith "Enable"
+                                     | _ -> false)
+
+                          // `use` inside a computation expression binds to
+                          // the builder's Using: `query { }` and a hand-written
+                          // builder without one make it an FS0708
+                          let builderSupportsUse =
+                              match enclosingComputation declPath with
+                              | None -> true
+                              | Some(Some builder) -> builderDefinesUsing check source builder
+                              | Some None -> false
 
                           let destinations =
                               escapes
@@ -978,6 +1350,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   | HandedAt(callee, _, _) -> Some(Destination.Function(callee, true))
                                   | StoredLocally name -> Some(Destination.StoredLocally name)
                                   | Captured -> Some Destination.Captured
+                                  | ResultReads -> Some Destination.ReadInResult
                                   | Returned
                                   | Adopted
                                   | Held
@@ -1006,7 +1379,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   (Position.mkPos expr.Range.StartLine (expr.Range.StartColumn + 3))
 
                           if textOfRange source letRange = "let" && not transferred then
-                              let canFix = handedTo.IsNone && not inResult
+                              let canFix = handedTo.IsNone && not inResult && not selfActive && builderSupportsUse
 
                               { Range = letRange
                                 Name = name
@@ -1014,7 +1387,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 Destination =
                                   if canFix then None
                                   elif handedTo.IsSome then handedTo
-                                  else Some Destination.ReadInResult
+                                  elif selfActive then Some Destination.SelfActive
+                                  elif inResult then Some Destination.ReadInResult
+                                  else Some Destination.NoBuilderUsing
                                 Context =
                                   match bindingContext declPath expr.Range with
                                   // a handle the OS reclaims at exit is no loss

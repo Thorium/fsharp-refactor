@@ -416,40 +416,92 @@ let hasErrors (check: FSharpCheckFileResults) =
 /// Find all wrapper matches for one config (Option or ValueOption) that can
 /// be rewritten with module functions. Requires typed check results; emits
 /// nothing when the file has type errors.
-/// A receiver `.IsSome` can hang off: a name or a dotted path, with its
-/// root ident (whose declaration decides whether the type is settled).
+/// A receiver `.IsSome` can hang off: a name or a dotted path, as its
+/// identifiers (the root's declaration decides whether the type is
+/// settled; every further member must carry a declared type too).
 [<return: Struct>]
 let (|ReceiverPath|_|) (e: SynExpr) =
     match e with
-    | SynExpr.Ident root -> ValueSome(root, root.idText)
-    | SynExpr.LongIdent(longDotId = SynLongIdent(id = (root :: _ as ids))) -> ValueSome(root, identText ids)
+    | SynExpr.Ident root -> ValueSome([ root ], root.idText)
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = (_ :: _ as ids))) -> ValueSome(ids, identText ids)
     | _ -> ValueNone
 
-/// The declaration positions of every UNANNOTATED parameter in the file:
-/// function and member arguments, lambda parameters. Their types are
-/// inferred from their uses, which may come after the expression at hand.
-let unannotatedParameters (index: AstIndex.Index) : Set<int * int> =
-    let names = System.Collections.Generic.HashSet<int * int>()
+/// What the parse tree says about where a file's names are declared: the
+/// POSITIVE evidence `receiverSettled` needs before it calls a receiver's
+/// type known at its use. Everything not listed — a `for` variable, a
+/// match-bound name, a destructured tuple, a primary-constructor or lambda
+/// parameter, an unannotated parameter — has a type inferred from uses
+/// that may come later, where `x.IsSome` is FS0072 "lookup on object of
+/// indeterminate type" while `Option.isSome x` infers fine.
+type DeclarationEvidence =
+    {
+        /// Names declared under an explicit, non-variable type annotation:
+        /// `(x: int option)`, `let (x: T) = …`, `| (o: T) :: _ ->`.
+        Annotated: Set<int * int>
+        /// Plain value bindings (`let x = …`, at any level) by the name's
+        /// position: settled when their right-hand side is.
+        ValueBindings: Map<int * int, SynBinding>
+        /// The self identifier of a member (`member this.M`): the type
+        /// being defined.
+        SelfIdents: Set<int * int>
+        /// Top-level declarations (nested modules flattened): a name
+        /// declared in one is fully inferred once the checker has left it.
+        TopLevel: range list
+        /// `module rec` / `namespace rec` bodies, where declaration order
+        /// settles nothing.
+        RecursiveModules: range list
+    }
 
-    let rec collect (p: SynPat) =
+/// A written type that pins something: `'a` and `_` do not.
+let private concreteType (t: SynType) =
+    match t with
+    | SynType.Var _
+    | SynType.Anon _ -> false
+    | _ -> true
+
+let private posOf (id: Ident) =
+    id.idRange.StartLine, id.idRange.StartColumn
+
+let declarationEvidence (parseTree: ParsedInput) : DeclarationEvidence =
+    let index = AstIndex.ofTree parseTree
+    let annotated = System.Collections.Generic.HashSet<int * int>()
+    let values = System.Collections.Generic.Dictionary<int * int, SynBinding>()
+    let selfIdents = System.Collections.Generic.HashSet<int * int>()
+    let topLevel = ResizeArray<range>()
+    let recursiveModules = ResizeArray<range>()
+
+    // the names directly under an annotation: `(x: T)`, `([<A>] x: T)`
+    let rec namedUnder (p: SynPat) =
         match p with
-        | SynPat.Typed _ -> ()
-        | SynPat.Named(ident = SynIdent(ident = id)) ->
-            names.Add((id.idRange.StartLine, id.idRange.StartColumn)) |> ignore
-        | SynPat.As(lhsPat = l; rhsPat = r) ->
-            collect l
-            collect r
+        | SynPat.Named(ident = SynIdent(ident = id)) -> annotated.Add(posOf id) |> ignore
         | SynPat.Paren(pat = inner)
-        | SynPat.Attrib(pat = inner) -> collect inner
-        | SynPat.Tuple(elementPats = ps)
-        | SynPat.Ands(pats = ps)
-        | SynPat.ArrayOrList(elementPats = ps) -> List.iter collect ps
-        | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> List.iter collect ps
+        | SynPat.Attrib(pat = inner) -> namedUnder inner
         | _ -> ()
 
-    let ofBinding (SynBinding(headPat = headPat)) =
+    let rec walkPat (p: SynPat) =
+        match p with
+        | SynPat.Typed(pat = inner; targetType = t) ->
+            if concreteType t then
+                namedUnder inner
+
+            walkPat inner
+        | SynPat.Paren(pat = inner)
+        | SynPat.Attrib(pat = inner) -> walkPat inner
+        | SynPat.As(lhsPat = l; rhsPat = r)
+        | SynPat.Or(lhsPat = l; rhsPat = r)
+        | SynPat.ListCons(lhsPat = l; rhsPat = r) ->
+            walkPat l
+            walkPat r
+        | SynPat.Tuple(elementPats = ps)
+        | SynPat.Ands(pats = ps)
+        | SynPat.ArrayOrList(elementPats = ps) -> List.iter walkPat ps
+        | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> List.iter walkPat ps
+        | _ -> ()
+
+    let ofBinding (SynBinding(headPat = headPat) as b) =
         match headPat with
-        | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> List.iter collect ps
+        | SynPat.Named(ident = SynIdent(ident = id)) -> values.[posOf id] <- b
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ self; _ ])) -> selfIdents.Add(posOf self) |> ignore
         | _ -> ()
 
     let rec ofMembers (members: SynMemberDefns) =
@@ -463,48 +515,172 @@ let unannotatedParameters (index: AstIndex.Index) : Set<int * int> =
                 Option.iter ofBinding s
             | _ -> ()
 
-    for _, decl in index.Decls do
-        match decl with
-        | SynModuleDecl.Let(bindings = bs) -> List.iter ofBinding bs
-        | SynModuleDecl.Types(typeDefns = defns) ->
-            for SynTypeDefn(typeRepr = repr; members = extra) in defns do
-                match repr with
-                | SynTypeDefnRepr.ObjectModel(members = ms) -> ofMembers ms
+    let rec ofDecls (decls: SynModuleDecl list) =
+        for decl in decls do
+            match decl with
+            | SynModuleDecl.NestedModule(isRecursive = isRecursive; decls = nested; range = r) ->
+                if isRecursive then
+                    recursiveModules.Add r
+
+                ofDecls nested
+            | _ ->
+                topLevel.Add decl.Range
+
+                match decl with
+                | SynModuleDecl.Let(bindings = bs) -> List.iter ofBinding bs
+                | SynModuleDecl.Types(typeDefns = defns) ->
+                    for SynTypeDefn(typeRepr = repr; members = extra) in defns do
+                        match repr with
+                        | SynTypeDefnRepr.ObjectModel(members = ms) -> ofMembers ms
+                        | _ -> ()
+
+                        ofMembers extra
                 | _ -> ()
 
-                ofMembers extra
-        | _ -> ()
+    match parseTree with
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        for SynModuleOrNamespace(isRecursive = isRecursive; decls = decls; range = r) in modules do
+            if isRecursive then
+                recursiveModules.Add r
+
+            ofDecls decls
+    | _ -> ()
+
+    for _, p in index.Pats do
+        walkPat p
 
     for _, e in index.Exprs do
         match e with
         | LetOrUseE lou -> List.iter ofBinding lou.Bindings
-        | SynExpr.Lambda(parsedData = Some(pats, _)) -> List.iter collect pats
+        // the walker does not visit a lambda's parsed patterns
+        | SynExpr.Lambda(parsedData = Some(pats, _)) -> List.iter walkPat pats
         | SynExpr.ObjExpr(bindings = bs; members = ms) ->
             List.iter ofBinding bs
             ofMembers ms
         | _ -> ()
 
-    Set.ofSeq names
+    { Annotated = Set.ofSeq annotated
+      ValueBindings = values |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+      SelfIdents = Set.ofSeq selfIdents
+      TopLevel = List.ofSeq topLevel
+      RecursiveModules = List.ofSeq recursiveModules }
 
-/// Is the root's type settled where it is read — declared anywhere but as
-/// an unannotated parameter of this file?
-let receiverSettled (check: FSharpCheckFileResults) (source: ISourceText) (unannotated: Set<int * int>) (root: Ident) =
-    let r = root.idRange
-    let lineText = source.GetLineString(r.EndLine - 1)
+/// The symbol an identifier resolves to, given the dotted path leading up
+/// to and including it.
+let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (qualified: Ident list) =
+    match List.tryLast qualified with
+    | Some last ->
+        let r = last.idRange
+        let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ root.idText ]) with
-    | Some symbolUse ->
-        match symbolUse.Symbol with
+        check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, qualified |> List.map (fun i -> i.idText))
+        |> Option.map (fun u -> u.Symbol)
+    | None -> None
+
+/// Is the receiver's type settled where it is read — determined BEFORE the
+/// checker reaches the lookup, so `.IsSome` resolves? Only positive
+/// evidence counts: the root is declared under a type annotation, is a
+/// member's self identifier, is a top-level (module- or class-level) name
+/// read from a later declaration, or is a `let` value whose right-hand
+/// side is itself settled (a union case, a call whose declared return type
+/// is not a bare type parameter, a branch of an `if`/`match` that is);
+/// every further member of a dotted path must carry a declared type of its
+/// own. Anything else keeps the module form.
+let receiverSettled
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (evidence: DeclarationEvidence)
+    (ids: Ident list)
+    : bool =
+    let file =
+        match ids with
+        | id :: _ -> id.idRange.FileName
+        | [] -> ""
+
+    let inRecursiveModule (d: range) =
+        evidence.RecursiveModules |> List.exists (fun m -> Range.rangeContainsRange m d)
+
+    // the reading position lies outside the top-level declaration that
+    // declares the symbol: inference of that declaration has finished
+    let leftBehind (useAt: pos) (d: range) =
+        match evidence.TopLevel |> List.tryFind (fun t -> Range.rangeContainsRange t d) with
+        | Some t -> not (Range.rangeContainsPos t useAt)
+        | None -> false
+
+    let nominal (t: FSharpType) =
+        try
+            not t.IsGenericParameter
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+
+    let rec symbolSettled (depth: int) (useAt: pos) (symbol: FSharpSymbol) : bool =
+        match symbol with
+        // a module or type qualifier along the path
+        | :? FSharpEntity -> true
+        // `Some x`, `None`: the case's own type
+        | :? FSharpUnionCase -> true
+        | :? FSharpField as f -> nominal f.FieldType
         | :? FSharpMemberOrFunctionOrValue as v ->
             (try
                 let d = v.DeclarationLocation
 
-                d.FileName <> r.FileName
-                || not (unannotated.Contains((d.StartLine, d.StartColumn)))
+                if d.FileName <> file then
+                    nominal v.ReturnParameter.Type
+                elif not (inRecursiveModule d) && leftBehind useAt d then
+                    nominal v.ReturnParameter.Type
+                else
+                    let p = d.StartLine, d.StartColumn
+
+                    evidence.Annotated.Contains p
+                    || evidence.SelfIdents.Contains p
+                    || (match evidence.ValueBindings.TryFind p with
+                        | Some(SynBinding(returnInfo = Some(SynBindingReturnInfo(typeName = t)))) when concreteType t ->
+                            true
+                        | Some(SynBinding(expr = rhs)) -> depth < 6 && rhsSettled (depth + 1) rhs
+                        | None -> false)
              with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                  false)
         | _ -> false
-    | None -> false
+
+    // every identifier along a dotted path, each resolved with its prefix
+    and pathSettled (depth: int) (path: Ident list) =
+        let rec go prefix rest =
+            match rest with
+            | [] -> true
+            | (id: Ident) :: tail ->
+                let qualified = prefix @ [ id ]
+
+                (match symbolAt check source qualified with
+                 | Some s -> symbolSettled depth id.idRange.Start s
+                 | None -> false)
+                && go qualified tail
+
+        go [] path
+
+    and rhsSettled (depth: int) (e: SynExpr) : bool =
+        match e with
+        | SynExpr.Typed(targetType = t) -> concreteType t
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.TypeApp(expr = inner) -> rhsSettled depth inner
+        | SynExpr.Const _ -> true
+        | SynExpr.Ident id -> pathSettled depth [ id ]
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = path)) -> pathSettled depth path
+        | SynExpr.DotGet(expr = target; longDotId = SynLongIdent(id = path)) ->
+            rhsSettled depth target && pathSettled depth path
+        | PipeApp(_, fn) -> rhsSettled depth fn
+        // an application is typed by its head's declared return type
+        | SynExpr.App(funcExpr = fn) -> rhsSettled depth fn
+        // branches unify: one settled branch pins them all
+        | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some el) -> rhsSettled depth t || rhsSettled depth el
+        | SynExpr.Match(clauses = clauses) ->
+            clauses
+            |> List.exists (fun (SynMatchClause(resultExpr = result)) -> rhsSettled depth result)
+        | LetOrUseE lou -> rhsSettled depth lou.Body
+        | SynExpr.Sequential(expr2 = e2) -> rhsSettled depth e2
+        | SynExpr.TryWith(tryExpr = t) -> rhsSettled depth t
+        | _ -> false
+
+    not ids.IsEmpty && pathSettled 0 ids
 
 let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) =
     if hasErrors check then
@@ -522,9 +698,7 @@ let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText)
             let replacement =
                 if c.Target.EndsWith ".isSome" || c.Target.EndsWith ".isNone" then
                     match c.Scrutinee with
-                    | ReceiverPath(root, text) when
-                        receiverSettled check source (unannotatedParameters (AstIndex.ofTree parseTree)) root
-                        ->
+                    | ReceiverPath(ids, text) when receiverSettled check source (declarationEvidence parseTree) ids ->
                         text + (if c.Target.EndsWith ".isSome" then ".IsSome" else ".IsNone")
                     | _ -> c.Replacement
                 else

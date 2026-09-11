@@ -1552,10 +1552,9 @@ let ``FR0055: the guard spells the zero of the divisor's type, never for a float
             |> Option.map (fun o -> o.Edits |> List.map (fun (_, _, r) -> r) |> List.head))
 
     Assert.Equal<string option list>(
-        // float division never throws: no guard to offer
-        [ None
-          Some "if count = 0L then 0L else total / count"
-          Some "if count = 0m then 0m else total / count" ],
+        // float division never throws: no guard to offer; decimal
+        // arithmetic overflows, so the catch guarded more than the division
+        [ None; Some "if count = 0L then 0L else total / count"; None ],
         guards
     )
 

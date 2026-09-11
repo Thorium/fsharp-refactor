@@ -671,6 +671,111 @@ let conditionToKeep (source: ISourceText) (originLine: int) (targetLine: int) : 
 /// would collapse), or a line spanning string literal, whose content the
 /// re-indent would silently edit. The caller then leaves the code alone.
 ///
+/// Does a line break fall inside a string literal or a block comment? A
+/// textual walk over the block, with no parse tree to ask: plain `"…"`
+/// (with `\` escapes), verbatim `@"…"` (`""` escapes), triple-quoted
+/// `"""…"""`, each with or without `$` prefixes, and `(* … *)`. Line
+/// comments run to the end of their line; `'"'` is a char, not a string
+/// start. The walk stays on the safe side: a mis-read only ever reports a
+/// break INSIDE a literal, never hides one.
+let private lineBreakInsideLiteral (text: string) =
+    let n = text.Length
+    let at i = if i < n then text.[i] else '\000'
+
+    let startsAt i (s: string) =
+        i + s.Length <= n && text.Substring(i, s.Length) = s
+
+    // states: 0 code, 1 plain string, 2 verbatim string, 3 triple-quoted
+    // string, 4 line comment, 5 block comment (nesting depth in `depth`)
+    let mutable state = 0
+    let mutable depth = 0
+    let mutable i = 0
+    let mutable found = false
+
+    while not found && i < n do
+        let c = at i
+
+        match state with
+        | 0 ->
+            if startsAt i "(*)" then
+                i <- i + 3
+            elif startsAt i "(*" then
+                state <- 5
+                depth <- 1
+                i <- i + 2
+            elif startsAt i "//" then
+                state <- 4
+                i <- i + 2
+            elif c = '\'' && at (i + 2) = '\'' then
+                i <- i + 3
+            elif c = '\'' && at (i + 1) = '\\' then
+                let close = text.IndexOf('\'', i + 2)
+                i <- (if close > 0 && close - i <= 8 then close + 1 else i + 1)
+            elif startsAt i "\"\"\"" then
+                state <- 3
+                i <- i + 3
+            elif c = '@' && at (i + 1) = '"' then
+                state <- 2
+                i <- i + 2
+            elif c = '$' && (at (i + 1) = '@' || at (i + 1) = '"' || at (i + 1) = '$') then
+                i <- i + 1
+            elif c = '"' then
+                state <- 1
+                i <- i + 1
+            else
+                i <- i + 1
+        | 1 ->
+            if c = '\n' then
+                found <- true
+            // `\` before the break continues the literal on the next line
+            elif c = '\\' then
+                (if at (i + 1) = '\n' then found <- true else i <- i + 2)
+            elif c = '"' then
+                state <- 0
+                i <- i + 1
+            else
+                i <- i + 1
+        | 2 ->
+            if c = '\n' then
+                found <- true
+            elif c = '"' && at (i + 1) = '"' then
+                i <- i + 2
+            elif c = '"' then
+                state <- 0
+                i <- i + 1
+            else
+                i <- i + 1
+        | 3 ->
+            if c = '\n' then
+                found <- true
+            elif startsAt i "\"\"\"" then
+                state <- 0
+                i <- i + 3
+            else
+                i <- i + 1
+        | 4 ->
+            if c = '\n' then
+                state <- 0
+
+            i <- i + 1
+        | _ ->
+            if c = '\n' then
+                found <- true
+            elif startsAt i "(*" then
+                depth <- depth + 1
+                i <- i + 2
+            elif startsAt i "*)" then
+                depth <- depth - 1
+
+                if depth = 0 then
+                    state <- 0
+
+                i <- i + 2
+            else
+                i <- i + 1
+
+    found
+
 /// Three rules grew their own copy of this before it was extracted
 /// (FR0034's match layout, FR0044's try removal, FR0142's task wrap); they
 /// can migrate to it.
@@ -685,9 +790,13 @@ let reindentBlock (target: int) (firstColumn: int) (text: string) : string optio
         let leading (l: string) = l.Length - l.TrimStart().Length
 
         if
-            shift < 0
-            && continuation
-               |> Array.exists (fun l -> not (System.String.IsNullOrWhiteSpace l) && leading l < -shift)
+            (shift < 0
+             && continuation
+                |> Array.exists (fun l -> not (System.String.IsNullOrWhiteSpace l) && leading l < -shift))
+            // a continuation line that belongs to a string literal (or a
+            // block comment) is content, not layout: moving it edits the
+            // program's data
+            || lineBreakInsideLiteral (String.concat "\n" lines)
         then
             None
         else

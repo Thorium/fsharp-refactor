@@ -297,21 +297,36 @@ let private hasDistinctParamTypes (symbol: FSharpSymbol) =
 /// uses them — each edit's range names its own file. Driven only by the
 /// apply tool under --api-changes; any use in a file the caller cannot
 /// supply suppresses the suggestion, and the two parameters must have
-/// different concrete types (see hasDistinctParamTypes).
+/// different concrete types (see hasDistinctParamTypes). Public
+/// definitions, and internal ones of an assembly with InternalsVisibleTo
+/// friends, are reshaped only as far as `outside` says their callers have
+/// been read (TupleParams.reshapableScopes).
 let findApiChanges
     (defFile: FileContext)
     (check: FSharpCheckFileResults)
     (project: FSharpCheckProjectResults)
     (fileLookup: string -> FileContext option)
     /// Call sites OUTSIDE this project's compilation — a script that
-    /// `#load`s the defining file compiles it into a different
-    /// compilation, so its uses are invisible to `project`.
-    (extraUses: FSharpSymbol -> FSharpSymbolUse[])
+    /// `#load`s the defining file, a sibling project that references the
+    /// assembly — and how far the host's reading of them reaches.
+    (outside: Visibility.Outside)
     : Suggestion list =
     if OptionModule.hasErrors check then
         []
     else
-        match findCandidatesIn Visibility.Scope.Assembly defFile.ParseTree with
+        // a definition worth asking about at all, before the host is asked
+        // what it read (TupleParams has the same gate, and the reason)
+        let anyCandidate =
+            [ Visibility.Scope.Assembly; Visibility.Scope.Exported ]
+            |> List.exists (fun scope -> not (findCandidatesIn scope defFile.ParseTree).IsEmpty)
+
+        match
+            (if anyCandidate then
+                 TupleParams.reshapableScopes project outside
+                 |> List.collect (fun scope -> findCandidatesIn scope defFile.ParseTree)
+             else
+                 [])
+        with
         | [] -> []
         | candidates ->
             // per-file indexes, built lazily as uses arrive
@@ -339,10 +354,11 @@ let findApiChanges
                 | None -> None
                 | Some symbolUse when hasDistinctParamTypes symbolUse.Symbol ->
                     let uses =
-                        // a `#load`ing script is a real call site that `project` cannot
-                        // see. Missing one is the single thing this rule cannot survive:
-                        // the definition changes shape and the script stops compiling.
-                        Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (extraUses symbolUse.Symbol)
+                        // a `#load`ing script or a sibling project is a real call site
+                        // that `project` cannot see. Missing one is the single thing this
+                        // rule cannot survive: the definition changes shape and the
+                        // caller stops compiling.
+                        Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (outside.Uses symbolUse.Symbol)
                         |> Array.filter (fun u -> not u.IsFromDefinition)
 
                     buildSuggestion candidate defFile.Source artifactsFor uses

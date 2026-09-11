@@ -79,16 +79,232 @@ let private referenceNames (name: string) =
     else
         [ name ]
 
-/// The text with its string literals and comments blanked: a name inside
-/// `failwith "StripToNominalTyconRef: ..."` is no reference (the F#
-/// compiler's Optimizer.fs kept `let rec` on fifteen functions whose only
-/// "self-call" was such a message).
+let private isIdentifierChar (c: char) =
+    System.Char.IsLetterOrDigit c || c = '_' || c = '''
+
+/// The text with its string literals, char literals and comments blanked:
+/// a name inside `failwith "StripToNominalTyconRef: ..."` is no reference
+/// (the F# compiler's Optimizer.fs kept `let rec` on fifteen functions
+/// whose only "self-call" was such a message). An interpolated string's
+/// holes are CODE and stay visible — `$"size is {size n}"` calls `size` —
+/// and a char literal `'"'` opens no string. A regex got both wrong: the
+/// hole vanished with the text around it, and the quote inside the char
+/// literal flipped the string phase for the rest of the block; either way
+/// a reference went unseen, and a member left the group above a sibling
+/// it still called. Anything this scanner cannot place stays visible: an
+/// extra mention only keeps a member where it is.
 let private codeOnly (text: string) =
-    Regex.Replace(
-        text,
-        @"@""(?:[^""]|"""")*""|""""""[\s\S]*?""""""|""(?:\\.|[^""\\])*""|\(\*[\s\S]*?\*\)|//[^\n]*",
-        fun m -> String.replicate m.Length " "
-    )
+    let chars = text.ToCharArray()
+    let out = Array.copy chars
+    let n = chars.Length
+
+    let at i =
+        if i >= 0 && i < n then chars.[i] else '\000'
+
+    let blank i =
+        if i >= 0 && i < n && chars.[i] <> '\n' && chars.[i] <> '\r' then
+            out.[i] <- ' '
+
+    let blankTo (a: int) (b: int) =
+        for i in a .. b - 1 do
+            blank i
+
+    // a literal's end: from just after its opening quote(s) to just after
+    // its closing quote(s); n when unterminated
+    let closeOfString (start: int) (verbatim: bool) (triple: bool) =
+        let mutable j = start
+        let mutable close = -1
+
+        while close < 0 && j < n do
+            let c = chars.[j]
+
+            if triple then
+                if c = '"' && at (j + 1) = '"' && at (j + 2) = '"' then
+                    close <- j + 3
+                else
+                    j <- j + 1
+            elif verbatim then
+                if c = '"' then
+                    // a doubled quote is an escaped quote
+                    if at (j + 1) = '"' then j <- j + 2 else close <- j + 1
+                else
+                    j <- j + 1
+            elif c = '\\' then
+                j <- j + 2
+            elif c = '"' then
+                close <- j + 1
+            else
+                j <- j + 1
+
+        if close < 0 then n else close
+
+    // code from `start`; inside a hole, up to and including the `}` that
+    // closes it (braces within nest). Returns the index after the last
+    // character consumed
+    let rec scanCode (start: int) (inHole: bool) : int =
+        let mutable j = start
+        let mutable depth = 0
+        let mutable fin = -1
+
+        while fin < 0 && j < n do
+            let c = chars.[j]
+            let next = at (j + 1)
+
+            if c = '/' && next = '/' then
+                let mutable e = j
+
+                while e < n && chars.[e] <> '\n' do
+                    e <- e + 1
+
+                blankTo j e
+                j <- e
+            elif c = '(' && next = '*' && at (j + 2) <> ')' then
+                // block comments nest; `(*)` is the multiplication operator
+                let mutable d = 1
+                let mutable e = j + 2
+
+                while d > 0 && e < n do
+                    if chars.[e] = '(' && at (e + 1) = '*' then
+                        d <- d + 1
+                        e <- e + 2
+                    elif chars.[e] = '*' && at (e + 1) = ')' then
+                        d <- d - 1
+                        e <- e + 2
+                    else
+                        e <- e + 1
+
+                blankTo j e
+                j <- e
+            elif c = ''' && not (j > 0 && isIdentifierChar chars.[j - 1]) then
+                // a char literal (`'"'`, `'\n'`, `'\''`) opens no string; a
+                // type variable `'a` is one apostrophe and moves on; the
+                // prime of `x'` is part of the identifier before it
+                if next = '\\' then
+                    let close = System.Array.IndexOf(chars, ''', min n (j + 2))
+
+                    if close > 0 && close - j <= 12 then
+                        blankTo j (close + 1)
+                        j <- close + 1
+                    else
+                        j <- j + 1
+                elif at (j + 2) = ''' then
+                    blankTo j (j + 3)
+                    j <- j + 3
+                else
+                    j <- j + 1
+            elif c = '"' then
+                let triple = next = '"' && at (j + 2) = '"'
+                let close = closeOfString (if triple then j + 3 else j + 1) false triple
+                blankTo j close
+                j <- close
+            elif c = '@' && next = '"' then
+                let close = closeOfString (j + 2) true false
+                blankTo j close
+                j <- close
+            elif c = '$' || (c = '@' && next = '$') then
+                // interpolated: `$"`, `$@"`, `@$"`, `$"""`, `$$"""`
+                let mutable e = j
+                let mutable verbatim = false
+                let mutable dollars = 0
+
+                if chars.[e] = '@' then
+                    verbatim <- true
+                    e <- e + 1
+
+                while at e = '$' do
+                    dollars <- dollars + 1
+                    e <- e + 1
+
+                if at e = '@' then
+                    verbatim <- true
+                    e <- e + 1
+
+                if at e = '"' && dollars > 0 then
+                    let triple = at (e + 1) = '"' && at (e + 2) = '"'
+                    let bodyStart = if triple then e + 3 else e + 1
+                    blankTo j bodyStart
+                    j <- scanInterpolated bodyStart dollars verbatim triple
+                else
+                    j <- j + 1
+            elif inHole && c = '{' then
+                depth <- depth + 1
+                j <- j + 1
+            elif inHole && c = '}' then
+                if depth = 0 then
+                    fin <- j + 1
+                else
+                    depth <- depth - 1
+                    j <- j + 1
+            else
+                j <- j + 1
+
+        if fin < 0 then n else fin
+
+    // an interpolated string's text, blanked; its holes scanned as code.
+    // Returns the index after the closing quote(s)
+    and scanInterpolated (start: int) (dollars: int) (verbatim: bool) (triple: bool) : int =
+        let mutable j = start
+        let mutable fin = -1
+
+        while fin < 0 && j < n do
+            let c = chars.[j]
+
+            if c = '{' then
+                let mutable run = 0
+
+                while at (j + run) = '{' do
+                    run <- run + 1
+
+                // `$"…"` opens a hole with one brace and escapes one with
+                // two; `$$"""…"""` opens with two and takes one literally
+                if (dollars = 1 && run = 1) || (dollars > 1 && run >= dollars) then
+                    blankTo j (j + dollars)
+                    let afterHole = scanCode (j + dollars) true
+                    blank (afterHole - 1)
+                    let mutable e = afterHole
+                    let mutable k = 1
+
+                    while k < dollars && at e = '}' do
+                        blank e
+                        e <- e + 1
+                        k <- k + 1
+
+                    j <- e
+                else
+                    blankTo j (j + run)
+                    j <- j + run
+            elif triple then
+                if c = '"' && at (j + 1) = '"' && at (j + 2) = '"' then
+                    blankTo j (j + 3)
+                    fin <- j + 3
+                else
+                    blank j
+                    j <- j + 1
+            elif verbatim then
+                if c = '"' then
+                    if at (j + 1) = '"' then
+                        blankTo j (j + 2)
+                        j <- j + 2
+                    else
+                        blank j
+                        fin <- j + 1
+                else
+                    blank j
+                    j <- j + 1
+            elif c = '\\' then
+                blankTo j (j + 2)
+                j <- j + 2
+            elif c = '"' then
+                blank j
+                fin <- j + 1
+            else
+                blank j
+                j <- j + 1
+
+        if fin < 0 then n else fin
+
+    scanCode 0 false |> ignore
+    System.String out
 
 /// Any use of `name` (by any of its reference identifiers) in the text.
 let private mentions (text: string) (name: string) =
@@ -458,20 +674,39 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                           let keyword = if isSelfRecursive then "let rec" else "let"
                           let extracted = commentPrefix + keyword + bindingText.Substring(3)
 
+                          // a member under `#if` leaves under the same `#if`.
+                          // A directive has to open its own line, so that
+                          // form is inserted at column 0 of the group's line,
+                          // ahead of its indentation — which the generated
+                          // `let` line then carries itself (a raw comment
+                          // line already does)
+                          let insertRange, insertText =
+                              match conditionToKeep source keywordLine decl.Range.StartLine with
+                              | Some condition ->
+                                  let placed =
+                                      if commentPrefix = "" then
+                                          indent + extracted.TrimEnd()
+                                      else
+                                          extracted.TrimEnd()
+
+                                  Range.mkRange
+                                      decl.Range.FileName
+                                      (Position.mkPos decl.Range.StartLine 0)
+                                      (Position.mkPos decl.Range.StartLine 0),
+                                  $"#if {condition}\n{placed}\n#endif\n\n"
+                              | None ->
+                                  // the insert point sits AFTER the group's
+                                  // existing indentation: the first inserted
+                                  // line must not bring its own (raw comment
+                                  // lines carry it; inside a nested module
+                                  // that doubled up)
+                                  Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start,
+                                  extracted.TrimStart().TrimEnd() + $"\n\n{indent}"
+
                           Some
                               { RemoveRange = block
-                                InsertRange = Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start
-                                // the insert point sits AFTER the group's
-                                // existing indentation: the first inserted
-                                // line must not bring its own (raw comment
-                                // lines carry it; inside a nested module
-                                // that doubled up)
-                                // a member under `#if` leaves under the same `#if`
-                                InsertText =
-                                  (match conditionToKeep source keywordLine decl.Range.StartLine with
-                                   | Some condition -> $"#if {condition}\n{extracted.TrimStart().TrimEnd()}\n#endif"
-                                   | None -> extracted.TrimStart().TrimEnd())
-                                  + $"\n\n{indent}"
+                                InsertRange = insertRange
+                                InsertText = insertText
                                 MemberName = name
                                 IsSelfRecursive = isSelfRecursive }
                       else

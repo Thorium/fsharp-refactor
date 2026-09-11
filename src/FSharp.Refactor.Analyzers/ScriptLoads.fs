@@ -211,12 +211,46 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
         // that: fantomas's docs scripts `#r` an artifacts dll that was never
         // built, and fsharp.formatting's Script.fsx loads a Library1.fs that
         // no longer exists — the FS0039s are not a missing #load
+        //
+        // A `#r` by NAME — no path separator, no source extension:
+        // `#r "System.Xml.Linq"`, FAKE 4's `#I "packages/FAKE/tools"` and
+        // `#r "FakeLib.dll"` — is looked for beside the script and in every
+        // `#I` directory, and when it is in neither it is still not broken:
+        // the compiler resolves such a reference from its reference set,
+        // and whether the script typechecks against it is a matter for
+        // the script. Only a `#load`, or a `#r` with a PATH that leads
+        // nowhere, is broken.
+        let existsIn (dir: string) (value: string) =
+            try
+                File.Exists(Path.GetFullPath(Path.Combine(dir, value)))
+            with _ -> // an unopenable value is no evidence either way; fsharpanalyzer: ignore-line FR0055
+                false
+
+        let includeDirs =
+            [ for d in all do
+                  if d.Ident = "I" then
+                      yield Path.Combine(scriptDir, d.Value.Replace('\\', '/')) ]
+
         let brokenDirective =
             all
             |> List.exists (fun d ->
-                (d.Ident = "load" || d.Ident = "r")
-                && not (d.Value.Contains ':' && not (Path.IsPathRooted d.Value))
-                && not (File.Exists(Path.GetFullPath(Path.Combine(scriptDir, d.Value.Replace('\\', '/'))))))
+                let value = d.Value.Replace('\\', '/')
+                // `nuget: X`, `paket: X`: a package, not a path
+                let prefixed = d.Value.Contains ':' && not (Path.IsPathRooted d.Value)
+
+                let byName =
+                    not (value.Contains '/')
+                    && not (value.EndsWith(".fs", StringComparison.OrdinalIgnoreCase))
+                    && not (value.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase))
+
+                match d.Ident with
+                | "load" -> not prefixed && not (existsIn scriptDir value)
+                | "r" ->
+                    not prefixed
+                    && not (existsIn scriptDir value)
+                    && not (includeDirs |> List.exists (fun dir -> existsIn dir value))
+                    && not byName
+                | _ -> false)
 
         if loads.IsEmpty || brokenDirective then
             []

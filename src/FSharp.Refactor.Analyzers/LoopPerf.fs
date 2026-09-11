@@ -194,7 +194,16 @@ let loopBinders (path: SyntaxNode list) =
 /// private HashSet companion beside it instead, which leaves its type
 /// alone (fsharplint's public `testMethodAttributes` list, in a NuGet
 /// library, was converted to a Set without `--api-changes`).
-let find
+///
+/// `seenByLaterFile`: when the opt-in is not the caller's own but the
+/// host's leaf-compilation heuristic — an executable, whose public surface
+/// is no API — a LATER file of the same executable can still read the
+/// binding at its list type. This answers, by name, whether one does; a
+/// binding that is not private then converts in place only when nothing
+/// after it mentions it. `find` passes the constant "no", which is the
+/// right answer for a real `--api-changes` and moot for a closed gate.
+let findWith
+    (seenByLaterFile: string -> bool)
     (allowApiChanges: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -218,6 +227,11 @@ let find
                       longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []; accessibility = patAcc) ->
                       let confined =
                           Visibility.isInScopeNamed allowApiChanges path [ bindingAcc; patAcc ] id.idText
+                          // the opt-in covers this file's own uses (the
+                          // `strayUse` scan below) - a later file's, only a
+                          // private binding is sure to have none
+                          && (Visibility.isPrivate path [ bindingAcc; patAcc ]
+                              || not (seenByLaterFile id.idText))
 
                       yield id.idText, (id, decl.Range, rhs, confined)
                   | _ -> ()
@@ -436,3 +450,8 @@ let find
               | _ -> () ]
 
     contains, List.ofSeq constructions
+
+/// `findWith` for a caller whose opt-in is its own: `--api-changes`, or no
+/// opt-in at all. No later file is consulted.
+let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) =
+    findWith (fun _ -> false) allowApiChanges parseTree source

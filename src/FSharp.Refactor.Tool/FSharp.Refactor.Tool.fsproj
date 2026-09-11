@@ -34,6 +34,7 @@
 
   <ItemGroup>
     <Compile Include="FileWalk.fs" />
+    <Compile Include="Workspace.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

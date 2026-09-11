@@ -252,6 +252,7 @@ let findUnhandledStart
         []
     else
         let index = AstIndex.ofTree parseTree
+        let comments = lazy (commentsWithText parseTree source)
 
         let isCoreAsync (ident: Ident) =
             let r = ident.idRange
@@ -413,8 +414,34 @@ let findUnhandledStart
                                       | _ -> true
                                   | _ -> true
 
+                              // the handler lands inside the computation,
+                              // where the compiler makes it a closure: a
+                              // `reraise ()` there is FS0413, not a rethrow
+                              let rethrows =
+                                  System.Text.RegularExpressions.Regex.IsMatch(
+                                      textOfRange source trivia.WithToEndRange,
+                                      @"\b(reraise|rethrow)\b"
+                                  )
+
+                              // the rewrite is rebuilt from the body and the
+                              // handler alone: a comment anywhere else in the
+                              // try - beside `async {`, after the last
+                              // statement, between `}` and the start - would
+                              // be dropped with it
+                              let commentDropped (body: SynExpr) =
+                                  comments.Value
+                                  |> List.exists (fun (r, _) ->
+                                      Range.rangeContainsRange tryExpr.Range r
+                                      && not (Range.rangeContainsRange body.Range r)
+                                      && not (Range.rangeContainsRange trivia.WithToEndRange r))
+
                               match comp with
-                              | AsyncLiteral body when singleArgument && not (spansDirective source tryExpr.Range) ->
+                              | AsyncLiteral body when
+                                  singleArgument
+                                  && not (spansDirective source tryExpr.Range)
+                                  && not rethrows
+                                  && not (commentDropped body)
+                                  ->
                                   let baseColumn = tryExpr.Range.StartColumn
                                   let indent = System.String(' ', baseColumn)
 

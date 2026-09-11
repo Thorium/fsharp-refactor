@@ -13,7 +13,7 @@
 ///        let private asdfRegex = Regex "asdf"
 ///        ...
 ///        for line in lines do
-///            if asdfRegex.IsMatch line then ...
+///            if asdfRegex.IsMatch(line) then ...
 ///
 ///    A lambda handed to a List/Seq/Array function runs once per element,
 ///    so `xs |> List.map (fun x -> Regex.IsMatch(x, "asdf"))` is the same
@@ -201,11 +201,14 @@ let private plainLiteral (pattern: string) : string option =
 ///     "xxabcdyy".Replace("abcd", "$&!")         =  "xx$&!yy"
 ///
 /// measured, along with `$$` meaning a literal `$` to one and two characters
-/// to the other. Any `$` at all disqualifies the swap.
+/// to the other. Any `$` at all disqualifies the swap. So does a backslash:
+/// the DECODED text is re-emitted inside a regular `"..."`, where `\` is an
+/// escape again - `@"\"` would come out as the unterminated `"\"`, and
+/// `"a\\nb"` (four characters) as `"a\nb"`, a newline.
 let private plainReplacement (replacement: string) : string option =
     if
         replacement.Contains '$'
-        || replacement |> Seq.exists (fun c -> c = '"' || Char.IsControl c)
+        || replacement |> Seq.exists (fun c -> c = '"' || c = '\\' || Char.IsControl c)
     then
         None
     else
@@ -274,14 +277,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
     let index = AstIndex.ofTree parseTree
 
-    let hasRegexOpen =
+    // the lines of every `open System.Text.RegularExpressions` in the file:
+    // a bare `Regex` in a hoisted binding resolves only under an open that
+    // comes BEFORE it - one further down the module, or inside a sibling
+    // nested module, is no help at the insertion point
+    let regexOpenLines =
         lazy
             (index.Decls
-             |> Array.exists (fun (_, decl) ->
+             |> Array.choose (fun (_, decl) ->
                  match decl with
-                 | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
+                 | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) when
                      (ids |> List.map (fun i -> i.idText) |> String.concat ".") = "System.Text.RegularExpressions"
-                 | _ -> false))
+                     ->
+                     Some decl.Range.StartLine
+                 | _ -> None))
+
+    let regexOpenAbove (decl: SynModuleDecl) =
+        regexOpenLines.Value |> Array.exists (fun line -> line < decl.Range.StartLine)
 
     let fileText =
         lazy
@@ -388,7 +400,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         let edits =
                             match enclosingLet path with
                             | Some decl when
-                                hasRegexOpen.Value
+                                regexOpenAbove decl
                                 && (hoistableMethods.Contains methodName || methodName = "Replace")
                                 && not (fileText.Value.Contains name)
                                 ->
@@ -400,7 +412,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                             name
                                             (textOfRange source input.Range)
                                             (textOfRange source repl.Range)
-                                    | _, [ input; _ ] -> sprintf "%s.%s %s" name methodName (argumentText source input)
+                                    // a parenthesised method call, never a
+                                    // juxtaposition: `Regex.Match(x, "p").Success`
+                                    // is the call's receiver of `.Success`, and
+                                    // `pRegex.Match x.Success` would hand the
+                                    // continuation to the ARGUMENT instead
+                                    | _, [ input; _ ] ->
+                                        sprintf "%s.%s(%s)" name methodName (textOfRange source input.Range)
                                     | _ -> ""
 
                                 if callReplacement = "" then
@@ -435,7 +453,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         | _ -> None
 
                     match pattern, enclosingLet path, LoopPerf.loopBinders path with
-                    | Some pattern, Some decl, ValueSome _ when qualified || hasRegexOpen.Value ->
+                    | Some pattern, Some decl, ValueSome _ when qualified || regexOpenAbove decl ->
                         let name = nameFromPattern pattern
 
                         if not (fileText.Value.Contains name) then

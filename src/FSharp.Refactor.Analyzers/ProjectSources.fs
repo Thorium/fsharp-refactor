@@ -34,6 +34,33 @@ let hasInternalsVisibleTo (projectCheck: FSharpCheckProjectResults) =
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         true
 
+/// The friends the assembly names in InternalsVisibleTo, by assembly name:
+/// `[<assembly: InternalsVisibleTo("Lib.Tests, PublicKey=...")>]` names
+/// "Lib.Tests". None when an attribute cannot be read, which the caller
+/// must treat as a friend it cannot vouch for — the same fail-safe as
+/// `hasInternalsVisibleTo`, whose question this answers by name for the
+/// host that can read a friend's compilation and reshape its call sites.
+let internalsVisibleTo (projectCheck: FSharpCheckProjectResults) : string list option =
+    try
+        let friends =
+            projectCheck.AssemblySignature.Attributes
+            |> Seq.filter (fun a -> a.AttributeType.DisplayName.Contains "InternalsVisibleTo")
+            |> Seq.map (fun a ->
+                match a.ConstructorArguments |> Seq.tryHead with
+                | Some(_, (:? string as spec)) when not (System.String.IsNullOrWhiteSpace spec) ->
+                    // the assembly name ends at the first comma; what follows
+                    // is the public key, no part of the name
+                    Some(spec.Split(',').[0].Trim())
+                | _ -> None)
+            |> List.ofSeq
+
+        if friends |> List.exists Option.isNone then
+            None
+        else
+            Some(friends |> List.choose id)
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        None
+
 let mutable private parser: (string -> (ParsedInput * ISourceText) option) option =
     None
 

@@ -187,21 +187,39 @@ let private callEdit
 /// be applied atomically as independent range edits, so it is suppressed.
 let private editsNest (edits: Edit list) = rangesNest (edits |> List.map _.Range)
 
+/// The definitions the project-wide rules may reshape, given what the host
+/// has read of the world outside the compilation: the assembly-confined
+/// ones — unless the assembly names friends in InternalsVisibleTo whose
+/// compilations were not all read — and the public ones only when every
+/// compilation that can see them was. Shared by FR0090 and FR0091.
+let reshapableScopes (project: FSharpCheckProjectResults) (outside: Visibility.Outside) : Visibility.Scope list =
+    [ // a friend named by InternalsVisibleTo sees the internal declarations
+      // exactly as a sibling sees the public ones; an unread friend is a
+      // caller the all-or-nothing rule cannot count, so nothing internal
+      // moves until every friend's compilation has been read
+      match ProjectSources.internalsVisibleTo project with
+      | Some friends when friends |> List.forall outside.AssemblyRead -> Visibility.Scope.Assembly
+      | _ -> ()
+      if outside.PublicRead() then
+          Visibility.Scope.Exported ]
+
 /// The PROJECT-WIDE (API-changing) variant: internal/public tupled
 /// functions defined in `defFile`, with call-site edits wherever the
 /// project uses them — each edit's range names its own file. Driven only
 /// by the apply tool under --api-changes; the same all-or-nothing rule
 /// applies across the whole project, and any use in a file the caller
-/// cannot supply suppresses the suggestion.
+/// cannot supply suppresses the suggestion. Public definitions, and
+/// internal ones of an assembly with InternalsVisibleTo friends, are
+/// reshaped only as far as `outside` says their callers have been read.
 let findApiChanges
     (defFile: FileContext)
     (check: FSharpCheckFileResults)
     (project: FSharpCheckProjectResults)
     (fileLookup: string -> FileContext option)
     /// Call sites OUTSIDE this project's compilation — a script that
-    /// `#load`s the defining file compiles it into a different
-    /// compilation, so its uses are invisible to `project`.
-    (extraUses: FSharpSymbol -> FSharpSymbolUse[])
+    /// `#load`s the defining file, a sibling project that references the
+    /// assembly — and how far the host's reading of them reaches.
+    (outside: Visibility.Outside)
     : Suggestion list =
     let hasErrors =
         check.Diagnostics
@@ -210,7 +228,20 @@ let findApiChanges
     if hasErrors then
         []
     else
-        match findCandidatesIn Visibility.Scope.Assembly defFile.ParseTree with
+        // a definition worth asking about at all, before the host is asked
+        // what it read: the answer is a typecheck of every referencing
+        // project, and most files have no tupled definition to reshape
+        let anyCandidate =
+            [ Visibility.Scope.Assembly; Visibility.Scope.Exported ]
+            |> List.exists (fun scope -> not (findCandidatesIn scope defFile.ParseTree).IsEmpty)
+
+        match
+            (if anyCandidate then
+                 reshapableScopes project outside
+                 |> List.collect (fun scope -> findCandidatesIn scope defFile.ParseTree)
+             else
+                 [])
+        with
         | [] -> []
         | candidates ->
             // per-file application indexes, built lazily as uses arrive
@@ -244,10 +275,11 @@ let findApiChanges
                     | None -> None
                     | Some symbolUse ->
                         let uses =
-                            // a `#load`ing script is a real call site that `project` cannot
-                            // see. Missing one is the single thing this rule cannot survive:
-                            // the definition changes shape and the script stops compiling.
-                            Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (extraUses symbolUse.Symbol)
+                            // a `#load`ing script or a sibling project is a real call site
+                            // that `project` cannot see. Missing one is the single thing this
+                            // rule cannot survive: the definition changes shape and the
+                            // caller stops compiling.
+                            Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (outside.Uses symbolUse.Symbol)
                             |> Array.filter (fun u -> not u.IsFromDefinition)
 
                         let callEdits =

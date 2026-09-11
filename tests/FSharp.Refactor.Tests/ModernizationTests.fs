@@ -1270,7 +1270,10 @@ let ``FR0147: the tupled-call guard holds for any namespace with the extension, 
 
     let tree, sourceText, checkResults = parseAndCheckSecond extensions source
 
-    match QualifiedNames.find 3 2 tree sourceText checkResults |> List.filter (fun s -> s.Namespace = "Ext") with
+    match
+        QualifiedNames.find 3 2 tree sourceText checkResults
+        |> List.filter (fun s -> s.Namespace = "Ext")
+    with
     | [ s ] ->
         Assert.Empty s.Edits
         Assert.Contains("'Contains'", s.Reason.Value)
@@ -2544,7 +2547,9 @@ let ``FR0092: a mention the loosening cannot rewrite vetoes the enrichment`` () 
     )
 
     // NUnit's dialect is not recognised
-    Assert.False(FailwithContext.everyMentionRewritable "Assert.AreEqual(\"model inference failed\", ex.Message)" literal)
+    Assert.False(
+        FailwithContext.everyMentionRewritable "Assert.AreEqual(\"model inference failed\", ex.Message)" literal
+    )
 
     // a test-side stub throwing the same text (Fuuga) is not an assertion at all
     Assert.False(
@@ -2569,8 +2574,35 @@ let ``FR0147: an F#-style extension in the namespace's AutoOpen module is seen b
 
     let tree, sourceText, checkResults = parseAndCheckSecond extensions source
 
-    match QualifiedNames.find 3 2 tree sourceText checkResults |> List.filter (fun s -> s.Namespace = "Ext") with
+    match
+        QualifiedNames.find 3 2 tree sourceText checkResults
+        |> List.filter (fun s -> s.Namespace = "Ext")
+    with
     | [ s ] ->
         Assert.Empty s.Edits
         Assert.Contains("'Contains'", s.Reason.Value)
     | other -> failwithf "Expected a declined Ext finding, got %A" other
+
+[<Fact>]
+let ``FR0147: the tupled-call guard declines one namespace, not the file`` () =
+    // System.Linq brings a `Contains` extension beside `seen.Contains (e, ct)`
+    // and is declined; System.Threading.Tasks brings none and is opened in
+    // the same pass
+    let source =
+        "module Test\nopen System.Collections.Generic\nlet seen = List<string * int>()\nlet check (e: string) (ct: int) = if not (seen.Contains (e, ct)) then seen.Add(e, ct)\nlet a (xs: int[]) = System.Linq.Enumerable.Sum xs\nlet b (xs: int[]) = System.Linq.Enumerable.Max xs\nlet c (xs: int[]) = System.Linq.Enumerable.Min xs\nlet d = System.Threading.Tasks.Task.FromResult 1\nlet e = System.Threading.Tasks.Task.Delay 10\nlet f (t: System.Threading.Tasks.Task<int>) = t.Result"
+
+    let found = qualifiedIn source
+
+    match found |> List.filter (fun s -> s.Namespace = "System.Linq") with
+    | [ s ] ->
+        Assert.Empty s.Edits
+        Assert.Contains("'Contains'", s.Reason.Value)
+    | other -> failwithf "Expected a declined System.Linq finding, got %A" other
+
+    match found |> List.filter (fun s -> s.Namespace = "System.Threading.Tasks") with
+    | [ s ] ->
+        Assert.Equal(None, s.Reason)
+        let patched = applyAll source s.Edits
+        Assert.Contains("open System.Threading.Tasks", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected an offered System.Threading.Tasks finding, got %A" other

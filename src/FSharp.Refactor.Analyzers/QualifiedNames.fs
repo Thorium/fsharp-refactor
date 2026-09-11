@@ -246,15 +246,40 @@ let find
                     // Company.Product.Data need not open Company.Product
                     let ownPrefixes = [ for k in 1 .. ids.Length -> ids |> List.take k |> identText ]
 
+                    // the line a declaration's `///` doc block starts on: an
+                    // open inserted at the declaration's own line would wedge
+                    // itself between the doc and what it documents
+                    let aboveDoc (line: int) =
+                        let mutable top = line
+
+                        while top > 1 && source.GetLineString(top - 2).TrimStart().StartsWith "///" do
+                            top <- top - 1
+
+                        top
+
                     // where an open goes when the file has none: under the
                     // module or namespace line — and in a file without one
                     // (the implicit module of a last file, a script) before
                     // the first declaration, since the "header" range there
-                    // is the first declaration's own line
+                    // is the first declaration's own line. A script's leading
+                    // `#r`/`#load`/`#I`/`#nowarn` lines are what make the
+                    // namespace exist, so the open follows the last of them
                     let insertAt =
                         match kind with
                         | SynModuleOrNamespaceKind.AnonModule ->
-                            decls |> List.tryHead |> Option.map (fun d -> r.FileName, d.Range.StartLine)
+                            let directives =
+                                decls
+                                |> List.takeWhile (fun d ->
+                                    match d with
+                                    | SynModuleDecl.HashDirective _ -> true
+                                    | _ -> false)
+
+                            match List.tryLast directives with
+                            | Some d -> Some(r.FileName, d.Range.EndLine + 1)
+                            | None ->
+                                decls
+                                |> List.tryHead
+                                |> Option.map (fun d -> r.FileName, aboveDoc d.Range.StartLine)
                         // under the `module`/`namespace` line itself, which doc
                         // comments and attributes above it push down the range
                         | _ when not ids.IsEmpty -> Some(r.FileName, (List.last ids).idRange.EndLine + 1)
@@ -263,6 +288,7 @@ let find
                     {| Range = r
                        InsertAt = insertAt
                        Opened = opens
+                       Decls = decls
                        Own = Set.ofList (own :: ownPrefixes) |})
             | _ -> []
 
@@ -438,19 +464,36 @@ let find
             | None, None, Some(_, lastOpen), _ ->
                 let at = Position.mkPos (lastOpen.EndLine + 1) 0
                 Some(Range.mkRange lastOpen.FileName at at, String.replicate lastOpen.StartColumn " ")
-            // no open in the uses' `#if` region: right below its `#if` line,
-            // at the indentation of the first line there
-            | None, None, None, _ when region > 0 ->
-                let indent =
-                    seq { region .. source.GetLineCount() - 1 }
-                    |> Seq.map source.GetLineString
-                    |> Seq.tryFind (fun l -> not (System.String.IsNullOrWhiteSpace l))
-                    |> Option.map (fun l -> l.Substring(0, l.Length - l.TrimStart().Length))
-                    |> Option.defaultValue ""
+            // no open in the uses' `#if` region: right below its `#if` (or
+            // `#else`) line, or the block's own place when that is lower —
+            // a whole file wrapped in `#if !FABLE_COMPILER` above its
+            // `module` line takes the open under the header, inside the
+            // same region. Only when that line is a top-level declaration
+            // slot of this block: not inside a declaration (a `#if` in a
+            // function body would take an `open` in expression position)
+            // and still under the same condition. Anywhere else the open
+            // has no place and the namespace stays spelled out
+            | None, None, None, Some(fileName, insertAtLine) when region > 0 ->
+                let line = max (region + 1) insertAtLine
+                let decls = blocks.[block].Decls
 
-                let at = Position.mkPos (region + 1) 0
-                let fileName = (List.head (List.head spellings)).idRange.FileName
-                Some(Range.mkRange fileName at at, indent)
+                let splitsDecl =
+                    decls
+                    |> List.exists (fun d -> d.Range.StartLine < line && line <= d.Range.EndLine)
+
+                if splitsDecl || conditionalRegion line <> region then
+                    None
+                else
+                    // at the indentation of the block's declarations
+                    let indent =
+                        decls
+                        |> List.tryFind (fun d -> d.Range.StartLine >= line)
+                        |> Option.orElse (List.tryLast decls)
+                        |> Option.map (fun d -> String.replicate d.Range.StartColumn " ")
+                        |> Option.defaultValue ""
+
+                    let at = Position.mkPos line 0
+                    Some(Range.mkRange fileName at at, indent)
             | None, None, None, Some(fileName, line) ->
                 let at = Position.mkPos line 0
                 Some(Range.mkRange fileName at at, "")
@@ -1057,7 +1100,11 @@ let find
                     if alreadyOpen then
                         None
                     elif insertion.IsEmpty then
-                        Some "its uses sit under different #if conditions, so no one open serves them all"
+                        match region with
+                        | None -> Some "its uses sit under different #if conditions, so no one open serves them all"
+                        | Some _ ->
+                            Some
+                                "its uses sit under a #if that has no top-level place for an open under the same condition"
                     elif moduleNamed ns then
                         Some $"a module spelled '{ns}' is what the open would resolve to, and it refuses to be opened"
                     else

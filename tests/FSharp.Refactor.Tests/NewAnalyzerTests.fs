@@ -108,7 +108,7 @@ let ``fully anchored pattern is left alone`` () =
 let ``regex call in a loop is hoisted above the declaration`` () =
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for s in xs do\n        if Regex.IsMatch(s, \"a.c\") then printfn \"%s\" s"
-        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if acRegex.IsMatch s then printfn \"%s\" s"
+        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if acRegex.IsMatch(s) then printfn \"%s\" s"
 
 [<Fact>]
 let ``hoist without the open stays advice-only`` () =
@@ -148,7 +148,7 @@ let ``regex call in a List.filter lambda is hoisted like a loop`` () =
     // a lambda handed to a collection function runs once per element
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> Regex.IsMatch(s, \"a.c\"))"
-        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> acRegex.IsMatch s)"
+        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> acRegex.IsMatch(s))"
 
 [<Fact>]
 let ``regex call in a lambda given to a non-collection function is not a loop`` () =
@@ -240,11 +240,11 @@ let ``a hoisted regex binding lands above the declaration's doc comment`` () =
     // the declaration is outside the range and is walked over the same way
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\n\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a+\") then ()"
-        "module Test\nopen System.Text.RegularExpressions\n\nlet private aRegex = Regex \"a+\"\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch x then ()"
+        "module Test\nopen System.Text.RegularExpressions\n\nlet private aRegex = Regex \"a+\"\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch(x) then ()"
 
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet g = 1\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a+\") then ()"
-        "module Test\nopen System.Text.RegularExpressions\nlet g = 1\nlet private aRegex = Regex \"a+\"\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch x then ()"
+        "module Test\nopen System.Text.RegularExpressions\nlet g = 1\nlet private aRegex = Regex \"a+\"\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch(x) then ()"
 
     assertRegexConstructionHoist
         "module Test\nopen System.Text.RegularExpressions\n/// Counts the a-runs.\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
@@ -693,3 +693,33 @@ let ``FR0149: a start carrying a cancellation token keeps its argument`` () =
     match unhandledStartsIn source with
     | [ s ] -> Assert.True(s.TryFix.IsNone)
     | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
+
+[<Fact>]
+let ``FR0015: an open below the declaration does not license a bare Regex above it`` () =
+    // the hoisted binding lands above `f`; an `open System.Text.RegularExpressions`
+    // further down the module is no help there, and the bare `Regex` would
+    // not resolve - the qualified spelling needs no open at all
+    let below =
+        "module Test\nlet f (lines: string list) =\n    for line in lines do\n        if System.Text.RegularExpressions.Regex.IsMatch(line, \"a+b\") then ()\nopen System.Text.RegularExpressions\nlet g (s: string) = Regex.IsMatch(s, \"x\")"
+
+    let tree, source = parse below
+
+    let hoists =
+        RegexUsage.find tree source
+        |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.HoistFromLoop)
+
+    match hoists with
+    | [ s ] -> Assert.Empty s.Edits
+    | other -> failwithf "Expected one fix-less hoist note, got %A" other
+
+    let above =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (lines: string list) =\n    for line in lines do\n        if Regex.IsMatch(line, \"a+b\") then ()"
+
+    let tree, source = parse above
+
+    match
+        RegexUsage.find tree source
+        |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.HoistFromLoop)
+    with
+    | [ s ] -> Assert.NotEmpty s.Edits
+    | other -> failwithf "Expected one hoist with a fix, got %A" other

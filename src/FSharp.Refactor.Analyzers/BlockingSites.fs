@@ -125,6 +125,19 @@ let taskArity check source id =
 
 let isTaskTyped check source id = (taskArity check source id).IsSome
 
+/// Is the value this identifier names a `ValueTask`/`ValueTask<T>` (or
+/// does the function or member return one)? A struct unrelated to Task:
+/// `vt :> Task` does not compile, `vt.AsTask()` is the spelling.
+let isValueTaskTyped check source id =
+    valueTypeOf check source id
+    |> Option.exists (fun t ->
+        try
+            t.HasTypeDefinition
+            && (t.TypeDefinition.TryFullName
+                |> Option.exists (fun n -> n.StartsWith "System.Threading.Tasks.ValueTask"))
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            false)
+
 /// A plain `Task` or a `Task<unit>` — something `do!` binds as it is.
 let taskResultIsUnit check source id =
     match valueTypeOf check source id with
@@ -193,6 +206,16 @@ type Blocking =
         /// `Assert.ThrowsAsync` returns the exception itself, so the
         /// rewrite is a plain replacement, never a bind.
         NoBind: bool
+        /// True when the site surfaces a fault WRAPPED: `.Wait()`,
+        /// `.Result` and `Task.WaitAll` throw an AggregateException
+        /// holding the failure(s), where a bind on the awaitable throws
+        /// the first inner exception itself. Code that asserts or
+        /// catches the wrapper cannot keep doing so after the rewrite.
+        WrapsFaults: bool
+        /// True when the awaitable is a `ValueTask`/`ValueTask<T>` — a
+        /// struct unrelated to `Task`, with no upcast to it: where a
+        /// `Task` is expected the spelling is `.AsTask()`.
+        ValueTask: bool
     }
 
 [<return: Struct>]
@@ -208,7 +231,9 @@ let private blocking site awaitable =
       UnitResult = false
       BindsValue = true
       PlainTask = false
-      NoBind = false }
+      NoBind = false
+      WrapsFaults = false
+      ValueTask = false }
 
 /// `<blocking> |> ignore` — the result was thrown away.
 [<return: Struct>]
@@ -292,10 +317,30 @@ let rec assertThrows (check: FSharpCheckFileResults) (source: ISourceText) (e: S
                     | Ignored i -> i
                     | b -> b
 
+                // the assert's head — everything before the lambda: the
+                // type argument `<AggregateException>` or the
+                // `typeof<AggregateException>` of the non-generic overload
+                let assertsAggregate =
+                    Regex.IsMatch(
+                        textOfRange source (Range.mkRange e.Range.FileName e.Range.Start lambda.Range.Start),
+                        @"\bAggregateException\b"
+                    )
+
                 match blockingOf check source inner with
-                | Some b when not b.NoBind ->
+                // `Assert.Throws<AggregateException>(fun () -> t.Wait())`
+                // asserts the WRAPPER `.Wait()` throws; the awaited delegate
+                // throws the inner exception and the assertion fails at
+                // runtime — that assert stays as written
+                | Some b when not b.NoBind && not (b.WrapsFaults && assertsAggregate) ->
                     let asTask =
-                        if b.PlainTask then
+                        // a ValueTask has no upcast to Task: `.AsTask()`,
+                        // then the upcast for the generic one
+                        if b.ValueTask then
+                            if b.PlainTask then
+                                $"{b.Awaitable}.AsTask()"
+                            else
+                                $"{b.Awaitable}.AsTask() :> System.Threading.Tasks.Task"
+                        elif b.PlainTask then
                             b.Awaitable
                         else
                             $"{b.Awaitable} :> System.Threading.Tasks.Task"
@@ -369,7 +414,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                                 $"({recvText} :> System.Threading.Tasks.Task)"
                         UnitResult = true
                         BindsValue = false
-                        PlainTask = arity = 0 }
+                        PlainTask = arity = 0
+                        WrapsFaults = true }
             | None -> None
         | Some(_, _, gr) when gr.idText = "GetResult" ->
             match f with
@@ -382,7 +428,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                         Some
                             { blocking e.Range recvText with
                                 UnitResult = taskResultIsUnit check source rid
-                                PlainTask = arity = 0 }
+                                PlainTask = arity = 0
+                                ValueTask = isValueTaskTyped check source rid }
                     | None -> None
                 | _ -> None
             | _ -> None
@@ -412,11 +459,14 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                 let allPlain = arities |> List.forall (fun a -> a = Some 0)
 
                 if m.idText = "WaitAll" then
+                    // WaitAll throws ONE AggregateException carrying every
+                    // failure; awaiting WhenAll throws the first alone
                     Some
                         { blocking e.Range text with
                             UnitResult = allPlain
                             PlainTask = allPlain
-                            BindsValue = false }
+                            BindsValue = false
+                            WrapsFaults = true }
                 else
                     // WhenAny yields the finished task, WaitAny its index:
                     // a bound value would change type, so only a discarded
@@ -430,7 +480,9 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
         | Some(recvText, rid, p) when p.idText = "Result" && isTaskTyped check source rid ->
             Some
                 { blocking e.Range recvText with
-                    UnitResult = taskResultIsUnit check source rid }
+                    UnitResult = taskResultIsUnit check source rid
+                    WrapsFaults = true
+                    ValueTask = isValueTaskTyped check source rid }
         | _ -> assertThrows check source other
 
 /// Is this body choreographed around a THREAD? Code that hands work to a

@@ -22,7 +22,7 @@
 ///      first, every literal spelled with L, the arithmetic run wide, and
 ///      `Checked.int` narrowing the result back to its original type —
 ///      `(1000000 * 1000000 + 5) / 100000` becomes
-///      `(1000000L * 1000000L + 5L) / 100000L |> Checked.int`. The value
+///      `Checked.int ((1000000L * 1000000L + 5L) / 100000L)`. The value
 ///      keeps its meaning, which is what the author wanted; delete the
 ///      narrowing to keep it int64
 ///   2. `Checked.( * ) seconds 1_000_000` — still fails, just loudly: an
@@ -194,30 +194,65 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                       // arithmetic run wide, and Checked.int narrowing the
                       // result back to the original type at the end:
                       //     (1000000 * 1000000 + 5) / 100000
-                      //  →  (1000000L * 1000000L + 5L) / 100000L |> Checked.int
+                      //  →  Checked.int ((1000000L * 1000000L + 5L) / 100000L)
                       let arithmetic =
                           set [ "op_Addition"; "op_Subtraction"; "op_Multiply"; "op_Division"; "op_Modulus" ]
 
-                      let outermost =
-                          path
-                          |> List.fold
-                              (fun (acc: SynExpr) node ->
-                                  match node with
-                                  | SyntaxNode.SynExpr(SynExpr.Paren _ as p) when
-                                      Range.rangeContainsRange p.Range acc.Range
-                                      ->
-                                      p
-                                  | SyntaxNode.SynExpr(SynExpr.App(
-                                      funcExpr = SynExpr.App(funcExpr = SingleIdent o); argExpr = _) as a) when
-                                      arithmetic.Contains o.idText && Range.rangeContainsRange a.Range acc.Range
-                                      ->
-                                      a
-                                  | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = SingleIdent o) as a) when
-                                      arithmetic.Contains o.idText && Range.rangeContainsRange a.Range acc.Range
-                                      ->
-                                      a
-                                  | _ -> acc)
-                              expr
+                      let isArithmetic (e: SynExpr) =
+                          match e with
+                          | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent o)) ->
+                              arithmetic.Contains o.idText
+                          | SynExpr.App(isInfix = true; funcExpr = SingleIdent o) -> arithmetic.Contains o.idText
+                          | _ -> false
+
+                      // climbed from the operation outward, innermost parent
+                      // first: an enclosing arithmetic application, or a
+                      // paren whose OWN parent is one. A paren that is a
+                      // function argument (`int64 (seconds * 1_000_000)`), a
+                      // method argument (`Math.Max(seconds * 1_000_000, 0)`)
+                      // or a comparison operand is where the arithmetic ends
+                      // — widening past it fed `int64` a tuple, or narrowed
+                      // back a value the author had just widened. Yields the
+                      // outermost node and the path above it
+                      let rec climb (acc: SynExpr) (above: SyntaxNode list) =
+                          match above with
+                          | SyntaxNode.SynExpr(SynExpr.Paren _ as p) :: (SyntaxNode.SynExpr parent :: _ as rest) when
+                              isArithmetic parent && Range.rangeContainsRange p.Range acc.Range
+                              ->
+                              climb p rest
+                          | SyntaxNode.SynExpr a :: rest when
+                              isArithmetic a && Range.rangeContainsRange a.Range acc.Range
+                              ->
+                              climb a rest
+                          | _ -> acc, above
+
+                      let outermost, above = climb expr path
+
+                      // the widened expression must be a WHOLE value — the
+                      // right-hand side of a binding, a `return`, an
+                      // assignment — so that `Checked.int (...)` replaces
+                      // exactly what the original computed. An operand of a
+                      // comparison, a call argument, a branch of an `if`:
+                      // there the narrowing has no place of its own, and the
+                      // widening is withheld (the Checked offer still stands)
+                      let wholeValue =
+                          let rec unwrap (nodes: SyntaxNode list) =
+                              match nodes with
+                              | SyntaxNode.SynExpr(SynExpr.Paren _) :: rest
+                              | SyntaxNode.SynExpr(SynExpr.Typed _) :: rest -> unwrap rest
+                              | _ -> nodes
+
+                          let holds (value: SynExpr) =
+                              Range.rangeContainsRange value.Range outermost.Range
+
+                          match unwrap above with
+                          | SyntaxNode.SynBinding(SynBinding(expr = body)) :: _ -> holds body
+                          | SyntaxNode.SynExpr(SynExpr.YieldOrReturn(expr = value)) :: _ -> holds value
+                          | SyntaxNode.SynExpr(SynExpr.Set(rhsExpr = value)) :: _ -> holds value
+                          | SyntaxNode.SynExpr(SynExpr.LongIdentSet(expr = value)) :: _ -> holds value
+                          | SyntaxNode.SynExpr(SynExpr.DotSet(rhsExpr = value)) :: _ -> holds value
+                          | SyntaxNode.SynExpr(SynExpr.DotIndexedSet(valueExpr = value)) :: _ -> holds value
+                          | _ -> false
 
                       let rec wide (e: SynExpr) : string option =
                           match e with
@@ -246,13 +281,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                           // an int32 literal only: an int64 expression has
                           // nowhere wider to go, and narrowing it back to int
                           // would be the wrong type
-                          | Some _ when not (text.EndsWith 'L' || text.EndsWith 'l') ->
+                          | Some _ when wholeValue && not (text.EndsWith 'L' || text.EndsWith 'l') ->
                               // the chain must widen as a whole: a float or
                               // decimal operand anywhere means it is not int
-                              // arithmetic
+                              // arithmetic. A prefix call with parentheses:
+                              // `|> Checked.int` shares its precedence with
+                              // `<`, `=` and `::`, and would have taken a
+                              // comparison to its left along
                               wide outermost
                               |> Option.map (fun t ->
-                                  outermost.Range, textOfRange source outermost.Range, $"{t} |> Checked.int")
+                                  outermost.Range, textOfRange source outermost.Range, $"Checked.int ({t})")
                           | _ -> None
 
                       let checkedFix =

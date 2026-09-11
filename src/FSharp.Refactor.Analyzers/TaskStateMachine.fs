@@ -486,8 +486,9 @@ let find
                   | _ -> None
 
               // every leaf of a branch tree, as the position of its `return`
-              // keyword — None as soon as one leaf is not a plain `return
-              // <expr>` whose payload starts on the keyword's own line.
+              // keyword and the payload's range — None as soon as one leaf is
+              // not a plain `return <expr>` whose payload starts on the
+              // keyword's own line.
               // closingOf, not terminalOf: an arm opening with `let!` has its
               // branch AFTER the binding, and terminalOf stops at a bang
               let rec leafReturns (e: SynExpr) =
@@ -495,7 +496,7 @@ let find
                   | SynExpr.YieldOrReturn(flags = (false, true); expr = payload; range = r) when
                       payload.Range.StartLine = r.StartLine
                       ->
-                      Some [ r.StartLine, r.StartColumn ]
+                      Some [ r.StartLine, r.StartColumn, payload.Range ]
                   | inner ->
                       match branchResults inner with
                       | Some arms ->
@@ -526,15 +527,43 @@ let find
                           // both logged "async" before and "sync" after
                           && not (containsUse e.Range)
                           && startsOwnLine source e.Range
+                          // every line of the branch gains an indent, and a
+                          // string literal spanning lines would gain it INSIDE
+                          // its content - the same refusal the let hoist and
+                          // the tail wrap make
+                          && multiLineStringSafe (linesOf source e.Range.StartLine e.Range.EndLine)
+                          && not (spansMultiLineLiteral index e.Range.StartLine e.Range.EndLine)
                           ->
                           [ e, starts ]
                       | _ -> arms |> List.collect (fun arm -> hoistSites (closingOf arm))
 
-              for site, starts in hoistSites (closingOf body) do
-                  let positions = Set.ofList starts
+              for site, leaves in hoistSites (closingOf body) do
+                  let positions = leaves |> List.map (fun (l, c, _) -> l, c) |> Set.ofList
                   let lines = linesOf source site.Range.StartLine site.Range.EndLine
 
                   let lastLine = List.length lines - 1
+
+                  // a payload continuing below its keyword line moves as ONE
+                  // block: the strip pulls its first line left by the
+                  // keyword's width, so every continuation line follows by
+                  // the same amount - a record's fields, a list's elements
+                  // keep their alignment. (keyword line, payload end line,
+                  // columns to give back, the payload's own column)
+                  let continuations =
+                      leaves
+                      |> List.choose (fun (l, c, (payload: range)) ->
+                          if payload.EndLine > l then
+                              Some(l, payload.EndLine, payload.StartColumn - c, payload.StartColumn)
+                          else
+                              None)
+
+                  // one line, one shift: a keyword line holding a second
+                  // `return`, or a continuation line carrying one, would be
+                  // pulled twice - withhold rather than skew
+                  let cleanlyLayered =
+                      continuations
+                      |> List.forall (fun (l, endLine, _, _) ->
+                          positions |> Set.filter (fun (pl, _) -> pl >= l && pl <= endLine) |> Set.count = 1)
 
                   let rewritten =
                       lines
@@ -570,22 +599,48 @@ let find
                                   line
                               |> fun s -> if isBlank s then "" else s.TrimEnd()
 
-                          if isBlank stripped then "" else "    " + stripped)
+                          let giveBack =
+                              continuations
+                              |> List.tryPick (fun (l, endLine, shift, payloadColumn) ->
+                                  if lineNo > l && lineNo <= endLine then
+                                      Some(shift, payloadColumn)
+                                  else
+                                      None)
 
-                  // a branch that fitted on one line has to keep `return` on
-                  // that line: `return` alone with the payload below opens an
-                  // offside context the payload's own line never closes, so a
-                  // trailing `}` - or the next `else` - lands inside it
-                  let hoisted =
-                      match rewritten with
-                      | [ single ] -> "return " + single.TrimStart()
-                      | _ -> "return\n" + String.concat "\n" rewritten
+                          if isBlank stripped then
+                              Some ""
+                          else
+                              match giveBack with
+                              // a continuation left of the payload's own
+                              // column (a lambda body the parser lets
+                              // undent, say) would land left of the arm
+                              // once the payload moves: withhold
+                              | Some(_, payloadColumn) when leadingSpaces stripped < payloadColumn -> None
+                              | Some(shift, _) -> Some("    " + stripped.Substring shift)
+                              | None -> Some("    " + stripped))
+                      |> fun parts ->
+                          if cleanlyLayered && parts |> List.forall Option.isSome then
+                              Some(parts |> List.choose id)
+                          else
+                              None
 
-                  hoistOffered <- true
+                  match rewritten with
+                  | None -> ()
+                  | Some rewritten ->
+                      // a branch that fitted on one line has to keep `return` on
+                      // that line: `return` alone with the payload below opens an
+                      // offside context the payload's own line never closes, so a
+                      // trailing `}` - or the next `else` - lands inside it
+                      let hoisted =
+                          match rewritten with
+                          | [ single ] -> "return " + single.TrimStart()
+                          | _ -> "return\n" + String.concat "\n" rewritten
 
-                  { Range = site.Range
-                    Kind = AdviceKind.HoistReturn starts.Length
-                    Edits = withhold [ site.Range, hoisted ] }
+                      hoistOffered <- true
+
+                      { Range = site.Range
+                        Kind = AdviceKind.HoistReturn leaves.Length
+                        Edits = withhold [ site.Range, hoisted ] }
 
               // the shrink advice only for genuinely oversized tasks
               if not isAsync && (bangCount >= BangThreshold || bodyLines >= LineThreshold) then

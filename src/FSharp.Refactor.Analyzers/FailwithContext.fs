@@ -450,8 +450,7 @@ let private assertionForms (literal: string) : (Regex * string) list =
 let everyMentionRewritable (text: string) (literal: string) : bool =
     let covered =
         assertionForms literal
-        |> List.collect (fun (pattern, _) ->
-            [ for m in pattern.Matches text -> m.Index, m.Index + m.Length ])
+        |> List.collect (fun (pattern, _) -> [ for m in pattern.Matches text -> m.Index, m.Index + m.Length ])
 
     let rec mentions (from: int) =
         match text.IndexOf(literal, from, StringComparison.Ordinal) with

@@ -641,19 +641,82 @@ let find
                                 // `field.Dispose()` as the first statement of
                                 // the Dispose body — replacing a `()` body,
                                 // else a line above what is there, at its
-                                // column
+                                // column.
+                                //
+                                // Not when the body still USES the field:
+                                // `cts.Dispose(); cts.Cancel()` throws
+                                // ObjectDisposedException, and compiles. The
+                                // call then goes LAST — and only after a
+                                // body whose closing statement is a plain
+                                // call or assignment (a `task { }` or a
+                                // value-returning tail would change the
+                                // member's type), with nothing trailing on
+                                // its last line that the new line would
+                                // carry off
+                                let interfaceDisposeExpr (r: range) =
+                                    members
+                                    |> List.tryPick (fun m ->
+                                        match m with
+                                        | SynMemberDefn.Interface(members = Some interfaceMembers) ->
+                                            interfaceMembers
+                                            |> List.tryPick (fun im ->
+                                                match im with
+                                                | SynMemberDefn.Member(
+                                                    memberDefn = SynBinding(
+                                                        headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = ids))
+                                                        expr = body)) when
+                                                    not ids.IsEmpty
+                                                    && (List.last ids).idText = "Dispose"
+                                                    && Range.equals body.Range r
+                                                    ->
+                                                    Some body
+                                                | _ -> None)
+                                        | _ -> None)
+
+                                let rec closingStatement (e: SynExpr) =
+                                    match e with
+                                    | SynExpr.Sequential(expr2 = e2) -> closingStatement e2
+                                    | LetOrUseE lou -> closingStatement lou.Body
+                                    | _ -> e
+
+                                let plainStatement (e: SynExpr) =
+                                    match e with
+                                    | SynExpr.App(
+                                        isInfix = false
+                                        funcExpr = (SynExpr.LongIdent _ | SynExpr.DotGet _ | SynExpr.TypeApp _)
+                                        argExpr = (SynExpr.Const(SynConst.Unit, _) | SynExpr.Paren _))
+                                    | SynExpr.LongIdentSet _
+                                    | SynExpr.DotSet _
+                                    | SynExpr.Set _ -> true
+                                    | _ -> false
+
+                                let appendable (body: range) =
+                                    match interfaceDisposeExpr body with
+                                    | Some e when plainStatement (closingStatement e) ->
+                                        let lastLine = source.GetLineString(body.EndLine - 1)
+
+                                        lastLine.Length >= body.EndColumn
+                                        && System.String.IsNullOrWhiteSpace(lastLine.Substring body.EndColumn)
+                                        && not (spansDirective source body)
+                                    | _ -> false
+
                                 let fix =
                                     disposeBodies
                                     |> List.tryHead
-                                    |> Option.map (fun body ->
+                                    |> Option.bind (fun body ->
                                         let bodyText = textOfRange source body
+                                        let indent = String.replicate body.StartColumn " "
 
                                         if bodyText.Trim() = "()" then
-                                            body, bodyText, $"{fieldName}.Dispose()"
-                                        else
+                                            Some(body, bodyText, $"{fieldName}.Dispose()")
+                                        elif not mentionedOnly then
                                             let at = Range.mkRange body.FileName body.Start body.Start
-                                            let indent = String.replicate body.StartColumn " "
-                                            at, "", $"{fieldName}.Dispose()\n{indent}")
+                                            Some(at, "", $"{fieldName}.Dispose()\n{indent}")
+                                        elif appendable body then
+                                            let at = Range.mkRange body.FileName body.End body.End
+                                            Some(at, "", $"\n{indent}{fieldName}.Dispose()")
+                                        else
+                                            None)
 
                                 undisposed.Add
                                     { TypeName = typeName

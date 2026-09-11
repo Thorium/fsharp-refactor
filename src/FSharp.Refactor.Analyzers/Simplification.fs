@@ -132,8 +132,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     let suggestions = ResizeArray<Suggestion>()
 
     // consulted only when an option test is found
-    let unannotated =
-        lazy (OptionModule.unannotatedParameters (AstIndex.ofTree parseTree))
+    let evidence = lazy (OptionModule.declarationEvidence parseTree)
 
     let add (range: range) (replacement: string) kind =
         suggestions.Add
@@ -166,9 +165,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             // the property where the receiver's type is settled; the
             // module function keeps inference going where it is not
             match other with
-            | OptionModule.ReceiverPath(root, text) when
+            | OptionModule.ReceiverPath(ids, text) when
                 check
-                |> Option.exists (fun c -> OptionModule.receiverSettled c source unannotated.Value root)
+                |> Option.exists (fun c -> OptionModule.receiverSettled c source evidence.Value ids)
                 ->
                 let property = if op = "op_Equality" then "IsNone" else "IsSome"
                 add range $"{text}.{property}" SimplificationKind.OptionComparison
@@ -262,9 +261,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SynExpr.App(isInfix = false; funcExpr = OptionTestFunc(f, isSome); argExpr = receiver)
                 | PipeApp(receiver, OptionTestFunc(f, isSome)) ->
                     match check, receiver with
-                    | Some c, OptionModule.ReceiverPath(root, text) when
+                    | Some c, OptionModule.ReceiverPath(ids, text) when
                         isCoreOptionTest c source f
-                        && OptionModule.receiverSettled c source unannotated.Value root
+                        && OptionModule.receiverSettled c source evidence.Value ids
                         && not (payloadRead path expr receiver)
                         ->
                         let property = if isSome then "IsSome" else "IsNone"

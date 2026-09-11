@@ -13,8 +13,10 @@
 ///   - the raised identifier is bound by the handler's own pattern and is
 ///     not rebound in between
 ///   - the raise site is lexically in the handler: not inside a lambda,
-///     computation expression, or nested try (where `reraise` would not
-///     compile or would refer to a different exception)
+///     local function, object expression, `lazy`, comprehension,
+///     computation expression, quotation or nested try (where `reraise`
+///     would not compile — FS0413 — or would refer to a different
+///     exception)
 ///   - the try-with itself is not inside a computation expression:
 ///     `task { try ... with ex -> raise ex }` desugars the handler into a
 ///     lambda passed to builder.TryWith, where `reraise ()` is FS0413
@@ -48,29 +50,58 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let index = AstIndex.ofTree parseTree
 
         // sub-ranges of `r` where reraise () would not compile or would
-        // mean a different exception
+        // mean a different exception. FS0413 allows `reraise ()` DIRECTLY
+        // in the handler only: every closure spelling is out — a lambda, a
+        // local function (`let helper () = raise ex` compiles to its own
+        // closure, a plain value binding does not), an object-expression
+        // member, `lazy`, a comprehension, a computation expression, a
+        // quotation — and so is a nested try. A `for`, a `match` and an
+        // `if` inside the handler are fine.
         let opaqueRangesIn (r: range) =
             index.Exprs
-            |> Array.choose (fun (_, e) ->
-                match e with
-                | SynExpr.Lambda _
-                | SynExpr.MatchLambda _
-                | SynExpr.ComputationExpr _
-                | SynExpr.TryWith _
-                | SynExpr.TryFinally _ when Range.rangeContainsRange r e.Range -> Some e.Range
-                | _ -> None)
+            |> Array.collect (fun (_, e) ->
+                if not (Range.rangeContainsRange r e.Range) then
+                    [||]
+                else
+                    match e with
+                    | SynExpr.Lambda _
+                    | SynExpr.MatchLambda _
+                    | SynExpr.ComputationExpr _
+                    | SynExpr.ArrayOrListComputed _
+                    | SynExpr.ObjExpr _
+                    | SynExpr.Lazy _
+                    | SynExpr.Quote _
+                    | SynExpr.TryWith _
+                    | SynExpr.TryFinally _ -> [| e.Range |]
+                    | LetOrUseE lou ->
+                        lou.Bindings
+                        |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
+                            match p with
+                            | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> Some rhs.Range
+                            | _ when lou.IsRecursive -> Some rhs.Range
+                            | _ -> None)
+                        |> Array.ofList
+                    | _ -> [||])
 
-        // is `name` rebound inside `r`?
+        // is `name` rebound inside `r`? A let/use, a lambda parameter, a
+        // match arm (`| Some ex -> raise ex` raises the INNER exception), a
+        // `function` clause, a nested handler or a loop binder — any of
+        // them makes `raise ex` a different object from the one caught
         let reboundIn (name: string) (r: range) =
+            let binds (p: SynPat) = patBoundNames p |> List.contains name
+
             index.Exprs
             |> Array.exists (fun (_, e) ->
                 Range.rangeContainsRange r e.Range
                 && (match e with
-                    | LetOrUseE lou ->
-                        lou.Bindings
-                        |> List.exists (fun (SynBinding(headPat = p)) -> patBoundNames p |> List.contains name)
-                    | SynExpr.Lambda(parsedData = Some(pats, _)) ->
-                        pats |> List.exists (fun p -> patBoundNames p |> List.contains name)
+                    | LetOrUseE lou -> lou.Bindings |> List.exists (fun (SynBinding(headPat = p)) -> binds p)
+                    | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.exists binds
+                    | SynExpr.Match(clauses = cs)
+                    | SynExpr.MatchBang(clauses = cs)
+                    | SynExpr.MatchLambda(matchClauses = cs)
+                    | SynExpr.TryWith(withCases = cs) -> cs |> List.exists (fun (SynMatchClause(pat = p)) -> binds p)
+                    | SynExpr.ForEach(pat = p) -> binds p
+                    | SynExpr.For(ident = id) -> id.idText = name
                     | _ -> false))
 
         // A try-with whose nearest deferring ancestor is a computation

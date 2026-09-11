@@ -89,7 +89,17 @@ let private isPartialActivePatternName (name: string) = Regex.IsMatch(name, @"^\
 
 /// Find trivial partial active patterns that can get [<return: Struct>].
 /// Requires typed check results for the Some/None gate.
-let find
+///
+/// `seenByLaterFile`: when the opt-in is the host's leaf-compilation
+/// heuristic rather than the caller's own `--api-changes`, a LATER file of
+/// the same executable may invoke the pattern as a function and expect the
+/// option it returns today (`List.choose (|Int|_|)` in Program.fs). This
+/// answers, by name, whether one mentions it; a pattern that is not private
+/// then changes representation only when nothing after it does. `find`
+/// passes the constant "no", the right answer for a real `--api-changes`
+/// and moot for a closed gate.
+let findWith
+    (seenByLaterFile: string -> bool)
     (allowApiChanges: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -131,6 +141,11 @@ let find
                     // implementation a voption return alone does not compile
                     && Visibility.isInScopeNamed allowApiChanges path [ bindingAccess; patAccess ] nameIdent.idText
                     && not (invokedAsFunction nameIdent.idText)
+                    // `invokedAsFunction` covers this file; a later file of
+                    // the compilation, only a private pattern is sure to
+                    // escape
+                    && (Visibility.isPrivate path [ bindingAccess; patAccess ]
+                        || not (seenByLaterFile nameIdent.idText))
                     ->
                     let results = ResizeArray<range * string>()
 
@@ -180,3 +195,13 @@ let find
     else
         AstIndex.replay collector parseTree
         List.ofSeq suggestions
+
+/// `findWith` for a caller whose opt-in is its own: `--api-changes`, or no
+/// opt-in at all. No later file is consulted.
+let find
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    : Suggestion list =
+    findWith (fun _ -> false) allowApiChanges parseTree source check

@@ -409,14 +409,22 @@ But that could affect to external users and serialization.
 
 `--api-changes` opts into rewrites that change internal or public
 signatures — currying a tupled function (FR0090) and reordering its
-parameters data-last (FR0091) — rewriting every call site in the project.
-Without it those are held back and only counted. It also widens the
-contained-type hints (FR0022, FR0069, FR0070, FR0093) to public types.
-Consumers outside the project are why this is opt-in: their call sites
-cannot be rewritten, so each rule only fires where a missed one would fail
-to compile rather than change behaviour silently. Naming a single source
-file skips these entirely — asking for one file and getting edits in its
-callers would be a surprise.
+parameters data-last (FR0091) — rewriting every call site in the project,
+in the scripts that `#load` it, and in the sibling projects of the same
+solution that reference it (the test project, typically) or compile one
+of its sources directly (a linked file; such a fix line says
+` note: linked file`). Without it those are held back and only counted. It
+also widens the contained-type hints (FR0022, FR0069, FR0070, FR0093) to
+public types. Consumers outside
+the run are why this is opt-in: their call sites cannot be rewritten, so
+a public function changes shape only when every project referencing it
+in the run is an F# project that typechecks — a referencing C# project, a
+sibling with errors, a script `#r`ing the built assembly or a bare project
+with no solution above it holds the public surface as it is, and the run
+says so — and each rule only fires where a call site it still cannot see
+would fail to compile rather than change behaviour silently. Naming a
+single source file skips these entirely — asking for one file and getting
+edits in its callers would be a surprise.
 
 The flag bundles two separable things: fixes that edit OTHER files, and
 the widening of in-place shape changes to public declarations. Only the

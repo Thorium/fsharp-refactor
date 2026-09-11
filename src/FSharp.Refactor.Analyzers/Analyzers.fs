@@ -115,6 +115,22 @@ let private whenEnabled (fileName: string) (code: string) (name: string) (produc
                 []
     }
 
+/// The same gate for an analyzer that emits MORE THAN ONE code. It runs
+/// when any of them is enabled, and each code's own builder asks its own
+/// switch — so `"FR0017": false` does not take FR0149 down with it, and
+/// `--codes FR0149` alone brings FR0149 back.
+let private whenAnyEnabled (fileName: string) (codes: string list) (name: string) (produce: unit -> Message list) =
+    async {
+        return
+            if
+                codes
+                |> List.exists (fun code -> Configuration.isRuleEnabled fileName code name)
+            then
+                DeepStack.run produce
+            else
+                []
+    }
+
 /// The scope gate for the rules whose fix changes a declaration's
 /// compiled SHAPE in place — `[<Struct>]`, `[<Literal>]`, named union
 /// fields, a field's Option becoming ValueOption.
@@ -155,6 +171,56 @@ let private shapeScopeOpen (fileName: string) (options: AnalyzerProjectOptions) 
                )
 
            Visibility.isApplication fileName leaf
+
+/// The extra question for the two gated rules whose in-place rewrite
+/// changes a BINDING'S TYPE rather than a type's representation —
+/// FR0035's `|> Set.ofList` on a module value, FR0011's
+/// `[<return: Struct>]` on an active pattern.
+///
+/// "Nothing outside the assembly can see it" is what opens the gate for an
+/// executable, and it is true — but a LATER FILE of the same executable
+/// can, and consumes the binding at its old type: `Data.names` read as a
+/// list in Program.fs, `List.choose (|Int|_|)` wanting an option. Both
+/// rules check their own file's uses; this answers for the rest of the
+/// compilation, by name. Only when the gate stands open on the leaf
+/// heuristic ALONE: `--api-changes` and an explicit `publicApi` /
+/// `apiChanges` are the caller vouching for the callers, cross-file
+/// included, and a closed gate never asks. Textual and over-eager, like
+/// `Text.signatureMentions` and for the same reason: it has to hold in
+/// the editor, which installs no cross-file parser and reads the sibling
+/// from disk instead. A sibling that cannot be read counts as a use.
+let private seenByLaterFile (fileName: string) (options: AnalyzerProjectOptions) : string -> bool =
+    if
+        Visibility.apiChangesAllowed ()
+        || (Configuration.publicSurfaceSetting fileName).IsSome
+        || not (shapeScopeOpen fileName options)
+    then
+        fun _ -> false
+    else
+        match Visibility.laterSourceFiles fileName options.SourceFiles with
+        | [] -> fun _ -> false
+        | later ->
+            // read once per analysis of this file, and only once a
+            // candidate binding asks
+            let texts =
+                lazy
+                    (later
+                     |> List.map (fun path ->
+                         if ProjectSources.available () then
+                             ProjectSources.tryParse path
+                             |> Option.map (fun (_, source) -> source.GetSubTextString(0, source.Length))
+                         else
+                             try
+                                 Some(System.IO.File.ReadAllText path)
+                             with _ -> // an unreadable sibling counts as a use; fsharpanalyzer: ignore-line FR0055
+                                 None))
+
+            fun name ->
+                texts.Value
+                |> List.exists (fun text ->
+                    match text with
+                    | Some text -> Text.mentionsIdentifier text name
+                    | None -> true)
 
 /// What the scope gate is holding back, per rule code, for the run to
 /// report. Only the CLI reads it; editors show the findings themselves.
@@ -584,24 +650,31 @@ let private exceptionDetailMessages
     checkResults
     : Message list =
     ExceptionDetail.find parseTree source checkResults
-    |> List.map (fun s ->
-        hint
-            "FR0151"
-            (s.Advice)
-            s.Range
-            // editor-only, like FR0049's sync swap: it compiles either way,
-            // but WHAT GETS LOGGED is the author's call, not the tool's
-            (if offerFix then
-                 // the carry-on repair FIRST where it applies: not failing at
-                 // all beats reporting the failure better
-                 (match s.AlternativeFix with
-                  | Some(r, original, replacement) -> [ fix r original replacement ]
-                  | None -> [])
-                 @ (match s.Fix with
-                    | Some(r, original, replacement) -> [ fix r original replacement ]
-                    | None -> [])
-             else
-                 []))
+    |> List.collect (fun s ->
+        // editor-only, like FR0049's sync swap: it compiles either way,
+        // but WHAT GETS LOGGED is the author's call, not the tool's
+        if not offerFix then
+            [ hint "FR0151" s.Advice s.Range [] ]
+        else
+            let detail =
+                match s.Fix with
+                | Some(r, original, replacement) -> [ fix r original replacement ]
+                | None -> []
+
+            // an editor applies EVERY fix of a message as one action, so
+            // the two repairs are two messages: the carry-on FIRST where
+            // it applies — not failing at all beats reporting the failure
+            // better — and the LoaderExceptions join as the alternative
+            match s.AlternativeFix with
+            | Some(r, original, replacement) ->
+                [ hint "FR0151" s.Advice s.Range [ fix r original replacement ]
+                  if not detail.IsEmpty then
+                      hint
+                          "FR0151"
+                          "Alternative: report the failure with every LoaderExceptions message joined, in place of the .Message that names none of them."
+                          s.Range
+                          detail ]
+            | None -> [ hint "FR0151" s.Advice s.Range detail ])
 
 let private cachedFailureMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
     CachedFailure.find parseTree source checkResults
@@ -1151,12 +1224,13 @@ let simplificationCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private structActivePatternMessages
     (scopeOpen: bool)
+    (seenByLaterFile: string -> bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     checkResults
     : Message list =
     widened scopeOpen (fun scope ->
-        StructActivePattern.find scope parseTree source checkResults
+        StructActivePattern.findWith seenByLaterFile scope parseTree source checkResults
         |> List.map (fun s ->
             hint
                 "FR0011"
@@ -1173,6 +1247,7 @@ let structActivePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list>
             if fsharpCoreAtLeast 6 ctx.ProjectOptions then
                 structActivePatternMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                    (seenByLaterFile ctx.FileName ctx.ProjectOptions)
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText
                     check
@@ -1185,6 +1260,7 @@ let structActivePatternCliAnalyzer (ctx: CliContext) : Async<Message list> =
         if fsharpCoreAtLeast 6 ctx.ProjectOptions then
             structActivePatternMessages
                 (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                (seenByLaterFile ctx.FileName ctx.ProjectOptions)
                 ctx.ParseFileResults.ParseTree
                 ctx.SourceText
                 ctx.CheckFileResults
@@ -1548,22 +1624,30 @@ let paramOrderCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0017 AsyncIgnore ----
 
-let private discardedAsyncMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
-    AsyncIgnore.find parseTree source checkResults
-    |> List.map (fun s ->
-        hint
-            "FR0017"
-            (if s.IsValueTask then
-                 sprintf
-                     "'%s' returns a ValueTask: ignore drops its outcome — a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it (let! _ = / do! inside task { }) or call .AsTask() and hand the task to whoever waits."
-                     s.Name
-             else
-                 sprintf
-                     "'%s' is an Async computation: ignore discards it without running it. Bind it inside the computation — let! _ = %s (do! when it returns unit) — or Async.Start it to fire and forget."
-                     s.Name
-                     s.Name)
-            s.Range
-            [])
+let private discardedAsyncMessages
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    if not (Configuration.isRuleEnabled fileName "FR0017" "AsyncIgnore") then
+        []
+    else
+        AsyncIgnore.find parseTree source checkResults
+        |> List.map (fun s ->
+            hint
+                "FR0017"
+                (if s.IsValueTask then
+                     sprintf
+                         "'%s' returns a ValueTask: ignore drops its outcome — a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it (let! _ = / do! inside task { }) or call .AsTask() and hand the task to whoever waits."
+                         s.Name
+                 else
+                     sprintf
+                         "'%s' is an Async computation: ignore discards it without running it. Bind it inside the computation — let! _ = %s (do! when it returns unit) — or Async.Start it to fire and forget."
+                         s.Name
+                         s.Name)
+                s.Range
+                [])
 
 // ---- FR0149 UnhandledStart ----
 
@@ -1610,15 +1694,15 @@ let private unhandledStartMessages
 
 [<EditorAnalyzer("AsyncIgnore", "Flag Async computations discarded with ignore", HelpBase)>]
 let asyncIgnoreEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
-    whenEnabled ctx.FileName "FR0017" "AsyncIgnore" (fun () ->
+    whenAnyEnabled ctx.FileName [ "FR0017"; "FR0149" ] "AsyncIgnore" (fun () ->
         whenChecked ctx (fun check ->
-            discardedAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText check
+            discardedAsyncMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText check
             @ unhandledStartMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText check))
 
 [<CliAnalyzer("AsyncIgnore", "Flag Async computations discarded with ignore", HelpBase)>]
 let asyncIgnoreCliAnalyzer (ctx: CliContext) : Async<Message list> =
-    whenEnabled ctx.FileName "FR0017" "AsyncIgnore" (fun () ->
-        discardedAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+    whenAnyEnabled ctx.FileName [ "FR0017"; "FR0149" ] "AsyncIgnore" (fun () ->
+        discardedAsyncMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         @ unhandledStartMessages ctx.FileName false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0018 DictTryAdd ----
@@ -2132,6 +2216,7 @@ let optionMatchCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private loopPerfMessages
     (scopeOpen: bool)
+    (seenByLaterFile: string -> bool)
     (fileName: string)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -2144,7 +2229,8 @@ let private loopPerfMessages
     if not (containsEnabled || constructionEnabled) then
         []
     else
-        let contains, constructions = LoopPerf.find scopeOpen parseTree source
+        let contains, constructions =
+            LoopPerf.findWith seenByLaterFile scopeOpen parseTree source
 
         let containsMessages =
             if containsEnabled then
@@ -2219,6 +2305,7 @@ let loopPerfEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
             DeepStack.run (fun () ->
                 loopPerfMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                    (seenByLaterFile ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText)
@@ -2231,6 +2318,7 @@ let loopPerfCliAnalyzer (ctx: CliContext) : Async<Message list> =
             DeepStack.run (fun () ->
                 loopPerfMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                    (seenByLaterFile ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText)
@@ -3420,8 +3508,20 @@ let unicodeCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0127 SecretLiterals ----
 
-let private secretMessages (parseTree: ParsedInput) : Message list =
+let private secretMessages (fileName: string) (parseTree: ParsedInput) : Message list =
+    // two codes from one scan, each behind its own switch: a config that
+    // turns FR0153 off keeps the FR0127 leaks, and the other way round
+    let leakEnabled = Configuration.isRuleEnabled fileName "FR0127" "SecretLiterals"
+
+    let designTimeEnabled =
+        Configuration.isRuleEnabled fileName "FR0153" "SecretLiterals"
+
     SecretLiterals.find parseTree
+    |> List.filter (fun s ->
+        if s.DesignTimeLiteral then
+            designTimeEnabled
+        else
+            leakEnabled)
     |> List.map (fun s ->
         // a literal cannot move to configuration, so the check is a different
         // one: the value should be a development credential
@@ -3448,11 +3548,13 @@ let private secretMessages (parseTree: ParsedInput) : Message list =
 
 [<EditorAnalyzer("SecretLiterals", "Provider-format API keys in string literals", HelpBase)>]
 let secretsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
-    whenEnabled ctx.FileName "FR0127" "SecretLiterals" (fun () -> secretMessages ctx.ParseFileResults.ParseTree)
+    whenAnyEnabled ctx.FileName [ "FR0127"; "FR0153" ] "SecretLiterals" (fun () ->
+        secretMessages ctx.FileName ctx.ParseFileResults.ParseTree)
 
 [<CliAnalyzer("SecretLiterals", "Provider-format API keys in string literals", HelpBase)>]
 let secretsCliAnalyzer (ctx: CliContext) : Async<Message list> =
-    whenEnabled ctx.FileName "FR0127" "SecretLiterals" (fun () -> secretMessages ctx.ParseFileResults.ParseTree)
+    whenAnyEnabled ctx.FileName [ "FR0127"; "FR0153" ] "SecretLiterals" (fun () ->
+        secretMessages ctx.FileName ctx.ParseFileResults.ParseTree)
 
 // ---- FR0128 ObsoleteCrypto ----
 
@@ -4404,6 +4506,19 @@ let private useBindingMessages (parseTree: ParsedInput) (source: ISourceText) ch
                 []
             |> weigh)
 
+/// FR0075 behind its own switch: the analyzer carries FR0150 too, and
+/// one code's config entry must not decide the other's.
+let private useBindingMessagesFor
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    if Configuration.isRuleEnabled fileName "FR0075" "UseBinding" then
+        useBindingMessages parseTree source checkResults
+    else
+        []
+
 // ---- FR0150 EscapingUse ----
 
 let private escapingUseMessages
@@ -4437,15 +4552,15 @@ let private escapingUseMessages
 
 [<EditorAnalyzer("UseBinding", "Locally constructed disposables become use-bindings", HelpBase)>]
 let useBindingEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
-    whenEnabled ctx.FileName "FR0075" "UseBinding" (fun () ->
+    whenAnyEnabled ctx.FileName [ "FR0075"; "FR0150" ] "UseBinding" (fun () ->
         whenChecked ctx (fun check ->
-            useBindingMessages ctx.ParseFileResults.ParseTree ctx.SourceText check
+            useBindingMessagesFor ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText check
             @ escapingUseMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText check))
 
 [<CliAnalyzer("UseBinding", "Locally constructed disposables become use-bindings", HelpBase)>]
 let useBindingCliAnalyzer (ctx: CliContext) : Async<Message list> =
-    whenEnabled ctx.FileName "FR0075" "UseBinding" (fun () ->
-        useBindingMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+    whenAnyEnabled ctx.FileName [ "FR0075"; "FR0150" ] "UseBinding" (fun () ->
+        useBindingMessagesFor ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         @ escapingUseMessages ctx.FileName false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0076 MapIgnore ----
@@ -4731,6 +4846,8 @@ let private singleAwaitableMessages
         let advice =
             if s.CallName = "Async.Parallel" then
                 "nothing runs in parallel — run the one computation directly (the result becomes 'T instead of 'T[])"
+            elif s.CallName = "Task.WaitAll" then
+                "wait on the one task directly with its own Wait() (the blocking stays; FR0049 covers moving it toward async)"
             else
                 "await the one task directly (the task keeps its result where WhenAll returns plain Task)"
 
@@ -5107,11 +5224,33 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
         let message =
             match s.Kind with
             | CheckedArithmetic.OverflowKind.ScaleFactor ->
-                sprintf
-                    "Multiplying by %s overflows int32 once the other operand passes %d — the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
-                    s.ConstantText
-                    (System.Int32.MaxValue / (abs (int (s.ConstantText.Replace("_", "")))))
-                    s.ConstantText
+                // the literal as SOURCE TEXT: `1_000_000`, `1000000l` (the
+                // int32 suffix), a negated `-2147483648` whose magnitude no
+                // int32 holds. Parsed as int64 after stripping both, so the
+                // note never throws building itself; a text that still
+                // does not parse gets the note without the figure
+                let digits = s.ConstantText.Replace("_", "").TrimEnd('l', 'L', 'u', 'U', 'y', 's')
+
+                match
+                    System.Int64.TryParse(
+                        digits,
+                        System.Globalization.NumberStyles.AllowLeadingSign,
+                        System.Globalization.CultureInfo.InvariantCulture
+                    )
+                with
+                | true, n when n <> 0L ->
+                    sprintf
+                        "Multiplying by %s overflows int32 once the other operand passes %d — the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
+                        s.ConstantText
+                        // one times any int32 fits, so the threshold is
+                        // never below 1 (the minimum's magnitude is 2^31)
+                        (max 1L (int64 System.Int32.MaxValue / abs n))
+                        digits
+                | _ ->
+                    sprintf
+                        "Multiplying by %s overflows int32 once the other operand is large enough — the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
+                        s.ConstantText
+                        digits
             | CheckedArithmetic.OverflowKind.LimitConstant ->
                 sprintf
                     "Arithmetic on %s overflows for every operand but zero — F# operators wrap SILENTLY; a wider type, Checked operators, or a comment saying the wraparound is intended."

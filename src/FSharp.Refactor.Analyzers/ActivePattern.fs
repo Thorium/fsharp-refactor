@@ -248,16 +248,25 @@ let find
                                         // from the declaration it lands above — glued
                                         // together, fantomas --check rejects the file.
                                         // A guard under `#if` yields a definition under
-                                        // the same `#if`
-                                        let placed =
+                                        // the same `#if`; a directive has to open its
+                                        // own line, so that form is inserted at column
+                                        // 0 of the decl's line, ahead of its
+                                        // indentation, which the generated first line
+                                        // then carries itself
+                                        let insertRange, insertText =
                                             match conditionToKeep source clauseRange.StartLine insertAt.StartLine with
-                                            | Some condition -> $"#if {condition}\n{binding}\n#endif"
-                                            | None -> binding
+                                            | Some condition ->
+                                                Range.mkRange
+                                                    decl.Range.FileName
+                                                    (Position.mkPos decl.Range.StartLine 0)
+                                                    (Position.mkPos decl.Range.StartLine 0),
+                                                $"#if {condition}\n{indent}{binding}\n#endif\n\n"
+                                            | None -> insertAt, $"{binding}\n\n{indent}"
 
                                         suggestions.Add
                                             { PatternName = patternName
-                                              InsertRange = insertAt
-                                              InsertText = $"{placed}\n\n{indent}"
+                                              InsertRange = insertRange
+                                              InsertText = insertText
                                               ClauseRange = clauseRange
                                               OriginalClauseText = textOfRange source clauseRange
                                               ClauseText = $"{patternName} {binder}" }

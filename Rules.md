@@ -538,11 +538,11 @@ The pattern `x :: []` → `[ x ]`
 
 ### FR0090 — idiom
 
-Tupled → curried for internal/public functions with every project call site rewritten (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0008)
+Tupled → curried for internal/public functions with every call site rewritten — across the project, in `#load`ing scripts, and in the sibling projects of the same solution that reference it (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0008). A public function changes shape only once every project referencing it in the run — the test project, typically, found through the solution the run was pointed at or the nearest one listing the project — is an F# project that typechecks, its call sites read and rewritten in the same atomic edit set; a referencing C# or VB project, a sibling with errors, a script `#r`ing the built assembly, or a bare project with no solution above it holds every public function as it is, and the run says so once per project. An internal function of an assembly naming friends in `InternalsVisibleTo` waits the same way for every friend to be read. A project that compiles one of this project's sources directly (a `<Compile Include="..\Common\X.fs">` link) is read the same way — another compilation of the same declaration, its own call sites rewritten in the same set, the fix line saying ` note: linked file` once per such file — and its shared files keep their shape only when it cannot be read; a vendored or generated source (an ignored path, git-ignored) is never reshaped and never counts as shared. The reading is paid only once a file holds a tupled definition worth reshaping: a project with none costs nothing
 
 ### FR0091 — idiom
 
-Data-last parameter reorder for internal/public functions with every project call site rewritten (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0023). The two parameters must have different concrete types, so that a call site outside the project — which we can neither see nor fix — fails to compile rather than silently swapping two interchangeable arguments
+Data-last parameter reorder for internal/public functions with every call site rewritten — across the project, in `#load`ing scripts, and in the sibling projects of the same solution that reference it, read and vetoed exactly as FR0090 describes (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0023). The two parameters must have different concrete types, so that a call site outside the run — another repository, which nothing can see or fix — fails to compile rather than silently swapping two interchangeable arguments
 
 ### FR0092 — idiom
 

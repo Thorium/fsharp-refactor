@@ -459,6 +459,83 @@ let findWith
             lambdaRanges
             |> Array.exists (fun l -> Range.rangeContainsRange ceRange l && Range.rangeContainsRange l r)
 
+        // a LOCAL FUNCTION's body and an object expression's members are
+        // closures too, but their AST is a binding with argument patterns
+        // or a member, not a Lambda node — a do!/let! injected there would
+        // land in a plain function. The same guard FR0119 carries
+        let closureRanges =
+            index.Exprs
+            |> Array.collect (fun (_, e) ->
+                match e with
+                | SynExpr.ObjExpr _ -> [| e.Range |]
+                | LetOrUseE lou when not lou.IsBang ->
+                    lou.Bindings
+                    |> List.choose (fun b ->
+                        if isFunctionBinding b then
+                            Some b.RangeOfBindingWithRhs
+                        else
+                            None)
+                    |> Array.ofList
+                | _ -> [||])
+            |> Array.append lambdaRanges
+
+        let insideClosureWithin (ceRange: range) (r: range) =
+            closureRanges
+            |> Array.exists (fun l -> Range.rangeContainsRange ceRange l && Range.rangeContainsRange l r)
+
+        // Every CE's own STATEMENT SPINE: the let/use/sequential chain
+        // hanging directly off its body, plus the branches of the control
+        // flow on it (a match arm, an if branch, a try body, a loop body are
+        // statement positions of the same CE). `let!` and `do!` are legal
+        // only there — a call nested inside ANOTHER binding's right-hand
+        // side sits inside the CE's range but not on its spine, and
+        // rewriting its `let` to `let!` cannot compile (FR0119: 21 of the
+        // rollbacks in one sweep repo, all of this shape):
+        //     task {
+        //         let pair =
+        //             let x = t.Result        // NOT on the spine
+        //             x, x + 1
+        // A `with` handler and a `finally` stay out — `inNoBindZone`
+        // excludes them on purpose
+        let spineRanges =
+            let acc = ResizeArray<range>()
+
+            let rec walk (e: SynExpr) =
+                acc.Add e.Range
+
+                match e with
+                | LetOrUseE lou -> walk lou.Body
+                | SynExpr.Sequential(expr1 = a; expr2 = b) ->
+                    walk a
+                    walk b
+                | SynExpr.Match(clauses = clauses)
+                | SynExpr.MatchBang(clauses = clauses) ->
+                    for SynMatchClause(resultExpr = result) in clauses do
+                        walk result
+                | SynExpr.IfThenElse(thenExpr = thenExpr; elseExpr = elseExpr) ->
+                    walk thenExpr
+                    elseExpr |> Option.iter walk
+                | SynExpr.TryWith(tryExpr = body)
+                | SynExpr.TryFinally(tryExpr = body)
+                | SynExpr.ForEach(bodyExpr = body)
+                | SynExpr.For(doBody = body)
+                | SynExpr.While(doExpr = body) -> walk body
+                | _ -> ()
+
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.App(
+                    isInfix = false; funcExpr = IdentName builder; argExpr = SynExpr.ComputationExpr(expr = body)) when
+                    ceBuilders.Contains builder
+                    ->
+                    walk body
+                | _ -> ()
+
+            acc.ToArray()
+
+        let onSpine (r: range) =
+            spineRanges |> Array.exists (fun s -> Range.equals s r)
+
         // every CE body of ANY builder (seq { }, query { }, custom ones) and
         // every comprehension. A `do!` fix landing in statement position of
         // one of those nested inside the async/task would call a Bind the
@@ -493,6 +570,21 @@ let findWith
 
         let inNoBindZone (r: range) =
             noBindRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
+
+        // the try body of a `try .. with` whose handler names
+        // AggregateException: `t.Wait()`, `t.Result` and `Task.WaitAll`
+        // throw the wrapper, a bind throws the inner exception — the
+        // handler would go dead (and WaitAll's other failures with it)
+        let underAggregateHandler (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                match e with
+                | SynExpr.TryWith(tryExpr = body; withCases = cases) ->
+                    Range.rangeContainsRange body.Range r
+                    && cases
+                       |> List.exists (fun (c: SynMatchClause) ->
+                           Regex.IsMatch(textOfRange source c.Range, @"\bAggregateException\b"))
+                | _ -> false)
 
         let finallyRanges =
             index.Exprs
@@ -1074,25 +1166,31 @@ let findWith
                                           headPat = SynPat.Named _
                                           expr = rhs
                                           trivia = btrivia) ] when Range.equals rhs.Range target ->
-                                      Some btrivia.LeadingKeyword.Range
+                                      // the let node's own range travels
+                                      // too: only a binding ON THE CE
+                                      // SPINE may become `let!`
+                                      Some(btrivia.LeadingKeyword.Range, e.Range)
                                   | _ -> None
                               | _ -> None)
 
                       let bindingRewrite (target: range) (bound: string) =
                           match bindingKeywordFor target with
-                          | Some kw when textOfRange source kw = "let" ->
+                          | Some(kw, letRange) when textOfRange source kw = "let" && onSpine letRange ->
                               [ kw, "let", "let!"; target, textOfRange source target, bound ]
                           | _ -> []
 
                       // statement position: a sequential element, the CE
-                      // body itself, a let-continuation, or `do ...`
+                      // body itself, a let-continuation, or `do ...` — and
+                      // on the CE's own spine, not a statement of some
+                      // nested binding's right-hand side
                       let statementTarget =
-                          match path with
-                          | SyntaxNode.SynExpr(SynExpr.Do _ as doExpr) :: _ -> Some doExpr.Range
-                          | SyntaxNode.SynExpr(SynExpr.Sequential _) :: _
-                          | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: _
-                          | SyntaxNode.SynExpr(SynExpr.LetOrUse _) :: _ -> Some expr.Range
-                          | _ -> None
+                          (match path with
+                           | SyntaxNode.SynExpr(SynExpr.Do _ as doExpr) :: _ -> Some doExpr.Range
+                           | SyntaxNode.SynExpr(SynExpr.Sequential _) :: _
+                           | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: _
+                           | SyntaxNode.SynExpr(SynExpr.LetOrUse _) :: _ -> Some expr.Range
+                           | _ -> None)
+                          |> Option.filter onSpine
 
                       // a statement with a successor can end in a `let! _ =`;
                       // the last one cannot, a block does not end on a bind
@@ -1108,7 +1206,7 @@ let findWith
                           | _ -> false
 
                       let insideFixableSpine =
-                          not (insideLambdaWithin ceRange expr.Range)
+                          not (insideClosureWithin ceRange expr.Range)
                           && not (insideOtherCeWithin ceRange expr.Range)
                           && not (inNoBindZone expr.Range)
 
@@ -1140,14 +1238,14 @@ let findWith
                               && not (insideOtherCeWithin ceRange expr.Range)
                           then
                               index.Exprs
-                              |> Array.tryPick (fun (_, e) ->
+                              |> Array.tryPick (fun (runPath, e) ->
                                   if Range.rangeContainsRange e.Range expr.Range then
                                       match taskRunOfRunSync check source e with
-                                      | ValueSome(comp, ignored) -> Some(e.Range, comp, ignored)
+                                      | ValueSome(comp, ignored) -> Some(runPath, e.Range, comp, ignored)
                                       | ValueNone -> None
                                   else
                                       None)
-                              |> Option.map (fun (runRange, comp, ignored) ->
+                              |> Option.map (fun (runPath, runRange, comp, ignored) ->
                                   let started = $"{textOfRange source comp.Range} |> Async.StartAsTask"
 
                                   let replacement =
@@ -1155,6 +1253,29 @@ let findWith
                                           $"({started}) :> System.Threading.Tasks.Task"
                                       else
                                           started
+
+                                  // the replacement is an infix pipe where the
+                                  // call was atomic: bare only where nothing
+                                  // binds tighter around it — a bind's RHS, a
+                                  // statement, a pipe's left operand. As the
+                                  // receiver of `.ConfigureAwait(false)`, a
+                                  // juxtaposed argument or under any other
+                                  // parent it takes parentheses
+                                  let bare =
+                                      match runPath with
+                                      | SyntaxNode.SynBinding _ :: _
+                                      | SyntaxNode.SynExpr(SynExpr.DoBang _) :: _
+                                      | SyntaxNode.SynExpr(SynExpr.YieldOrReturnFrom _) :: _
+                                      | SyntaxNode.SynExpr(SynExpr.YieldOrReturn _) :: _
+                                      | SyntaxNode.SynExpr(SynExpr.Sequential _) :: _
+                                      | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: _
+                                      | SyntaxNode.SynExpr(SynExpr.LetOrUse _) :: _
+                                      | SyntaxNode.SynExpr(SynExpr.Paren _) :: _ -> true
+                                      | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op)) :: _ ->
+                                          isPipeRight op
+                                      | _ -> false
+
+                                  let replacement = if bare then replacement else $"({replacement})"
 
                                   [ runRange, textOfRange source runRange, replacement ])
                               |> Option.defaultValue []
@@ -1164,11 +1285,7 @@ let findWith
                       let fixes =
                           match kind, sleepArg with
                           | BlockKind.RunSynchronously, _ when not (List.isEmpty taskRunFixes) -> taskRunFixes
-                          | BlockKind.ThreadSleep, Some arg when
-                              not (insideLambdaWithin ceRange expr.Range)
-                              && not (insideOtherCeWithin ceRange expr.Range)
-                              && not (inNoBindZone expr.Range)
-                              ->
+                          | BlockKind.ThreadSleep, Some arg when insideFixableSpine ->
                               let target = statementTarget
 
                               let waiter =
@@ -1182,9 +1299,7 @@ let findWith
                                   r, textOfRange source r, $"do! {waiter} {argumentText source (stripParens arg)}")
                               |> Option.toList
                           | (BlockKind.AwaiterGetResult | BlockKind.TaskResult | BlockKind.RunSynchronously), _ when
-                              not (insideLambdaWithin ceRange expr.Range)
-                              && not (insideOtherCeWithin ceRange expr.Range)
-                              && not (inNoBindZone expr.Range)
+                              insideFixableSpine
                               ->
                               // `let x = <blocking>` as a direct CE statement
                               // becomes `let! x = <computation>` — the
@@ -1218,6 +1333,13 @@ let findWith
                                   else
                                       None
 
+                              // `.Result` throws a faulted task's exception
+                              // WRAPPED in AggregateException, `let!` throws
+                              // it bare: under a handler for the wrapper the
+                              // read stays (GetResult and RunSynchronously
+                              // already unwrap, so those two are unaffected)
+                              let wrapperCaught = underAggregateHandler expr.Range
+
                               match kind, expr with
                               | BlockKind.AwaiterGetResult,
                                 SynExpr.App(funcExpr = SynExpr.DotGet(expr = AwaiterReceiverRange recvRange)) ->
@@ -1225,12 +1347,12 @@ let findWith
                                   |> Option.map (bindingRewrite expr.Range)
                                   |> Option.defaultValue []
                               | BlockKind.TaskResult, SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                                  ids.Length >= 2
+                                  ids.Length >= 2 && not wrapperCaught
                                   ->
                                   bindTaskReceiver (prefixRangeOf expr ids)
                                   |> Option.map (bindingRewrite expr.Range)
                                   |> Option.defaultValue []
-                              | BlockKind.TaskResult, SynExpr.DotGet(expr = recv) ->
+                              | BlockKind.TaskResult, SynExpr.DotGet(expr = recv) when not wrapperCaught ->
                                   bindTaskReceiver recv.Range
                                   |> Option.map (bindingRewrite expr.Range)
                                   |> Option.defaultValue []
@@ -1255,7 +1377,12 @@ let findWith
                           // statement follows
                           | BlockKind.TaskWait, _ when insideFixableSpine ->
                               match statementTarget, BlockingSites.blockingOf check source expr with
-                              | Some target, Some b when not b.NoBind ->
+                              // `.Wait()` and `WaitAll` throw the
+                              // AggregateException a `do!` unwraps: under a
+                              // handler for the wrapper the wait stays
+                              | Some target, Some b when
+                                  not b.NoBind && not (b.WrapsFaults && underAggregateHandler expr.Range)
+                                  ->
                                   match bindOperand b.DoText, bindOperand b.Awaitable with
                                   | Some operand, _ when b.UnitResult ->
                                       [ target, textOfRange source target, $"do! {operand}" ]
@@ -1277,7 +1404,7 @@ let findWith
                                   match node with
                                   | SyntaxNode.SynExpr(SynExpr.App _ as app) when
                                       Range.rangeContainsRange ceRange app.Range
-                                      && not (insideLambdaWithin ceRange app.Range)
+                                      && not (insideClosureWithin ceRange app.Range)
                                       && not (insideOtherCeWithin ceRange app.Range)
                                       ->
                                       BlockingSites.assertThrows check source app |> Option.map (fun b -> app, b)
@@ -1299,6 +1426,7 @@ let findWith
                                                     SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = first)) :: _ when
                                                       Range.equals inner.Range app.Range
                                                       && Range.rangeContainsRange first.Range e.Range
+                                                      && onSpine e.Range
                                                       ->
                                                       Some
                                                           [ e.Range, textOfRange source e.Range, $"let! _ = {bound}" ]

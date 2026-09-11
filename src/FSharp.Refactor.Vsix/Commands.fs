@@ -362,7 +362,13 @@ module internal Commands =
                     if not (File.Exists config) then
                         showPane ()
 
-                        let! _ = runTool $"--create-config \"%s{dir}\"" dir |> Async.StartAsTask
+                        // no positional target: the tool writes into its CURRENT
+                        // directory, which runTool sets to `dir`. Quoting the
+                        // directory instead broke on its trailing separator -
+                        // a `\` before the closing quote escapes the quote under
+                        // the .NET host's argument splitting, and the tool
+                        // then saw `C:\git\Foo"`, not a directory
+                        let! _ = runTool "--create-config" dir |> Async.StartAsTask
 
                         do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
 

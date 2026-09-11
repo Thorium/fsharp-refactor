@@ -95,6 +95,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         Fix =
                           singleElement arg
                           |> Option.map (fun only ->
-                              expr.Range, textOfRange source expr.Range, textOfRange source only.Range) }
+                              // `Task.WaitAll [| t |]` is a blocking unit
+                              // statement: its element alone would DROP the
+                              // wait (a bare Task in statement position), so
+                              // it keeps one — `t.Wait()`. The awaiting
+                              // combinators unwrap to the element itself
+                              let replacement =
+                                  if f.idText = "WaitAll" then
+                                      $"{atomicText source only}.Wait()"
+                                  else
+                                      textOfRange source only.Range
+
+                              expr.Range, textOfRange source expr.Range, replacement) }
                   | _ -> ()
               | _ -> () ]

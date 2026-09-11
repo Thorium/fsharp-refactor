@@ -92,13 +92,32 @@ let private getTypesIdent (e: SynExpr) =
         | _ -> ValueNone
     | _ -> ValueNone
 
-/// `reraise()` or `raise e` - throwing away what already loaded.
-let private isRethrow (e: SynExpr) =
+/// `reraise ()` or `raise <the handler's own binder>` - throwing away what
+/// already loaded. NOT `raise (Wrap("...", e))`: a deliberate wrap changes
+/// the thrown type, and a carry-on in its place would silently drop it.
+let private isRethrow (bound: string) (e: SynExpr) =
     match e with
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident f) -> f.idText = "reraise" || f.idText = "raise"
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident f)) ->
-        f.idText = "raise"
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident f; argExpr = arg) ->
+        match f.idText, stripParens arg with
+        | "reraise", UnitConst -> true
+        | "raise", SynExpr.Ident raised -> raised.idText = bound
+        | _ -> false
     | _ -> false
+
+/// The expressions a handler body can EVALUATE TO: the tail of its
+/// statement chain, through parentheses, a let's body, both branches of
+/// an if/else and every arm of a match. Only a rethrow in one of these can
+/// be replaced by a value - `if strict then reraise ()` followed by more
+/// statements is a unit `if`, and a Type[] in its branch is FS0001.
+let rec private tailExprs (e: SynExpr) : SynExpr list =
+    match e with
+    | SynExpr.Sequential(expr2 = e2) -> tailExprs e2
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.Typed(expr = inner) -> tailExprs inner
+    | LetOrUseE lou -> tailExprs lou.Body
+    | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some els) -> tailExprs t @ tailExprs els
+    | SynExpr.Match(clauses = cs) -> cs |> List.collect (fun (SynMatchClause(resultExpr = r)) -> tailExprs r)
+    | _ -> [ e ]
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
@@ -132,6 +151,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             |> Array.choose (fun (_, inner) ->
                 match inner with
                 | SynExpr.TryWith _ when Range.rangeContainsRange outer inner.Range -> Some inner.Range
+                | _ -> None)
+
+        // Ranges of `$"..."` literals inside a clause. A `.Message` in a
+        // hole is a read like any other, but the replacement carries a
+        // quoted `"; "`, which a single-quote interpolated string may not
+        // hold inside a hole (FS3373) - such a read is reported, never fixed.
+        let interpolatedRanges (outer: range) =
+            index.Exprs
+            |> Array.choose (fun (_, inner) ->
+                match inner with
+                | SynExpr.InterpolatedString(range = r) when Range.rangeContainsRange outer r -> Some r
                 | _ -> None)
 
         // the type that declares a called member
@@ -209,10 +239,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               let thrownAway =
                                   reads |> Array.tryFind (fun (n, _, _) -> n = "Message" || n = "ToString")
 
-                              // only a read that ENDS at .Message can be
-                              // rewritten in place; a longer chain is reported
-                              // and left alone
-                              let fixable = reads |> Array.tryFind (fun (n, _, exact) -> n = "Message" && exact)
+                              // only a read that ENDS at .Message, outside any
+                              // `$"..."` hole, can be rewritten in place; a
+                              // longer chain or an interpolated one is
+                              // reported and left alone
+                              let interpolated = interpolatedRanges clauseRange
+
+                              let fixable =
+                                  reads
+                                  |> Array.tryFind (fun (n, r, exact) ->
+                                      n = "Message"
+                                      && exact
+                                      && not (interpolated |> Array.exists (fun i -> Range.rangeContainsRange i r)))
 
                               match mentionsCarrier, thrownAway with
                               | false, Some(_, r, _) ->
@@ -251,11 +289,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                       (entityMemberOwner id).StartsWith "System.Reflection.Assembly"
                                                   | ValueNone -> false)
                                           then
-                                              index.Exprs
-                                              |> Array.tryPick (fun (_, inner) ->
+                                              // only a rethrow the handler EVALUATES
+                                              // TO: the replacement is a Type[], so
+                                              // a statement-position `if strict then
+                                              // reraise ()` mid-body stays as it is
+                                              tailExprs body
+                                              |> List.tryPick (fun inner ->
                                                   if
-                                                      Range.rangeContainsRange body.Range inner.Range
-                                                      && isRethrow inner
+                                                      isRethrow bound.idText inner
                                                       // a nested handler's rethrow
                                                       // belongs to ITS exception,
                                                       // not ours

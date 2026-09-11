@@ -152,19 +152,21 @@ let private arithmeticOps =
           "op_UnaryNegation" ]
 
 /// Is the expression arithmetic over names and literals only — nothing
-/// that can throw but a division? Returns the non-literal divisors.
-let rec private pureArithmetic (e: SynExpr) : (bool * SynExpr list) =
+/// that can throw but a division? Returns the non-literal divisors. A
+/// dotted operand is only as pure as `dottedIsPure` proves it: `opt.Value`,
+/// `lazy.Value` and `s.Length` are property getters, and a getter throws.
+let rec private pureArithmetic (dottedIsPure: SynExpr -> bool) (e: SynExpr) : (bool * SynExpr list) =
     match e with
-    | SynExpr.Paren(expr = inner) -> pureArithmetic inner
+    | SynExpr.Paren(expr = inner) -> pureArithmetic dottedIsPure inner
     | SynExpr.Const(SynConst.Unit, _) -> false, []
     | SynExpr.Const _
-    | SynExpr.Ident _
-    | SynExpr.LongIdent _ -> true, []
+    | SynExpr.Ident _ -> true, []
+    | SynExpr.LongIdent _ -> dottedIsPure e, []
     | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = l); argExpr = r) when
         arithmeticOps.Contains op.idText
         ->
-        let okL, dl = pureArithmetic l
-        let okR, dr = pureArithmetic r
+        let okL, dl = pureArithmetic dottedIsPure l
+        let okR, dr = pureArithmetic dottedIsPure r
 
         let divisor =
             match op.idText, stripParens r with
@@ -174,8 +176,46 @@ let rec private pureArithmetic (e: SynExpr) : (bool * SynExpr list) =
 
         okL && okR, dl @ dr @ divisor
     | SynExpr.App(funcExpr = SingleIdent op; argExpr = inner) when op.idText = "op_UnaryNegation" ->
-        pureArithmetic inner
+        pureArithmetic dottedIsPure inner
     | _ -> false, []
+
+/// A dotted operand the typed check proves cannot throw when read: every
+/// segment a module or namespace, a record (or anonymous record) field, or
+/// a plain value — never a member, so no property getter, no `.Value` on
+/// an option, a Nullable or a Lazy, no `.Length` on a null string.
+let private dottedOperandIsPure (check: FSharpCheckFileResults option) (source: ISourceText) (e: SynExpr) =
+    match check, e with
+    | Some check, SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+        let safeSymbol (symbol: FSharpSymbol) =
+            match symbol with
+            | :? FSharpEntity as entity -> entity.IsFSharpModule || entity.IsNamespace
+            | :? FSharpField as field ->
+                field.IsAnonRecordField
+                || (field.DeclaringEntity |> Option.exists (fun entity -> entity.IsFSharpRecord))
+            | :? FSharpMemberOrFunctionOrValue as v -> not v.IsMember
+            | _ -> false
+
+        let resolves (prefix: Ident list) =
+            try
+                let id = List.last prefix
+                let r = id.idRange
+                let lineText = source.GetLineString(r.EndLine - 1)
+
+                match
+                    check.GetSymbolUseAtLocation(
+                        r.EndLine,
+                        r.EndColumn,
+                        lineText,
+                        prefix |> List.map (fun i -> i.idText)
+                    )
+                with
+                | Some symbolUse -> safeSymbol symbolUse.Symbol
+                | None -> false
+            with _ -> // unresolved reads as unsafe; fsharpanalyzer: ignore-line FR0055
+                false
+
+        [ 1 .. ids.Length ] |> List.forall (fun n -> resolves (List.take n ids))
+    | _ -> false
 
 let private parseTypes =
     set
@@ -318,11 +358,14 @@ let private logLine (idiom: LogIdiom) (ex: string) (method': string) (parameters
 
         $"Message.eventError \"{template}\"{fields} |> Message.addExn {ex} |> {sink}"
 
-/// The zero of a divisor's type, as F# spells it — `0`, `0L`, `0m` — from
+/// The zero of a divisor's type, as F# spells it — `0`, `0L`, `0uy` — from
 /// the typed check; None when the type is unknown or has no literal zero,
 /// and the guard is not offered. Floats are left out on purpose: float
 /// division never throws (it yields infinity or NaN), so the catch was
 /// never reached and a guard would change the result, not remove a catch.
+/// Decimals too: decimal `+`, `*` and even `/` throw OverflowException, so
+/// the catch guarded more than the division and a zero check cannot
+/// replace it.
 let private zeroOf (check: FSharpCheckFileResults option) (source: ISourceText) (divisor: SynExpr) =
     let ident =
         match divisor with
@@ -340,31 +383,35 @@ let private zeroOf (check: FSharpCheckFileResults option) (source: ISourceText) 
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> ids |> List.map (fun i -> i.idText)
             | _ -> [ id.idText ]
 
+        let zeroOfType (declared: FSharpType) =
+            try
+                let t = OptionModule.stripAbbreviations declared
+
+                match
+                    (if t.HasTypeDefinition then
+                         t.TypeDefinition.TryFullName
+                     else
+                         None)
+                with
+                | Some "System.Int32" -> Some "0"
+                | Some "System.Int64" -> Some "0L"
+                | Some "System.Int16" -> Some "0s"
+                | Some "System.Byte" -> Some "0uy"
+                | Some "System.SByte" -> Some "0y"
+                | Some "System.UInt32" -> Some "0u"
+                | Some "System.UInt64" -> Some "0UL"
+                | Some "System.UInt16" -> Some "0us"
+                | _ -> None
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                None
+
         match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, names) with
         | Some symbolUse ->
             match symbolUse.Symbol with
-            | :? FSharpMemberOrFunctionOrValue as v ->
-                (try
-                    let t = OptionModule.stripAbbreviations v.FullType
-
-                    match
-                        (if t.HasTypeDefinition then
-                             t.TypeDefinition.TryFullName
-                         else
-                             None)
-                    with
-                    | Some "System.Int32" -> Some "0"
-                    | Some "System.Int64" -> Some "0L"
-                    | Some "System.Int16" -> Some "0s"
-                    | Some "System.Byte" -> Some "0uy"
-                    | Some "System.SByte" -> Some "0y"
-                    | Some "System.UInt32" -> Some "0u"
-                    | Some "System.UInt64" -> Some "0UL"
-                    | Some "System.UInt16" -> Some "0us"
-                    | Some "System.Decimal" -> Some "0m"
-                    | _ -> None
-                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                     None)
+            | :? FSharpMemberOrFunctionOrValue as v -> zeroOfType v.FullType
+            // a record field divisor (`r.Count`): the operand check has
+            // already proven the read pure
+            | :? FSharpField as f -> zeroOfType f.FieldType
             | _ -> None
         | None -> None
     | _ -> None
@@ -391,13 +438,25 @@ let private acknowledged (source: ISourceText) (clause: SynMatchClause) (result:
 
     commented clause.Range.StartLine || commented result.Range.EndLine
 
+/// A union case that CARRIES the failure rather than hiding it: `Error "x"`,
+/// `Failure "x"`, `Choice2Of2 ""`, a user's `ParseError ""`. The bare
+/// `with _ -> Error "x"` is quiet already; a tuple or record slot holding
+/// one reports the failure just the same.
+let private carriesFailure (case: string) =
+    case = "Choice2Of2"
+    || case.EndsWith "Error"
+    || case.EndsWith "Failure"
+    || case.EndsWith "Failed"
+
 /// A slot that IS a default: bare, or a union case wrapping one
 /// (`Completed None`).
 let private carriesDefault (e: SynExpr) =
     match stripParens e with
     | IsDefaultFallback _ -> true
     | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident case; argExpr = arg) when
-        case.idText.Length > 0 && System.Char.IsUpper case.idText.[0]
+        case.idText.Length > 0
+        && System.Char.IsUpper case.idText.[0]
+        && not (carriesFailure case.idText)
         ->
         isDefaultFallback (stripParens arg)
     | _ -> false
@@ -570,6 +629,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     // a test file yields nothing to walk
     let exprs = if isTestFile index source then [||] else index.Exprs
 
+    let dottedIsPure = dottedOperandIsPure check source
+
+    // under `open Checked` (Microsoft.FSharp.Core.Operators.Checked) every
+    // `+`, `-` and `*` throws OverflowException, so the catch guarded more
+    // than the division and no zero check can stand in for it
+    let checkedOpen =
+        index.Decls
+        |> Array.exists (fun (_, d) ->
+            match d with
+            | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
+                not ids.IsEmpty && (List.last ids).idText = "Checked"
+            | _ -> false)
+
     [ for path, expr in exprs do
           match expr with
           | SynExpr.TryWith(tryExpr = tryBody; withCases = clauses) when not (continuationRaises path expr.Range) ->
@@ -616,11 +688,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           // 1. the guard: pure arithmetic, one non-literal
                           // divisor, nothing else that throws
                           let guard =
-                              match fallbackText, pureArithmetic (stripParens tryBody) with
-                              | Some fb, (true, [ divisor ]) when isSingleLine tryBody.Range ->
+                              match fallbackText, pureArithmetic dottedIsPure (stripParens tryBody) with
+                              | Some fb, (true, [ divisor ]) when isSingleLine tryBody.Range && not checkedOpen ->
                                   // the zero is the divisor's own — 0, 0L,
-                                  // 0.0, 0m — from the typed check; without
-                                  // the type the guard is not offered
+                                  // 0uy — from the typed check; without the
+                                  // type (or for a float or decimal) the
+                                  // guard is not offered
                                   match zeroOf check source divisor with
                                   | Some zero ->
                                       let d = textOfRange source divisor.Range
@@ -737,11 +810,38 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               | Serilog
                               | Logary _ -> true
 
-                          let logging =
-                              match idiom.Value with
-                              | Some idiom when receiverInScope idiom ->
-                                  let ex = binderOf pat |> Option.defaultValue "ex"
+                          // the exception's name for the log line: the
+                          // handler's own binder, or for `_` and a bare
+                          // `:? Exception` a fresh one — `ex` unless the
+                          // enclosing declaration already says `ex`, in which
+                          // case the fallback (or the log line's parameters)
+                          // could name the wrong one
+                          let binder =
+                              match binderOf pat with
+                              | Some name -> Some name
+                              | None ->
+                                  let scope =
+                                      path
+                                      |> List.tryPick (fun node ->
+                                          match node with
+                                          | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                                          | _ -> None)
 
+                                  let text =
+                                      match scope with
+                                      | Some r -> textOfRange source r
+                                      | None ->
+                                          String.concat
+                                              "\n"
+                                              [ for i in 0 .. source.GetLineCount() - 1 -> source.GetLineString i ]
+
+                                  [ "ex"; "exn"; "err" ]
+                                  |> List.tryFind (fun candidate ->
+                                      not (Regex.IsMatch(text, identifierPattern candidate)))
+
+                          let logging =
+                              match idiom.Value, binder with
+                              | Some idiom, Some ex when receiverInScope idiom ->
                                   let method', parameters = enclosingFunction path |> Option.defaultValue ("?", [])
 
                                   // the logger itself is not a parameter worth
@@ -770,6 +870,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   let bindEdit =
                                       match pat with
                                       | SynPat.Wild _ -> [ pat.Range, patText, ex ]
+                                      // `:? Exception` binds nothing: without
+                                      // `as ex` the log line's `ex` is FS0039
+                                      | SynPat.IsInst _ ->
+                                          let original = textOfRange source pat.Range
+                                          [ pat.Range, original, $"{original} as {ex}" ]
                                       | _ -> []
 
                                   let bodyEdit =

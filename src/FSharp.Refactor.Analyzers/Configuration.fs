@@ -664,23 +664,67 @@ let private repositoryRoot (analyzedFile: string) =
         None
 
 /// Every test source of the repository, read once: (path, text) for each
-/// `.fs`/`.fsx` whose path carries "test", build output excluded.
+/// `.fs`/`.fsx` whose path names a test (`isTestSourcePath`), build output
+/// excluded.
 let private testSources =
     System.Collections.Concurrent.ConcurrentDictionary<string, (string * string)[]>(StringComparer.OrdinalIgnoreCase)
 
-/// A path below the root, forward-slashed and lower-cased, for the "is this
-/// a test file" question. Asked of the ABSOLUTE path, a repository under
-/// `C:\git\contest-app` or `...\latest\...` would make every file a test
-/// source and no file a production one.
-let private relativeLower (root: string) (p: string) =
+/// A path below the root, forward-slashed and in its own case, for the "is
+/// this a test file" question. Asked of the ABSOLUTE path, a repository
+/// under `C:\git\contest-app` or `...\latest\...` would make every file a
+/// test source and no file a production one.
+let private relativeTo (root: string) (p: string) =
     let full = p.Replace('\\', '/')
     let rootSlash = root.Replace('\\', '/').TrimEnd('/') + "/"
 
-    (if full.StartsWith(rootSlash, StringComparison.OrdinalIgnoreCase) then
-         full.Substring rootSlash.Length
-     else
-         full)
-        .ToLowerInvariant()
+    if full.StartsWith(rootSlash, StringComparison.OrdinalIgnoreCase) then
+        full.Substring rootSlash.Length
+    else
+        full
+
+let private relativeLower (root: string) (p: string) = (relativeTo root p).ToLowerInvariant()
+
+let private testWords = [ "test"; "tests"; "spec"; "specs" ]
+
+/// Is this path (relative to the repository, any separator) a TEST source?
+///
+/// `test`, `tests`, `spec` or `specs` as a WORD of some segment: a whole
+/// directory (`tests/`, `Spec/`), or bounded inside a name by a separator
+/// or a camel-case rise — `Foo.Tests.fs`, `FooTests.fs`, `Foo.Spec.fs`,
+/// `test_helpers.fs`, `TestHelpers.fs`, `Lib.Tests/`. Never a mere
+/// substring: `Contest`, `LatestPrices`, `Attestation`, `ProtestHandler`
+/// are production code, and a note that named one of them as the test
+/// pinning its own failure text was simply wrong. Case-insensitive on the
+/// word, so the camel rule reads the ORIGINAL case.
+let isTestSourcePath (relativePath: string) =
+    let isWordAt (segment: string) (i: int) (word: string) =
+        let j = i + word.Length
+
+        String.Compare(segment, i, word, 0, word.Length, StringComparison.OrdinalIgnoreCase) = 0
+        // bounded on the left: the start, a non-identifier character, or
+        // a camel-case rise (`FooTests`: lower before, upper here)
+        && (i = 0
+            || not (Char.IsLetterOrDigit segment.[i - 1])
+            || (Char.IsUpper segment.[i] && not (Char.IsUpper segment.[i - 1])))
+        // and on the right: the end, a non-identifier character, or the
+        // next word's rise (`TestHelpers`)
+        && (j = segment.Length
+            || not (Char.IsLetterOrDigit segment.[j])
+            || (Char.IsUpper segment.[j] && not (Char.IsUpper segment.[j - 1])))
+
+    relativePath.Replace('\\', '/').Split('/')
+    |> Array.exists (fun segment ->
+        testWords
+        |> List.exists (fun word ->
+            let rec scan (from: int) =
+                if from > segment.Length - word.Length then
+                    false
+                else
+                    match segment.IndexOf(word, from, StringComparison.OrdinalIgnoreCase) with
+                    | -1 -> false
+                    | i -> isWordAt segment i word || scan (i + 1)
+
+            scan 0))
 
 let private readTestSources (root: string) =
     testSources.GetOrAdd(
@@ -692,7 +736,7 @@ let private readTestSources (root: string) =
                     let lower = relativeLower root p
 
                     (lower.EndsWith ".fs" || lower.EndsWith ".fsx")
-                    && lower.Contains "test"
+                    && isTestSourcePath (relativeTo root p)
                     && not (
                         lower.Contains "/obj/"
                         || lower.Contains "/bin/"
@@ -718,8 +762,19 @@ let testFilesMentioning (analyzedFile: string) (literal: string) : (string * str
     match repositoryRoot analyzedFile with
     | None -> []
     | Some root ->
+        // the throw itself is a mention, so the file being analysed can
+        // never be the test pinning it - a helper under `tests/` that
+        // throws the text is the one place this scan is asked about
+        let self =
+            try
+                System.IO.Path.GetFullPath analyzedFile
+            with _ -> // fsharpanalyzer: ignore-line FR0055
+                analyzedFile
+
         readTestSources root
-        |> Array.filter (fun (_, text) -> text.Contains literal)
+        |> Array.filter (fun (path, text) ->
+            text.Contains literal
+            && not (String.Equals(System.IO.Path.GetFullPath path, self, StringComparison.OrdinalIgnoreCase)))
         |> List.ofArray
 
 /// The string literals thrown by `failwith` in the repository's PRODUCTION
@@ -747,7 +802,7 @@ let productionFailwithLiterals (analyzedFile: string) : string list =
                     |> Seq.filter (fun p ->
                         let lower = relativeLower root p
 
-                        not (lower.Contains "test")
+                        not (isTestSourcePath (relativeTo root p))
                         && not (
                             lower.Contains "/obj/"
                             || lower.Contains "/bin/"

@@ -69,6 +69,16 @@
     <Compile Include="ModernizationTests.fs" />
     <Compile Include="ApiChangesTests.fs" />
     <Compile Include="FileWalkTests.fs" />
+    <Compile Include="WorkspaceTests.fs" />
+    <Compile Include="SiblingProjectsTests.fs" />
+    <Compile Include="AuditHoistTests.fs" />
+    <Compile Include="AuditRegexQualifiedTests.fs" />
+    <Compile Include="AuditAsyncTests.fs" />
+    <Compile Include="AuditExceptionTests.fs" />
+    <Compile Include="AuditUseBindingTests.fs" />
+    <Compile Include="AuditInfraTests.fs" />
+    <Compile Include="AuditPatternTests.fs" />
+    <Compile Include="AuditToolTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

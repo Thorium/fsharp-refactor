@@ -82,6 +82,10 @@ open FSharp.Compiler.Text
 open FSharp.Refactor
 open FSharp.Refactor.Text
 
+// the tests drive the snapshot and process helpers below directly
+[<assembly: System.Runtime.CompilerServices.InternalsVisibleTo("FSharp.Refactor.Tests")>]
+do ()
+
 /// Colour, when the terminal is actually a terminal.
 ///
 /// A redirected stream is a pipe or a file, where escape codes are
@@ -526,7 +530,7 @@ let private parseArgs (argv: string[]) =
 /// console that may not even be attached. And a child that simply never
 /// finishes takes us with it, silently, which is the worst of the three
 /// because there is nothing on screen to explain it.
-let private runProcessIn (workingDirectory: string option) (timeout: TimeSpan) (fileName: string) (arguments: string) =
+let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) (fileName: string) (arguments: string) =
     let psi =
         ProcessStartInfo(
             FileName = fileName,
@@ -539,46 +543,64 @@ let private runProcessIn (workingDirectory: string option) (timeout: TimeSpan) (
 
     workingDirectory |> Option.iter (fun dir -> psi.WorkingDirectory <- dir)
 
-    use p = Process.Start psi
-
-    // a prompt now reads end-of-input and gives up, instead of waiting
-    p.StandardInput.Close()
-
-    // Both pipes drain on their own callbacks. .NET raises each stream's
-    // event in order, so a builder is never written from two threads at
-    // once, and nothing here blocks on a task the child has to finish
-    // first — which is what made reading one pipe then the other deadlock.
-    let outText = Text.StringBuilder()
-    let errText = Text.StringBuilder()
-
-    p.OutputDataReceived.Add(fun e ->
-        if not (isNull e.Data) then
-            outText.AppendLine e.Data |> ignore)
-
-    p.ErrorDataReceived.Add(fun e ->
-        if not (isNull e.Data) then
-            errText.AppendLine e.Data |> ignore)
-
-    p.BeginOutputReadLine()
-    p.BeginErrorReadLine()
-
-    if p.WaitForExit(int timeout.TotalMilliseconds) then
-        // the timed overload can return before the output callbacks have
-        // flushed; the argument-less one waits for them
-        p.WaitForExit()
-        p.ExitCode, outText.ToString(), errText.ToString()
-    else
+    // A child that cannot START is the fourth way: a blocked or missing
+    // executable (a paket bootstrapper under application control, `mono`
+    // absent, `dotnet` not on the PATH) throws out of Process.Start, and
+    // that unwound the whole sweep from one checkout's restore. Reported
+    // the way a failed exit is, so the caller skips that target and the
+    // run goes on.
+    let started =
         try
-            // the whole tree: MSBuild leaves worker nodes behind
-            p.Kill true
+            Ok(Process.Start psi)
         with
-        | :? InvalidOperationException
-        | :? NotSupportedException
-        | :? System.ComponentModel.Win32Exception -> ()
+        | :? System.ComponentModel.Win32Exception
+        | :? IOException
+        | :? UnauthorizedAccessException as e -> Error e.Message
 
-        let minutes = timeout.TotalMinutes
+    match started with
+    | Error message -> -1, "", $"'{fileName}' could not be started: {message}"
+    | Ok p ->
 
-        -1, "", $"'{fileName} {arguments}' had not finished after {minutes} minutes, so it was stopped."
+        use p = p
+
+        // a prompt now reads end-of-input and gives up, instead of waiting
+        p.StandardInput.Close()
+
+        // Both pipes drain on their own callbacks. .NET raises each stream's
+        // event in order, so a builder is never written from two threads at
+        // once, and nothing here blocks on a task the child has to finish
+        // first — which is what made reading one pipe then the other deadlock.
+        let outText = Text.StringBuilder()
+        let errText = Text.StringBuilder()
+
+        p.OutputDataReceived.Add(fun e ->
+            if not (isNull e.Data) then
+                outText.AppendLine e.Data |> ignore)
+
+        p.ErrorDataReceived.Add(fun e ->
+            if not (isNull e.Data) then
+                errText.AppendLine e.Data |> ignore)
+
+        p.BeginOutputReadLine()
+        p.BeginErrorReadLine()
+
+        if p.WaitForExit(int timeout.TotalMilliseconds) then
+            // the timed overload can return before the output callbacks have
+            // flushed; the argument-less one waits for them
+            p.WaitForExit()
+            p.ExitCode, outText.ToString(), errText.ToString()
+        else
+            try
+                // the whole tree: MSBuild leaves worker nodes behind
+                p.Kill true
+            with
+            | :? InvalidOperationException
+            | :? NotSupportedException
+            | :? System.ComponentModel.Win32Exception -> ()
+
+            let minutes = timeout.TotalMinutes
+
+            -1, "", $"'{fileName} {arguments}' had not finished after {minutes} minutes, so it was stopped."
 
 /// Long enough for a real build of a large project, short enough that a
 /// stuck one is reported rather than waited on forever.
@@ -650,6 +672,20 @@ let private gitIgnoredFiles (projectDir: string) (files: string[]) : Set<string>
                 Set.empty
         with _ -> // no git on this machine is not an error; fsharpanalyzer: ignore-line FR0055
             Set.empty
+
+/// The sources of a compilation the run may EDIT: the project's files less
+/// the vendored and generated ones above (ignored paths, git-ignored) -
+/// the same partition the sweep makes, asked here by the api pass so that
+/// a paket-files source is neither reshaped nor, when seventeen projects
+/// compile it, the reason all seventeen are read as linkers of each other.
+let private editableSources (options: FSharpProjectOptions) : string[] =
+    let gitIgnored =
+        gitIgnoredFiles (Path.GetDirectoryName options.ProjectFileName) options.SourceFiles
+
+    options.SourceFiles
+    |> Array.filter (fun f ->
+        not (Configuration.isIgnoredPath f)
+        && not (gitIgnored.Contains(Path.GetFullPath(f).ToLowerInvariant())))
 
 /// Where a project's builds run from, decided once per project.
 ///
@@ -1624,6 +1660,38 @@ let private fixKey (code: string) (file: string) (f: Fix) =
 let private putBackFiles =
     System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
+/// The files the compilation's snapshot covers — its own sources — and
+/// the ORIGINAL text of every file written OUTSIDE it: a sibling project's
+/// sources, a #loading script, a linker's own files, which the api pass
+/// (and a cross-file migration) rewrite and the project's build never
+/// sees. Recorded the moment each is first written, so the end-of-run
+/// put-backs — the error-count guard, the all-frameworks arbiter, the
+/// bisection — can put them back with the definitions they were rewritten
+/// for. Empty while there is no snapshot (--dry-run writes nothing anyway).
+let internal snapshotFiles =
+    System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+let internal extraSnapshot =
+    System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+
+/// A file is about to be written over `before`: keep that text when the
+/// file is outside the snapshot and not seen yet.
+let internal recordExtra (file: string) (before: string) =
+    let full = Path.GetFullPath file
+
+    if
+        snapshotFiles.Count > 0
+        && not (snapshotFiles.Contains full)
+        && not (extraSnapshot.ContainsKey full)
+    then
+        extraSnapshot.[full] <- before
+
+/// Files of a LINKED compilation — another project's own sources, edited
+/// by the api pass because that project compiles this one's files directly
+/// — for the one-word note on their fix lines. Set by the api pass for
+/// the duration of its apply, empty otherwise.
+let private linkedFiles = System.Collections.Generic.HashSet<string>()
+
 /// Returns the number of fixes applied and the files they changed.
 /// `suppressed` holds fixes rolled back by an earlier pass's verification;
 /// re-applying one would only be rolled back again.
@@ -1756,11 +1824,19 @@ let private applyEditGroups
                     appliedHere <- (groupId, code, f) :: appliedHere
                     applied <- applied + 1
 
+                    // once per file: the first fix line in a linked file says so
+                    let linked =
+                        if linkedFiles.Remove(Path.GetFullPath(file).ToLowerInvariant()) then
+                            " note: linked file"
+                        else
+                            ""
+
                     printfn
-                        $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn})"
+                        $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn}){linked}"
                 | None -> ()
 
         if current <> text && not dryRun then
+            recordExtra file text
             writeSource file current
 
             appliedFiles.Add
@@ -1826,7 +1902,27 @@ type private ScriptCallSites =
         /// call sites are unreadable, so nothing defined in these files may
         /// be reshaped — the same restraint as an unresolvable use.
         Unverifiable: System.Collections.Generic.HashSet<string>
+        /// Scripts that `#r` the project's BUILT assembly. Such a script
+        /// sees the public declarations, and its calls resolve to the dll's
+        /// metadata rather than to the sources this pass rewrites, so
+        /// nothing matches them to a declaration and nothing could rewrite
+        /// them: the pass declines to reshape what the script can see.
+        ReferencingScripts: string list
     }
+
+/// The file name of the assembly a compilation builds — `Lib.dll` — from
+/// its `-o:`/`--out:` argument, else from the project file's name, which
+/// is the SDK's default AssemblyName.
+let private outputFileNameOf (options: FSharpProjectOptions) =
+    options.OtherOptions
+    |> Array.tryPick (fun o ->
+        [ "-o:"; "--out:" ]
+        |> List.tryPick (fun flag ->
+            if o.StartsWith(flag, StringComparison.OrdinalIgnoreCase) then
+                Some(Path.GetFileName(o.Substring flag.Length))
+            else
+                None))
+    |> Option.defaultWith (fun () -> Path.GetFileNameWithoutExtension options.ProjectFileName + ".dll")
 
 /// FullName throws for a few symbol kinds; a symbol we cannot name simply
 /// contributes no cross-compilation match.
@@ -2015,10 +2111,24 @@ let inline private (|Exists|_|) (input: string) =
 /// rewritten `#load`ing scripts; the normal pass does too now that the
 /// FR0069/FR0093 migrations read their call sites, and one rule's safety
 /// net is no use to the other if it hangs in only one of the two places.
+///
+/// `brokenElsewhere` is the same question for whatever else the caller
+/// edited outside the project — the api pass's sibling projects, which
+/// it rechecks itself and answers with the groups to put back; the
+/// normal pass has nothing to add and answers with none.
+///
+/// And one more thing a group can be, besides broken: HALF-APPLIED.
+/// `applyEditGroups` decides a group per file, so a group whose edit in
+/// one file was held back — suppressed from an earlier rollback, or in a
+/// file the all-frameworks verification put back — while its edits in
+/// another file went in has left a definition reshaped and a call site
+/// not. That is exactly the state a group exists to make impossible, so
+/// such a group is put back whole here, with the broken ones.
 let rec private applyEditGroupsCheckingScripts
     (checker: FSharpChecker)
     (dryRun: bool)
     (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (brokenElsewhere: AppliedFile list -> Set<int>)
     (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
     : int * AppliedFile list =
     // which of the scripts about to be edited were typechecking BEFORE the
@@ -2046,7 +2156,7 @@ let rec private applyEditGroupsCheckingScripts
 
     let applied, changed = applyEditGroups dryRun suppressed editsByFile
 
-    let brokenGroups =
+    let brokenScriptGroups =
         if dryRun then
             Set.empty
         else
@@ -2054,6 +2164,38 @@ let rec private applyEditGroupsCheckingScripts
             |> List.filter (fun cf -> contextBefore.Contains cf.Path && (readScript checker cf.Path).Context.IsNone)
             |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
             |> Set.ofList
+
+    // a group applied in one file and held back in another; only an edit
+    // that changes something counts as expected, since a self-identical
+    // member is never recorded as applied
+    let halfAppliedGroups =
+        if dryRun then
+            Set.empty
+        else
+            let appliedIn =
+                changed
+                |> List.collect (fun cf ->
+                    cf.Fixes
+                    |> List.map (fun (g, _, _) -> g, Path.GetFullPath(cf.Path).ToLowerInvariant()))
+                |> Set.ofList
+
+            let appliedGroups = appliedIn |> Set.map fst
+
+            [ for kv in editsByFile do
+                  for g, _, f in kv.Value do
+                      if
+                          appliedGroups.Contains g
+                          && f.ToText.Replace("\r", "") <> f.FromText.Replace("\r", "")
+                          && not (appliedIn.Contains(g, Path.GetFullPath(kv.Key).ToLowerInvariant()))
+                      then
+                          g ]
+            |> Set.ofList
+
+    let brokenGroups =
+        Set.unionMany
+            [ brokenScriptGroups
+              halfAppliedGroups
+              (if dryRun then Set.empty else brokenElsewhere changed) ]
 
     if Set.isEmpty brokenGroups then
         applied, changed
@@ -2078,9 +2220,15 @@ let rec private applyEditGroupsCheckingScripts
             if kept.Count > 0 then
                 survivors.[kv.Key] <- kept
 
-        Out.skip $"  ({brokenGroups.Count} suggestion(s) put back: the script they rewrote stopped typechecking)"
+        if not (Set.isEmpty brokenScriptGroups) then
+            Out.skip
+                $"  ({brokenScriptGroups.Count} suggestion(s) put back: the script they rewrote stopped typechecking)"
 
-        applyEditGroupsCheckingScripts checker dryRun suppressed survivors
+        if not (Set.isEmpty halfAppliedGroups) then
+            Out.skip
+                $"  ({halfAppliedGroups.Count} suggestion(s) put back: their edits could not all apply together across files)"
+
+        applyEditGroupsCheckingScripts checker dryRun suppressed brokenElsewhere survivors
 
 let private findScriptCallSites (checker: FSharpChecker) (root: string) (options: FSharpProjectOptions) =
     let searchRoot =
@@ -2136,6 +2284,28 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
                 |> Seq.toArray
             with _ -> // an unreadable tree contributes no call sites; fsharpanalyzer: ignore-line FR0055
                 [||]
+
+    // `#r "../bin/Debug/net8.0/Lib.dll"`, in any spelling of the path: a
+    // textual probe, since the script is not typechecked for this — its
+    // calls could not be matched to a declaration if it were
+    let referencing =
+        let assemblyFile = Text.RegularExpressions.Regex.Escape(outputFileNameOf options)
+
+        let pattern =
+            Text.RegularExpressions.Regex(
+                "^\\s*#r\\s+@?\"(?:[^\"\\r\\n]*[\\\\/])?" + assemblyFile + "\"",
+                Text.RegularExpressions.RegexOptions.IgnoreCase
+                ||| Text.RegularExpressions.RegexOptions.Multiline
+            )
+
+        scripts
+        |> Array.filter (fun script ->
+            try
+                pattern.IsMatch(File.ReadAllText script)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> false)
+        |> List.ofArray
 
     let contexts = ResizeArray()
 
@@ -2206,7 +2376,444 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
 
     { Contexts = List.ofSeq contexts
       UsesByFullName = byName
-      Unverifiable = unverifiable }
+      Unverifiable = unverifiable
+      ReferencingScripts = referencing }
+
+/// One sibling project's compilation, read for the api pass: the project
+/// references the one being analyzed, so its sources are call sites of
+/// that project's public declarations (and of its internal ones, when
+/// InternalsVisibleTo names the sibling).
+type private SiblingInfo =
+    {
+        Project: string
+        /// The sibling's own compiler arguments, with the analyzed project
+        /// referenced IN MEMORY (see readSibling) — the options the
+        /// post-apply recheck uses again.
+        Options: FSharpProjectOptions
+        /// The sibling's sources, parsed with ITS parsing options, so a
+        /// call-site edit can be rendered in them.
+        Contexts: (string * FileContext) list
+        /// Uses inside the sibling's own files.
+        Uses: FSharpSymbolUse[]
+        /// The first errors of a sibling that does not typecheck — the
+        /// reason beside the verdict. Non-empty means unreadable.
+        Errors: string list
+    }
+
+/// What the sibling projects of the run contribute to one project's api
+/// pass, in the same shape as ScriptCallSites and folded into the same
+/// `Outside` the rules read.
+type private SiblingCallSites =
+    {
+        /// Parse contexts of every sibling read, for the file lookup.
+        Contexts: (string * FileContext) list
+        /// Uses inside the siblings, indexed by the symbol's full name.
+        UsesByFullName: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>
+        /// Was every project that can see this project's PUBLIC
+        /// declarations read — a workspace enumerated, every referencing
+        /// project an F# one that typechecked?
+        PublicRead: bool
+        /// Has the project building the assembly of this name been read,
+        /// or can it not see this project at all? The InternalsVisibleTo
+        /// question, by friend name.
+        AssemblyRead: string -> bool
+        /// The siblings read, for the recheck after edits land in them.
+        Read: SiblingInfo list
+        /// This project's source files that another workspace project
+        /// compiles directly (a `<Compile Include>` link) and that
+        /// project could not be read: it holds its own copy of every
+        /// declaration in them, with call sites of its own that nothing
+        /// reaches, so nothing in such a file is reshaped. A linker that
+        /// reads is a sibling like any other, its call sites rewritten.
+        UnreadShared: string list
+        /// The own files of the linking projects read, lower-cased full
+        /// paths: an edit landing there is noted as such on its fix line.
+        Linked: Set<string>
+    }
+
+/// A sibling's compiler arguments, once per run: they come from MSBuild,
+/// which is the expensive half, and do not change as sources are edited.
+let private siblingOptionsCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, Result<FSharpProjectOptions, string>>(
+        StringComparer.OrdinalIgnoreCase
+    )
+
+/// A sibling's typecheck, keyed by (sibling, referenced project): the
+/// sibling is checked against THAT project's sources in memory, so one
+/// test project referencing three libraries is read three times over —
+/// and once per ROUND, since the previous round's edits are what it must
+/// now see; the api pass clears this as each round begins. What survives
+/// the run is the MSBuild half above.
+let private siblingCheckCache =
+    System.Collections.Generic.Dictionary<string * string, SiblingInfo>()
+
+/// Read one sibling: MSBuild for its arguments, then a typecheck with the
+/// analyzed project referenced IN MEMORY rather than through the dll on
+/// disk. Two reasons. The dll is stale the moment a round has rewritten
+/// the project (nothing rebuilds it between rounds), and against a stale
+/// dll every rewritten call site in the sibling is an error. And a symbol
+/// resolved from source carries the declaration's exact position, which
+/// is what `sameDeclaration` matches on; the pass would rather not depend
+/// on what a dll's metadata says about where its sources were.
+///
+/// The `-r:` naming the project's output is the one replaced. A sibling
+/// whose arguments carry no such reference is not compiled against the
+/// project after all — a ProjectReference with ReferenceOutputAssembly
+/// false, say — and is reported unreadable rather than assumed harmless.
+let private readSibling
+    (checker: FSharpChecker)
+    (optionsOf: string -> Result<FSharpProjectOptions, string>)
+    (project: FSharpProjectOptions)
+    /// The sibling compiles some of the project's sources DIRECTLY (a
+    /// `<Compile Include="..\Common\X.fs">` link) rather than referencing
+    /// the built assembly: its own arguments already carry the sources,
+    /// so there is no `-r:` to replace, and the declarations it shares
+    /// resolve to the same positions the project's do.
+    (linksSources: bool)
+    (sibling: string)
+    =
+    let key =
+        Path.GetFullPath(sibling).ToLowerInvariant(), Path.GetFullPath(project.ProjectFileName).ToLowerInvariant()
+
+    match siblingCheckCache.TryGetValue key with
+    | true, info -> info
+    | false, _ ->
+        let unreadable errors =
+            { Project = sibling
+              Options = project
+              Contexts = []
+              Uses = [||]
+              Errors = errors }
+
+        let info =
+            match siblingOptionsCache.GetOrAdd(Path.GetFullPath sibling, (fun p -> optionsOf p)) with
+            | Error message -> unreadable [ message ]
+            | Ok siblingOptions ->
+                let outputFile = outputFileNameOf project
+
+                let referencesProject (arg: string) =
+                    arg.StartsWith("-r:", StringComparison.OrdinalIgnoreCase)
+                    && String.Equals(Path.GetFileName(arg.Substring 3), outputFile, StringComparison.OrdinalIgnoreCase)
+
+                let inMemory =
+                    if linksSources then
+                        Some siblingOptions
+                    else
+                        siblingOptions.OtherOptions
+                        |> Array.tryFind referencesProject
+                        |> Option.map (fun reference ->
+                            { siblingOptions with
+                                ReferencedProjects =
+                                    [| FSharpReferencedProject.FSharpReference(reference.Substring 3, project) |] })
+
+                match inMemory with
+                | None ->
+                    unreadable
+                        [ $"its compiler arguments carry no reference to {outputFile}, so it cannot be checked against this project" ]
+                | Some options ->
+
+                    // the previous round's edits are on disk; FCS must not
+                    // answer from the tree it built before them
+                    checker.InvalidateConfiguration options
+                    let results = checker.ParseAndCheckProject options |> Async.RunSynchronously
+
+                    let errors =
+                        results.Diagnostics
+                        |> Array.filter (fun d ->
+                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+
+                    if not (Array.isEmpty errors) then
+                        { unreadable (
+                              errors
+                              |> Array.truncate 2
+                              |> Array.map (fun d ->
+                                  $"{Path.GetFileName d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}")
+                              |> List.ofArray
+                          ) with
+                            Options = options }
+                    else
+                        let projectFiles =
+                            System.Collections.Generic.HashSet<string>(
+                                project.SourceFiles |> Array.map Path.GetFullPath,
+                                StringComparer.OrdinalIgnoreCase
+                            )
+
+                        // the sibling's OWN files: a linker compiles the
+                        // project's sources as well, and those are the
+                        // project pass's business - their call sites come
+                        // from the project's compilation, and their trees
+                        // from the project's parse
+                        let own =
+                            System.Collections.Generic.HashSet<string>(
+                                options.SourceFiles
+                                |> Array.map Path.GetFullPath
+                                |> Array.filter (projectFiles.Contains >> not),
+                                StringComparer.OrdinalIgnoreCase
+                            )
+
+                        let parsingOptions, _ = checker.GetParsingOptionsFromProjectOptions options
+
+                        let contexts =
+                            [ for file in options.SourceFiles |> Array.filter (Path.GetFullPath >> own.Contains) do
+                                  let sourceText = SourceText.ofString (File.ReadAllText file)
+
+                                  let parsed =
+                                      checker.ParseFile(file, sourceText, parsingOptions) |> Async.RunSynchronously
+
+                                  file,
+                                  { FileName = file
+                                    Source = sourceText
+                                    ParseTree = parsed.ParseTree } ]
+
+                        // only uses IN THE SIBLING: the referenced project's
+                        // own files are the project pass's business
+                        let uses =
+                            results.GetAllUsesOfAllSymbols()
+                            |> Array.filter (fun u ->
+                                not u.IsFromDefinition && own.Contains(Path.GetFullPath u.Range.FileName))
+
+                        // a use of the project's declaration that cannot be
+                        // NAMED cannot be matched to it, and might be the
+                        // one call site the pass would miss — the same
+                        // restraint findScriptCallSites shows a script
+                        let unnameable =
+                            uses
+                            |> Array.exists (fun u ->
+                                (symbolFullName u.Symbol).IsNone
+                                && (match u.Symbol.DeclarationLocation with
+                                    | Some d ->
+                                        (try
+                                            projectFiles.Contains(Path.GetFullPath d.FileName)
+                                         with _ -> // fsharpanalyzer: ignore-line FR0055
+                                             false)
+                                    | None -> false))
+
+                        { Project = sibling
+                          Options = options
+                          Contexts = contexts
+                          Uses = uses
+                          Errors =
+                            if unnameable then
+                                [ "it uses a declaration of this project that the pass cannot name, so its calls cannot all be matched" ]
+                            else
+                                [] }
+
+        siblingCheckCache.[key] <- info
+        info
+
+/// Index the call sites in the sibling projects that can see this
+/// project's declarations — the complement of findScriptCallSites for
+/// the callers a `#load` does not explain.
+///
+/// The workspace is the run's solution, or the nearest one listing the
+/// project, or the directory the run was pointed at (Workspace.workspaceOf);
+/// its projects referencing this one, directly or through another, are the
+/// siblings. Each F# sibling is typechecked and its uses indexed; a
+/// sibling in another language, one that does not typecheck, or a
+/// workspace that cannot be enumerated at all leaves the public
+/// declarations as they are — said once, like the signature-file skip.
+let private findSiblingCallSites
+    (checker: FSharpChecker)
+    (root: string)
+    (options: FSharpProjectOptions)
+    (optionsOf: string -> Result<FSharpProjectOptions, string>)
+    : SiblingCallSites =
+    let unread =
+        { Contexts = []
+          UsesByFullName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+          PublicRead = false
+          AssemblyRead = (fun _ -> false)
+          Read = []
+          UnreadShared = []
+          Linked = Set.empty }
+
+    // a script compilation is nobody's reference target, and the project
+    // sources it #loads belong to a project whose other callers this
+    // compilation cannot see: nothing public is reshaped from here
+    if options.SourceFiles |> Array.exists Visibility.isScriptFile then
+        unread
+    else
+        match Workspace.workspaceOf root options.ProjectFileName with
+        | None ->
+            Out.dim
+                "  (no solution lists this project, so nothing referencing it can be read; public declarations keep their shape)"
+
+            unread
+        | Some workspace ->
+            let referencers = Workspace.referencersOf workspace options.ProjectFileName
+
+            let foreign, fsharp =
+                referencers |> List.partition (Workspace.isFSharpProject >> not)
+
+            if not foreign.IsEmpty then
+                let names = foreign |> List.map Path.GetFileName |> String.concat ", "
+                let verb = if foreign.Length = 1 then "references" else "reference"
+
+                Out.skip $"  ({names} {verb} this project and cannot be read; public declarations keep their shape)"
+
+            // a project compiling some of this project's sources directly
+            // is another compilation of those declarations, read like a
+            // referencer: its own files hold call sites of its own copy
+            let linkers =
+                Workspace.sharedSourcesOf workspace options.ProjectFileName (editableSources options)
+                |> List.filter (fun (linker, _) ->
+                    Workspace.isFSharpProject linker
+                    && not (
+                        fsharp
+                        |> List.exists (fun r -> String.Equals(r, linker, StringComparison.OrdinalIgnoreCase))
+                    ))
+
+            let readOne (linksSources: bool) (sibling: string) (why: string) =
+                if not linksSources then
+                    Out.dim $"  {Path.GetFileName sibling} {why}; reading its call sites"
+
+                let info = readSibling checker optionsOf options linksSources sibling
+
+                if not info.Errors.IsEmpty then
+                    Out.skip
+                        $"  ({Path.GetFileName sibling} cannot be read, so its calls cannot be rewritten; declarations it can see keep their shape)"
+
+                    for e in info.Errors do
+                        Out.dim $"    {e}"
+
+                info
+
+            let read =
+                [ for sibling in fsharp do
+                      readOne false sibling "references this project"
+                  for linker, _ in linkers do
+                      readOne true linker "" ]
+
+            // a linker's own files, for the note on their fix lines
+            let linked =
+                [ for linker, _ in linkers do
+                      let info = readSibling checker optionsOf options true linker
+
+                      for file, _ in info.Contexts do
+                          Path.GetFullPath(file).ToLowerInvariant() ]
+                |> Set.ofList
+
+            // the shared files of a linker that could not be read: their
+            // declarations have call sites nothing can reach
+            let unreadShared =
+                [ for linker, files in linkers do
+                      if not (readSibling checker optionsOf options true linker).Errors.IsEmpty then
+                          yield! files ]
+
+            let usesByName =
+                System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+
+            for info in read do
+                for u in info.Uses do
+                    match symbolFullName u.Symbol with
+                    | Some name ->
+                        match usesByName.TryGetValue name with
+                        | true, existing -> existing.Add u
+                        | false, _ ->
+                            let fresh = ResizeArray()
+                            fresh.Add u
+                            usesByName.[name] <- fresh
+                    | None -> ()
+
+            let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+
+            for kv in usesByName do
+                byName.[kv.Key] <- kv.Value.ToArray()
+
+            let readable = read |> List.filter (fun info -> info.Errors.IsEmpty)
+
+            let verified =
+                readable
+                |> List.map (fun info -> Workspace.assemblyNameOf info.Project)
+                |> Set.ofList
+
+            // a workspace project that does not reference this one cannot
+            // call it, friend or not
+            let unreferencing =
+                workspace
+                |> List.filter (fun p ->
+                    not (
+                        referencers
+                        |> List.exists (fun r -> String.Equals(r, p, StringComparison.OrdinalIgnoreCase))
+                    )
+                    && not (
+                        String.Equals(
+                            Path.GetFullPath p,
+                            Path.GetFullPath options.ProjectFileName,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    ))
+                |> List.map Workspace.assemblyNameOf
+                |> Set.ofList
+
+            { Contexts = readable |> List.collect (fun info -> info.Contexts)
+              UsesByFullName = byName
+              PublicRead = foreign.IsEmpty && read.Length = readable.Length
+              AssemblyRead =
+                (fun name ->
+                    verified
+                    |> Set.exists (fun v -> String.Equals(v, name, StringComparison.OrdinalIgnoreCase))
+                    || unreferencing
+                       |> Set.exists (fun v -> String.Equals(v, name, StringComparison.OrdinalIgnoreCase)))
+              Read = readable
+              UnreadShared = unreadShared
+              Linked = linked }
+
+/// The linkers alone, for the channel the ANALYZERS read: the FR0069,
+/// FR0093 and FR0049 migrations reshape `internal` declarations
+/// project-wide, and a project compiling this project's sources directly
+/// holds those declarations as its own internals, with call sites in its
+/// own files. Read like a sibling (cached with them), its uses are folded
+/// into the same `Outside` a #loading script's are, and the shared files
+/// of a linker that cannot be read are unreadable exactly as a file a
+/// broken script #loads is. Referencers are not read here: they see only
+/// public declarations, which those migrations never touch.
+let private findLinkerCallSites
+    (checker: FSharpChecker)
+    (root: string)
+    (options: FSharpProjectOptions)
+    (optionsOf: string -> Result<FSharpProjectOptions, string>)
+    : (string * FileContext) list * System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]> * string list =
+    let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+
+    if options.SourceFiles |> Array.exists Visibility.isScriptFile then
+        [], byName, []
+    else
+        match Workspace.workspaceOf root options.ProjectFileName with
+        | None -> [], byName, []
+        | Some workspace ->
+            let linkers =
+                Workspace.sharedSourcesOf workspace options.ProjectFileName (editableSources options)
+                |> List.filter (fst >> Workspace.isFSharpProject)
+
+            let read =
+                [ for linker, files in linkers -> files, readSibling checker optionsOf options true linker ]
+
+            let usesByName =
+                System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+
+            for _, info in read do
+                for u in info.Uses do
+                    match symbolFullName u.Symbol with
+                    | Some name ->
+                        match usesByName.TryGetValue name with
+                        | true, existing -> existing.Add u
+                        | false, _ ->
+                            let fresh = ResizeArray()
+                            fresh.Add u
+                            usesByName.[name] <- fresh
+                    | None -> ()
+
+            for kv in usesByName do
+                byName.[kv.Key] <- kv.Value.ToArray()
+
+            let contexts = read |> List.collect (fun (_, info) -> info.Contexts)
+
+            let unreadable =
+                read
+                |> List.collect (fun (files, info) -> if info.Errors.IsEmpty then [] else files)
+
+            contexts, byName, unreadable
 
 /// The API-CHANGING pass: project-wide refactorings whose edits cross file
 /// boundaries — currying internal/public tupled functions (FR0090) and
@@ -2220,12 +2827,28 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
 /// the definition changes would not compile. When two suggestions collide
 /// (a call to one inside a call tuple of another) the later one is held
 /// back whole, and the caller's iteration picks it up on the next round.
+///
+/// The call sites are not all in the project. `#load`ing scripts and the
+/// sibling projects that reference this one (findScriptCallSites,
+/// findSiblingCallSites) are read first, their uses handed to the rules
+/// as the `Outside` of this compilation, and their files supplied to the
+/// same lookup the project's own go through, so an edit lands in a test
+/// project's file exactly as it lands in a second file of the project —
+/// and in the same group, so a sibling edit and the definition edit are
+/// one all-or-nothing decision. What could not be read holds the
+/// declarations it can see in their present shape.
 let private runApiPass
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
     /// Call sites in #loading scripts, which the project compilation
     /// cannot see.
     (scriptSites: ScriptCallSites)
+    /// Call sites in the sibling projects that reference this one, which
+    /// the project compilation cannot see either. Lazy: the reading costs
+    /// an MSBuild evaluation and a typecheck per referencing project (22
+    /// of them, seven minutes, on SQLProvider.Common), and is asked for
+    /// only once a file holds a tupled definition worth reshaping.
+    (siblingSites: Lazy<SiblingCallSites>)
     (codes: Set<string> option)
     (dryRun: bool)
     (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
@@ -2237,6 +2860,10 @@ let private runApiPass
         let wanted (file: string) (code: string) (name: string) =
             codes |> Option.forall (fun allowed -> allowed.Contains code)
             && Configuration.isRuleEnabled file code name
+
+        for script in scriptSites.ReferencingScripts do
+            Out.skip
+                $"  ({Path.GetFileName script} #r's this project's built assembly, so its calls cannot be matched to the sources; public declarations keep their shape)"
 
         let projectResults = checker.ParseAndCheckProject options |> Async.RunSynchronously
 
@@ -2256,33 +2883,62 @@ let private runApiPass
                   Source = sourceText
                   ParseTree = parsed.ParseTree }
 
-        // a #loading script is looked up exactly like a project file: its
-        // edits are rendered from its own parse tree and source
+        // a #loading script or a sibling's source is looked up exactly like
+        // a project file: its edits are rendered from its own parse tree
+        // and source
         for script, ctx in scriptSites.Contexts do
             fileContexts.[Path.GetFullPath script] <- ctx
 
+        // a sibling's files arrive with the reading, when a rule first
+        // asks for a file the project does not hold
         let fileLookup (name: string) =
             match fileContexts.TryGetValue(Path.GetFullPath name) with
             | true, ctx -> Some ctx
-            | false, _ -> None
+            | false, _ ->
+                siblingSites.Value.Contexts
+                |> List.tryFind (fun (file, _) ->
+                    String.Equals(Path.GetFullPath file, Path.GetFullPath name, StringComparison.OrdinalIgnoreCase))
+                |> Option.map snd
 
         let suggestions = ResizeArray<ApiSuggestion>()
 
-        /// The uses a #loading script contributes for this symbol, matched
-        /// by full name because the script compiled it separately.
-        let extraUses (symbol: FSharpSymbol) =
+        /// The uses the other compilations contribute for this symbol,
+        /// matched by full name because each compiled it separately, then
+        /// by declaration because a name is not identity.
+        let usesIn (index: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>) (symbol: FSharpSymbol) =
             match symbolFullName symbol with
             | Some name ->
-                match scriptSites.UsesByFullName.TryGetValue name with
+                match index.TryGetValue name with
                 | true, uses -> uses |> Array.filter (fun u -> sameDeclaration symbol u.Symbol)
                 | false, _ -> [||]
             | None -> [||]
 
+        let outside: Visibility.Outside =
+            { Uses =
+                (fun symbol ->
+                    Array.append
+                        (usesIn scriptSites.UsesByFullName symbol)
+                        (usesIn siblingSites.Value.UsesByFullName symbol))
+              // a script compiled against the dll is a caller of the public
+              // declarations the sibling reading cannot vouch for
+              PublicRead = (fun () -> scriptSites.ReferencingScripts.IsEmpty && siblingSites.Value.PublicRead)
+              AssemblyRead = (fun name -> siblingSites.Value.AssemblyRead name) }
+
         // a file a broken script #loads is left alone entirely: we cannot
         // read that script's calls, and reshaping blind is how it broke
+        // - and so is a vendored or generated file the sweep would not touch
         let reshapable =
-            options.SourceFiles
+            editableSources options
             |> Array.filter (Path.GetFullPath >> scriptSites.Unverifiable.Contains >> not)
+
+        // and a file another project compiles directly when THAT project
+        // could not be read: its own call sites are out of reach. Asked of
+        // a file only once a rule found something in it, which is when the
+        // sibling reading has been paid for anyway
+        let inUnreadShared (file: string) =
+            siblingSites.Value.UnreadShared
+            |> List.exists (fun shared ->
+                String.Equals(Path.GetFullPath shared, Path.GetFullPath file, StringComparison.OrdinalIgnoreCase))
 
         for file in reshapable do
             let ctx = fileContexts.[Path.GetFullPath file]
@@ -2294,14 +2950,18 @@ let private runApiPass
             match checkAnswer with
             | FSharpCheckFileAnswer.Succeeded checkResults ->
                 if wanted file "FR0090" "TupleParams" then
-                    for s in TupleParams.findApiChanges ctx checkResults projectResults fileLookup extraUses do
+                    for s in
+                        TupleParams.findApiChanges ctx checkResults projectResults fileLookup outside
+                        |> List.filter (fun _ -> not (inUnreadShared file)) do
                         suggestions.Add
                             { Code = "FR0090"
                               FunctionName = s.FunctionName
                               Edits = s.Edits |> List.map (fun e -> e.Range, e.Original, e.Replacement) }
 
                 if wanted file "FR0091" "ParamOrder" then
-                    for s in ParamOrder.findApiChanges ctx checkResults projectResults fileLookup extraUses do
+                    for s in
+                        ParamOrder.findApiChanges ctx checkResults projectResults fileLookup outside
+                        |> List.filter (fun _ -> not (inUnreadShared file)) do
                         suggestions.Add
                             { Code = "FR0091"
                               FunctionName = s.FunctionName
@@ -2335,21 +2995,37 @@ let private runApiPass
                 printfn
                     $"  {s.Code} {kindColumn s.Code} {s.FunctionName}: held back this round (edits nest inside another change)"
             else
-                // scripts are worth naming: they are the call sites a reader
-                // assumes were out of scope, and the ones that used to break
+                // scripts and sibling projects are worth naming: they are
+                // the call sites a reader assumes were out of scope, and
+                // the ones that used to break
                 let inScripts =
                     s.Edits
                     |> List.filter (fun (r, _, _) -> r.FileName.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase))
                     |> List.length
 
-                let scriptNote =
-                    if inScripts > 0 then
-                        $" ({inScripts} of them in scripts)"
-                    else
-                        ""
+                let inSiblings =
+                    s.Edits
+                    |> List.filter (fun (r, _, _) ->
+                        siblingSites.Value.Contexts
+                        |> List.exists (fun (file, _) ->
+                            String.Equals(
+                                Path.GetFullPath file,
+                                Path.GetFullPath r.FileName,
+                                StringComparison.OrdinalIgnoreCase
+                            )))
+                    |> List.length
+
+                let elsewhereNote =
+                    [ if inScripts > 0 then
+                          $"{inScripts} of them in scripts"
+                      if inSiblings > 0 then
+                          $"{inSiblings} of them in referencing projects" ]
+                    |> function
+                        | [] -> ""
+                        | notes -> " (" + String.concat ", " notes + ")"
 
                 printfn
-                    $"  {s.Code} {kindColumn s.Code} {s.FunctionName}: {s.Edits.Length} edit(s) across the project{scriptNote}"
+                    $"  {s.Code} {kindColumn s.Code} {s.FunctionName}: {s.Edits.Length} edit(s) across the project{elsewhereNote}"
 
                 nextGroup <- nextGroup + 1
 
@@ -2375,7 +3051,75 @@ let private runApiPass
                         fresh.Add range
                         acceptedRanges.[target] <- fresh
 
-        applyEditGroupsCheckingScripts checker dryRun suppressed editsByFile
+        /// Once the edits are on disk, every sibling read is typechecked
+        /// again — against the project's rewritten sources, through the
+        /// same in-memory reference. A sibling with an error now is one
+        /// this pass broke: it typechecked when it was read, or it would
+        /// not have been. The groups that edited it go back; when none
+        /// did, every group of the round does, since the definition edit
+        /// alone then broke a call the reading missed. The sibling's own
+        /// turn in the run would build it too, but that is a report, not
+        /// a rollback, and comes after the project was left rewritten.
+        let siblingsBroken (changed: AppliedFile list) =
+            if
+                changed.IsEmpty
+                || not siblingSites.IsValueCreated
+                || siblingSites.Value.Read.IsEmpty
+            then
+                Set.empty
+            else
+                checker.InvalidateConfiguration options
+
+                let groupsIn (files: AppliedFile list) =
+                    files |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
+
+                siblingSites.Value.Read
+                |> List.collect (fun info ->
+                    checker.InvalidateConfiguration info.Options
+                    let results = checker.ParseAndCheckProject info.Options |> Async.RunSynchronously
+
+                    let errors =
+                        results.Diagnostics
+                        |> Array.filter (fun d ->
+                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+
+                    if Array.isEmpty errors then
+                        []
+                    else
+                        let own =
+                            info.Options.SourceFiles
+                            |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant())
+                            |> Set.ofArray
+
+                        let touched =
+                            changed
+                            |> List.filter (fun cf -> own.Contains(Path.GetFullPath(cf.Path).ToLowerInvariant()))
+
+                        let blamed =
+                            (if touched.IsEmpty then
+                                 groupsIn changed
+                             else
+                                 groupsIn touched)
+                            |> List.distinct
+
+                        Out.skip
+                            $"  ({Path.GetFileName info.Project} stopped typechecking after the edits: {blamed.Length} suggestion(s) put back)"
+
+                        for d in errors |> Array.truncate 2 do
+                            Out.dim $"    {Path.GetFileName d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}"
+
+                        blamed)
+                |> Set.ofList
+
+        linkedFiles.Clear()
+
+        if siblingSites.IsValueCreated then
+            linkedFiles.UnionWith siblingSites.Value.Linked
+
+        try
+            applyEditGroupsCheckingScripts checker dryRun suppressed siblingsBroken editsByFile
+        finally
+            linkedFiles.Clear()
 
 /// One analyze-and-apply pass over every file. Returns the number of fixes
 /// applied.
@@ -3811,7 +4555,9 @@ let private runPass
     if slowest <> "" then
         Out.dim $"  slowest analyzers: {slowest}"
 
-    applyEditGroupsCheckingScripts checker dryRun suppressed editsByFile
+    // the normal pass edits nothing outside the project but scripts, which
+    // are checked above; it has no sibling compilations to answer for
+    applyEditGroupsCheckingScripts checker dryRun suppressed (fun _ -> Set.empty) editsByFile
 
 /// One compilation to work on. Which kind it is comes from the file
 /// extension — the caller never has to say.
@@ -3875,27 +4621,14 @@ let private owningProject (sourceFile: string) =
     found
 
 /// The .fsproj paths a solution lists, resolved against the solution's own
-/// directory. `.slnx` is XML; the classic `.sln` has one `Project(...)` line
-/// per entry. MSBuild refuses to report compiler arguments for a solution
-/// itself, so the tool works through the projects instead.
+/// directory. MSBuild refuses to report compiler arguments for a solution
+/// itself, so the tool works through the projects instead. The C# and VB
+/// projects a solution also lists are not compilations for this tool, but
+/// the api pass still has to know of them (Workspace.projectsInSolution
+/// keeps them): one referencing an F# project is a caller it cannot read.
 let private projectsInSolution (solutionPath: string) =
-    let dir = Path.GetDirectoryName(Path.GetFullPath solutionPath)
-    let text = File.ReadAllText solutionPath
-
-    let paths =
-        if solutionPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) then
-            Text.RegularExpressions.Regex.Matches(text, "Path\\s*=\\s*\"([^\"]+)\"")
-            |> Seq.map (fun m -> m.Groups.[1].Value)
-        else
-            Text.RegularExpressions.Regex.Matches(text, "\"([^\"]+\\.fsproj)\"")
-            |> Seq.map (fun m -> m.Groups.[1].Value)
-
-    paths
-    |> Seq.filter (fun p -> p.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
-    |> Seq.map (fun p -> Path.GetFullPath(Path.Combine(dir, p.Replace('\\', Path.DirectorySeparatorChar))))
-    |> Seq.filter File.Exists
-    |> Seq.distinct
-    |> List.ofSeq
+    Workspace.projectsInSolution solutionPath
+    |> List.filter Workspace.isFSharpProject
 
 let private targetOf (path: string) =
     match (Path.GetExtension path).ToLowerInvariant() with
@@ -4249,22 +4982,32 @@ let private judgeAgainstBaseline (withFixes: string array) (project: string) (fi
                 Introduced remaining
 
 /// The source files as they stand, so one framework's pass can be undone
-/// if it turns out to have broken another's.
-let private takeSnapshot (files: string array) =
-    files
-    |> Array.choose (fun f ->
-        try
-            Some(f, File.ReadAllText f)
-        with
-        | :? IOException
-        | :? UnauthorizedAccessException -> None)
-    |> Map.ofArray
+/// if it turns out to have broken another's. Starts the record of files
+/// written outside it afresh: an empty `files` is "no snapshot", and then
+/// nothing outside it is kept either.
+let internal takeSnapshot (files: string array) =
+    snapshotFiles.Clear()
+    extraSnapshot.Clear()
 
-/// Put back every file that changed since the snapshot; returns how many.
-let private restoreSnapshot (snapshot: Map<string, string>) =
+    let snapshot =
+        files
+        |> Array.choose (fun f ->
+            try
+                Some(f, File.ReadAllText f)
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> None)
+        |> Map.ofArray
+
+    for KeyValue(path, _) in snapshot do
+        snapshotFiles.Add(Path.GetFullPath path) |> ignore
+
     snapshot
-    |> Map.toSeq
-    |> Seq.sumBy (fun (path, original) ->
+
+/// Put back every file that changed since the snapshot — and every file
+/// the run wrote outside it since; returns how many.
+let internal restoreSnapshot (snapshot: Map<string, string>) =
+    let putBack (path: string, original: string) =
         try
             if File.ReadAllText path <> original then
                 writeSource path original
@@ -4273,7 +5016,10 @@ let private restoreSnapshot (snapshot: Map<string, string>) =
                 0
         with
         | :? IOException
-        | :? UnauthorizedAccessException -> 0)
+        | :? UnauthorizedAccessException -> 0
+
+    (snapshot |> Map.toSeq |> Seq.sumBy putBack)
+    + (extraSnapshot |> Seq.sumBy (fun kv -> putBack (kv.Key, kv.Value)))
 
 /// Type-check the project after an applying pass; on new errors, roll the
 /// pass back — first only the changed files the errors name, then (F#
@@ -4700,15 +5446,32 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             for script, ctx in sites.Contexts do
                 ProjectSources.seed script ctx.ParseTree ctx.Source
 
+            // a project compiling some of this project's sources directly
+            // (a `<Compile Include>` link) holds those declarations as
+            // its own, with call sites in its own files that neither this
+            // compilation nor its verification build sees: read like a
+            // sibling, its uses join the scripts' and its files are
+            // rendered from its own parse; where it cannot be read, its
+            // shared files are unreadable as a broken script's #loads are
+            let linkerContexts, linkerUses, unreadShared =
+                findLinkerCallSites checker opts.Target options (fun linker ->
+                    optionsFor checker opts.ParseOnly "" (Target.Project(linker, None)))
+
+            for file, ctx in linkerContexts do
+                ProjectSources.seed file ctx.ParseTree ctx.Source
+
+            let usesIn (index: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>) name symbol =
+                match index.TryGetValue name with
+                | true, uses -> uses |> Array.filter (fun u -> sameDeclaration symbol u.Symbol)
+                | false, _ -> [||]
+
             ProjectSources.configureOutside
                 (Some(fun symbol ->
                     match symbolFullName symbol with
                     | Some name ->
-                        match sites.UsesByFullName.TryGetValue name with
-                        | true, uses -> uses |> Array.filter (fun u -> sameDeclaration symbol u.Symbol)
-                        | false, _ -> [||]
+                        Array.append (usesIn sites.UsesByFullName name symbol) (usesIn linkerUses name symbol)
                     | None -> [||]))
-                sites.Unverifiable
+                (Seq.append sites.Unverifiable unreadShared)
         else
             ProjectSources.configureOutside None []
 
@@ -4783,9 +5546,40 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
         let snapshot =
             if opts.DryRun || skipCompilationCheck then
-                Map.empty
+                // no snapshot — and, through it, no record of files written
+                // outside one
+                takeSnapshot [||]
             else
                 takeSnapshot options.SourceFiles
+
+        // Every set of files one suggestion edited together, pass by pass:
+        // a definition and its call sites in a sibling project, a script
+        // or a linker (the api pass), or across this project's own files.
+        // The end-of-run bisection puts WHOLE files back, and a file it
+        // puts back takes these with it — a sibling's rewritten call site
+        // must not outlive its reverted definition.
+        let ties = ResizeArray<Set<string>>()
+        let canonicalPath (p: string) = Path.GetFullPath(p).ToLowerInvariant()
+
+        let recordTies (changedFiles: AppliedFile list) =
+            changedFiles
+            |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g, canonicalPath cf.Path))
+            |> List.groupBy fst
+            |> List.iter (fun (_, members) ->
+                let files = members |> List.map snd |> Set.ofList
+
+                if files.Count > 1 then
+                    ties.Add files)
+
+        /// `files` and everything tied to them, transitively
+        let rec tiedTo (files: Set<string>) =
+            let more =
+                ties
+                |> Seq.filter (fun t -> not (Set.isEmpty (Set.intersect t files)))
+                |> Set.unionMany
+
+            let all = Set.union files more
+            if all = files then files else tiedTo all
 
         // fixes a verification rollback rejected; never re-applied this run
         let suppressed =
@@ -4912,6 +5706,10 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 while apiPass < opts.MaxPasses && apiApplied <> 0 do
                     apiPass <- apiPass + 1
                     ProjectSources.invalidate ()
+                    // a sibling's typecheck is a round's worth of truth: the
+                    // previous round's edits are on disk now, and the
+                    // sibling must be read against them
+                    siblingCheckCache.Clear()
                     printfn $"api pass {apiPass}:"
 
                     let applied, changedFiles =
@@ -4919,9 +5717,18 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                             checker
                             options
                             (findScriptCallSites checker opts.Target options)
+                            // the sibling's arguments come from MSBuild the
+                            // way the project's own did, framework chosen
+                            // the same way (its narrowest)
+                            (lazy
+                                (findSiblingCallSites checker opts.Target options (fun sibling ->
+                                    optionsFor checker opts.ParseOnly "" (Target.Project(sibling, None)))))
                             opts.Codes
                             opts.DryRun
                             suppressed
+
+                    if not opts.DryRun then
+                        recordTies changedFiles
 
                     apiApplied <- applied
                     totalApplied <- totalApplied + applied
@@ -5004,6 +5811,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
                 if not opts.DryRun then
                     updateDivergenceGuard changedFiles
+                    recordTies changedFiles
 
                 let prefix = if opts.DryRun then "would be " else ""
                 Out.good $"  {lastApplied} fix(es) {prefix}applied"
@@ -5070,9 +5878,12 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                             // paket-files source, most famously): test by
                             // un-applying — if the build still fails, the
                             // breakage is not ours and the fixes go back.
+                            // the project's own files AND the ones the run
+                            // wrote outside it, so a put-back and a
+                            // write-back below move the same set
                             let currentTexts =
-                                snapshot
-                                |> Map.toList
+                                Seq.append (Map.toSeq snapshot) (extraSnapshot |> Seq.map (fun kv -> kv.Key, kv.Value))
+                                |> List.ofSeq
                                 |> List.choose (fun (path, _) ->
                                     try
                                         Some(path, File.ReadAllText path)
@@ -5277,7 +6088,57 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                             putBackFiles.Add(Path.GetFullPath path) |> ignore
                                             eprintfn $"  {path}"
 
+                                        // A suggestion's edits move as ONE across
+                                        // files, and this project's build says
+                                        // nothing about the sibling test project,
+                                        // #loading script or linker in which a
+                                        // put-back definition's call sites were
+                                        // rewritten. Those go back with it — and
+                                        // then whatever else THEIR suggestions tied
+                                        // them to, so that no file is left reshaped
+                                        // against a reverted one (a ParamOrder swap
+                                        // compiles either way and computes the
+                                        // wrong thing). Lossy, and consistent.
+                                        let closure = tiedTo (found |> List.map canonicalPath |> Set.ofList)
+
+                                        let extras =
+                                            [ for kv in extraSnapshot do
+                                                  if closure.Contains(canonicalPath kv.Key) then
+                                                      kv.Key, kv.Value ]
+
+                                        let alsoOwn =
+                                            changed
+                                            |> List.filter (fun path ->
+                                                closure.Contains(canonicalPath path)
+                                                && not (
+                                                    found
+                                                    |> List.exists (fun f -> canonicalPath f = canonicalPath path)
+                                                ))
+
+                                        for path, original in extras do
+                                            writeSource path original
+
+                                            eprintfn
+                                                $"  {path} (outside this project, rewritten by the same suggestion)"
+
+                                        for path in alsoOwn do
+                                            writeSource path (Map.find path snapshot)
+                                            putBackFiles.Add(Path.GetFullPath path) |> ignore
+                                            eprintfn $"  {path} (tied to one of those by a suggestion of its own)"
+
                                         eprintfn $"{report again}"
+
+                                        // more of the project's own files went back
+                                        // than the bisection's last build saw
+                                        if not alsoOwn.IsEmpty then
+                                            match buildAllFrameworks project with
+                                            | Ok() -> ()
+                                            | Error _ ->
+                                                let restored = restoreSnapshot snapshot
+
+                                                eprintfn
+                                                    $"With those put back too a target framework still fails, so the {restored} file(s) this run changed were all put back."
+
                                         1
                                     else
                                         let restored = restoreSnapshot snapshot
@@ -5455,6 +6316,11 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
         inviteApiChanges ()
 
         sweptFiles.Clear()
+        // a sibling's compiler arguments and typecheck are this run's: the
+        // corpus harness runs main in-process, and the next run's sources
+        // may be another tree's
+        siblingOptionsCache.Clear()
+        siblingCheckCache.Clear()
         // the corpus harness runs main in-process; a leaked count would
         // report the previous run's held-back findings as this one's
         Analyzers.heldByScope.Clear()
@@ -5561,7 +6427,12 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
 
                             runTarget checker { opts with Framework = tfm } true target)
 
+                    // both are this project's rounds' business only: a
+                    // leaked FSREF_NO_GUARD dropped the capability fixes of
+                    // every later target in the run, single-target net8.0
+                    // projects included
                     Environment.SetEnvironmentVariable("FSREF_DUAL_TFM", null)
+                    Environment.SetEnvironmentVariable("FSREF_NO_GUARD", null)
                     results |> List.fold max 0
             | _ -> runTarget checker opts several target
 
@@ -5663,6 +6534,7 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
             Environment.SetEnvironmentVariable("FSREF_API_CHANGES", null)
             Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", null)
             Environment.SetEnvironmentVariable("FSREF_DUAL_TFM", null)
+            Environment.SetEnvironmentVariable("FSREF_NO_GUARD", null)
 
 /// --rules: the catalog, human table by default, JSON on request.
 let private printRules (json: bool) =

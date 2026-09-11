@@ -12,6 +12,8 @@
 module FSharp.Refactor.Visibility
 
 open System
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 
 /// True when the apply tool was started with --api-changes, which opts into
@@ -135,6 +137,37 @@ let compilationIsLeaf (sourceFiles: string seq) (otherOptions: string seq) =
 let isApplication (analyzedFile: string) (compilationIsLeaf: bool) =
     isScriptFile analyzedFile || compilationIsLeaf
 
+/// The sources compiled AFTER this file in its compilation — the ones that
+/// can see what it declares.
+///
+/// "Nothing outside the assembly can see it" is true of an executable, but
+/// a later file of the SAME executable can, and it consumes a declaration
+/// at the shape it has today. A rule whose in-place rewrite changes a
+/// binding's type — FR0035's `|> Set.ofList` on a module value, FR0011's
+/// struct return on an active pattern — checks its own file's uses; these
+/// are the files it must ask about as well. Paths are compared in full,
+/// ignoring case and separator spelling. A file the list does not carry
+/// gets EVERY other source back: the host's options and the file do not
+/// agree, and the safe reading is that any of them may follow it.
+let laterSourceFiles (analyzedFile: string) (sourceFiles: string seq) : string list =
+    let full (p: string) =
+        try
+            System.IO.Path.GetFullPath p
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            p
+
+    let analyzed = full analyzedFile
+
+    let same (p: string) =
+        String.Equals(full p, analyzed, StringComparison.OrdinalIgnoreCase)
+
+    let files = List.ofSeq sourceFiles
+
+    if files |> List.exists same then
+        files |> List.skipWhile (same >> not) |> List.skip 1
+    else
+        files
+
 /// The gate itself: fire on contained declarations always, on any
 /// declaration when the caller opted into API changes — except beside a
 /// signature file, where only a private declaration can change shape
@@ -214,10 +247,17 @@ let isInScopeWithSignatureEdits
 /// vacuously and the edit would break them (found the hard way: currying
 /// SQLProvider.Common's public QueryFactory.createRelated broke
 /// SQLProvider.Runtime).
+///
+/// Exported is the public remainder, and it is not a scan the analyzer
+/// may open on its own: the host opens it only after READING every
+/// compilation that can see this one — the sibling projects of the same
+/// solution, typechecked and their uses indexed (see `Outside`) — so
+/// that "every use covered" is once more a statement about every use.
 [<RequireQualifiedAccess>]
 type Scope =
     | Private
     | Assembly
+    | Exported
 
 /// Does a definition with this accessibility, at this path, belong to the
 /// given scan?
@@ -234,3 +274,50 @@ let scopeMatches (scope: Scope) (path: SyntaxNode list) (accessibility: SynAcces
          | Some(SynAccess.Private _) -> false
          | _ -> true)
         && isConfined path [ accessibility ]
+    | Scope.Exported -> not (isConfined path [ accessibility ])
+
+/// What the HOST knows about the compilations OUTSIDE the one being
+/// analyzed, for the rules that rewrite a declaration and every one of its
+/// call sites (FR0090/FR0091).
+///
+/// A declaration's callers are not all in its own project. A `#load`ing
+/// script compiles the file into itself and sees its internals; a sibling
+/// project of the same solution — the test project, typically — sees its
+/// public declarations, and its internal ones too once InternalsVisibleTo
+/// names it. None of those calls appear in the project's own symbol
+/// tables, and the per-project verification build does not compile the
+/// caller either (a solution's projects are processed in turn, not in
+/// dependency order), so a definition reshaped behind such a caller's back
+/// broke it with nothing to say so. The host that can read those
+/// compilations says here what it read; a rule reshapes a declaration only
+/// as far as the reading reaches, and withholds the rest.
+type Outside =
+    {
+        /// Uses of a symbol in those other compilations, matched to the
+        /// declaration rather than the name (a referenced assembly can
+        /// carry the same full name). Their files must be renderable
+        /// through the rule's file lookup, or the rule stands down.
+        Uses: FSharpSymbol -> FSharpSymbolUse[]
+        /// Has every compilation that can reach this assembly's PUBLIC
+        /// declarations been read — every referencing project of the run
+        /// an F# project that typechecked, no script `#r`ing the built
+        /// assembly? False whenever the host cannot say: a run with no
+        /// solution to enumerate, a referencing C# project, a sibling with
+        /// errors. Public declarations then keep their shape. A thunk: the
+        /// answer costs the host a reading of every referencing project,
+        /// asked only once a candidate exists.
+        PublicRead: unit -> bool
+        /// Has the compilation of the assembly with this name — a friend the
+        /// project names in InternalsVisibleTo — been read? Internal
+        /// declarations of an assembly with friends are reshaped only when
+        /// every friend answers yes.
+        AssemblyRead: string -> bool
+    }
+
+/// The host that has read nothing beyond the compilation itself, which is
+/// every editor host and a script target: internal declarations reshape
+/// as before, public ones never.
+let unknownOutside =
+    { Uses = (fun _ -> [||])
+      PublicRead = (fun () -> false)
+      AssemblyRead = (fun _ -> false) }
