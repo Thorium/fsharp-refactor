@@ -6,6 +6,7 @@ module FSharp.Refactor.Tests.ApiChangesTests
 open System
 open System.IO
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Text
 open FSharp.Refactor
 open Xunit
@@ -276,13 +277,13 @@ let private withScriptCallSite (defSource: string) (useSource: string) (scriptSo
                     StringComparison.OrdinalIgnoreCase
                 ))
 
-        let fullName (s: FSharp.Compiler.Symbols.FSharpSymbol) =
+        let fullName (s: FSharpSymbol) =
             try
                 Some s.FullName
             with _ ->
                 None
 
-        let extraUses (symbol: FSharp.Compiler.Symbols.FSharpSymbol) =
+        let extraUses (symbol: FSharpSymbol) =
             match fullName symbol with
             | Some name -> scriptUses |> Array.filter (fun u -> fullName u.Symbol = Some name)
             | None -> [||]
@@ -487,7 +488,7 @@ let private withSiblingProject
             testProject.Diagnostics
             |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
 
-        Assert.True(Array.isEmpty testErrors, sprintf "the test project should typecheck: %A" testErrors)
+        Assert.True(Array.isEmpty testErrors, $"the test project should typecheck: %A{testErrors}")
 
         // the sibling's uses, in its own files only
         let siblingUses =
@@ -500,7 +501,7 @@ let private withSiblingProject
                     StringComparison.OrdinalIgnoreCase
                 ))
 
-        let fullName (s: FSharp.Compiler.Symbols.FSharpSymbol) =
+        let fullName (s: FSharpSymbol) =
             try
                 Some s.FullName
             with _ ->
@@ -508,7 +509,7 @@ let private withSiblingProject
 
         // matched by declaration POSITION, as the tool does: both
         // compilations read the same source file
-        let sameDeclaration (a: FSharp.Compiler.Symbols.FSharpSymbol) (b: FSharp.Compiler.Symbols.FSharpSymbol) =
+        let sameDeclaration (a: FSharpSymbol) (b: FSharpSymbol) =
             match a.DeclarationLocation, b.DeclarationLocation with
             | Some ra, Some rb ->
                 ra.StartLine = rb.StartLine

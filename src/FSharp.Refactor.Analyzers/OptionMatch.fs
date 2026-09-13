@@ -140,6 +140,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
+        // an argument the compiler quotes into a LINQ expression tree
+        // (SqlHydra's `where (cityFilter.IsSome && a.City = cityFilter.Value)`)
+        // is read by shape by its receiver: nothing is rewritten there
+        let inExpressionTree = ExpressionTree.gate check source
+
         // is `name` rebound anywhere inside `r` (lambda parameter, let,
         // match clause, loop pattern)? substituting under a shadow would
         // change which value the binder refers to
@@ -183,6 +188,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                   // shape IS what the quotation's translator recognizes
                   && not (insideQuotedCode path)
                   && isSingleLine expr.Range
+                  && not (inExpressionTree path expr.Range)
                   // only the OUTERMOST chain node; inner nodes re-visit it
                   && (match path with
                       | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent parentOp))) :: _
@@ -241,6 +247,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                   | _ -> ()
               | SynExpr.IfThenElse(ifExpr = OptionTest(x, negated); thenExpr = t; elseExpr = els; trivia = trivia) when
                   not (trivia.IsElif || insideQuotedCode path)
+                  && not (inExpressionTree path expr.Range)
                   ->
                   let someArm, noneArm = if negated then els, Some t else Some t, els
 

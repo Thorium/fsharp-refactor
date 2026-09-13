@@ -495,7 +495,11 @@ let find
                                          |> List.forall (fun u ->
                                              // no self-recursion
                                              if
-                                                 System.IO.Path.GetFullPath(u.Range.FileName).ToLowerInvariant() = thisFile
+                                                 System.String.Equals(
+                                                     System.IO.Path.GetFullPath u.Range.FileName,
+                                                     thisFile,
+                                                     System.StringComparison.OrdinalIgnoreCase
+                                                 )
                                                  && Range.rangeContainsRange binding.RangeOfBindingWithRhs u.Range
                                              then
                                                  false

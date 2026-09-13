@@ -194,6 +194,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                   && isSingleLine binding.RangeOfBindingWithRhs
                   // the binder must appear only as the scrutinee
                   && not (mentionedInside index lou.Body.Range scrutinee.idRange binder.idText)
+                  // ...and the source text agrees: a mention in a shape the
+                  // index does not descend into (SageFs's Mcp.fs kept it in
+                  // anonymous-record fields of two arms) would dangle once
+                  // the binding is gone, so every later word of the match
+                  // is read as well — the guards, the arm bodies, all of it
+                  && not (
+                      mentionsIdentifier
+                          (textOfRange
+                              source
+                              (Range.mkRange lou.Body.Range.FileName scrutinee.idRange.End lou.Body.Range.End))
+                          binder.idText
+                  )
                   ->
                   let letLine = binding.RangeOfBindingWithRhs.StartLine
                   // a BANG binding's range INCLUDES the `let!` keyword

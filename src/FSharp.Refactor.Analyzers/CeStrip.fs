@@ -145,6 +145,33 @@ let rec private terminalExpr (e: SynExpr) =
     | LetOrUseE lou when not lou.IsBang -> terminalExpr lou.Body // a plain `use` is walked THROUGH: the terminal sits past it
     | e -> e
 
+/// The builder of the computation expression a statement sits in: the
+/// nearest `{ }` on the path and the identifier applied to it.
+[<TailCall>]
+let rec private enclosingBuilder (path: SyntaxNode list) : string option =
+    match path with
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.Ident builder)) :: _ ->
+        Some builder.idText
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: _ -> None
+    | _ :: rest -> enclosingBuilder rest
+    | [] -> None
+
+/// Does `return! inner { return v }` in a CE of `outer` mean `return v`?
+/// Only where the outer builder's `return!` hands the inner computation's
+/// result through unchanged: FSharp.Core's `task`/`backgroundTask` accept a
+/// `Task<'T>` or an `Async<'T>` and yield `'T`; `async` accepts an
+/// `Async<'T>`. Any other builder may route `return!` through a `Source`
+/// or `ReturnFrom` overload that converts — FsToolkit's
+/// `cancellableTaskResult { return! async { return Choice1Of2 x } }` turns
+/// the Choice into a Result on the way, and `return Choice1Of2 x` is a
+/// type error there; where the types happen to coincide the strip silently
+/// bypasses the overload under test. Withheld for every name not listed.
+let private returnBangPassesThrough (outer: string option) (inner: string) =
+    match outer with
+    | Some("task" | "backgroundTask") -> inner = "task" || inner = "backgroundTask" || inner = "async"
+    | Some "async" -> inner = "async"
+    | _ -> false
+
 /// `Async.RunSynchronously`
 [<return: Struct>]
 let private (|RunSynchronously|_|) (e: SynExpr) =
@@ -206,7 +233,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     let collector =
         { new SyntaxCollectorBase() with
-            override _.WalkExpr(_path, expr) =
+            override _.WalkExpr(path, expr) =
                 match expr with
                 // async { return e } |> Async.RunSynchronously
                 | PipeApp(ReturnOnly returned, RunSynchronously)
@@ -231,12 +258,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         (sprintf "Task.FromResult(%s)" (textOfRange source returned.Range))
                         StripKind.TaskFromResult
                 // return! task { <single return statement> } — the wrapper
-                // machine is a no-op; the inner statement IS the arm
+                // machine is a no-op; the inner statement IS the arm. Only
+                // inside a builder known to pass the inner result through
+                // unchanged (see returnBangPassesThrough)
                 | SynExpr.YieldOrReturnFrom(
                     expr = SynExpr.App(funcExpr = SynExpr.Ident builder; argExpr = SynExpr.ComputationExpr(expr = inner))) when
-                    (builder.idText = "task"
-                     || builder.idText = "async"
-                     || builder.idText = "backgroundTask")
+                    returnBangPassesThrough (enclosingBuilder path) builder.idText
                     && (match inner with
                         | SynExpr.YieldOrReturn _
                         | SynExpr.YieldOrReturnFrom _ -> true

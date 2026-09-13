@@ -56,7 +56,38 @@ let private valueBinder (p: SynPat) =
         ValueSome(id, acc)
     | _ -> ValueNone
 
-let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+/// Names that appear as a bare identifier PATTERN anywhere in the tree.
+/// `match s with | greeting -> ...` binds today; once `greeting` carries
+/// [<Literal>] the same pattern MATCHES THE CONSTANT — it compiles, and
+/// the behavior silently changes. Local `let greeting = ...` binders are
+/// patterns too and would turn into partial matches (FS3190, an error,
+/// for a lowercase literal). Either parse shape a lone identifier takes.
+let private patternIdents (index: AstIndex.Index) =
+    [ for _, p in index.Pats do
+          match p with
+          | SynPat.Named(ident = SynIdent(ident = id))
+          | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
+              id.idText, id.idRange
+          | _ -> () ]
+
+/// The names ANOTHER file of the compilation binds as bare patterns — the
+/// host's half of the cross-file veto (Analyzers.patternBoundInSibling):
+/// `let lat = 13.067439` in TestData.fs and `let! lat = validLatR` in
+/// Result.fs of the same project is FS3190 the moment `lat` is a literal.
+let patternBoundNames (parseTree: ParsedInput) : Set<string> =
+    patternIdents (AstIndex.ofTree parseTree) |> List.map fst |> Set.ofList
+
+/// `find` with the cross-file question answered by the host: does any OTHER
+/// source file of the compilation bind `name` as a bare pattern? Asked only
+/// for a binding another file can see — a `private` one is invisible
+/// outside its module, so its name cannot clash there. The host answers
+/// "yes" for a sibling it cannot read (fail closed).
+let findWith
+    (boundAsPatternElsewhere: string -> bool)
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Suggestion list =
     // the companion signature is carried along, not a reason to stand down:
     // its `val` gains the attribute and the literal value in the same edit
     // set, or — where it cannot be read — the fix is withheld
@@ -68,20 +99,9 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
     | SignatureFile.Read _ ->
         let index = AstIndex.ofTree parseTree
 
-        // Names that appear as a bare identifier PATTERN anywhere in the file.
-        // `match s with | greeting -> ...` binds today; once `greeting` carries
-        // [<Literal>] the same pattern MATCHES THE CONSTANT — it compiles, and
-        // the behavior silently changes. Local `let greeting = ...` binders are
-        // patterns too and would turn into partial matches. Any same-named bare
-        // pattern (either parse shape a lone identifier takes) other than the
-        // candidate's own binder vetoes the annotation.
-        let patternIdents =
-            [ for _, p in index.Pats do
-                  match p with
-                  | SynPat.Named(ident = SynIdent(ident = id))
-                  | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-                      id.idText, id.idRange
-                  | _ -> () ]
+        // any same-named bare pattern in this file other than the
+        // candidate's own binder vetoes the annotation
+        let patternIdents = patternIdents index
 
         let vetoed (id: Ident) =
             patternIdents
@@ -110,11 +130,15 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                               kw.StartColumn = 0
                               || (source.GetLineString(kw.StartLine - 1)).Substring(0, kw.StartColumn).Trim() = ""
 
-                          if ownLine then
+                          let declaredPrivately = Visibility.isPrivate path [ access; patAccess ]
+
+                          // a binding another file can see is asked about
+                          // there too: the same veto, project-wide
+                          let clashesElsewhere = not declaredPrivately && boundAsPatternElsewhere id.idText
+
+                          if ownLine && not clashesElsewhere then
                               let indent = String.replicate kw.StartColumn " "
                               let at = Position.mkPos kw.StartLine 0
-
-                              let declaredPrivately = Visibility.isPrivate path [ access; patAccess ]
 
                               match
                                   SignatureFile.literalEdits
@@ -132,3 +156,8 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                       | _ -> ()
                   | _ -> ()
               | _ -> () ]
+
+/// `findWith` for a caller with no other files to ask — a lone script, or
+/// a test over one source string. Only this file's patterns veto.
+let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+    findWith (fun _ -> false) allowApiChanges parseTree source

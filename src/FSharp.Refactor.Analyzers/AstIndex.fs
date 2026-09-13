@@ -65,6 +65,13 @@ let private objExprMemberBindings (e: SynExpr) : SynBinding list =
 let private setChildren (e: SynExpr) : SynExpr list =
     match e with
     | SynExpr.Set(targetExpr = target; rhsExpr = rhs) -> [ target; rhs ]
+    // an anonymous record's copy source and field values are the same
+    // hole: the walker visits `{| r with X = f v |}` and none of r, f or
+    // v (found the hard way: FR0073 collapsed a `let! r` whose only other
+    // uses were `{| message = format r |}` fields in the match arms)
+    | SynExpr.AnonRecd(copyInfo = copy; recordFields = fields) ->
+        (copy |> Option.map fst |> Option.toList)
+        @ (fields |> List.map (fun (_, _, value) -> value))
     | SynExpr.MatchBang(expr = scrutinee; clauses = cs) ->
         scrutinee
         :: (cs

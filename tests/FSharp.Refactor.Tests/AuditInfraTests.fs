@@ -212,6 +212,7 @@ let private withConfig (json: string) (source: string) (analyzer: CliContext -> 
 let private codes (messages: Message list) =
     messages |> List.map (fun m -> m.Code) |> List.distinct |> List.sort
 
+[<Literal>]
 let private secretsSource =
     "[<Literal>]\nlet designTime = \"Data Source=157.24.1.223;User Id=sa;Password=Password12!; Initial Catalog=sqlprovider;TrustServerCertificate=true;\"\nlet leaked = \"Data Source=db.corp.example.com;Initial Catalog=x;User Id=sa;Password=W3lf0rd9Prod\"\n"
 
@@ -236,6 +237,7 @@ let ``FR0127 false keeps the FR0153 design-time note`` () =
         codes (withConfig """{ "rules": { "FR0127": false } }""" secretsSource Analyzers.secretsCliAnalyzer)
     )
 
+[<Literal>]
 let private asyncSource =
     "let work () = async { return 1 }\nlet discard (comp: Async<int>) = comp |> ignore\nlet run () =\n    async {\n        while true do\n            let! _ = work ()\n            ()\n    }\n    |> Async.Start\n"
 
@@ -277,6 +279,7 @@ let ``--codes FR0149 brings FR0149 back on its own`` () =
     finally
         Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", null)
 
+[<Literal>]
 let private useSource =
     "open System.IO\nopen System.Threading\nopen System.Threading.Tasks\nlet read (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let b = stream.ReadByte()\n    b + 1\nlet start () =\n    use cts = new CancellationTokenSource()\n\n    task {\n        do! Task.Delay(1000, cts.Token)\n        return 1\n    }\n"
 

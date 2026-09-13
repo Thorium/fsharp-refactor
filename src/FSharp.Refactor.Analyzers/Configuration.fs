@@ -622,11 +622,11 @@ let parameterBool (analyzedFile: string) (code: string) (analyzerName: string) (
 /// wait to be told. An empty map (the IDE, or a build that compiled nothing
 /// because it was already up to date) simply means no site is known.
 let private dynamicFallback =
-    System.Collections.Concurrent.ConcurrentDictionary<string, Set<int>>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, Set<int>>(StringComparer.OrdinalIgnoreCase)
 
 let setDynamicFallbackSites (sites: (string * int) seq) =
     for file, line in sites do
-        let key = System.IO.Path.GetFullPath file
+        let key = Path.GetFullPath file
 
         dynamicFallback.AddOrUpdate(key, Set.singleton line, (fun _ existing -> existing.Add line))
         |> ignore
@@ -635,7 +635,7 @@ let setDynamicFallbackSites (sites: (string * int) seq) =
 let dynamicFallbackLines (analyzedFile: string) : Set<int> =
     let key =
         try
-            System.IO.Path.GetFullPath analyzedFile
+            Path.GetFullPath analyzedFile
         with _ -> // fsharpanalyzer: ignore-line FR0055
             analyzedFile
 
@@ -646,20 +646,20 @@ let dynamicFallbackLines (analyzedFile: string) : Set<int> =
 /// The repository root above a file: the nearest ancestor holding `.git` or
 /// a solution. None when the file is not inside one.
 let private repositoryRoot (analyzedFile: string) =
-    let rec up (dir: System.IO.DirectoryInfo) =
+    let rec up (dir: DirectoryInfo) =
         if isNull dir then
             None
         elif
-            System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, ".git"))
-            || System.IO.File.Exists(System.IO.Path.Combine(dir.FullName, ".git"))
-            || System.IO.Directory.EnumerateFiles(dir.FullName, "*.sln*") |> Seq.isEmpty |> not
+            Directory.Exists(Path.Combine(dir.FullName, ".git"))
+            || File.Exists(Path.Combine(dir.FullName, ".git"))
+            || Directory.EnumerateFiles(dir.FullName, "*.sln*") |> Seq.isEmpty |> not
         then
             Some dir.FullName
         else
             up dir.Parent
 
     try
-        up (System.IO.FileInfo(System.IO.Path.GetFullPath analyzedFile).Directory)
+        up (FileInfo(Path.GetFullPath analyzedFile).Directory)
     with _ -> // fsharpanalyzer: ignore-line FR0055
         None
 
@@ -667,7 +667,7 @@ let private repositoryRoot (analyzedFile: string) =
 /// `.fs`/`.fsx` whose path names a test (`isTestSourcePath`), build output
 /// excluded.
 let private testSources =
-    System.Collections.Concurrent.ConcurrentDictionary<string, (string * string)[]>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, (string * string)[]>(StringComparer.OrdinalIgnoreCase)
 
 /// A path below the root, forward-slashed and in its own case, for the "is
 /// this a test file" question. Asked of the ABSOLUTE path, a repository
@@ -712,7 +712,7 @@ let isTestSourcePath (relativePath: string) =
             || not (Char.IsLetterOrDigit segment.[j])
             || (Char.IsUpper segment.[j] && not (Char.IsUpper segment.[j - 1])))
 
-    relativePath.Replace('\\', '/').Split('/')
+    relativePath.Replace('\\', '/').Split '/'
     |> Array.exists (fun segment ->
         testWords
         |> List.exists (fun word ->
@@ -731,7 +731,7 @@ let private readTestSources (root: string) =
         root,
         fun root ->
             try
-                System.IO.Directory.EnumerateFiles(root, "*.fs*", System.IO.SearchOption.AllDirectories)
+                Directory.EnumerateFiles(root, "*.fs*", SearchOption.AllDirectories)
                 |> Seq.filter (fun p ->
                     let lower = relativeLower root p
 
@@ -744,7 +744,7 @@ let private readTestSources (root: string) =
                     ))
                 |> Seq.choose (fun p ->
                     try
-                        Some(p, System.IO.File.ReadAllText p)
+                        Some(p, File.ReadAllText p)
                     with _ -> // fsharpanalyzer: ignore-line FR0055
                         None)
                 |> Array.ofSeq
@@ -767,14 +767,14 @@ let testFilesMentioning (analyzedFile: string) (literal: string) : (string * str
         // throws the text is the one place this scan is asked about
         let self =
             try
-                System.IO.Path.GetFullPath analyzedFile
+                Path.GetFullPath analyzedFile
             with _ -> // fsharpanalyzer: ignore-line FR0055
                 analyzedFile
 
         readTestSources root
         |> Array.filter (fun (path, text) ->
             text.Contains literal
-            && not (String.Equals(System.IO.Path.GetFullPath path, self, StringComparison.OrdinalIgnoreCase)))
+            && not (String.Equals(Path.GetFullPath path, self, StringComparison.OrdinalIgnoreCase)))
         |> List.ofArray
 
 /// The string literals thrown by `failwith` in the repository's PRODUCTION
@@ -784,7 +784,7 @@ let testFilesMentioning (analyzedFile: string) (literal: string) : (string * str
 /// asks the question the other way round - is the text I pin a production
 /// throw at all? - which gives the same answer whichever project goes first.
 let private productionThrows =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string list>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, string list>(StringComparer.OrdinalIgnoreCase)
 
 let productionFailwithLiterals (analyzedFile: string) : string list =
     match repositoryRoot analyzedFile with
@@ -798,7 +798,7 @@ let productionFailwithLiterals (analyzedFile: string) : string list =
                     let pattern =
                         System.Text.RegularExpressions.Regex(@"\bfailwith\s+(""(?:[^""\\]|\\.)*"")")
 
-                    System.IO.Directory.EnumerateFiles(root, "*.fs", System.IO.SearchOption.AllDirectories)
+                    Directory.EnumerateFiles(root, "*.fs", SearchOption.AllDirectories)
                     |> Seq.filter (fun p ->
                         let lower = relativeLower root p
 
@@ -810,7 +810,7 @@ let productionFailwithLiterals (analyzedFile: string) : string list =
                         ))
                     |> Seq.collect (fun p ->
                         try
-                            pattern.Matches(System.IO.File.ReadAllText p)
+                            pattern.Matches(File.ReadAllText p)
                             |> Seq.map (fun m -> m.Groups.[1].Value)
                         with _ -> // fsharpanalyzer: ignore-line FR0055
                             Seq.empty)

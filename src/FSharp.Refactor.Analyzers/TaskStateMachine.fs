@@ -535,7 +535,7 @@ let find
                           && not (spansMultiLineLiteral index e.Range.StartLine e.Range.EndLine)
                           ->
                           [ e, starts ]
-                      | _ -> arms |> List.collect (fun arm -> hoistSites (closingOf arm))
+                      | _ -> arms |> List.collect (closingOf >> hoistSites)
 
               for site, leaves in hoistSites (closingOf body) do
                   let positions = leaves |> List.map (fun (l, c, _) -> l, c) |> Set.ofList

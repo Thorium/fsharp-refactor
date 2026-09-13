@@ -74,6 +74,11 @@ type Destination =
     /// a watcher, a listener, an event it raises that the scope subscribed
     /// to, a callback it was constructed with — which `use` would stop
     | SelfActive
+    /// a Task- or Async-returning member of it was called and the result
+    /// dropped (`|> ignore`, a bare statement, `Async.Start`): that work
+    /// may still be running when the scope exits, on a receiver `use`
+    /// would have disposed
+    | InFlight of memberName: string
     /// the binding sits in a computation expression whose builder defines
     /// no `Using`, so `use` cannot bind it there (FS0708)
     | NoBuilderUsing
@@ -110,6 +115,8 @@ let describeEscape (s: Suggestion) =
         "the scope's result reads it, so it may still be needed after the scope exits (a task, a sequence, an object tied to it)"
     | Some Destination.SelfActive ->
         "it does work of its own after the scope returns (a timer, a watcher, a listener, an event it raises, a callback it was built with), which 'use' would stop"
+    | Some(Destination.InFlight m) ->
+        $"the result of its '%s{m}' call is dropped rather than awaited, so that work may still be running when the scope exits, and 'use' would dispose it underneath"
     | Some Destination.NoBuilderUsing ->
         "it sits in a computation expression whose builder defines no 'Using', so 'use' cannot bind it there"
     | Some Destination.Unknown
@@ -261,14 +268,18 @@ let private adoptedResourceBases =
 /// to it — a `use` there closed the stream under the caller; a
 /// `LineSource(stream: Stream)` wrapping its constructor parameter in a
 /// StreamReader per call closed the shared stream after the first line.
-/// Only a value the SAME scope constructed (`isLocal`) is the scope's own:
-/// a parameter, a constructor parameter, a class `let` field, a
-/// module-level value, an outer binding or a property read is foreign.
-/// Such a wrapper is not this scope's to dispose.
+/// Only a value the SAME scope constructed AND keeps (`ownedHere`) is the
+/// scope's own: a parameter, a constructor parameter, a class `let` field,
+/// a module-level value, an outer binding or a property read is foreign —
+/// and so is a local that escapes the scope (Giraffe's tests build a
+/// MemoryStream, wrap it in a StreamWriter, store it in
+/// `ctx.Request.Body` and return a `task { }` that reads it: a `use` on
+/// the writer closed the request body before the task ran). Such a
+/// wrapper is not this scope's to dispose.
 let private wrapsForeignResource
     (check: FSharpCheckFileResults)
     (source: ISourceText)
-    (isLocal: string -> bool)
+    (ownedHere: string -> bool)
     (rhs: SynExpr)
     =
     let arguments (args: SynExpr) =
@@ -292,7 +303,7 @@ let private wrapsForeignResource
 
     let foreign (arg: SynExpr) =
         match unwrapped arg with
-        | SynExpr.Ident id -> resourceLike id && not (isLocal id.idText)
+        | SynExpr.Ident id -> resourceLike id && not (ownedHere id.idText)
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> resourceLike (List.last ids)
         | _ -> false
 
@@ -925,6 +936,164 @@ let rec private resultsLoop (acc: SynExpr list) (pending: SynExpr list) =
         | SynExpr.ForEach _ -> resultsLoop acc rest
         | other -> resultsLoop (other :: acc) rest
 
+/// Is a mention at `path` one that runs LATER than the scope of the
+/// binding at `binding` (whose body is `body`): inside a lambda, a local
+/// function, an object expression, a `lazy`, or a computation expression
+/// that starts after the binding (a `task { }` the function returns)?
+/// suave's ConnectionHealthChecker kept its CancellationTokenSource in a
+/// returned task's loop, and Proxy.fs its TcpListener in a `let rec loop
+/// () = task { ... }`: a `use` there disposed the value before the
+/// closure ran, and every health check died on its first cycle.
+let private runsAfter (binding: range) (body: range) (path: SyntaxNode list) =
+    path
+    |> List.exists (fun node ->
+        match node with
+        | SyntaxNode.SynExpr(SynExpr.Lambda _)
+        | SyntaxNode.SynExpr(SynExpr.ObjExpr _)
+        // a `lazy` body runs when the caller forces it
+        | SyntaxNode.SynExpr(SynExpr.Lazy _) -> true
+        | SyntaxNode.SynExpr(SynExpr.ComputationExpr(range = r)) ->
+            // the scope's OWN computation contains the binding; one that
+            // starts inside it is deferred
+            not (Range.rangeContainsRange r binding)
+        | SyntaxNode.SynBinding(SynBinding(headPat = headPat; range = r)) ->
+            Range.rangeContainsRange body r
+            && (match headPat with
+                | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> true
+                | _ -> false)
+        | _ -> false)
+
+/// Is a mention at `path` returned inside a tuple, a record, an upcast or
+/// a union case that is the scope's result (`isResult`)? Still the
+/// caller's (suave's `(port, cts)`, Mibo's `(node :> IDisposable, node :>
+/// aset<'B>)` and `{ Vertices = vb; ... }`).
+let private returnedThroughTo check source (isResult: range -> bool) (path: SyntaxNode list) =
+    path
+    |> Seq.map (fun node ->
+        match node with
+        | SyntaxNode.SynExpr(SynExpr.Paren _ | SynExpr.Typed _ | SynExpr.Upcast _ | SynExpr.InferredUpcast _ | SynExpr.Tuple _ | SynExpr.Record _ | SynExpr.AnonRecd _ as e) ->
+            Some e
+        | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f) as e) when isUnionCase check source f -> Some e
+        | _ -> None)
+    |> Seq.takeWhile Option.isSome
+    |> Seq.exists (fun e -> isResult e.Value.Range)
+
+/// Types whose value is work in progress: a Task or ValueTask is running
+/// from the moment the member returns it; an Async runs once started.
+let private pendingTypes =
+    set
+        [ "System.Threading.Tasks.Task"
+          "System.Threading.Tasks.Task`1"
+          "System.Threading.Tasks.ValueTask"
+          "System.Threading.Tasks.ValueTask`1"
+          "Microsoft.FSharp.Control.FSharpAsync`1" ]
+
+/// Does the member return pending work — and is it already running when
+/// returned (a Task) or not until started (an Async)? ValueNone for any
+/// other return type, or unresolved.
+let private pendingKind (check: FSharpCheckFileResults) (source: ISourceText) (memberId: Ident) =
+    match symbolAt check source memberId with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            let t = OptionModule.stripAbbreviations value.ReturnParameter.Type
+
+            match
+                (if t.HasTypeDefinition then
+                     t.TypeDefinition.TryFullName
+                 else
+                     None)
+            with
+            | Some n when pendingTypes.Contains n -> ValueSome(not (n.StartsWith "Microsoft.FSharp.Control."))
+            | _ -> ValueNone
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             ValueNone)
+    | _ -> ValueNone
+
+/// The last two segments of a callee's name (`Async.AwaitTask`, `ignore`),
+/// through parens and type applications; empty for anything else.
+[<TailCall>]
+let rec private shortName (e: SynExpr) =
+    match e with
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.TypeApp(expr = inner) -> shortName inner
+    | SynExpr.Ident id -> id.idText
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+        ids
+        |> List.map (fun i -> i.idText)
+        |> List.rev
+        |> List.truncate 2
+        |> List.rev
+        |> String.concat "."
+    | _ -> ""
+
+/// A `x.Member(...)` mention at `path` whose Task/ValueTask/Async result
+/// is DROPPED while the work runs — `|> ignore`, `|> Async.AwaitTask |>
+/// ignore`, a bare statement of Task type, `Async.Start` — is
+/// fire-and-forget on the receiver: the work may still be running at
+/// scope exit, where `use` would dispose it underneath (FsCheck's Runner
+/// test calls `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`). An
+/// awaited, bound, `.Wait()`ed or `Async.RunSynchronously`'d result is
+/// finished before the scope ends. The member's name, when so.
+let private discardedPending
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (path: SyntaxNode list)
+    (e: SynExpr)
+    =
+    match e with
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = _ :: (_ :: _ as members))) when invokedAt path e.Range ->
+        let last = List.last members
+
+        match pendingKind check source last with
+        | ValueSome started ->
+            // the application node the mention is the function of, and
+            // the path above it
+            let rec application (path: SyntaxNode list) (inner: range) =
+                match path with
+                | SyntaxNode.SynExpr(SynExpr.TypeApp(range = r)) :: rest -> application rest r
+                | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; range = r)) :: rest when
+                    Range.rangeContainsRange f.Range inner
+                    ->
+                    Some(r, rest)
+                | _ -> None
+
+            // where the value at `r` goes: dropped, or handed on still pending
+            let rec dropped (started: bool) (r: range) (path: SyntaxNode list) =
+                match path with
+                | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr)) :: rest ->
+                    dropped started pr rest
+                // a bare statement: only a running task is work in flight
+                | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a)) :: _ -> started && a.Range = r
+                | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op; argExpr = a)) :: SyntaxNode.SynExpr(SynExpr.App(
+                    isInfix = false; argExpr = callee; range = outer)) :: rest when
+                    operatorName op = "op_PipeRight" && a.Range = r
+                    ->
+                    consumer started (shortName callee) outer rest
+                | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a; range = outer)) :: rest when
+                    Range.rangeContainsRange a.Range r
+                    ->
+                    consumer started (shortName f) outer rest
+                | _ -> false
+
+            and consumer (started: bool) (name: string) (outer: range) (rest: SyntaxNode list) =
+                match name with
+                | "ignore" -> started
+                | "Async.Start"
+                | "Async.StartImmediate" -> true
+                // still pending, whatever happens next
+                | "Async.AwaitTask"
+                | "Async.Ignore"
+                | "Async.Catch" -> dropped started outer rest
+                | "Async.StartAsTask"
+                | "Async.StartChild" -> dropped true outer rest
+                | _ -> false
+
+            match application path e.Range with
+            | Some(r, rest) when dropped started r rest -> Some last.idText
+            | _ -> None
+        | ValueNone -> None
+    | _ -> None
+
 /// Find leaked local disposables. Requires typed check results for the
 /// IDisposable gate.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
@@ -997,11 +1166,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                | _ -> false)
                        | _ -> false))
 
-        // the names the enclosing scope (a member, a function, a lambda, a
-        // computation) constructs itself: a wrapper over one of these is
-        // the scope's own to dispose. A construction outside the lambda
-        // is shared by every call of it, so it counts as foreign there
-        let localConstructions (declPath: SyntaxNode list) =
+        // the binding of `local` that the enclosing scope (a member, a
+        // function, a lambda, a computation) constructs itself, in whose
+        // body the wrapper binding at `wrapper` sits — the innermost such.
+        // A construction outside the lambda is shared by every call of it,
+        // so it counts as foreign there
+        let localConstructionOf (declPath: SyntaxNode list) (wrapper: range) (local: string) =
             let scope =
                 declPath
                 |> List.tryPick (fun node ->
@@ -1013,21 +1183,82 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | _ -> None)
 
             index.Exprs
-            |> Array.collect (fun (_, e) ->
+            |> Array.choose (fun (_, e) ->
                 match e with
                 | LetOrUseE inner when
                     not inner.IsBang
+                    && Range.rangeContainsRange inner.Range wrapper
+                    && inner.Range.Start <> wrapper.Start
                     && (scope |> Option.forall (fun r -> Range.rangeContainsRange r inner.Range))
+                    && inner.Bindings
+                       |> List.exists (fun (SynBinding(headPat = p; expr = rhs)) ->
+                           locallyConstructed check source (unwrapped rhs)
+                           && List.contains local (patNames p))
                     ->
-                    inner.Bindings
-                    |> List.collect (fun (SynBinding(headPat = p; expr = rhs)) ->
-                        if locallyConstructed check source (unwrapped rhs) then
-                            patNames p
-                        else
-                            [])
-                    |> Array.ofList
-                | _ -> [||])
-            |> Set.ofArray
+                    Some inner
+                | _ -> None)
+            |> Array.sortByDescending (fun inner -> inner.Range.StartLine, inner.Range.StartColumn)
+            |> Array.tryHead
+
+        // does the local resource a wrapper is built over ESCAPE the scope
+        // — stored beyond it, returned, handed to a function, captured by a
+        // closure or a deferred computation, read by the result — so that
+        // disposing the wrapper, which closes the resource, would pull it
+        // out from under its new owner? The wrapper's own construction
+        // (`construction`, its rhs) is the one mention that is expected; an
+        // invoked member of the local (`stream.Position <- 0L`,
+        // `ms.ToArray()` as a plain-valued result) keeps it here
+        let localResourceEscapes
+            (declPath: SyntaxNode list)
+            (localRange: range)
+            (body: SynExpr)
+            (construction: range)
+            (name: string)
+            =
+            let holders = holdersOn index declPath localRange
+            let results = resultsLoop [] [ body ]
+
+            let isResult (r: range) =
+                results |> List.exists (fun x -> x.Range = r)
+
+            let inLambda = runsAfter localRange body.Range
+            let returnedThrough = returnedThroughTo check source isResult
+
+            index.Exprs
+            |> Array.exists (fun (path, e) ->
+                Range.rangeContainsRange body.Range e.Range
+                && not (Range.rangeContainsRange construction e.Range)
+                && (match e with
+                    | SynExpr.Ident id when id.idText = name ->
+                        inLambda path
+                        || isResult e.Range
+                        || returnedThrough path
+                        || classifyLoop check source holders.Contains e.Range false None path <> Kept
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: (_ :: _ as members))) when
+                        first.idText = name
+                        ->
+                        let last = List.last members
+
+                        inLambda path
+                        || (not (invokedAt path e.Range) && isMethod check source last)
+                        || (results |> List.exists (fun r -> Range.rangeContainsRange r.Range e.Range)
+                            && not (
+                                (invokedAt path e.Range || not (isMethod check source last))
+                                && plainValued check source last
+                            ))
+                    | _ -> false))
+
+        // is the name a resource this scope constructed and keeps: the
+        // scope's own to dispose through the wrapper bound at `wrapper`
+        // (its LetOrUse) and constructed by `construction` (its rhs)? One
+        // already `use`-bound is disposed at scope exit whatever the
+        // wrapper does
+        let ownedHere (declPath: SyntaxNode list) (wrapper: range) (construction: range) (local: string) =
+            match localConstructionOf declPath wrapper local with
+            | Some inner ->
+                inner.IsUse
+                || not (localResourceEscapes declPath inner.Range inner.Body construction local)
+            | None -> false
 
         // the identifiers a local binding's pattern names — the aliases
         // a value reached through the binder can be bound to
@@ -1056,13 +1287,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                       (let rhs = unwrapped rhs
 
                        locallyConstructed check source rhs
-                       && not (
-                           wrapsForeignResource
-                               check
-                               source
-                               (fun local -> (localConstructions declPath).Contains local)
-                               rhs
-                       )
+                       && not (wrapsForeignResource check source (ownedHere declPath expr.Range rhs.Range) rhs)
                        && not (ObjectDesign.ownsNoResource check source rhs))
                       && ObjectDesign.resolvesToDisposable check source binder
                       ->
@@ -1177,50 +1402,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               results |> List.exists (fun x -> x.Range = r)
 
                           // returned inside a tuple, a record, an upcast or a
-                          // union case: still the caller's (suave's `(port, cts)`,
-                          // Mibo's `(node :> IDisposable, node :> aset<'B>)`
-                          // and `{ Vertices = vb; ... }`)
-                          let returnedThrough (path: SyntaxNode list) =
-                              path
-                              |> Seq.map (fun node ->
-                                  match node with
-                                  | SyntaxNode.SynExpr(SynExpr.Paren _ | SynExpr.Typed _ | SynExpr.Upcast _ | SynExpr.InferredUpcast _ | SynExpr.Tuple _ | SynExpr.Record _ | SynExpr.AnonRecd _ as e) ->
-                                      Some e
-                                  | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f) as e) when
-                                      isUnionCase check source f
-                                      ->
-                                      Some e
-                                  | _ -> None)
-                              |> Seq.takeWhile Option.isSome
-                              |> Seq.exists (fun e -> isResult e.Value.Range)
+                          // union case: still the caller's
+                          let returnedThrough = returnedThroughTo check source isResult
 
                           // a mention that runs LATER than the scope: inside a
                           // lambda, a local function, an object expression, or
                           // a computation expression that starts after the
-                          // binding (a `task { }` the function returns). suave's
-                          // ConnectionHealthChecker kept its CancellationTokenSource
-                          // in a returned task's loop, and Proxy.fs its TcpListener
-                          // in a `let rec loop () = task { ... }`: a `use` there
-                          // disposed the value before the closure ran, and every
-                          // health check died on its first cycle
-                          let inLambda (path: SyntaxNode list) =
-                              path
-                              |> List.exists (fun node ->
-                                  match node with
-                                  | SyntaxNode.SynExpr(SynExpr.Lambda _)
-                                  | SyntaxNode.SynExpr(SynExpr.ObjExpr _)
-                                  // a `lazy` body runs when the caller forces it
-                                  | SyntaxNode.SynExpr(SynExpr.Lazy _) -> true
-                                  | SyntaxNode.SynExpr(SynExpr.ComputationExpr(range = r)) ->
-                                      // the scope's OWN computation contains the
-                                      // binding; one that starts inside it is deferred
-                                      not (Range.rangeContainsRange r lou.Range)
-                                  | SyntaxNode.SynBinding(SynBinding(headPat = headPat; range = r)) ->
-                                      Range.rangeContainsRange body.Range r
-                                      && (match headPat with
-                                          | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> true
-                                          | _ -> false)
-                                  | _ -> false)
+                          // binding (a `task { }` the function returns)
+                          let inLambda = runsAfter lou.Range body.Range
 
                           // a `x.Member` mention that is not the function
                           // of an application is a method group handed on
@@ -1332,6 +1521,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                          && (List.last members).idText.StartsWith "Enable"
                                      | _ -> false)
 
+                          // a Task/Async-returning member of the binder called
+                          // and its result dropped (`|> ignore`, `|> Async.AwaitTask
+                          // |> ignore`, a bare statement, `Async.Start`): work
+                          // still running at scope exit, on a receiver `use`
+                          // would dispose under it (FsCheck's Runner test:
+                          // `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`)
+                          let inFlight =
+                              binderMentions
+                              |> Array.tryPick (fun (path, e) -> discardedPending check source path e)
+
                           // `use` inside a computation expression binds to
                           // the builder's Using: `query { }` and a hand-written
                           // builder without one make it an FS0708
@@ -1379,17 +1578,29 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                   (Position.mkPos expr.Range.StartLine (expr.Range.StartColumn + 3))
 
                           if textOfRange source letRange = "let" && not transferred then
-                              let canFix = handedTo.IsNone && not inResult && not selfActive && builderSupportsUse
+                              let canFix =
+                                  handedTo.IsNone
+                                  && not inResult
+                                  && not selfActive
+                                  && inFlight.IsNone
+                                  && builderSupportsUse
 
                               { Range = letRange
                                 Name = name
                                 Fix = if canFix then Some("let", "use") else None
                                 Destination =
-                                  if canFix then None
-                                  elif handedTo.IsSome then handedTo
-                                  elif selfActive then Some Destination.SelfActive
-                                  elif inResult then Some Destination.ReadInResult
-                                  else Some Destination.NoBuilderUsing
+                                  if canFix then
+                                      None
+                                  elif handedTo.IsSome then
+                                      handedTo
+                                  elif selfActive then
+                                      Some Destination.SelfActive
+                                  elif inFlight.IsSome then
+                                      Some(Destination.InFlight inFlight.Value)
+                                  elif inResult then
+                                      Some Destination.ReadInResult
+                                  else
+                                      Some Destination.NoBuilderUsing
                                 Context =
                                   match bindingContext declPath expr.Range with
                                   // a handle the OS reclaims at exit is no loss

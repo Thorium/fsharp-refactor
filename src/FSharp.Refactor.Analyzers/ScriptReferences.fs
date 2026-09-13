@@ -121,12 +121,13 @@ let private parseVersioned (segment: string) =
     else
         None
 
+let private refnetd0Regex = Regex @"[\\/]ref[\\/]net(\d+)\.0[\\/]"
 /// The major version of the SDK the script is checked against, read off
 /// its reference assemblies (`...\ref\net10.0\...`).
 let sdkMajorOf (compilerOptions: string seq) =
     compilerOptions
     |> Seq.tryPick (fun o ->
-        let m = Regex.Match(o, @"[\\/]ref[\\/]net(\d+)\.0[\\/]")
+        let m = refnetd0Regex.Match o
 
         if m.Success then Some(int m.Groups.[1].Value) else None)
 
@@ -386,7 +387,7 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                                   yield
                                       { Range = d.ArgumentRange
                                         OriginalText = textOfRange source d.ArgumentRange
-                                        ReplacementText = "\"" + spec + "\""
+                                        ReplacementText = $"\"{spec}\""
                                         IsNugetReference = true
                                         Message =
                                           $"#r path does not exist and no other folder under the package has it — nothing on disk to re-point to. `#r \"{spec}\"` resolves it from nuget instead; that needs `dotnet fsi` (F# 5+), as the .NET Framework fsi.exe does not resolve package references." }

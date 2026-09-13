@@ -31,6 +31,7 @@ let private expectFix (name: string) (source: string) =
 
 // a disposable with a derived-value surface: a command from a connection,
 // a reader from a command, a method to hand on, an event to subscribe
+[<Literal>]
 let private types =
     "module Test
 open System

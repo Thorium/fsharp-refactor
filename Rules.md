@@ -31,7 +31,7 @@ and its category and default state match the code.
 | FR0020 | Correctness | v | | v | `type B() as this =<br>    do this.Init()<br>    abstract Init: unit -> unit` | — |
 | FR0021 | Performance | v | | | `$"{x.ToString()} items"` | `$"{x} items"` |
 | FR0022 | Idiom | v | v | | `type private Order = \| Line of int * decimal` then `\| Line(qty, price) -> total qty price` | `type private Order = \| Line of qty: int * price: decimal` |
-| FR0023 | Idiom | v | | | `let scale x k = x * k in xs \|> List.map (fun x -> scale x 2)` | `let scale k x = x * k in xs \|> List.map (scale 2)` |
+| FR0023 | Idiom | v | | | `let scale (x: float) (k: int) = x * float k in xs \|> List.map (fun x -> scale x 2)` | `let scale (k: int) (x: float) = x * float k in xs \|> List.map (scale 2)` |
 | FR0024 | Idiom | v | | | `raise (Exception "boom")` | `failwith "boom"` |
 | FR0025 | Idiom | v | | | `if isNull x then None else Some x` | `Option.ofObj x` |
 | FR0026 | Idiom | v | | | `let mutable name = ""<br>member this.Name with get () = name and set v = name <- v` | `member val Name = "" with get, set` |
@@ -274,7 +274,7 @@ Non-public union cases with unnamed tuple fields take the field names the code a
 
 ### FR0023 — idiom
 
-Private two-parameter functions called as `fun x -> f x k` are reordered data-last, all in one fix: the definition swaps to `let private f k x`, direct calls swap their arguments, and the lambda — which under the new order would read `fun x -> f k x` — eta-reduces to the partial application `f k` (`List.map (fun x -> scale x 2)` ends up as `List.map (scale 2)`)
+Private two-parameter functions called as `fun x -> f x k` are reordered data-last, all in one fix: the definition swaps to `let private f k x`, direct calls swap their arguments, and the lambda — which under the new order would read `fun x -> f k x` — eta-reduces to the partial application `f k` (`List.map (fun x -> scale x 2)` ends up as `List.map (scale 2)`). The two parameters must have different types (a swap of two floats compiles either way and reads as a trap ever after: `point y x`), and the direct calls flipped must not outnumber the lambdas collapsed
 
 ### FR0024 — idiom
 
@@ -582,7 +582,7 @@ A match branch that says it is unfinished and then returns a stand-in — `| Jor
 
 ### FR0101 — idiom
 
-The Python `range(len(xs))` loop: `for i in 0 .. xs.Length - 1 do ... xs.[i]` → `for item in xs do ... item`, when the index's every use is indexing that same collection. Fix rewrites the header and each `xs.[i]`/`xs[i]`; an index also used as a value wants `iteri`, which changes shape enough to stay the author's call, and any `xs.[i] <- ...` keeps the loop
+The Python `range(len(xs))` loop: `for i in 0 .. xs.Length - 1 do ... xs.[i]` → `for item in xs do ... item`, when the index's every use is indexing that same collection. Fix rewrites the header and each `xs.[i]`/`xs[i]`; when the body opens with `let name = xs.[i]` and that is the index's only use, the loop variable is `name` and the alias line goes. An index also used as a value wants `iteri`, which changes shape enough to stay the author's call, and any `xs.[i] <- ...` keeps the loop
 
 ### FR0102 — performance
 
@@ -622,7 +622,7 @@ An incomplete DU match with no wildcard (the FS0025 warning shape) gains the mis
 
 ### FR0111 — cosmetic
 
-`else` holding a whole nested `if` flattens to `elif` (fix) — only when the `else` sits at the outer `if`'s column (offside rules for `elif`) and nothing but whitespace separates the keywords
+`else` holding a whole nested `if` flattens to `elif` (fix) — only when the `else` sits at the outer `if`'s column (offside rules for `elif`) and nothing but whitespace separates the keywords. A ladder of them flattens in one pass: one fix per link where the blocks stay put, one fix for the whole ladder where they move left
 
 ### FR0112 — idiom
 
@@ -698,7 +698,7 @@ A when-guard that only equality-tests the clause's own binder against a literal 
 
 ### FR0130 — idiom
 
-A module-level constant binding (string/number/char/bool literal RHS, no attributes) gains `[<Literal>]` (fix): a true CLR const — const-folded at use sites, usable in patterns and attribute arguments. Contained bindings by default (`[<Literal>]` compiles a public field to a const, a binary-compatibility change — `--api-changes` opts in). Local `let`s cannot take attributes, so the rule is module-level by construction Edits the companion .fsi in step: its val gains the attribute and the value
+A module-level constant binding (string/number/char/bool literal RHS, no attributes) gains `[<Literal>]` (fix): a true CLR const — const-folded at use sites, usable in patterns and attribute arguments. Contained bindings by default (`[<Literal>]` compiles a public field to a const, a binary-compatibility change — `--api-changes` opts in). Local `let`s cannot take attributes, so the rule is module-level by construction. Withheld when the name is bound as a bare pattern anywhere it is visible — a match arm, a local `let`, a `let!` — in this file or, for a non-private binding, in any other file of the compilation (a lowercase literal shadowed by a pattern is FS3190: `let lat = 13.067439` in one test file, `let! lat = validLatR` in another); the CLI reads the siblings' parse trees, an editor their text. Edits the companion .fsi in step: its val gains the attribute and the value
 
 ### FR0131 — idiom
 

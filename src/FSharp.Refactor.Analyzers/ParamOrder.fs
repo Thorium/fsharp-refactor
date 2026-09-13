@@ -1,8 +1,8 @@
 /// Refactoring (slide 6, single-file variant): swap a private two-parameter
 /// function to data-last order when call sites show the eta-blocking shape.
 ///
-///     let private scale x k = x * k        let private scale k x = x * k
-///     xs |> List.map (fun x -> scale x 2)  xs |> List.map (scale 2)
+///     let private scale (x: float) (k: int)   let private scale (k: int) (x: float)
+///     xs |> List.map (fun x -> scale x 2)     xs |> List.map (scale 2)
 ///
 /// The lambda `fun x -> f x k` is the tell: the varying value arrives first,
 /// so the call cannot be partially applied. Swapping the parameters makes
@@ -17,7 +17,12 @@
 ///   - every other use is a direct application `f a b` where at least one
 ///     argument is a pure atom (swapping argument evaluation order must be
 ///     unobservable); anything else — partial application, pipe, use as a
-///     value — suppresses the suggestion entirely
+///     value — suppresses the suggestion entirely; and those direct calls
+///     must not outnumber the lambdas collapsed, or the file reads worse
+///     for the swap
+///   - the two parameters have different concrete types: a swap of two
+///     floats compiles either way and reads as a trap ever after
+///     (`point y x`)
 ///   - the file must have no type errors (call shapes are trusted from the
 ///     typed uses)
 module FSharp.Refactor.ParamOrder
@@ -199,8 +204,10 @@ type private Artifacts = Dictionary<int * int, AppSite> * Dictionary<int * int, 
 /// All-or-nothing — one unrewritable use suppresses the whole suggestion,
 /// because a call site left in the old order would not compile against the
 /// swapped definition. At least one eta-blocking lambda must be present, or
-/// the swap is pure churn.
+/// the swap is pure churn — and the direct calls it flips must not
+/// outnumber the lambdas it collapses, or the churn outweighs the gain.
 let private buildSuggestion
+    (vetoChurn: bool)
     (candidate: Candidate)
     (defSource: ISourceText)
     (artifactsFor: string -> Artifacts option)
@@ -236,7 +243,23 @@ let private buildSuggestion
             | Some(true, _) -> 1
             | _ -> 0)
 
-    if lambdaCount = 0 || siteResults |> Array.exists Option.isNone then
+    // direct `f a b` calls that only swap their arguments to keep up
+    let directCount =
+        siteResults
+        |> Array.sumBy (function
+            | Some(false, _) -> 1
+            | _ -> 0)
+
+    // churn: more direct calls rewritten than lambdas collapsed is a file
+    // that reads worse afterwards (svg_path's OverlapsTests: one lambda,
+    // forty `point x y` literals flipped). Only the in-file rule weighs
+    // it: an `--api-changes` reorder is asked for explicitly and its
+    // direct call sites are spread over the project
+    if
+        lambdaCount = 0
+        || (vetoChurn && directCount > lambdaCount)
+        || siteResults |> Array.exists Option.isNone
+    then
         None
     else
         let p1Text = textOfRange defSource candidate.Param1.Range
@@ -263,15 +286,21 @@ let private buildSuggestion
 
 /// Are the two parameters of DIFFERENT concrete types?
 ///
-/// This matters only once the function leaves the project. Inside it, the
-/// all-or-nothing rule is exhaustive: every use is rewritten or nothing is.
-/// Outside it — a public function, or an internal one reached through
-/// InternalsVisibleTo — there are call sites we can neither see nor fix.
-/// With different parameter types those call sites stop COMPILING, which is
-/// a loud, immediate failure the consumer cannot miss. With interchangeable
-/// types (`f (x: string) (y: string)`) they keep compiling and silently
-/// pass their arguments the wrong way round, which is exactly the kind of
-/// invisible breakage this project refuses to cause.
+/// Outside the project — a public function, or an internal one reached
+/// through InternalsVisibleTo — there are call sites we can neither see
+/// nor fix. With different parameter types those call sites stop
+/// COMPILING, which is a loud, immediate failure the consumer cannot miss.
+/// With interchangeable types (`f (x: string) (y: string)`) they keep
+/// compiling and silently pass their arguments the wrong way round, which
+/// is exactly the kind of invisible breakage this project refuses to cause.
+///
+/// Inside the project the all-or-nothing rule is exhaustive, so every use
+/// compiles either way — and that is the problem: with interchangeable
+/// types NOTHING checks the swap, not the compiler and not the next reader.
+/// svg_path's `let private point x y` became `point y x` for the sake of
+/// one lambda, and forty `point 10.0 0.0` literals were flipped into code
+/// that reads as drawing vertical lines. So both variants require distinct
+/// types.
 ///
 /// Generic parameters count as interchangeable: a caller may well have
 /// instantiated both to the same type.
@@ -361,7 +390,7 @@ let findApiChanges
                         Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (outside.Uses symbolUse.Symbol)
                         |> Array.filter (fun u -> not u.IsFromDefinition)
 
-                    buildSuggestion candidate defFile.Source artifactsFor uses
+                    buildSuggestion false candidate defFile.Source artifactsFor uses
                 | Some _ -> None)
 
 /// Find private data-first two-parameter functions with eta-blocking lambda
@@ -386,13 +415,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                 match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ]) with
                 | None -> None
-                | Some symbolUse ->
-                    // a private binding is named only inside this file, so
-                    // its in-file uses are every use there is — no need for
-                    // the distinct-parameter-types guard the API variant
-                    // needs
+                // a private binding is named only inside this file, so its
+                // in-file uses are every use there is; the distinct-types
+                // guard is for the reader, not the compiler (see
+                // hasDistinctParamTypes)
+                | Some symbolUse when hasDistinctParamTypes symbolUse.Symbol ->
                     let uses =
                         check.GetUsesOfSymbolInFile symbolUse.Symbol
                         |> Array.filter (fun u -> not u.IsFromDefinition)
 
-                    buildSuggestion candidate source artifactsFor uses)
+                    buildSuggestion true candidate source artifactsFor uses
+                | Some _ -> None)

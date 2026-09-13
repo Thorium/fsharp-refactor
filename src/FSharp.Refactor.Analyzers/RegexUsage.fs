@@ -325,7 +325,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         let insertAt = Range.mkRange decl.Range.FileName at at
 
         let binding =
-            let bare = sprintf "let private %s = %s" name rhs
+            let bare = $"let private %s{name} = %s{rhs}"
 
             match conditionToKeep source originLine insertAt.StartLine with
             | Some condition -> $"#if {condition}\n{bare}\n#endif"

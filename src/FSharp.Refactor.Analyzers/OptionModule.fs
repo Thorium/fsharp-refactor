@@ -28,6 +28,7 @@
 ///   - non-atomic expressions are parenthesized when inlined
 module FSharp.Refactor.OptionModule
 
+open System.Collections.Generic
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Diagnostics
@@ -328,7 +329,7 @@ let (|FcsSymbolFailure|_|) (e: exn) =
     | :? System.InvalidOperationException
     | :? System.NotSupportedException
     | :? System.ArgumentException
-    | :? System.Collections.Generic.KeyNotFoundException -> ValueSome()
+    | :? KeyNotFoundException -> ValueSome()
     | _ -> ValueNone
 
 /// Follow F# type abbreviations (`string` → System.String) to the real
@@ -464,9 +465,9 @@ let private posOf (id: Ident) =
 
 let declarationEvidence (parseTree: ParsedInput) : DeclarationEvidence =
     let index = AstIndex.ofTree parseTree
-    let annotated = System.Collections.Generic.HashSet<int * int>()
-    let values = System.Collections.Generic.Dictionary<int * int, SynBinding>()
-    let selfIdents = System.Collections.Generic.HashSet<int * int>()
+    let annotated = HashSet<int * int>()
+    let values = Dictionary<int * int, SynBinding>()
+    let selfIdents = HashSet<int * int>()
     let topLevel = ResizeArray<range>()
     let recursiveModules = ResizeArray<range>()
 

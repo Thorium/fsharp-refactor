@@ -331,7 +331,7 @@ let rec assertThrows (check: FSharpCheckFileResults) (source: ISourceText) (e: S
                 // asserts the WRAPPER `.Wait()` throws; the awaited delegate
                 // throws the inner exception and the assertion fails at
                 // runtime — that assert stays as written
-                | Some b when not b.NoBind && not (b.WrapsFaults && assertsAggregate) ->
+                | Some b when not (b.NoBind || b.WrapsFaults && assertsAggregate) ->
                     let asTask =
                         // a ValueTask has no upcast to Task: `.AsTask()`,
                         // then the upcast for the generic one

@@ -28,6 +28,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\MatchToIf.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\BooleanSimplify.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\OptionModule.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\ExpressionTree.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\TypeDefaults.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\IfRestructure.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\MissingCases.fs" />

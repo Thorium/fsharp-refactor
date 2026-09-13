@@ -80,9 +80,9 @@ let private isCatchAll (pat: SynPat) =
 /// The name a catch-all binds the exception to, if any.
 let private binderOf (pat: SynPat) =
     match pat with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = id))) -> Some id.idText
-    | _ -> None
+    | SynPat.Named(ident = SynIdent(ident = id)) -> ValueSome id.idText
+    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = id))) -> ValueSome id.idText
+    | _ -> ValueNone
 
 /// A body that substitutes a default-ish value for the exception: a bare
 /// constant, `Unchecked.defaultof<_>`, None/ValueNone, or an empty
@@ -655,7 +655,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           let guardText = textOfRange source whenGuard.Range
 
                           match binderOf pat with
-                          | Some name when Regex.IsMatch(guardText, $@"\b{Regex.Escape name}\b") -> None
+                          | ValueSome name when Regex.IsMatch(guardText, $@"\b{Regex.Escape name}\b") -> None
                           | _ -> Some(pat, result, Some whenGuard)
                       | SynMatchClause(pat = pat; whenExpr = None; resultExpr = result) -> Some(pat, result, None)
 
@@ -743,9 +743,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range then
                                   let narrowed =
                                       match binderOf pat with
-                                      | Some name ->
+                                      | ValueSome name ->
                                           $"(:? System.IO.IOException | :? System.UnauthorizedAccessException) as {name}"
-                                      | None -> ":? System.IO.IOException | :? System.UnauthorizedAccessException"
+                                      | ValueNone -> ":? System.IO.IOException | :? System.UnauthorizedAccessException"
 
                                   [ { Label =
                                         "Alternative: catch the IO exceptions only — IOException and UnauthorizedAccessException — and let the rest surface"
@@ -818,8 +818,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                           // could name the wrong one
                           let binder =
                               match binderOf pat with
-                              | Some name -> Some name
-                              | None ->
+                              | ValueSome name -> Some name
+                              | ValueNone ->
                                   let scope =
                                       path
                                       |> List.tryPick (fun node ->

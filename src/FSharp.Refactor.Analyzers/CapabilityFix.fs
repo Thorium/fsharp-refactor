@@ -54,6 +54,86 @@ let dualGuardConstant () : string voption =
 let guardUnavailable () =
     Environment.GetEnvironmentVariable "FSREF_NO_GUARD" = "1"
 
+/// `obj/project.assets.json` per project: the file's write stamp and the
+/// lowest FSharp.Core major it resolves across the project's targets.
+let private assetsMinFSharpCore =
+    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * int voption>()
+
+/// The lowest FSharp.Core major among the targets `obj/project.assets.json`
+/// resolved for the project beside `projectFile`; ValueNone without a
+/// restore, or when no target lists FSharp.Core. The assets file is where
+/// every target's resolution meets — implicit (SDK-chosen), explicit and
+/// conditioned `<PackageReference>`s, central package versions and paket
+/// all end up there — which the project file alone cannot tell.
+let private assetsMinFSharpCoreMajor (projectFile: string) : int voption =
+    try
+        let dir = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath projectFile)
+        let assets = System.IO.Path.Combine(dir, "obj", "project.assets.json")
+
+        if not (System.IO.File.Exists assets) then
+            ValueNone
+        else
+            let stamp = System.IO.File.GetLastWriteTimeUtc assets
+
+            match assetsMinFSharpCore.TryGetValue assets with
+            | true, (seen, found) when seen = stamp -> found
+            | _ ->
+                let found =
+                    use doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText assets)
+
+                    match doc.RootElement.TryGetProperty "targets" with
+                    | true, targets when targets.ValueKind = System.Text.Json.JsonValueKind.Object ->
+                        let versions =
+                            [ for target in targets.EnumerateObject() do
+                                  if target.Value.ValueKind = System.Text.Json.JsonValueKind.Object then
+                                      for package in target.Value.EnumerateObject() do
+                                          if
+                                              package.Name.StartsWith(
+                                                  "FSharp.Core/",
+                                                  StringComparison.OrdinalIgnoreCase
+                                              )
+                                          then
+                                              // `9.0.300-beta.1`: the prerelease tag is no part of the version
+                                              let text =
+                                                  package.Name.Substring("FSharp.Core/".Length).Split '-' |> Array.head
+
+                                              match Version.TryParse text with
+                                              | true, version -> version
+                                              | _ -> () ]
+
+                        match versions with
+                        | [] -> ValueNone
+                        | _ -> ValueSome (List.min versions).Major
+                    | _ -> ValueNone
+
+                assetsMinFSharpCore.[assets] <- (stamp, found)
+                found
+    with _ -> // an unreadable assets file gates nothing more than the compilation's own reference; fsharpanalyzer: ignore-line FR0055
+        ValueNone
+
+/// The LOWEST FSharp.Core major among the project's target frameworks. A
+/// multi-targeted project compiles every file against each framework's
+/// FSharp.Core, so a rewrite that needs FSharp.Core 9 (`Result.isOk`,
+/// `[<TailCall>]`) has to hold for the narrowest one — FsToolkit's net9.0
+/// pass offered both on files its netstandard2.0 target compiles against
+/// FSharp.Core 6, and the all-frameworks build put two files back. The
+/// compilation's own reference only speaks for its own framework; the
+/// restore's `obj/project.assets.json` beside the project lists every
+/// target's, so the answer is the same in the apply tool and in an editor.
+/// FSREF_MIN_FSHARP_CORE, when set, overrides it (an explicit floor for a
+/// project whose restore is not on disk). ValueNone leaves a gate to the
+/// compilation's own reference.
+let minFSharpCoreMajor (projectFile: string) : int voption =
+    match Environment.GetEnvironmentVariable "FSREF_MIN_FSHARP_CORE" with
+    | null
+    | "" -> assetsMinFSharpCoreMajor projectFile
+    | v ->
+        let major = v.Split '.' |> Array.head
+
+        match Int32.TryParse major with
+        | true, n when n >= 0 -> ValueSome n
+        | _ -> ValueNone
+
 /// Does the file already use conditional compilation? Only then may a
 /// fix introduce more of it.
 let usesConditionals (source: ISourceText) =

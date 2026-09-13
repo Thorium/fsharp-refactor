@@ -79,6 +79,12 @@
     <Compile Include="AuditInfraTests.fs" />
     <Compile Include="AuditPatternTests.fs" />
     <Compile Include="AuditToolTests.fs" />
+    <Compile Include="AuditUseBinding2Tests.fs" />
+    <Compile Include="AuditExprTreeTests.fs" />
+    <Compile Include="AuditRewriteTests.fs" />
+    <Compile Include="AuditGateTests.fs" />
+    <Compile Include="AuditDriverTests.fs" />
+    <Compile Include="AuditMiscTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

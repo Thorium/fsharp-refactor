@@ -410,6 +410,7 @@ let private isFunctionBinding (SynBinding(headPat = pat)) =
     | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs _) -> true
     | _ -> false
 
+let private bAggregateExRegex = Regex @"\bAggregateException\b"
 /// Find blocking calls inside async/task CEs. Requires typed check results.
 /// `taskAvailable`: FSharp.Core 6 or newer on a non-Fable target, where a
 /// `task { }` can be written; without it a ContinueWith reading its
@@ -583,7 +584,7 @@ let findWith
                     Range.rangeContainsRange body.Range r
                     && cases
                        |> List.exists (fun (c: SynMatchClause) ->
-                           Regex.IsMatch(textOfRange source c.Range, @"\bAggregateException\b"))
+                           bAggregateExRegex.IsMatch(textOfRange source c.Range))
                 | _ -> false)
 
         let finallyRanges =
@@ -1381,7 +1382,7 @@ let findWith
                               // AggregateException a `do!` unwraps: under a
                               // handler for the wrapper the wait stays
                               | Some target, Some b when
-                                  not b.NoBind && not (b.WrapsFaults && underAggregateHandler expr.Range)
+                                  not (b.NoBind || b.WrapsFaults && underAggregateHandler expr.Range)
                                   ->
                                   match bindOperand b.DoText, bindOperand b.Awaitable with
                                   | Some operand, _ when b.UnitResult ->

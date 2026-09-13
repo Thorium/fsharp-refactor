@@ -18,6 +18,9 @@
 ///     shape enough to be the author's call
 ///   - nothing in the body writes an element (`<xs>.[i] <- ...` needs the
 ///     index), assigns the collection or the index, or rebinds either name
+///
+/// When the body opens with `let name = xs.[i]` and that is the index's
+/// only use, the loop variable is `name` and the alias line goes.
 module FSharp.Refactor.IndexedLoop
 
 open System.Text.RegularExpressions
@@ -192,12 +195,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             if onlyIndexes && not disqualified then
                 let loopText = textOfRange source expr.Range
 
-                // the element is `item`, or `item2`, `item3`... when a name
-                // is already taken: mentioned inside the loop, or bound by
-                // anything on the path to it — a parameter, an outer loop,
-                // a let, a lambda, a match arm. Mibo's Spatial2DTests had
-                // `for x in 0 .. 4 do` around the loop, and the `x` chosen
-                // then shadowed it.
+                // names bound by anything on the path to the loop — a
+                // parameter, an outer loop, a let, a lambda, a match arm.
+                // Mibo's Spatial2DTests had `for x in 0 .. 4 do` around the
+                // loop, and the `x` chosen then shadowed it.
                 let enclosingNames =
                     path
                     |> List.collect (fun node ->
@@ -215,28 +216,74 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         | _ -> [])
                     |> Set.ofList
 
-                let taken (name: string) =
-                    enclosingNames.Contains name || Regex.IsMatch(loopText, identifierPattern name)
-
-                let element =
-                    Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
-                    |> Seq.find (taken >> not)
+                // `let mChar = path.[i]` as the body's first statement and
+                // the index's ONLY use is the element already named: the
+                // loop variable takes that name and the alias line goes
+                // (Giraffe's FormatExpressions kept `for item in path do
+                // let mChar = item`). The binder must be a plain name — no
+                // type, no mutable, no attribute — that nothing around the
+                // loop already binds, and the rest of the body must start
+                // on its own line at the let's column with only whitespace
+                // in between, so dropping the let's span leaves the body in
+                // place.
+                let alias =
+                    match body with
+                    | LetOrUseE lou when not ((lou.IsUse || lou.IsBang) || lou.IsRecursive) ->
+                        match lou.Bindings, indexedUses with
+                        | [ SynBinding(
+                                attributes = []
+                                isMutable = false
+                                headPat = SynPat.Named(ident = SynIdent(ident = name); isThisVal = false)
+                                returnInfo = None
+                                expr = rhs) ],
+                          [| useRange, _ |] when
+                            indexMentions.Length = 1
+                            && Range.equals useRange (stripParens rhs).Range
+                            && name.idText <> i.idText
+                            && name.idText <> collRoot
+                            && not (enclosingNames.Contains name.idText)
+                            && lou.Body.Range.StartLine > rhs.Range.EndLine
+                            && lou.Body.Range.StartColumn = lou.Range.StartColumn
+                            && System.String.IsNullOrWhiteSpace(
+                                textOfRange source (Range.mkRange lou.Range.FileName rhs.Range.End lou.Body.Range.Start)
+                            )
+                            ->
+                            Some(name.idText, Range.mkRange lou.Range.FileName lou.Range.Start lou.Body.Range.Start)
+                        | _ -> None
+                    | _ -> None
 
                 let headerRange =
                     Range.mkRange expr.Range.FileName expr.Range.Start enumExpr.Range.End
 
-                let headerEdit =
+                let headerEdit element =
                     headerRange, textOfRange source headerRange, $"for {element} in {collText}"
 
-                let useEdits =
-                    indexedUses
-                    |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
-                    |> Array.toList
+                match alias with
+                | Some(element, aliasRange) ->
+                    suggestions.Add
+                        { Range = expr.Range
+                          CollectionText = collText
+                          Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ] }
+                | None ->
+                    // the element is `item`, or `item2`, `item3`... when a
+                    // name is already taken: mentioned inside the loop, or
+                    // bound by anything on the path to it
+                    let taken (name: string) =
+                        enclosingNames.Contains name || Regex.IsMatch(loopText, identifierPattern name)
 
-                suggestions.Add
-                    { Range = expr.Range
-                      CollectionText = collText
-                      Edits = headerEdit :: useEdits }
+                    let element =
+                        Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
+                        |> Seq.find (taken >> not)
+
+                    let useEdits =
+                        indexedUses
+                        |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
+                        |> Array.toList
+
+                    suggestions.Add
+                        { Range = expr.Range
+                          CollectionText = collText
+                          Edits = headerEdit element :: useEdits }
         | _ -> ()
 
     List.ofSeq suggestions

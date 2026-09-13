@@ -40,6 +40,9 @@ open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
+/// The identifier a shortened spelling starts with once its prefix is gone.
+let private identifierHead = System.Text.RegularExpressions.Regex(@"^[A-Za-z_][\w']*")
+
 type Suggestion =
     {
         /// The first use, where the hint anchors.
@@ -372,6 +375,68 @@ let find
                 namespaceOfSpelling.[key] <- ns
                 ns
 
+        // every name a declaration binds for a stretch of the file, with
+        // that stretch: a let's for its body, a parameter's for its
+        // function, a clause's or loop's binder for the arm or loop, a
+        // class-level let's (and a member's parameters, generously) for
+        // the type. A shortened spelling whose head is such a name, inside
+        // its stretch, would resolve to the binding instead — `let Version
+        // = 3` beside `System.Version(1, 0, 0, 0)` under `open System`
+        let rec scopeOf (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynPat _ :: rest -> scopeOf rest
+            | SyntaxNode.SynBinding b :: rest ->
+                match rest with
+                | SyntaxNode.SynExpr e :: _ -> Some e.Range
+                | SyntaxNode.SynMemberDefn _ :: _ ->
+                    rest
+                    |> List.tryPick (fun node ->
+                        match node with
+                        | SyntaxNode.SynTypeDefn t -> Some t.Range
+                        | _ -> None)
+                    |> Option.orElse (Some b.RangeOfBindingWithRhs)
+                | _ -> Some b.RangeOfBindingWithRhs
+            | SyntaxNode.SynExpr e :: _ -> Some e.Range
+            | SyntaxNode.SynMatchClause c :: _ -> Some c.Range
+            // a primary constructor's parameters (`type C(Version: int)`)
+            // hang directly under the member node, with no binding: they
+            // are in scope for the whole type
+            | SyntaxNode.SynMemberDefn _ :: rest ->
+                rest
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynTypeDefn t -> Some t.Range
+                    | _ -> None)
+            | _ -> None
+
+        let localBindings =
+            lazy
+                ([ for path, p in index.Pats do
+                       match patBoundNames p with
+                       | [] -> ()
+                       | names ->
+                           match scopeOf path with
+                           | Some scope ->
+                               for name in names do
+                                   yield name, scope
+                           | None -> ()
+                   for _, e in index.Exprs do
+                       match e with
+                       | SynExpr.Lambda(parsedData = Some(pats, _)) ->
+                           for p in pats do
+                               for name in patBoundNames p do
+                                   yield name, e.Range
+                       | SynExpr.For(ident = id) -> yield id.idText, e.Range
+                       | _ -> () ]
+                 |> List.groupBy fst
+                 |> List.map (fun (name, scopes) -> name, scopes |> List.map snd)
+                 |> Map.ofList)
+
+        let shadowedLocally (shortName: string) (at: range) =
+            match Map.tryFind shortName localBindings.Value with
+            | Some scopes -> scopes |> List.exists (fun scope -> Range.rangeContainsRange scope at)
+            | None -> false
+
         let resolved =
             worthResolving
             |> List.choose (fun ids ->
@@ -394,7 +459,14 @@ let find
                         let prefixRange =
                             Range.mkRange first.idRange.FileName first.idRange.Start afterNamespace.idRange.Start
 
-                        Some(ns, prefixRange)
+                        // a use inside the stretch of a same-named local
+                        // binding keeps its prefix: the open (if any) still
+                        // goes in for the others, and this spelling stays
+                        // right as it is
+                        if shadowedLocally afterNamespace.idText prefixRange then
+                            None
+                        else
+                            Some(ns, prefixRange)
                     else
                         None
                 | _ -> None)
@@ -539,14 +611,39 @@ let find
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                 false
 
+        // a [<RequireQualifiedAccess>] union's cases never resolve bare, so
+        // an open brings none of them
+        let requiresQualifiedAccess (e: FSharpEntity) =
+            try
+                e.Attributes
+                |> Seq.exists (fun a -> a.AttributeType.DisplayName = "RequireQualifiedAccessAttribute")
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                false
+
+        // a union type in an opened namespace or module brings its case
+        // names: a bare `Version(1, 0, 0, 0)` under `open Expecto` is the
+        // nullary case Expecto.Tests.CLIArguments.Version, not the System
+        // type (SageFs's HotReloadTests, where `open System` was in place)
+        let casesOf (e: FSharpEntity) =
+            try
+                if e.IsFSharpUnion && not (requiresQualifiedAccess e) then
+                    e.UnionCases |> Seq.map (fun c -> c.DisplayName, false) |> List.ofSeq
+                else
+                    []
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                []
+
         // the names a MODULE brings when opened: its nested types and
-        // modules, its values, and the case names of its active patterns
-        // (`|Ident|_|` reaches expressions as `Ident`)
-        let contentsOf (e: FSharpEntity) =
+        // modules with their union cases, the contents of its own
+        // [<AutoOpen>] modules, its values, and the case names of its
+        // active patterns (`|Ident|_|` reaches expressions as `Ident`)
+        let rec contentsOf (e: FSharpEntity) =
             try
                 let entities =
                     e.NestedEntities
-                    |> Seq.map (fun n -> n.DisplayName, n.IsFSharpModule)
+                    |> Seq.collect (fun n ->
+                        (n.DisplayName, n.IsFSharpModule) :: casesOf n
+                        @ (if n.IsFSharpModule && autoOpen n then contentsOf n else []))
                     |> List.ofSeq
 
                 let values =
@@ -563,16 +660,6 @@ let find
                     |> List.ofSeq
 
                 entities @ values
-            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                []
-
-        // a union type in an opened namespace brings its case names
-        let casesOf (e: FSharpEntity) =
-            try
-                if e.IsFSharpUnion then
-                    e.UnionCases |> Seq.map (fun c -> c.DisplayName, false) |> List.ofSeq
-                else
-                    []
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                 []
 
@@ -688,18 +775,51 @@ let find
             |> Seq.map fst
             |> Set.ofSeq
 
-        // names this file defines at any level: types, modules, values
+        // names this file defines at any level: types, modules, values,
+        // and the cases of its unions (bare ones: a
+        // [<RequireQualifiedAccess>] union's cases never resolve bare) and
+        // exceptions
         let definedHere =
+            let requiresQualifiedAccess (attrs: SynAttributes) =
+                attrs
+                |> List.exists (fun attrList ->
+                    attrList.Attributes
+                    |> List.exists (fun a ->
+                        match a.TypeName with
+                        | SynLongIdent(id = ids) when not ids.IsEmpty ->
+                            let name = (List.last ids).idText
+                            name = "RequireQualifiedAccess" || name = "RequireQualifiedAccessAttribute"
+                        | _ -> false))
+
             [ for _, decl in index.Decls do
                   match decl with
                   | SynModuleDecl.Types(typeDefns = defns) ->
-                      for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids)) in defns do
+                      for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids; attributes = attrs); typeRepr = repr) in
+                          defns do
                           yield (List.last ids).idText
+
+                          match repr with
+                          | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Union(unionCases = cases)) when
+                              not (requiresQualifiedAccess attrs)
+                              ->
+                              for SynUnionCase(ident = SynIdent(ident = caseId)) in cases do
+                                  yield caseId.idText
+                          | _ -> ()
+                  | SynModuleDecl.Exception(
+                      exnDefn = SynExceptionDefn(
+                          exnRepr = SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(ident = exnId))))) ->
+                      yield exnId.idText
                   | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids)) ->
                       yield (List.last ids).idText
                   | SynModuleDecl.Let(bindings = bindings) ->
                       for SynBinding(headPat = p) in bindings do
-                          yield! patBoundNames p
+                          match p with
+                          // a function's name is the module's; its
+                          // parameters reach only its own body, and
+                          // localBindings below holds them to it
+                          | SynPat.LongIdent(longDotId = SynLongIdent(id = [ fn ]); argPats = SynArgPats.Pats(_ :: _)) ->
+                              yield fn.idText
+                          | _ -> yield! patBoundNames p
                   | _ -> () ]
             |> Set.ofList
 
@@ -766,21 +886,17 @@ let find
             // F#-style extension (`type List<'T> with member xs.Contains(a,
             // b)`) lives in exactly such a module - reproduced: the identical
             // FS0001 through an AutoOpen module
-            let rec withAutoOpened (e: FSharpEntity) =
-                seq {
-                    yield e
-
-                    let nested =
-                        try
-                            if e.IsFSharpModule && autoOpen e then
-                                e.NestedEntities |> List.ofSeq
-                            else
-                                []
-                        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            let rec withAutoOpened (e: FSharpEntity) : FSharpEntity list =
+                let nested =
+                    try
+                        if e.IsFSharpModule && autoOpen e then
+                            e.NestedEntities |> List.ofSeq
+                        else
                             []
+                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                        []
 
-                    yield! nested |> Seq.collect withAutoOpened
-                }
+                e :: (nested |> List.collect withAutoOpened)
 
             let ofEntities (entities: FSharpEntity seq) =
                 entities
@@ -1047,7 +1163,7 @@ let find
                         // the segment right after the removed prefix
                         let lineText = source.GetLineString(r.EndLine - 1)
                         let rest = lineText.Substring(min r.EndColumn lineText.Length)
-                        let m = System.Text.RegularExpressions.Regex.Match(rest, @"^[A-Za-z_][\w']*")
+                        let m = identifierHead.Match rest
                         if m.Success then Some m.Value else None)
                     |> Set.ofList
 

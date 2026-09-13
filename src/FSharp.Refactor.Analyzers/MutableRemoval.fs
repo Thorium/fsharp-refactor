@@ -93,6 +93,33 @@ let private mayMutate (bodyText: string) (name: string) =
     Regex.IsMatch(bodyText, $@"\b{n}(\.[^\n<]*|\[[^\n]*\]\s*)?\s*<-")
     || Regex.IsMatch(bodyText, $@"&\s*{n}\b")
 
+/// A comment saying the mutability is deliberate. SageFs's LiveValueTree
+/// test wrote `// Use a non-constant capture so the compiler cannot inline
+/// it away.` above `let mutable captured = 42` — never assigned, so the
+/// rule removed the keyword, and the Release optimiser then folded the
+/// constant into the closure the test inspects (green in Debug, red in the
+/// repo's CI). The words that carry that intent: inline, fold (constant
+/// folding), optimi(se/ze/sation). Read from the binding's own trailing
+/// `//` comment and from a `//` comment line directly above it — nowhere
+/// else, so a `List.fold` in the code keeps nothing.
+let private commentKeepsMutable =
+    Regex(@"inline|fold|optimi", RegexOptions.IgnoreCase)
+
+let private commentSaysDeliberate (source: ISourceText) (bindingLine: int) =
+    let trailing =
+        let line = source.GetLineString(bindingLine - 1)
+        let at = line.IndexOf "//"
+        if at >= 0 then line.Substring at else ""
+
+    let above =
+        if bindingLine >= 2 then
+            let line = (source.GetLineString(bindingLine - 2)).TrimStart()
+            if line.StartsWith "//" then line else ""
+        else
+            ""
+
+    commentKeepsMutable.IsMatch trailing || commentKeepsMutable.IsMatch above
+
 /// The range of the `mutable` keyword plus its trailing whitespace, located
 /// textually between the start of the let-binding and its head pattern.
 let private mutableKeywordRange (source: ISourceText) (letStart: pos) (patStart: pos) (fileName: string) =
@@ -142,6 +169,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             headPat = (SynPat.Named(ident = SynIdent(ident = var)) | SynPat.LongIdent(
                                 longDotId = SynLongIdent(id = [ var ]); argPats = SynArgPats.Pats [])) as pat) ] when
                         not (mayMutate (textOfRange source lou.Body.Range) var.idText)
+                        && not (commentSaysDeliberate source expr.Range.StartLine)
                         && resolvesToSafeType var
                         ->
                         match mutableKeywordRange source expr.Range.Start pat.Range.Start expr.Range.FileName with
@@ -172,7 +200,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                      headPat = (SynPat.Named(ident = SynIdent(ident = var)) | SynPat.LongIdent(
                                                          longDotId = SynLongIdent(id = [ var ])
                                                          argPats = SynArgPats.Pats [])) as pat) ]) when
-                                    not (mayMutate typeText.Value var.idText) && resolvesToSafeType var
+                                    not (mayMutate typeText.Value var.idText)
+                                    && not (commentSaysDeliberate source memberDefn.Range.StartLine)
+                                    && resolvesToSafeType var
                                     ->
                                     match
                                         mutableKeywordRange

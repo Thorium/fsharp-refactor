@@ -100,20 +100,18 @@ let private unionCasesOf (check: FSharpCheckFileResults) (source: ISourceText) (
 /// earlier file of the project. A case another union also names is written
 /// qualified (`Result.Error _`), which is right in every scope.
 let private unionsInScope (check: FSharpCheckFileResults) =
-    let rec unions (entities: FSharpEntity seq) =
-        seq {
-            for e in entities do
-                let isUnion, nested =
-                    try
-                        e.IsFSharpUnion, (e.NestedEntities :> FSharpEntity seq)
-                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                        false, Seq.empty
+    let rec unions (entities: FSharpEntity seq) : FSharpEntity list =
+        [ for e in entities do
+              let isUnion, nested =
+                  try
+                      e.IsFSharpUnion, (e.NestedEntities :> FSharpEntity seq)
+                  with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                      false, Seq.empty
 
-                if isUnion then
-                    yield e
+              if isUnion then
+                  yield e
 
-                yield! unions nested
-        }
+              yield! unions nested ]
 
     // only a PUBLIC union of another assembly reaches this file (FSharp.Core
     // keeps an internal Result-like union whose `Error` would otherwise
@@ -142,7 +140,19 @@ let private unionsInScope (check: FSharpCheckFileResults) =
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             []
 
+    // a [<RequireQualifiedAccess>] union's cases never resolve bare, so
+    // they cannot capture a bare name: farmer's `ScaleActionDirection.None`
+    // and `NodeOSUpgradeChannel.Unmanaged` had every Option match spelled
+    // `Option.None` and every LinkedResource one `LinkedResource.Unmanaged _`
+    let requiresQualifiedAccess (e: FSharpEntity) =
+        try
+            e.Attributes
+            |> Seq.exists (fun a -> a.AttributeType.DisplayName = "RequireQualifiedAccessAttribute")
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+
     own @ referenced
+    |> List.filter (requiresQualifiedAccess >> not)
     |> List.map (fun e ->
         e,
         (try

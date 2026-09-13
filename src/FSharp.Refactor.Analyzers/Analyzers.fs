@@ -222,6 +222,97 @@ let private seenByLaterFile (fileName: string) (options: AnalyzerProjectOptions)
                     | Some text -> Text.mentionsIdentifier text name
                     | None -> true)
 
+/// What one sibling of the compilation says about a name, read once per
+/// analysis of a file (see patternBoundInSibling).
+type private SiblingPatterns =
+    /// The host parses siblings: the exact set of bare pattern binders.
+    | SiblingParsed of Set<string>
+    /// No cross-file parser (an editor): the text, for a mention scan.
+    | SiblingText of string
+    /// Cannot be read: counts as binding every name (fail closed).
+    | SiblingUnreadable
+
+/// FR0130's cross-file question: does any OTHER source file of this
+/// compilation — before or after this one — bind `name` as a bare
+/// pattern? A lowercase literal shadowed by a pattern is FS3190, an
+/// error: `let lat = 13.067439` in FsToolkit's TestData.fs took the
+/// attribute, and `let! lat = validLatR` in Result.fs of the same test
+/// project stopped compiling — the fix survived in a sibling project only
+/// because that one happened not to bind `lat`. The in-file veto in
+/// LiteralConst.find is this same check for the file itself.
+///
+/// Under the CLI's cross-file parser the answer is exact, from each
+/// sibling's parse tree, for any name (an UPPERCASE pattern binder in
+/// another file would silently start matching the constant, the in-file
+/// veto's reason). An editor installs no parser and reads the sibling's
+/// text instead: a whole-identifier mention is the conservative superset
+/// of a pattern binding, asked for lowercase names only — an uppercase
+/// name's mentions are overwhelmingly uses, and uppercase binders in
+/// patterns are the shape FS0049 already warns about. A sibling that
+/// cannot be read counts as binding the name.
+let patternBoundInSibling (fileName: string) (options: AnalyzerProjectOptions) : string -> bool =
+    let full (p: string) =
+        try
+            System.IO.Path.GetFullPath p
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            p
+
+    let analyzed = full fileName
+
+    let siblings =
+        options.SourceFiles
+        |> Seq.filter (fun p ->
+            not (System.String.Equals(full p, analyzed, System.StringComparison.OrdinalIgnoreCase))
+            // a signature file declares, it never binds a pattern
+            && not (p.EndsWith(".fsi", System.StringComparison.OrdinalIgnoreCase)))
+        |> List.ofSeq
+
+    match siblings with
+    | [] -> fun _ -> false
+    | _ ->
+        // read once per analysis of this file, and only once a candidate
+        // binding asks
+        let patterns =
+            lazy
+                (siblings
+                 |> List.map (fun path ->
+                     if ProjectSources.available () then
+                         match ProjectSources.tryParse path with
+                         | Some(tree, _) -> SiblingParsed(LiteralConst.patternBoundNames tree)
+                         | None -> SiblingUnreadable
+                     else
+                         try
+                             SiblingText(System.IO.File.ReadAllText path)
+                         with _ -> // an unreadable sibling counts as a binder; fsharpanalyzer: ignore-line FR0055
+                             SiblingUnreadable))
+
+        // without a parser, a sibling's text only vetoes on a BINDER-shaped
+        // mention — `let! lat`, `| lat ->`, `fun lat ->`, `for lat in`,
+        // `(lat, lng)`, `as lat` — not on a plain read, or every public
+        // lowercase constant another file uses would go dark in editors
+        let bindsAsPattern (text: string) (name: string) =
+            let n = Text.identifierPattern name
+
+            // anywhere in a let's pattern (`let! lat`, `let (a, lat)`, a
+            // parameter), a lambda's, a for's, a match clause's (`| Ok lat
+            // ->`, a guard read counts too — the safe side) or an `as`
+            [ $@"\b(let|use)!?\s+[^=\n]*{n}[^=\n]*="
+              $@"\bfun\b[^\n>]*{n}"
+              $@"\bfor\b[^\n]*{n}[^\n]*\b(in|to|downto)\b"
+              $@"\|[^\n]*{n}[^\n]*->"
+              $@"\bas\s+{n}" ]
+            |> List.exists (fun pattern -> System.Text.RegularExpressions.Regex.IsMatch(text, pattern))
+
+        fun name ->
+            let lowercase = name.Length > 0 && not (System.Char.IsUpper name.[0])
+
+            patterns.Value
+            |> List.exists (fun sibling ->
+                match sibling with
+                | SiblingParsed names -> names.Contains name
+                | SiblingText text -> lowercase && Text.mentionsIdentifier text name && bindsAsPattern text name
+                | SiblingUnreadable -> true)
+
 /// What the scope gate is holding back, per rule code, for the run to
 /// report. Only the CLI reads it; editors show the findings themselves.
 let heldByScope = System.Collections.Concurrent.ConcurrentDictionary<string, int>()
@@ -368,6 +459,13 @@ let private fsharpCoreVersions =
 /// An absent or unreadable reference answers TRUE — the same
 /// assume-the-latest stance the langversion gate takes, so a probe
 /// failure never silences a rule that works today.
+///
+/// A multi-targeted project compiles the same file against EVERY
+/// framework's FSharp.Core, and a pass over a wide framework sees only its
+/// own: FsToolkit's net9.0 pass (FSharp.Core 9) offered `Result.isOk` in
+/// files its netstandard2.0 target compiles against FSharp.Core 6. The
+/// apply tool hands the lowest FSharp.Core it has resolved for the project
+/// to CapabilityFix.minFSharpCoreMajor, and the gate answers for that one.
 let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
     let referencePath =
         options.OtherOptions
@@ -384,10 +482,10 @@ let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
             else
                 None)
 
-    match referencePath with
-    | None -> true
-    | Some path ->
-        let found =
+    let own =
+        match referencePath with
+        | None -> System.Int32.MaxValue
+        | Some path ->
             fsharpCoreVersions.GetOrAdd(
                 path,
                 fun p ->
@@ -397,7 +495,12 @@ let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
                         System.Int32.MaxValue
             )
 
-        found >= major
+    let found =
+        match CapabilityFix.minFSharpCoreMajor options.ProjectFileName with
+        | ValueSome projectMin -> min own projectMin
+        | ValueNone -> own
+
+    found >= major
 
 /// Interpolation needs BOTH halves: the F# 5 syntax and the FSharp.Core
 /// that backs it.
@@ -3600,9 +3703,14 @@ let matchGuardsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0130 LiteralConst ----
 
-let private literalConstMessages (scopeOpen: bool) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+let private literalConstMessages
+    (scopeOpen: bool)
+    (boundAsPatternElsewhere: string -> bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
     widened scopeOpen (fun scope ->
-        LiteralConst.find scope parseTree source
+        LiteralConst.findWith boundAsPatternElsewhere scope parseTree source
         |> List.map (fun s ->
             let insertRange, text = s.Fix
 
@@ -3619,6 +3727,7 @@ let literalConstEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0130" "LiteralConst" (fun () ->
         literalConstMessages
             (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            (patternBoundInSibling ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
 
@@ -3627,6 +3736,7 @@ let literalConstCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0130" "LiteralConst" (fun () ->
         literalConstMessages
             (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            (patternBoundInSibling ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
 

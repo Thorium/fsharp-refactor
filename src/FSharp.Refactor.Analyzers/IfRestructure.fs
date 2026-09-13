@@ -2,7 +2,9 @@
 ///
 /// 1. `else if` flattens to `elif` (FR0111, fix): a nested if written as
 ///    the whole else-branch, when the `else` sits at the outer if's
-///    column, is the elif that was meant.
+///    column, is the elif that was meant. A ladder of them flattens as
+///    one chain: every link in one walk, one fix per link where the links
+///    stay put and one fix for the whole ladder where the blocks move.
 ///
 /// 2. An if/elif chain comparing ONE identifier against distinct literals
 ///    becomes a match (FR0112, fix):
@@ -65,73 +67,121 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
             | SynExpr.InterpolatedString _ when not (isSingleLine e.Range) -> Some e.Range
             | _ -> None)
 
+    /// The edits that flatten the chain hanging off `expr`'s else — as
+    /// (range, replacement) pairs, disjoint and in source order. A WHOLE
+    /// nested chain goes in one walk: Giraffe's five-deep `else if` ladder
+    /// took one link per pass and ran the sweep out of passes, because a
+    /// deeper link only qualifies once the link above it reads `elif`.
+    /// `elseColumn` is where this link's `else` must sit for `elif` to be
+    /// legal there: the head if's column, and for a nested link the column
+    /// its `if` will occupy once the links above it are flat.
+    let rec chain (expr: SynExpr) (elseColumn: int) : (range * string) list =
+        match expr with
+        | SynExpr.IfThenElse(elseExpr = Some(SynExpr.IfThenElse(trivia = innerTrivia) as innerIf); trivia = trivia) ->
+            match trivia.ElseKeyword, innerTrivia.IfKeyword with
+            | Some elseKw, ifKw when
+                not innerTrivia.IsElif
+                // the else must own the if AND sit where elif may sit:
+                // at the outer if's column (offside rules for elif)
+                && elseKw.StartColumn = elseColumn
+                // only whitespace between `else` and `if` — a comment
+                // there would be swallowed
+                && (let between =
+                        textOfRange source (Range.mkRange elseKw.FileName elseKw.End ifKw.Start)
+
+                    System.String.IsNullOrWhiteSpace between)
+                ->
+                // the nested if's block — its then-body, elif chain and
+                // else — sat one level deeper than the `else` that owned
+                // it; under `elif` that level is gone, so every line of
+                // the block moves left by the difference (fsharplint's
+                // AstInfo.fs, suave's Bytes.fs kept the old depth and a
+                // trailing `else` deeper than its `elif`). An `if` on the
+                // `else`'s own line is already laid out for the flat form.
+                let dedent =
+                    if ifKw.StartLine > elseKw.StartLine then
+                        ifKw.StartColumn - elseKw.StartColumn
+                    else
+                        0
+
+                // the nested if's own else must sit at ITS if's column —
+                // which, for an `if` on the `else`'s line, is the `else`'s
+                let innerLinks =
+                    chain innerIf (if dedent > 0 then ifKw.StartColumn else elseKw.StartColumn)
+
+                let keywordsOnly = Range.mkRange elseKw.FileName elseKw.Start ifKw.End
+
+                if dedent > 0 then
+                    // the tail from the `if` keyword to the end of the
+                    // nested if, with the deeper links' rewrites spliced in
+                    // before the block moves left as one
+                    let tail =
+                        let sb = System.Text.StringBuilder()
+                        let mutable cursor = ifKw.End
+
+                        for r, replacement in innerLinks do
+                            sb.Append(textOfRange source (Range.mkRange r.FileName cursor r.Start)).Append replacement
+                            |> ignore
+
+                            cursor <- r.End
+
+                        sb.Append(textOfRange source (Range.mkRange ifKw.FileName cursor innerIf.Range.End)).ToString()
+
+                    let lines = tail.Split '\n'
+
+                    let movable =
+                        lines
+                        |> Array.skip 1
+                        |> Array.forall (fun l ->
+                            System.String.IsNullOrWhiteSpace l
+                            || (l.Length >= dedent && System.String.IsNullOrWhiteSpace(l.Substring(0, dedent))))
+                        && not (
+                            multiLineLiterals
+                            |> Array.exists (fun r -> Range.rangeContainsRange innerIf.Range r)
+                        )
+
+                    if movable then
+                        let moved =
+                            lines
+                            |> Array.mapi (fun i l ->
+                                if i = 0 then l
+                                elif l.Length >= dedent then l.Substring dedent
+                                else l.TrimStart())
+                            |> String.concat "\n"
+
+                        [ Range.mkRange elseKw.FileName elseKw.Start innerIf.Range.End, "elif" + moved ]
+                    else
+                        (keywordsOnly, "elif") :: innerLinks
+                else
+                    (keywordsOnly, "elif") :: innerLinks
+            // this link stays (an existing elif, a comment between the
+            // keywords, an else off its column); whatever hangs off the
+            // nested if starts a chain of its own, at its own column
+            | _ -> chain innerIf innerIf.Range.StartColumn
+        | _ -> []
+
+    // a nested if is walked from the head of its chain, never on its own:
+    // reached as a link it flattens with the links above it, and as its
+    // own head it would need a column the flattening changes
+    let key (r: range) =
+        r.StartLine, r.StartColumn, r.EndLine, r.EndColumn
+
+    let nested =
+        System.Collections.Generic.HashSet(
+            index.Exprs
+            |> Array.choose (fun (_, e) ->
+                match e with
+                | SynExpr.IfThenElse(elseExpr = Some(SynExpr.IfThenElse _ as inner)) -> Some(key inner.Range)
+                | _ -> None)
+        )
+
     [ for _, expr in index.Exprs do
           match expr with
-          | SynExpr.IfThenElse(elseExpr = Some(SynExpr.IfThenElse(trivia = innerTrivia) as innerIf); trivia = trivia) ->
-              match trivia.ElseKeyword, innerTrivia.IfKeyword with
-              | Some elseKw, ifKw when
-                  not innerTrivia.IsElif
-                  // the else must own the if AND sit where elif may sit:
-                  // at the outer if's column (offside rules for elif)
-                  && elseKw.StartColumn = expr.Range.StartColumn
-                  // only whitespace between `else` and `if` — a comment
-                  // there would be swallowed
-                  && (let between =
-                          textOfRange source (Range.mkRange elseKw.FileName elseKw.End ifKw.Start)
-
-                      System.String.IsNullOrWhiteSpace between)
-                  ->
-                  // the nested if's block — its then-body, elif chain and
-                  // else — sat one level deeper than the `else` that owned
-                  // it; under `elif` that level is gone, so every line of
-                  // the block moves left by the difference (fsharplint's
-                  // AstInfo.fs, suave's Bytes.fs kept the old depth and a
-                  // trailing `else` deeper than its `elif`). An `if` on the
-                  // `else`'s own line is already laid out for the flat form.
-                  let dedent =
-                      if ifKw.StartLine > elseKw.StartLine then
-                          ifKw.StartColumn - elseKw.StartColumn
-                      else
-                          0
-
-                  let tail =
-                      textOfRange source (Range.mkRange ifKw.FileName ifKw.End innerIf.Range.End)
-
-                  let lines = tail.Split '\n'
-
-                  let movable =
-                      dedent > 0
-                      && lines
-                         |> Array.skip 1
-                         |> Array.forall (fun l ->
-                             System.String.IsNullOrWhiteSpace l
-                             || (l.Length >= dedent && System.String.IsNullOrWhiteSpace(l.Substring(0, dedent))))
-                      && not (
-                          multiLineLiterals
-                          |> Array.exists (fun r -> Range.rangeContainsRange innerIf.Range r)
-                      )
-
-                  if movable then
-                      let replaceRange = Range.mkRange elseKw.FileName elseKw.Start innerIf.Range.End
-
-                      let moved =
-                          lines
-                          |> Array.mapi (fun i l ->
-                              if i = 0 then l
-                              elif l.Length >= dedent then l.Substring dedent
-                              else l.TrimStart())
-                          |> String.concat "\n"
-
-                      { Range = replaceRange
-                        OriginalText = textOfRange source replaceRange
-                        ReplacementText = "elif" + moved }
-                  else
-                      let replaceRange = Range.mkRange elseKw.FileName elseKw.Start ifKw.End
-
-                      { Range = replaceRange
-                        OriginalText = textOfRange source replaceRange
-                        ReplacementText = "elif" }
-              | _ -> ()
+          | SynExpr.IfThenElse _ when not (nested.Contains(key expr.Range)) ->
+              for replaceRange, replacement in chain expr expr.Range.StartColumn do
+                  { Range = replaceRange
+                    OriginalText = textOfRange source replaceRange
+                    ReplacementText = replacement }
           | _ -> () ]
 
 // ---- FR0112: equality chain -> match ----

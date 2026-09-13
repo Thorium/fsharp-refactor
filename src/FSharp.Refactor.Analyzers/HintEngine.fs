@@ -89,6 +89,13 @@ type Hint =
             /// is involved — `not (nan > limit)` is true, `nan <= limit` is
             /// false — so the bindings need typed proof they are not floats.
             NotFloatVars: Set<string>
+            /// The names the right side introduces that are not
+            /// metavariables — `isNull`, `not`, `List.collect`,
+            /// `op_Inequality` — each of which must still resolve to
+            /// FSharp.Core's at the site. Earcut defines its own narrower
+            /// `let inline isNull (node: Node)`, and `x = null ===> isNull x`
+            /// handed it a list: the rewrite did not compile.
+            RhsNames: string list
             /// Coarse first-token key of the left side, for indexing.
             HeadKey: string
             /// The metavariable that is the LAST argument of a right side
@@ -222,6 +229,35 @@ let rec private collectVarsLoop (acc: ResizeArray<string * range>) (pending: Syn
 let private collectVars (e: SynExpr) : (string * range) list =
     let acc = ResizeArray()
     collectVarsLoop acc [ e ]
+    List.ofSeq acc
+
+/// The non-metavariable names in the pending expressions: bare
+/// identifiers, dotted paths and the `op_` names of infix operators.
+[<TailCall>]
+let rec private collectNamesLoop (acc: ResizeArray<string>) (pending: SynExpr list) =
+    match pending with
+    | [] -> ()
+    | e :: rest ->
+        match e with
+        | MetaVar _ -> collectNamesLoop acc rest
+        | SynExpr.Ident id ->
+            acc.Add id.idText
+            collectNamesLoop acc rest
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+            acc.Add(identText ids)
+            collectNamesLoop acc rest
+        | SynExpr.Paren(expr = inner) -> collectNamesLoop acc (inner :: rest)
+        | SynExpr.App(funcExpr = f; argExpr = a) -> collectNamesLoop acc (f :: a :: rest)
+        | SynExpr.Tuple(exprs = es)
+        | SynExpr.ArrayOrList(exprs = es) -> collectNamesLoop acc (es @ rest)
+        | SynExpr.ArrayOrListComputed(expr = inner) -> collectNamesLoop acc (inner :: rest)
+        | SynExpr.Sequential(expr1 = e1; expr2 = e2) -> collectNamesLoop acc (e1 :: e2 :: rest)
+        | _ -> collectNamesLoop acc rest
+
+/// All names a rule side spells out, in order of appearance.
+let private collectNames (e: SynExpr) : string list =
+    let acc = ResizeArray()
+    collectNamesLoop acc [ e ]
     List.ofSeq acc
 
 // Rule sides are parsed as `let __h = <side>`; the side's text starts at this
@@ -400,6 +436,7 @@ let parseRule (rule: string) : Hint option =
                       PureOnlyVars = pureOnly
                       BoolTypedVars = boolTyped
                       NotFloatVars = notFloat
+                      RhsNames = collectNames rhs |> List.distinct
                       HeadKey = headKey lhs
                       PipeTail = pipeTail }
         | _ -> None
@@ -573,8 +610,18 @@ let private isProvablyBool (check: FSharpCheckFileResults) (source: ISourceText)
 /// to floats)? Non-float literals qualify syntactically; anything else needs
 /// its resolved type — including, for a function value like a sortBy key
 /// projection, the eventual return type — to name no System.Double/Single.
+/// A unit-of-measure float is a float with NaN too: `float<length>` is not
+/// an abbreviation of System.Double to FCS but FSharp.Core's own
+/// `float<'Measure>` definition, and svg_path's `not (tolerance >=
+/// 0.0<length>)` — the deliberate NaN-rejecting guard — was flipped to
+/// `tolerance < 0.0<length>` past the System.Double check.
 let private isProvablyNotFloat (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) : bool =
-    let floatNames = set [ "System.Double"; "System.Single" ]
+    let floatNames =
+        set
+            [ "System.Double"
+              "System.Single"
+              "Microsoft.FSharp.Core.float`1"
+              "Microsoft.FSharp.Core.float32`1" ]
 
     // instance-level stripping: the ENTITY's AbbreviatedType is the open
     // generic (list<int> would strip to FSharpList<'T>, losing the int),
@@ -605,7 +652,9 @@ let private isProvablyNotFloat (check: FSharpCheckFileResults) (source: ISourceT
     | SynExpr.Const(constant = c) ->
         match c with
         | SynConst.Double _
-        | SynConst.Single _ -> false
+        | SynConst.Single _
+        // `0.0<length>`: a float literal under a unit of measure
+        | SynConst.Measure(constant = (SynConst.Double _ | SynConst.Single _)) -> false
         | _ -> true
     | _ -> (resolvedOperandType check source e) |> ValueOption.exists notFloatType
 
@@ -738,6 +787,74 @@ let private boolOperandText (source: ISourceText) (op: string) (bound: SynExpr) 
 
     if bare then text else $"({text})"
 
+/// The names a file puts in scope that a rule's right side might spell:
+/// every name a pattern in the file binds (`let inline isNull (node:
+/// Node)`, a parameter, a match binder), every `M.f` a module `M` of the
+/// file binds, and — with typed results — everything the file's opened
+/// modules outside FSharp.Core define, their `[<AutoOpen>]` submodules
+/// included. A hint whose right side names one of these would resolve to
+/// the shadowing definition, not FSharp.Core's; it fails closed.
+let private shadowingNames (parseTree: ParsedInput) (check: FSharpCheckFileResults option) : HashSet<string> =
+    let names = HashSet<string>()
+    let index = AstIndex.ofTree parseTree
+
+    for _, p in index.Pats do
+        for name in patNames p do
+            names.Add name |> ignore
+
+    let headNames (bindings: SynBinding list) =
+        bindings |> List.collect (fun (SynBinding(headPat = p)) -> patNames p)
+
+    let rec moduleNames (moduleName: string) (decls: SynModuleDecl list) =
+        for d in decls do
+            match d with
+            | SynModuleDecl.Let(bindings = bindings) ->
+                for name in headNames bindings do
+                    names.Add $"{moduleName}.{name}" |> ignore
+            | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids); decls = inner) when
+                not ids.IsEmpty
+                ->
+                moduleNames (List.last ids).idText inner
+            | _ -> ()
+
+    match parseTree with
+    | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
+        for SynModuleOrNamespace(longId = ids; decls = decls) in modules do
+            if not ids.IsEmpty then
+                moduleNames (List.last ids).idText decls
+    | ParsedInput.SigFile _ -> ()
+
+    match check with
+    | Some check ->
+        try
+            let fromCore (entity: FSharpEntity) =
+                (OptionModule.fullNameOf entity).StartsWith "Microsoft.FSharp."
+
+            let hasAutoOpen (entity: FSharpEntity) =
+                entity.Attributes
+                |> Seq.exists (fun a -> a.AttributeType.DisplayName = "AutoOpenAttribute")
+
+            let addMembers (prefix: string) (entity: FSharpEntity) =
+                for m in entity.MembersFunctionsAndValues do
+                    names.Add(prefix + m.LogicalName) |> ignore
+
+            for opened in check.OpenDeclarations do
+                for entity in opened.Modules do
+                    if not (fromCore entity) then
+                        addMembers "" entity
+
+                        for nested in entity.NestedEntities do
+                            if nested.IsFSharpModule then
+                                if hasAutoOpen nested then
+                                    addMembers "" nested
+
+                                addMembers (nested.DisplayName + ".") nested
+        with OptionModule.FcsSymbolFailure ->
+            ()
+    | None -> ()
+
+    names
+
 let find
     (extraRules: string list)
     (parseTree: ParsedInput)
@@ -745,6 +862,18 @@ let find
     (check: FSharpCheckFileResults option)
     : Suggestion list =
     let typedCheck = check |> Option.filter (OptionModule.hasErrors >> not)
+
+    // the names the right sides introduce must still be FSharp.Core's at
+    // the site; computed once, when the first rule matches
+    let shadowing = lazy (shadowingNames parseTree check)
+
+    // an argument the compiler quotes into a LINQ expression tree
+    // (SqlHydra's `where (a.Line2 <> null)`) is read by shape by its
+    // receiver: no hint fires there (typed callee only)
+    let inExpressionTree =
+        match check with
+        | Some check -> ExpressionTree.gate check source
+        | None -> fun _ _ -> false
 
     // attribute arguments are constant/property-assignment territory:
     // `[<DllImport(..., SetLastError = true)>]` is not an equality to
@@ -815,12 +944,20 @@ let find
 
                 let rangeKey = expr.Range.ToString()
 
+                // a right side spelling a name the file (or an opened
+                // module) redefines would land on that definition
+                let shadowed =
+                    not hint.RhsNames.IsEmpty
+                    && hint.RhsNames |> List.exists shadowing.Value.Contains
+
                 if
                     pureOk
                     && boolTypedOk
                     && not movesOverloadedMethodGroup
                     && not namedArgumentPosition
                     && not (inAttributeArg expr.Range)
+                    && not shadowed
+                    && not (inExpressionTree path expr.Range)
                     && matchedRanges.Add rangeKey
                 then
                     let substitute (spans: (string * int * int) list) (template: string) =

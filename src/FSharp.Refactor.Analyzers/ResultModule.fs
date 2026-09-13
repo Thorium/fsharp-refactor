@@ -269,6 +269,52 @@ type private Candidate =
         MapBody: SynExpr option
     }
 
+/// The name the match's enclosing binding defines, qualified by the module
+/// it sits in: `Result.isOk` for FsToolkit's `module Result = let inline
+/// isOk ...`, from the nearest binding and the nearest module (nested, or
+/// the file's own — its last segment) on the path.
+let private definedName (path: SyntaxNode list) : string option =
+    let binding =
+        path
+        |> List.tryPick (fun node ->
+            match node with
+            | SyntaxNode.SynBinding(SynBinding(headPat = pat)) ->
+                match pat with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ name ])) -> Some name.idText
+                | SynPat.Named(ident = SynIdent(ident = name)) -> Some name.idText
+                | _ -> None
+            | _ -> None)
+
+    let enclosingModule =
+        path
+        |> List.tryPick (fun node ->
+            match node with
+            | SyntaxNode.SynModule(SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids))) when
+                not ids.IsEmpty
+                ->
+                Some (List.last ids).idText
+            | SyntaxNode.SynModuleOrNamespace(SynModuleOrNamespace(longId = ids; kind = kind)) when
+                not ids.IsEmpty && kind.IsModule
+                ->
+                Some (List.last ids).idText
+            | _ -> None)
+
+    match enclosingModule, binding with
+    | Some m, Some b -> Some $"{m}.{b}"
+    | _ -> None
+
+/// Is this match the body of the very function the rewrite would call?
+/// FsToolkit's `module Result = let inline isOk (value: Result<_, _>) =
+/// match value with ...` IS `Result.isOk`; rewriting its body to
+/// `value |> Result.isOk` makes a library's own primitive delegate to
+/// FSharp.Core's namesake, which is pointless where it compiles and a
+/// missing definition where the target's FSharp.Core is older. The
+/// combination target names two functions; either one counts.
+let private definesTarget (path: SyntaxNode list) (target: string) =
+    match definedName path with
+    | Some name -> target.Split([| " + " |], System.StringSplitOptions.None) |> Array.contains name
+    | None -> false
+
 let private findCandidates (parseTree: ParsedInput) (source: ISourceText) : Candidate list =
     let candidates = ResizeArray<Candidate>()
 
@@ -308,6 +354,7 @@ let private findCandidates (parseTree: ParsedInput) (source: ISourceText) : Cand
                         && not (OptionModule.implicitYieldPosition path)
                         ->
                         match rewrite source scrutinee okVar okBody errorVar errorBody with
+                        | Some(_, target) when definesTarget path target -> ()
                         | Some(replacement, target) ->
                             let replacement =
                                 if

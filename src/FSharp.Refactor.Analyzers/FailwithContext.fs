@@ -392,7 +392,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                               let thrown = thrownCounts |> Map.tryFind literalText |> Option.defaultValue 1
 
                               let rec count (from: int) (acc: int) =
-                                  let next = all.IndexOf(literalText, from, System.StringComparison.Ordinal)
+                                  let next = all.IndexOf(literalText, from, StringComparison.Ordinal)
                                   if next < 0 then acc else count (next + 1) (acc + 1)
 
                               count 0 0 > thrown
@@ -439,7 +439,7 @@ let private assertionForms (literal: string) : (Regex * string) list =
     [ // FsUnit
       Regex($@"should\s+equal\s+{escaped}"), "should startWith " + literal
       // xUnit
-      Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,"), "Assert.StartsWith(" + literal + "," ]
+      Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,"), $"Assert.StartsWith({literal}," ]
 
 /// Every occurrence of the literal in this test text sits inside an
 /// assertion form the rewrite knows. An NUnit `Assert.AreEqual`, an Expecto

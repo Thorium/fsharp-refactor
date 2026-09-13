@@ -17,6 +17,7 @@ module FSharp.Refactor.SprintfInterpolation
 
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
@@ -58,12 +59,103 @@ let private simpleArg (e: SynExpr) =
     | SynExpr.Const _ -> true
     | _ -> false
 
+/// The head of an application spine: `f` in `f a (b) c`, the operator in
+/// `a + (b)`. A type application (`x.M<int> (b)`) has no plain head.
+[<TailCall>]
+let rec private spineHead (e: SynExpr) =
+    match e with
+    | SynExpr.App(funcExpr = f) -> spineHead f
+    | SynExpr.TypeApp _ -> ValueNone
+    | other -> ValueSome other
+
+/// The head names a curried function, a union case or an active pattern —
+/// something whose argument may stand bare — rather than a method,
+/// constructor or property, whose parenthesised argument is its call.
+let private appliesPlainFunction (check: FSharpCheckFileResults) (source: ISourceText) (app: SynExpr) =
+    let idents =
+        match spineHead app with
+        | ValueSome(SynExpr.Ident id) -> [ id ]
+        | ValueSome(SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) -> ids
+        | _ -> []
+
+    match List.tryLast idents with
+    | None -> false
+    | Some last ->
+        let r = last.idRange
+        let lineText = source.GetLineString(r.EndLine - 1)
+
+        match
+            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, idents |> List.map (fun i -> i.idText))
+        with
+        | Some symbolUse ->
+            match symbolUse.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as value ->
+                try
+                    not (value.IsMember || value.IsConstructor)
+                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                    false
+            | :? FSharpUnionCase
+            | :? FSharpActivePatternCase -> true
+            | _ -> false
+        | None -> false
+
+/// Whether the parentheses around the application only wrap it, so the
+/// interpolated string can stand bare in their place: `Expect.throws f
+/// (sprintf "…" x)` reads `Expect.throws f $"…"`. They stay where they may
+/// be doing more — a method's or constructor's argument list (`c.M(sprintf
+/// …)` is a call, `c.M $"…"` a different shape), a receiver
+/// (`(…).Length`), an indexer — and under any parent not known to take the
+/// atom as it is.
+let private parenOnlyWraps (check: FSharpCheckFileResults) (source: ISourceText) (parent: SyntaxNode) (paren: range) =
+    match parent with
+    | SyntaxNode.SynBinding _
+    | SyntaxNode.SynMatchClause _ -> true
+    | SyntaxNode.SynExpr e ->
+        match e with
+        | SynExpr.App(flag = ExprAtomicFlag.Atomic) -> false
+        | SynExpr.App(isInfix = false; argExpr = arg) when Range.equals arg.Range paren ->
+            appliesPlainFunction check source e
+        | SynExpr.App(isInfix = true; argExpr = arg) when Range.equals arg.Range paren ->
+            appliesPlainFunction check source e
+        | SynExpr.Paren _
+        | SynExpr.Tuple _
+        | SynExpr.ArrayOrList _
+        | SynExpr.ArrayOrListComputed _
+        | SynExpr.Record _
+        | SynExpr.AnonRecd _
+        | SynExpr.Sequential _
+        | SynExpr.IfThenElse _
+        | SynExpr.Match _
+        | SynExpr.MatchBang _
+        | SynExpr.TryWith _
+        | SynExpr.TryFinally _
+        | SynExpr.Lambda _
+        | SynExpr.LetOrUse _
+        | SynExpr.YieldOrReturn _
+        | SynExpr.YieldOrReturnFrom _
+        | SynExpr.Typed _
+        | SynExpr.Upcast _
+        | SynExpr.Downcast _
+        | SynExpr.InferredUpcast _
+        | SynExpr.InferredDowncast _
+        | SynExpr.Lazy _
+        | SynExpr.Assert _
+        | SynExpr.Do _
+        | SynExpr.DoBang _
+        | SynExpr.While _
+        | SynExpr.For _
+        | SynExpr.ForEach _
+        | SynExpr.ComputationExpr _
+        | SynExpr.LongIdentSet _ -> true
+        | _ -> false
+    | _ -> false
+
 /// Find fully applied simple sprintf calls. Requires typed check results
 /// (`sprintf` itself must resolve to FSharp.Core, not a shadow).
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
+    [ for path, expr in index.Exprs do
           match expr with
           | SynExpr.App(isInfix = false) when isSingleLine expr.Range ->
               match collectSpine [] expr with
@@ -115,8 +207,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                       builder.Append(fmt.Substring cursor) |> ignore
 
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
+                      // parentheses that only wrapped the application go
+                      // with it (farmer's `(sprintf "Should have thrown for
+                      // %d" days)` was left as `($"…")`)
+                      let editRange =
+                          match path with
+                          | SyntaxNode.SynExpr(SynExpr.Paren(expr = inner; range = parenRange)) :: parent :: _ when
+                              Range.equals inner.Range expr.Range
+                              && isSingleLine parenRange
+                              && parenOnlyWraps check source parent parenRange
+                              ->
+                              parenRange
+                          | _ -> expr.Range
+
+                      { Range = editRange
+                        OriginalText = textOfRange source editRange
                         ReplacementText = "$\"" + builder.ToString() + "\"" }
               | _ -> ()
           | _ -> () ]

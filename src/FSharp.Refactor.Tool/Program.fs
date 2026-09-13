@@ -1257,19 +1257,22 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                 Text.RegularExpressions.RegexOptions.Multiline
             )
 
-        for m in fallbackPattern.Matches($"{buildOut}\n{buildErr}") do
-            let file: string = m.Groups.["file"].Value.Trim()
+        let harvestFallbackSites (out: string) (err: string) =
+            for m in fallbackPattern.Matches($"{out}\n{err}") do
+                let file: string = m.Groups.["file"].Value.Trim()
 
-            match Int32.TryParse m.Groups.["line"].Value with
-            | true, line ->
-                let full =
-                    if Path.IsPathRooted file then
-                        file
-                    else
-                        Path.Combine(Path.GetDirectoryName(Path.GetFullPath projectPath), file)
+                match Int32.TryParse m.Groups.["line"].Value with
+                | true, line ->
+                    let full =
+                        if Path.IsPathRooted file then
+                            file
+                        else
+                            Path.Combine(Path.GetDirectoryName(Path.GetFullPath projectPath), file)
 
-                Configuration.setDynamicFallbackSites [ full, line ]
-            | _ -> ()
+                    Configuration.setDynamicFallbackSites [ full, line ]
+                | _ -> ()
+
+        harvestFallbackSites buildOut buildErr
 
         if buildExit <> 0 then
             // the raw MSBuild transcript buries the compile errors under
@@ -1300,12 +1303,20 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
 
             // that Rebuild CLEANED the project's outputs and, compilation
             // skipped, wrote none back. An SDK-style sibling rebuilds this
-            // project through its project reference; an old-style one
-            // references the dll by path (FsXaml's demos:
-            // `..\..\bin\FsXaml.Wpf.TypeProvider\...dll`) and finds nothing.
-            // Build once more, so the outputs are there for whoever needs them
-            if not isSdkStyle then
-                run $"msbuild \"{projectPath}\" -t:Build{tfmArg}" |> ignore
+            // project through its project reference — but a script's
+            // `#r "../../src/X/bin/Debug/net9.0/X.dll"` does not (four of
+            // svg_path_fsharp's five debug scripts lost their reference and
+            // ran syntactic rules only), and neither does an old-style
+            // project referencing the dll by path (FsXaml's demos:
+            // `..\..\bin\FsXaml.Wpf.TypeProvider\...dll`). Build once more,
+            // for every project, so the outputs are there for whoever needs
+            // them. Amortised this costs nothing: the clean pushed the same
+            // compile onto the NEXT run's first build. And this compile is a
+            // real one, so its FS3511 lines are harvested too — the first
+            // build's are only there while the tree was stale
+            if Environment.GetEnvironmentVariable "FSREF_SKIP_BUILD" <> "1" then
+                let _, againOut, againErr = run $"msbuild \"{projectPath}\" -t:Build{tfmArg}"
+                harvestFallbackSites againOut againErr
 
             try
                 use doc = JsonDocument.Parse stdout
@@ -1558,8 +1569,55 @@ let private withFsiAuxLib (scriptPath: string) (options: FSharpProjectOptions) =
                 OtherOptions = Array.append options.OtherOptions [| $"-r:{dll}" |] }
         | None -> options
 
+let private checkDirectoryLock = obj ()
+
+/// ParseAndCheckProject from the project's own directory, the way MSBuild
+/// runs fsc. The typecheck ends by resolving the assembly's identity, and
+/// for that FCS opens the strong-name key exactly as the source spells it
+/// — `[<assembly: AssemblyKeyFile("../../FsCheckKey.snk")>]` is read
+/// relative to the PROCESS directory, not the project's (implicitIncludeDir
+/// covers `#r` and `--lib`, not this). A solution run from FsCheck's root
+/// refused all four library projects with "The key file could not be
+/// opened" while `dotnet build` and a run from each project directory
+/// were fine. The directory is process-wide state, so the change lasts
+/// exactly one synchronous check, under a lock; nothing else reads a
+/// relative path meanwhile (the sweep's parallel file checks come later
+/// and do not finalize an assembly).
+let internal checkProject (checker: FSharpChecker) (options: FSharpProjectOptions) =
+    let projectDir =
+        try
+            let dir = Path.GetDirectoryName(Path.GetFullPath options.ProjectFileName)
+
+            if not (String.IsNullOrEmpty dir) && Directory.Exists dir then
+                Some dir
+            else
+                None
+        with _ -> // a name that is no path checks from wherever we are; fsharpanalyzer: ignore-line FR0055
+            None
+
+    match projectDir with
+    | None -> checker.ParseAndCheckProject options |> Async.RunSynchronously
+    | Some dir ->
+        lock checkDirectoryLock (fun () ->
+            let previous = Environment.CurrentDirectory
+
+            // a directory the process cannot make current (a path past the
+            // OS limit) checks from wherever we are, as before
+            let switched =
+                try
+                    Environment.CurrentDirectory <- dir
+                    true
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    false
+
+            try
+                checker.ParseAndCheckProject options |> Async.RunSynchronously
+            finally
+                if switched then
+                    Environment.CurrentDirectory <- previous)
+
 let private projectErrors (checker: FSharpChecker) (options: FSharpProjectOptions) =
-    let results = checker.ParseAndCheckProject options |> Async.RunSynchronously
+    let results = checkProject checker options
 
     results.Diagnostics
     |> Array.filter (fun d ->
@@ -1632,7 +1690,7 @@ let private kindColumn (code: string) =
 /// A file one pass changed: its path, its pre-pass text, and the fixes
 /// that landed in it — enough to undo the pass's work on the file and to
 /// suppress those fixes on later passes.
-type private AppliedFile =
+type internal AppliedFile =
     {
         Path: string
         Before: string
@@ -2515,7 +2573,7 @@ let private readSibling
                     // the previous round's edits are on disk; FCS must not
                     // answer from the tree it built before them
                     checker.InvalidateConfiguration options
-                    let results = checker.ParseAndCheckProject options |> Async.RunSynchronously
+                    let results = checkProject checker options
 
                     let errors =
                         results.Diagnostics
@@ -2865,7 +2923,7 @@ let private runApiPass
             Out.skip
                 $"  ({Path.GetFileName script} #r's this project's built assembly, so its calls cannot be matched to the sources; public declarations keep their shape)"
 
-        let projectResults = checker.ParseAndCheckProject options |> Async.RunSynchronously
+        let projectResults = checkProject checker options
 
         let parsingOptions, _ = checker.GetParsingOptionsFromProjectOptions options
 
@@ -3076,7 +3134,7 @@ let private runApiPass
                 siblingSites.Value.Read
                 |> List.collect (fun info ->
                     checker.InvalidateConfiguration info.Options
-                    let results = checker.ParseAndCheckProject info.Options |> Async.RunSynchronously
+                    let results = checkProject checker info.Options
 
                     let errors =
                         results.Diagnostics
@@ -3283,6 +3341,14 @@ let mutable internal runTotalApplied = 0
 /// Compilations this run attempted — a multi-targeted project contributes
 /// one per framework, which is what the coverage warning counts against.
 let mutable internal runCompilations = 0
+
+/// Why each compilation of this run exited non-zero, one line each
+/// ("Tests.fsproj [net9.0]: all 25 changed file(s) put back by the
+/// all-frameworks build"). The run's exit code is the worst of them, and
+/// without this list a reader of an hour-long log had to find the one
+/// put-back paragraph that explained an exit 1 the tail never mentioned
+/// (FsToolkit: exit 1, no line saying why).
+let internal exitReasons = ResizeArray<string>()
 
 /// Compilations this run could not analyse because they would not build.
 /// The exit code already reflects them, but a HUMAN reads the tail of the
@@ -4053,7 +4119,7 @@ let private runPass
     (blockedRuleFile: System.Collections.Generic.HashSet<string * string>)
     =
     let projectSw = Stopwatch.StartNew()
-    let projectResults = checker.ParseAndCheckProject options |> Async.RunSynchronously
+    let projectResults = checkProject checker options
     projectSw.Stop()
 
     // where the wall clock goes, reported at the end of the pass: on a large
@@ -4799,6 +4865,62 @@ let private scriptProjectOptions (checker: FSharpChecker) (path: string) (assume
 
     withFsiAuxLib path options, diagnostics
 
+/// The compiler arguments with every relative path made absolute against
+/// the project directory. MSBuild hands fsc paths as the project spells
+/// them, relative to its own directory, which is fsc's working directory
+/// under a build — and is not this process's: a solution run starts from
+/// the solution's root and the tool checks each project from wherever it
+/// was started. A relative `--keyfile:`, `--doc:`, `--resource:`, `-r:`
+/// or `--lib:` in the arguments would otherwise be looked for in the wrong
+/// place. The source-attribute twin of the key file (AssemblyKeyFile in an
+/// AssemblyInfo.fs) never appears here; `checkProject` covers that one.
+let internal absolutizeArgs (projectDir: string) (args: string array) =
+    let rebase (path: string) =
+        let trimmed = path.Trim().Trim '"'
+
+        if trimmed = "" || Path.IsPathRooted trimmed then
+            path
+        else
+            Path.GetFullPath(Path.Combine(projectDir, trimmed))
+
+    // `--resource:file[,name[,public|private]]` — the file is the first
+    // component; `--lib:` takes a `;`-separated list
+    let firstComponentOf (separator: char) (value: string) =
+        value.Split separator
+        |> Array.mapi (fun i part -> if i = 0 then rebase part else part)
+        |> String.concat (string separator)
+
+    let everyComponentOf (separator: char) (value: string) =
+        value.Split separator |> Array.map rebase |> String.concat (string separator)
+
+    let single =
+        [ "-r:"
+          "--reference:"
+          "--doc:"
+          "-o:"
+          "--out:"
+          "--keyfile:"
+          "--pdb:"
+          "--win32res:"
+          "--win32manifest:"
+          "--win32icon:" ]
+
+    args
+    |> Array.map (fun arg ->
+        let lower = arg.ToLowerInvariant()
+
+        match single |> List.tryFind (fun flag -> lower.StartsWith flag) with
+        | Some flag -> arg.Substring(0, flag.Length) + rebase (arg.Substring flag.Length)
+        | None ->
+            if lower.StartsWith "--resource:" || lower.StartsWith "--linkresource:" then
+                let colon = arg.IndexOf ':'
+                arg.Substring(0, colon + 1) + firstComponentOf ',' (arg.Substring(colon + 1))
+            elif lower.StartsWith "--lib:" || lower.StartsWith "-i:" then
+                let colon = arg.IndexOf ':'
+                arg.Substring(0, colon + 1) + everyComponentOf ';' (arg.Substring(colon + 1))
+            else
+                arg)
+
 /// The compilation to analyze, from either input kind.
 ///
 /// A script needs no MSBuild at all — FCS resolves a script's own
@@ -4869,7 +4991,10 @@ let private optionsFor (checker: FSharpChecker) (parseOnly: bool) (chosenFramewo
                 |> List.exists (fun flag -> arg.StartsWith(flag, StringComparison.OrdinalIgnoreCase))
 
             let sources, otherArgs =
-                args |> Array.filter (isOutputOnly >> not) |> Array.partition isSource
+                args
+                |> Array.filter (isOutputOnly >> not)
+                |> absolutizeArgs projectDir
+                |> Array.partition isSource
 
             let absoluteSources =
                 sources
@@ -5106,7 +5231,7 @@ let private fixesNearErrors (cf: AppliedFile) (errorLines: Set<int>) : (int * st
 
     cf.Fixes |> List.filter (fun (g, _, _) -> culpritGroups.Contains g)
 
-let private verifyPass
+let internal verifyPass
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
     (baselineErrors: int)
@@ -5171,6 +5296,23 @@ let private verifyPass
         let restore (files: AppliedFile list) =
             writeBack files
             suppressAll files
+
+        // the text of each changed file as the pass left it, read before
+        // anything is put back: what a kept file is written back to
+        let appliedTexts =
+            changedFiles
+            |> List.map (fun cf ->
+                cf.Path,
+                (try
+                    File.ReadAllText cf.Path
+                 with _ -> // unreadable now: the same fixes re-applied to the pre-pass text; fsharpanalyzer: ignore-line FR0055
+                     reapplySubset cf.Before cf.Fixes))
+            |> Map.ofList
+
+        let appliedTextOf (cf: AppliedFile) =
+            match Map.tryFind cf.Path appliedTexts with
+            | Some text -> text
+            | None -> reapplySubset cf.Before cf.Fixes
 
         let rolledBack =
             if not named.IsEmpty then
@@ -5283,10 +5425,138 @@ let private verifyPass
 
                         named @ orphanFiles
                 else
+                    // The named files are back and the errors stay: the
+                    // culprit sits in a file the errors never named. FR0130
+                    // put [<Literal>] on `let lat` in FsToolkit's
+                    // TestData.fs and the errors landed on `let! lat` in
+                    // Result.fs — and the old answer here, every fix of the
+                    // pass rolled back and suppressed, cost that project 152
+                    // innocent fixes; the next pass re-applied nothing. So
+                    // find the file(s) whose fixes carry the blame by
+                    // bisecting the rest — a project check per step, bounded
+                    // — keep the others, and give the named files' own fixes
+                    // one more chance beside them.
                     let rest = changedFiles |> List.except named
-                    restore rest
-                    suppressAll named
-                    changedFiles
+                    let mutable checks = 0
+                    let maxChecks = 8
+
+                    // the project check alone: the per-file second look of
+                    // recount () is for the FS0034 signature case, and is
+                    // paid once, on the final answer, not per bisection step
+                    let failsQuick () =
+                        checker.InvalidateConfiguration options
+                        (projectErrors checker options).Length > baselineErrors
+
+                    // the tree with `named` put back and exactly `applied`
+                    // of the rest re-applied
+                    let failsApplying (applied: AppliedFile list) =
+                        checks <- checks + 1
+
+                        for cf in rest do
+                            if applied |> List.exists (fun a -> a.Path = cf.Path) then
+                                writeSource cf.Path (appliedTextOf cf)
+                            else
+                                writeSource cf.Path cf.Before
+
+                        failsQuick ()
+
+                    // with `context` and `suspects` all applied the check
+                    // fails; find the suspects that matter
+                    let rec culprits (context: AppliedFile list) (suspects: AppliedFile list) =
+                        if suspects.Length <= 1 || checks >= maxChecks then
+                            suspects
+                        else
+                            let h1, h2 = List.splitAt (suspects.Length / 2) suspects
+
+                            if failsApplying (context @ h1) then culprits context h1
+                            elif failsApplying (context @ h2) then culprits context h2
+                            else culprits (context @ h2) h1 @ culprits (context @ h1) h2
+
+                    // a rolled-back suggestion can have members in kept
+                    // files (a cross-file edit set under --api-changes):
+                    // those go too, or the suggestion is left half-applied
+                    let stripOrphans (rolled: AppliedFile list) (kept: AppliedFile list) =
+                        let rolledGroups =
+                            rolled
+                            |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
+                            |> Set.ofList
+
+                        [ for cf in kept do
+                              let orphans = cf.Fixes |> List.filter (fun (g, _, _) -> rolledGroups.Contains g)
+
+                              if not orphans.IsEmpty then
+                                  writeSource cf.Path (reapplySubset cf.Before (cf.Fixes |> List.except orphans))
+
+                                  for _, code, f in orphans do
+                                      suppressed.Add(fixKey code cf.Path f) |> ignore
+
+                                  { cf with Fixes = orphans } ]
+
+                    // everything back: the pass started clean, so this must
+                    // check clean — unless the errors were never ours
+                    writeBack rest
+
+                    if failsQuick () && (recount ()).Length > baselineErrors then
+                        // the same verdict the unnamed branch gives: a
+                        // breakage that survives the un-apply is not this
+                        // pass's, and its fixes go back in
+                        for cf in changedFiles do
+                            writeSource cf.Path (appliedTextOf cf)
+
+                        checker.InvalidateConfiguration options
+
+                        eprintfn
+                            "  (the new errors persist without this pass's fixes — pre-existing breakage elsewhere, fixes kept)"
+
+                        []
+                    else
+                        let blamed = if rest.IsEmpty then [] else culprits [] rest
+                        let innocent = rest |> List.except blamed
+
+                        // the innocent files re-applied without the blamed
+                        // ones — clean, or the bisection ran out of budget
+                        // and its answer is not to be trusted
+                        let innocentClean = innocent.IsEmpty || not (failsApplying innocent)
+
+                        if not innocentClean then
+                            restore rest
+                            suppressAll named
+                            changedFiles
+                        else
+                            // the named files' own fixes were only ever
+                            // guilty by location: back in beside the
+                            // innocent ones, do they check clean too?
+                            for cf in named do
+                                writeSource cf.Path (appliedTextOf cf)
+
+                            let namedClean = not (failsQuick ()) && (recount ()).Length <= baselineErrors
+
+                            if not namedClean then
+                                writeBack named
+
+                            let rolled = if namedClean then blamed else blamed @ named
+                            let kept = changedFiles |> List.except rolled
+
+                            suppressAll rolled
+                            let orphanFiles = stripOrphans rolled kept
+
+                            if not orphanFiles.IsEmpty then
+                                checker.InvalidateConfiguration options
+
+                            let keptFixes =
+                                (kept |> List.sumBy (fun cf -> cf.Fixes.Length))
+                                - (orphanFiles |> List.sumBy (fun cf -> cf.Fixes.Length))
+
+                            let verdict =
+                                if namedClean then
+                                    $"the errors in {named.Length} file(s) were caused by the fixes in {blamed.Length} other file(s)"
+                                else
+                                    $"the fixes in {blamed.Length} file(s) the errors never named are to blame, and the {named.Length} named file(s) do not check clean without them either"
+
+                            printfn
+                                $"  ({keptFixes} fix(es) in {kept.Length} file(s) kept — {verdict}; found by bisection in {checks} check(s))"
+
+                            rolled @ orphanFiles
             else
                 // every error sits in a file this pass never touched. That
                 // can still be our doing (an edit's inference ripple), so
@@ -5359,14 +5629,20 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
     // which framework this pass is for, when the project has several
     let frameworkLabel = if opts.Framework = "" then "" else $" [{opts.Framework}]"
 
-    if showHeader then
-        let label =
-            match target with
-            | Target.Project(p, Some file) -> $"{Path.GetFileName file} (in {Path.GetFileName p})"
-            | Target.Project(p, None) -> Path.GetFileName p
-            | Target.Script s -> Path.GetFileName s
+    let label =
+        match target with
+        | Target.Project(p, Some file) -> $"{Path.GetFileName file} (in {Path.GetFileName p})"
+        | Target.Project(p, None) -> Path.GetFileName p
+        | Target.Script s -> Path.GetFileName s
 
+    if showHeader then
         printfn $"== {label}{frameworkLabel} =="
+
+    /// exit 1 for this compilation, with the reason the end of the run
+    /// will repeat beside the exit code
+    let failed (why: string) =
+        lock exitReasons (fun () -> exitReasons.Add $"{label}{frameworkLabel}: {why}")
+        1
 
     match optionsFor checker opts.ParseOnly opts.Framework target with
     | Error message ->
@@ -5377,11 +5653,11 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // (a solution containing one used to fail the whole run's exit)
         if message.Contains "— skipped" || message.Contains "beyond --parse-only" then
             0
+        else if message.Contains "dotnet build failed" then
+            System.Threading.Interlocked.Increment(&runBuildFailures) |> ignore
+            failed "does not build, so it was not analysed"
         else
-            if message.Contains "dotnet build failed" then
-                System.Threading.Interlocked.Increment(&runBuildFailures) |> ignore
-
-            1
+            failed "could not be loaded (no compiler arguments), so it was not analysed"
     | Ok options ->
         let analyzers =
             cliAnalyzers ()
@@ -5670,19 +5946,23 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         if baselineErrors > 0 && not opts.ParseOnly && not degraded then
             Out.bad $"The project has {baselineErrors} error(s) before any fix; fix those first:"
 
-            if showHeader && not opts.DryRun then
+            if showHeader && not opts.DryRun && runTotalApplied > 0 then
                 // in a multi-compilation run these "pre-existing" errors can
                 // be an earlier project's applied fixes breaking a shared
-                // source file — that is our doing, not the caller's. A dry
-                // run modifies nothing, so there the errors are simply
+                // source file — that is our doing, not the caller's. Only
+                // when an earlier compilation of this run DID write
+                // something: on the first project, or after clean ones, the
+                // hint pointed at a diff that did not exist (FsCheck's
+                // key-file refusal wore it on its very first project). A
+                // dry run modifies nothing, so there the errors are simply
                 // pre-existing
                 eprintfn
-                    "  (multi-project run: if an earlier project was just modified, its fixes may have introduced these — review the diff)"
+                    $"  (multi-project run: an earlier compilation of this run applied {runTotalApplied} fix(es) — those may have introduced these; review the diff)"
 
             for d in projectErrors checker options |> Array.truncate 5 do
                 eprintfn $"  {d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}"
 
-            1
+            failed $"has {baselineErrors} error(s) before any fix, so it was not analysed"
         else
             // asking for one file and getting edits in its callers would be
             // a surprise, and that is exactly what the cross-file rules do
@@ -5850,7 +6130,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                     eprintfn
                         $"Applying introduced {finalErrors - baselineErrors} error(s); the {restored} changed file(s) were put back."
 
-                    1
+                    failed
+                        $"applying introduced {finalErrors - baselineErrors} error(s) in the end-of-run check; its {restored} changed file(s) were put back"
                 // The check above only covers the framework we analysed. A
                 // multi-targeted project has others, and a fix valid for one
                 // can fail on another, so build the lot before claiming
@@ -5901,7 +6182,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
                                 eprintfn $"{why}"
                                 eprintfn $"{report output}"
-                                1
+
+                                failed
+                                    "a target framework fails to build with and without this run's fixes; the fixes were kept, the build needs attention"
 
                             // a verification switch: a failure that needs the
                             // fixes in place to be studied (the F# compiler's
@@ -5932,7 +6215,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                         $"A target framework was ALREADY broken, but applying broke it further ({introduced.Count} error(s) seen only with this run's fixes), so the {restored} file(s) it changed were put back:"
 
                                     eprintfn $"{report (Array.ofSeq introduced)}"
-                                    1
+
+                                    failed
+                                        $"applying broke an already-failing target framework further ({introduced.Count} new error(s)); its {restored} changed file(s) were put back"
                             | Ok() ->
                                 // the baseline builds — so the failure is
                                 // ours, or a build that only fails
@@ -5956,7 +6241,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                         "FSREF_KEEP_ON_FAILURE: a target framework fails with this run's fixes and builds without them; the fixes are kept for inspection:"
 
                                     eprintfn $"{report again}"
-                                    1
+
+                                    failed
+                                        "FSREF_KEEP_ON_FAILURE: a target framework fails to build with this run's fixes; they were kept for inspection"
                                 | Error again ->
                                     // ONE file's fixes can be the whole trouble — the
                                     // F# compiler's sformat.fs is also a source of
@@ -5973,6 +6260,24 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                             | Some original -> original <> text
                                             | None -> false)
                                         |> List.map fst
+
+                                    // every file this run changed, the ones outside
+                                    // the project included — counted NOW, before the
+                                    // bisection below writes any of them back: a
+                                    // restoreSnapshot count taken after it only
+                                    // sees the files the last bisection step had
+                                    // not already put back ("the 6 file(s) it
+                                    // changed were put back" on FsToolkit, where
+                                    // all 25 went back)
+                                    let changedTotal =
+                                        changed.Length
+                                        + (currentTexts
+                                           |> List.filter (fun (path, text) ->
+                                               not (Map.containsKey path snapshot)
+                                               && (match extraSnapshot.TryGetValue path with
+                                                   | true, original -> original <> text
+                                                   | _ -> false))
+                                           |> List.length)
 
                                     let fixedText = Map.ofList currentTexts
                                     let mutable builds = 0
@@ -6130,24 +6435,36 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
                                         // more of the project's own files went back
                                         // than the bisection's last build saw
-                                        if not alsoOwn.IsEmpty then
-                                            match buildAllFrameworks project with
-                                            | Ok() -> ()
-                                            | Error _ ->
-                                                let restored = restoreSnapshot snapshot
+                                        let allBack =
+                                            if alsoOwn.IsEmpty then
+                                                false
+                                            else
+                                                match buildAllFrameworks project with
+                                                | Ok() -> false
+                                                | Error _ ->
+                                                    restoreSnapshot snapshot |> ignore
 
-                                                eprintfn
-                                                    $"With those put back too a target framework still fails, so the {restored} file(s) this run changed were all put back."
+                                                    eprintfn
+                                                        $"With those put back too a target framework still fails, so the {changedTotal} file(s) this run changed were all put back."
 
-                                        1
+                                                    true
+
+                                        if allBack then
+                                            failed
+                                                $"all {changedTotal} changed file(s) put back: a target framework this run did not analyze fails with its fixes"
+                                        else
+                                            failed
+                                                $"the fixes in {found.Length + alsoOwn.Length} of {changedTotal} changed file(s) put back: a target framework this run did not analyze refused them"
                                     else
-                                        let restored = restoreSnapshot snapshot
+                                        restoreSnapshot snapshot |> ignore
 
                                         eprintfn
-                                            $"Applying broke a target framework this run did not analyze, so the {restored} file(s) it changed were put back:"
+                                            $"Applying broke a target framework this run did not analyze, so the {changedTotal} file(s) it changed were put back:"
 
                                         eprintfn $"{report again}"
-                                        1
+
+                                        failed
+                                            $"all {changedTotal} changed file(s) put back: a target framework this run did not analyze fails with its fixes"
                     | Target.Script _ ->
                         printfn "done; project still checks clean"
                         markSwept options
@@ -6327,6 +6644,7 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
         directiveFreeCache.Clear()
         runTotalApplied <- 0
         runBuildFailures <- 0
+        lock exitReasons exitReasons.Clear
         runCompilations <- 0
         honorAllSuppressions <- opts.HonorSuppressions
         parseOnlyRun <- opts.ParseOnly
@@ -6521,6 +6839,13 @@ let private executeRun (checker: FSharpChecker) (opts: Options) : int =
 
                 Out.bad
                     $"  WARNING: {runBuildFailures} of {runCompilations} compilation(s) could not be analysed — they do not build, so {scope}. Fix the build (a missing `dotnet tool restore`/`paket restore` is the usual cause), or use --parse-only for the syntactic rules."
+
+            // the last line before a non-zero exit says which compilations
+            // caused it and why — the paragraphs that did are pages up
+            let reasons = lock exitReasons (fun () -> List.ofSeq exitReasons)
+
+            if exitCode <> 0 && not reasons.IsEmpty then
+                Out.bad $"""exit {exitCode}: {reasons.Length} compilation(s) — {String.concat "; " reasons}"""
 
             if exitCode = 0 && opts.FailOnFindings && reportedFindings.Count > 0 then
                 3

@@ -46,16 +46,26 @@ type Suggestion =
         Fix: range * string
     }
 
-/// [<TailCall>] ships in FSharp.Core 8.0.
+let private versiondRegex = Regex @"Version=(\d+)\."
+/// [<TailCall>] ships in FSharp.Core 8.0 — in EVERY FSharp.Core the file
+/// compiles against: a multi-targeted project's wide pass is asked about
+/// the narrowest target's too (FsToolkit's List.fs, offered five under
+/// net9.0 and put back by its netstandard2.0 build on FSharp.Core 6).
 let private coreHasAttribute (check: FSharpCheckFileResults) =
-    try
-        check.ProjectContext.GetReferencedAssemblies()
-        |> List.exists (fun a ->
-            a.SimpleName = "FSharp.Core"
-            && (let m = Regex.Match(a.QualifiedName, @"Version=(\d+)\.")
-                m.Success && int m.Groups.[1].Value >= 8))
-    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-        false
+    let projectMinAllows =
+        match CapabilityFix.minFSharpCoreMajor check.ProjectContext.ProjectOptions.ProjectFileName with
+        | ValueSome projectMin -> projectMin >= 8
+        | ValueNone -> true
+
+    projectMinAllows
+    && (try
+            check.ProjectContext.GetReferencedAssemblies()
+            |> List.exists (fun a ->
+                a.SimpleName = "FSharp.Core"
+                && (let m = versiondRegex.Match a.QualifiedName
+                    m.Success && int m.Groups.[1].Value >= 8))
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false)
 
 /// The application spine: `f a b c` unrolled to its head and arguments.
 [<TailCall>]

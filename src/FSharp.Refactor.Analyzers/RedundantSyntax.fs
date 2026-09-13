@@ -195,10 +195,18 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                 && text.Contains '$'
                 && not (expectsFormattable path)
             then
+                // every `$` of the opener goes: a `$$"""…"""` (F# 8) with
+                // no hole is as plain a string as a `$"…"` with none
+                let first = text.IndexOf '$'
+                let mutable last = first
+
+                while last + 1 < text.Length && text.[last + 1] = '$' do
+                    last <- last + 1
+
                 suggestions.Add
                     { Range = e.Range
                       OriginalText = text
-                      ReplacementText = text.Remove(text.IndexOf '$', 1)
+                      ReplacementText = text.Remove(first, last - first + 1)
                       Kind = Kind.HoleFreeInterpolation }
         | _ -> ()
 

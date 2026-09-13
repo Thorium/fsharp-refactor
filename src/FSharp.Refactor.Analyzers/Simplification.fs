@@ -28,6 +28,10 @@
 /// The boolean and emptiness rules are parse-only (the collection module
 /// name pins the type); the None-comparison rules require typed check
 /// results proving the case is really FSharp.Core's None/ValueNone.
+///
+/// Nothing is rewritten inside an argument the compiler auto-quotes into a
+/// LINQ expression tree (a `where (x <> None)` of SqlHydra's `select`):
+/// the receiver reads the tree by shape (see ExpressionTree).
 module FSharp.Refactor.Simplification
 
 open FSharp.Compiler.CodeAnalysis
@@ -134,14 +138,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     // consulted only when an option test is found
     let evidence = lazy (OptionModule.declarationEvidence parseTree)
 
-    let add (range: range) (replacement: string) kind =
-        suggestions.Add
-            { Range = range
-              OriginalText = textOfRange source range
-              ReplacementText = replacement
-              Kind = kind }
+    // an argument the compiler quotes into a LINQ expression tree is read
+    // by shape, not run: nothing is rewritten there (typed callee only)
+    let inExpressionTree =
+        match check with
+        | Some check -> ExpressionTree.gate check source
+        | None -> fun _ _ -> false
+
+    let add (path: SyntaxNode list) (range: range) (replacement: string) kind =
+        if not (inExpressionTree path range) then
+            suggestions.Add
+                { Range = range
+                  OriginalText = textOfRange source range
+                  ReplacementText = replacement
+                  Kind = kind }
 
     let noneComparison
+        (path: SyntaxNode list)
         (range: range)
         (op: string)
         (opIdent: Ident)
@@ -170,10 +183,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 |> Option.exists (fun c -> OptionModule.receiverSettled c source evidence.Value ids)
                 ->
                 let property = if op = "op_Equality" then "IsNone" else "IsSome"
-                add range $"{text}.{property}" SimplificationKind.OptionComparison
-            | _ -> add range (sprintf "%s |> %s.%s" (atomicText source other) m fn) SimplificationKind.OptionComparison
+                add path range $"{text}.{property}" SimplificationKind.OptionComparison
+            | _ ->
+                add
+                    path
+                    range
+                    (sprintf "%s |> %s.%s" (atomicText source other) m fn)
+                    SimplificationKind.OptionComparison
 
-    let emptiness (range: range) (negated: bool) (m: string) (fIdent: Ident) (arg: SynExpr) (piped: bool) =
+    let emptiness
+        (path: SyntaxNode list)
+        (range: range)
+        (negated: bool)
+        (m: string)
+        (fIdent: Ident)
+        (arg: SynExpr)
+        (piped: bool)
+        =
         // shadowing gate: `Seq.length` must be FSharp.Core's, not a user
         // module that happens to be named Seq. With typed results at hand
         // the symbol proves it; parse-only callers keep the old behavior
@@ -200,7 +226,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | false, false -> sprintf "%s.isEmpty %s" m (textOfRange source arg.Range)
                 | false, true -> sprintf "not (%s.isEmpty %s)" m (textOfRange source arg.Range)
 
-            add range replacement SimplificationKind.Emptiness
+            add path range replacement SimplificationKind.Emptiness
 
     // a test whose branch then reads the payload (`x.Value`, `Option.get
     // x`) is a match in disguise: FR0034 binds the payload, and `IsSome`
@@ -249,13 +275,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         else
                             "not " + atomicText source cond
 
-                    add expr.Range replacement SimplificationKind.BooleanIdentity
+                    add path expr.Range replacement SimplificationKind.BooleanIdentity
                 // x = None / None = x / x <> None (and ValueNone)
                 | InfixApp(("op_Equality" | "op_Inequality") as op, NoneCaseIdent(ident, m, prefix), other)
                 | InfixApp(("op_Equality" | "op_Inequality") as op, other, NoneCaseIdent(ident, m, prefix)) ->
                     match expr with
                     | InfixOpIdent opIdent when not (payloadRead path expr other) ->
-                        noneComparison expr.Range op opIdent other ident m prefix
+                        noneComparison path expr.Range op opIdent other ident m prefix
                     | _ -> ()
                 // Option.isSome x / x |> Option.isNone → the property
                 | SynExpr.App(isInfix = false; funcExpr = OptionTestFunc(f, isSome); argExpr = receiver)
@@ -267,17 +293,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         && not (payloadRead path expr receiver)
                         ->
                         let property = if isSome then "IsSome" else "IsNone"
-                        add expr.Range $"{text}.{property}" SimplificationKind.OptionProperty
+                        add path expr.Range $"{text}.{property}" SimplificationKind.OptionProperty
                     | _ -> ()
                 // length/count compared with zero
                 | InfixApp("op_Equality", LengthOf(m, f, arg, piped), ZeroConst)
                 | InfixApp("op_Equality", ZeroConst, LengthOf(m, f, arg, piped)) ->
-                    emptiness expr.Range false m f arg piped
+                    emptiness path expr.Range false m f arg piped
                 | InfixApp("op_Inequality", LengthOf(m, f, arg, piped), ZeroConst)
                 | InfixApp("op_Inequality", ZeroConst, LengthOf(m, f, arg, piped))
                 | InfixApp("op_GreaterThan", LengthOf(m, f, arg, piped), ZeroConst)
                 | InfixApp("op_LessThan", ZeroConst, LengthOf(m, f, arg, piped)) ->
-                    emptiness expr.Range true m f arg piped
+                    emptiness path expr.Range true m f arg piped
                 | _ -> () }
 
     AstIndex.replay collector parseTree

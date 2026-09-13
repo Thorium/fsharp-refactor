@@ -446,7 +446,7 @@ let directiveFollows (source: ISourceText) (r: range) =
             let text = (source.GetLineString(line - 1)).TrimStart()
 
             if text = "" then scan (line + 1)
-            elif text.StartsWith "#" then true
+            elif text.StartsWith '#' then true
             else false
 
     scan (r.EndLine + 1)

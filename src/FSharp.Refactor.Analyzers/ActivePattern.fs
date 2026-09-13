@@ -107,7 +107,18 @@ let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText)
                         ValueSome "input"
                     else
                         let t = value.CurriedParameterGroups.[0].[0].Type
-                        ValueSome $"(input: {t.Format symbolUse.DisplayContext})"
+
+                        // a nullness-aware compilation formats a BCL
+                        // parameter as `string | null` — F# 9 syntax that a
+                        // sibling target on LangVersion 8 reads as an
+                        // or-pattern (FS0018: FsToolkit's tests, net8.0 beside
+                        // net9.0). The annotation is optional, the pattern
+                        // body is the same, and a guard accepting null takes
+                        // a plain `string` just as well: drop it always
+                        let formatted =
+                            Regex.Replace(t.Format symbolUse.DisplayContext, @"\s*\|\s*null\b", "")
+
+                        ValueSome $"(input: {formatted})"
                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                     ValueNone
             | _ -> ValueNone

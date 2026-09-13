@@ -39,6 +39,10 @@ let private AsyncTypeName = "Microsoft.FSharp.Control.FSharpAsync`1"
 [<Literal>]
 let private ValueTaskTypeName = "System.Threading.Tasks.ValueTask"
 
+/// A handler that rethrows: a `reraise ()` inside a computation expression's
+/// `with` is FS0413, so such a handler is never moved in.
+let private rethrowPattern = System.Text.RegularExpressions.Regex(@"\b(reraise|rethrow)\b")
+
 /// `ignore x` / `x |> ignore` — the operand, parens stripped.
 [<return: Struct>]
 let private (|Ignored|_|) (e: SynExpr) =
@@ -418,10 +422,7 @@ let findUnhandledStart
                               // where the compiler makes it a closure: a
                               // `reraise ()` there is FS0413, not a rethrow
                               let rethrows =
-                                  System.Text.RegularExpressions.Regex.IsMatch(
-                                      textOfRange source trivia.WithToEndRange,
-                                      @"\b(reraise|rethrow)\b"
-                                  )
+                                  rethrowPattern.IsMatch(textOfRange source trivia.WithToEndRange)
 
                               // the rewrite is rebuilt from the body and the
                               // handler alone: a comment anywhere else in the

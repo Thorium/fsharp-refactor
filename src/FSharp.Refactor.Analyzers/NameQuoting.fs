@@ -48,6 +48,7 @@ let private testAttributes =
           "TestCase"
           "TestCaseSource" ]
 
+let private aZRegex = Regex "(?=[A-Z])"
 /// The double-backtick spelling, when the name earns one: five or more
 /// words, plain camel/snake, no acronym runs.
 let quotedForm (name: string) : string option =
@@ -59,7 +60,7 @@ let quotedForm (name: string) : string option =
     else
         let words =
             name.Split '_'
-            |> Array.collect (fun part -> Regex.Split(part, "(?=[A-Z])"))
+            |> Array.collect (fun part -> aZRegex.Split part)
             |> Array.filter (fun s -> s <> "")
 
         if words.Length > 4 then
@@ -196,7 +197,11 @@ let find
                                       (pc.GetUsesOfSymbol symbolUse.Symbol)
                                       (ProjectSources.outsideUsesOf symbolUse.Symbol)
                                   |> Array.forall (fun u ->
-                                      System.IO.Path.GetFullPath(u.Range.FileName).ToLowerInvariant() = thisFile)
+                                      System.String.Equals(
+                                          System.IO.Path.GetFullPath u.Range.FileName,
+                                          thisFile,
+                                          System.StringComparison.OrdinalIgnoreCase
+                                      ))
                               | None -> false))
 
                   if confinedToFile then

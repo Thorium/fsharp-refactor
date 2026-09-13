@@ -244,7 +244,7 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
                     && not (value.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase))
 
                 match d.Ident with
-                | "load" -> not prefixed && not (existsIn scriptDir value)
+                | "load" -> not (prefixed || existsIn scriptDir value)
                 | "r" ->
                     not prefixed
                     && not (existsIn scriptDir value)
