@@ -411,6 +411,7 @@ let private isFunctionBinding (SynBinding(headPat = pat)) =
     | _ -> false
 
 let private bAggregateExRegex = Regex @"\bAggregateException\b"
+
 /// Find blocking calls inside async/task CEs. Requires typed check results.
 /// `taskAvailable`: FSharp.Core 6 or newer on a non-Fable target, where a
 /// `task { }` can be written; without it a ContinueWith reading its

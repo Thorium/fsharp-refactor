@@ -810,8 +810,7 @@ let productionFailwithLiterals (analyzedFile: string) : string list =
                         ))
                     |> Seq.collect (fun p ->
                         try
-                            pattern.Matches(File.ReadAllText p)
-                            |> Seq.map (fun m -> m.Groups.[1].Value)
+                            pattern.Matches(File.ReadAllText p) |> Seq.map (fun m -> m.Groups.[1].Value)
                         with _ -> // fsharpanalyzer: ignore-line FR0055
                             Seq.empty)
                     |> Seq.distinct

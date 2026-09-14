@@ -99,7 +99,13 @@ let private cliContext (options: FSharpProjectOptions) (fileName: string) : CliC
       AnalyzerIgnoreRanges = Map.empty }
 
 /// Every diagnostic of a fresh check of the project as it is on disk now.
+/// A new stamp alone is not enough: two rewrites of the same file within
+/// one check cycle left FCS answering from the first (the FR0130 sweep
+/// test flapped on a warning its second rewrite had removed), so the
+/// checker's caches are dropped as well.
 let private projectDiagnostics (options: FSharpProjectOptions) =
+    checker.InvalidateAll()
+
     (checker.ParseAndCheckProject
         { options with
             Stamp = Some DateTime.UtcNow.Ticks }
@@ -140,6 +146,19 @@ let ``FR0130: a name another file binds as a pattern keeps its plain let`` () =
         |> List.map (fun s -> s.Name)
 
     Assert.Equal<string list>([ "lng"; "tolerance" ], names)
+
+[<Fact>]
+let ``FR0130: a body split by a directive is no constant`` () =
+    // Paket's runningOnMono: `false` here, a `try` under ENABLE_MONO_SUPPORT
+    let tree, sourceText =
+        parse
+            "module M\nlet private runningOnMono =\n#if ENABLE_MONO_SUPPORT\n    try System.Type.GetType(\"Mono.Runtime\") <> null with _ -> false\n#else\n    false\n#endif\nlet private other = 1"
+
+    let names =
+        LiteralConst.findWith (fun _ -> false) true tree sourceText
+        |> List.map (fun s -> s.Name)
+
+    Assert.Equal<string list>([ "other" ], names)
 
 [<Fact>]
 let ``FR0130: a private constant never asks the other files`` () =

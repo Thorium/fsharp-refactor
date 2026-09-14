@@ -41,7 +41,8 @@ let private ValueTaskTypeName = "System.Threading.Tasks.ValueTask"
 
 /// A handler that rethrows: a `reraise ()` inside a computation expression's
 /// `with` is FS0413, so such a handler is never moved in.
-let private rethrowPattern = System.Text.RegularExpressions.Regex(@"\b(reraise|rethrow)\b")
+let private rethrowPattern =
+    System.Text.RegularExpressions.Regex(@"\b(reraise|rethrow)\b")
 
 /// `ignore x` / `x |> ignore` — the operand, parens stripped.
 [<return: Struct>]
@@ -421,8 +422,7 @@ let findUnhandledStart
                               // the handler lands inside the computation,
                               // where the compiler makes it a closure: a
                               // `reraise ()` there is FS0413, not a rethrow
-                              let rethrows =
-                                  rethrowPattern.IsMatch(textOfRange source trivia.WithToEndRange)
+                              let rethrows = rethrowPattern.IsMatch(textOfRange source trivia.WithToEndRange)
 
                               // the rewrite is rebuilt from the body and the
                               // handler alone: a comment anywhere else in the

@@ -55,6 +55,15 @@ let private excluded (text: string) =
     // a single word (`unused`, `todo`) or fewer than 12 characters
     || not (body.Contains ' ')
     || body.Length < 12
+    // a code fragment - `d >> Result.map box`, `fun x -> x` - spells an
+    // equivalent for the reader beside the code, not a summary for a
+    // tooltip (Thoth.Json's boxDecoder)
+    || body.Contains "|>"
+    || body.Contains ">>"
+    || body.Contains "->"
+    || body.Contains "<-"
+    || body.Contains "()"
+    || body.Contains "fun "
 
 /// A test file's public declarations are fixtures, not an API: the
 /// trailing note on `let emojiParty = "\U0001F389" // 🎉 PARTY POPPER`

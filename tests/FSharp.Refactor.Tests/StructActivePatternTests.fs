@@ -38,6 +38,13 @@ let private assertSingleSuggestion (source: string) (expectedPatched: string) =
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 
 [<Fact>]
+let ``a body split by a directive is left alone`` () =
+    // Thoth.Json.Core.Auto: only the active branch would turn ValueSome,
+    // and the Fable-define build failed under the new attribute
+    assertNoSuggestion
+        "module Test\nlet private (|Even|_|) (n: int) =\n#if FABLE_COMPILER\n    if n % 2 = 0 then Some n else None\n#else\n    if n % 2 = 0 then Some n else None\n#endif"
+
+[<Fact>]
 let ``if-based partial active pattern becomes struct-returning`` () =
     assertSingleSuggestion
         "let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"

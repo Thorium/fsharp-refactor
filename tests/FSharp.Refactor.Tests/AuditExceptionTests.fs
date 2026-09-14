@@ -355,3 +355,19 @@ let ``FR0151: the carry-on and the Message fix are two messages, carry-on first`
         Assert.Contains("LoaderExceptions", detailFix.ToText)
         Assert.StartsWith("Alternative:", detail.Message)
     | other -> failwithf "Expected two FR0151 messages, got %A" other
+
+[<Fact>]
+let ``FR0116: the message carries the insert as well as the removal`` () =
+    // the insert was lost to a list expression that discarded it (an
+    // element before a `for` is a statement): FAKE's Wix.fs had a member
+    // deleted and never put back
+    let source =
+        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x\nand g (y: int) : int = y + 1"
+
+    match editorMessages source Analyzers.recGroupEditorAnalyzer with
+    | [ m ] ->
+        Assert.Equal(2, m.Fixes.Length)
+        let insert = m.Fixes |> List.find (fun f -> f.ToText <> "")
+        Assert.StartsWith("let g (y: int) : int = y + 1", insert.ToText)
+        Assert.Contains(m.Fixes, fun f -> f.ToText = "" && f.FromText.Contains "and g")
+    | other -> failwithf "Expected one FR0116 message, got %A" other

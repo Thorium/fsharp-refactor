@@ -140,8 +140,8 @@ module internal Commands =
     /// Save every dirty document before the tool touches the disk.
     ///
     /// The tool rewrites source files underneath Visual Studio. With unsaved
-    /// editors open there are then two versions of the same file â€” the buffer
-    /// VS holds and the one just written â€” and whichever the user saves next
+    /// editors open there are then two versions of the same file - the buffer
+    /// VS holds and the one just written - and whichever the user saves next
     /// silently discards the other. Saving first also makes a --dry-run report
     /// describe the code the user is actually looking at.
     let private saveDirtyDocuments () =

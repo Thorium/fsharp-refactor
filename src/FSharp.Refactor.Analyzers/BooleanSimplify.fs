@@ -94,7 +94,37 @@ let private duplicateSafe (index: AstIndex.Index) (r: range) =
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
+    // a context that pins the expression to bool by itself: the literal is
+    // then redundant wherever the other operand came from
+    let pinsBool (path: SyntaxNode list) =
+        match path with
+        | SyntaxNode.SynExpr(SynExpr.IfThenElse _) :: _
+        | SyntaxNode.SynExpr(SynExpr.While _) :: _
+        | SyntaxNode.SynExpr(SynExpr.Assert _) :: _
+        | SyntaxNode.SynMatchClause _ :: _ -> true
+        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent parentOp))) :: _ ->
+            isBoolOp parentOp
+        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SingleIdent parentOp)) :: _ ->
+            isBoolOp parentOp || parentOp.idText = "not"
+        | _ -> false
+
+    // a CALL as the kept operand may owe its bool type to the literal
+    // beside it: FSharpPlus's `let _111 = parse "true" && true`, where
+    // `parse` is an SRTP function whose return type the `&& true` pins -
+    // dropped, the binding no longer typechecks. Outside a bool-pinning
+    // context such an operand keeps its literal
+    let anchoredByLiteral (path: SyntaxNode list) (kept: SynExpr) =
+        (match appHead (stripParens kept) with
+         | SingleIdent id -> not (id.idText.StartsWith "op_" || pureCallees.Contains id.idText)
+         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+             not (ids.IsEmpty || (List.last ids).idText.StartsWith "op_")
+         | _ -> false)
+        && (match stripParens kept with
+            | SynExpr.App _ -> true
+            | _ -> false)
+        && not (pinsBool path)
+
+    [ for path, expr in index.Exprs do
           match expr with
           | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
               isBoolOp op && isSingleLine expr.Range && not (spansDirective source expr.Range)
@@ -108,7 +138,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     ReplacementText = textOfRange source kept.Range }
 
               match lhs, rhs with
-              // the literal operand contributes nothing
+              // the literal operand contributes nothing - unless the other
+              // operand is a call that owes it its type
+              | BoolConst true, kept when isAnd && anchoredByLiteral path kept -> ()
+              | kept, BoolConst true when isAnd && anchoredByLiteral path kept -> ()
+              | BoolConst false, kept when not isAnd && anchoredByLiteral path kept -> ()
+              | kept, BoolConst false when not isAnd && anchoredByLiteral path kept -> ()
               | BoolConst true, _ when isAnd -> keep rhs Identity
               | _, BoolConst true when isAnd -> keep lhs Identity
               | BoolConst false, _ when not isAnd -> keep rhs Identity

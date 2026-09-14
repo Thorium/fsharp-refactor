@@ -201,6 +201,53 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | None -> false
             | _ -> false
 
+        // The lambda sits in the right-hand side of a GENERIC VALUE, with no
+        // enclosing lambda of its own between them: Hopac's
+        // `let self : AT<'a, Actor<'a>> = AT (fun aCh -> Job.result (A aCh))`.
+        // A constructor over a lambda is a generalizable expression; the
+        // constructor over `A >> Job.result` is an application, the value
+        // restriction pins 'a, and the annotation no longer matches ("the
+        // respective type parameter counts differ"). A nested lambda above
+        // ours keeps the whole a syntactic function, so only the direct
+        // spine counts; a value with no type parameters has nothing to lose
+        let pinsGenericValue (path: SyntaxNode list) =
+            let rec spine (nodes: SyntaxNode list) =
+                match nodes with
+                | SyntaxNode.SynExpr(SynExpr.Lambda _) :: _
+                | SyntaxNode.SynExpr(SynExpr.MatchLambda _) :: _ -> false
+                | SyntaxNode.SynBinding(SynBinding(headPat = pat)) :: _ ->
+                    let rec valueIdent (p: SynPat) =
+                        match p with
+                        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                        | SynPat.Typed(pat = inner) -> valueIdent inner
+                        | SynPat.Paren(pat = inner) -> valueIdent inner
+                        | SynPat.LongIdent(longDotId = SynLongIdent(id = ids); argPats = SynArgPats.Pats []) when
+                            not ids.IsEmpty
+                            ->
+                            Some(List.last ids)
+                        | _ -> None
+
+                    match valueIdent pat with
+                    | Some id ->
+                        let r = id.idRange
+                        let lineText = source.GetLineString(r.EndLine - 1)
+
+                        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                        | Some symbolUse ->
+                            match symbolUse.Symbol with
+                            | :? FSharpMemberOrFunctionOrValue as v ->
+                                (try
+                                    v.GenericParameters.Count > 0
+                                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                     true)
+                            | _ -> false
+                        | None -> true
+                    | None -> false
+                | SyntaxNode.SynExpr _ :: rest -> spine rest
+                | _ -> false
+
+            spine path
+
         let collector =
             { new SyntaxCollectorBase() with
                 override _.WalkExpr(path, expr) =
@@ -230,6 +277,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 // a 170-column line on fantomas's Context.fs
                                 && isSingleLine expr.Range
                                 && not (calleeTakesInlineLambda path)
+                                && not (pinsGenericValue path)
                                 && stages |> List.forall (fun s -> isSingleLine s.Range)
                                 && stages |> List.forall (isOperatorStage source >> not)
                                 && stages |> List.forall (isMemberStage check source >> not)

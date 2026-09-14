@@ -71,10 +71,11 @@ type Hint =
             RhsVarSpans: (string * int * int) list
             /// The occurrences (by span start) that sit as operands of a
             /// boolean `&&` or `||` on the right side, with that operator's
-            /// text. An operand is bracketed by precedence, not like an
-            /// argument: `not ((List.isEmpty a) && (List.isEmpty b))` is
-            /// what the De Morgan rules produced before this distinction.
-            RhsBoolOperandSpans: Map<int, string>
+            /// text and whether the occurrence is its LEFT operand. An
+            /// operand is bracketed by precedence, not like an argument:
+            /// `not ((List.isEmpty a) && (List.isEmpty b))` is what the De
+            /// Morgan rules produced before this distinction.
+            RhsBoolOperandSpans: Map<int, string * bool>
             /// Metavariables that must bind pure atoms because the right side
             /// drops or duplicates them.
             PureOnlyVars: Set<string>
@@ -327,7 +328,7 @@ let parseRule (rule: string) : Hint option =
                 // `a || b` is App(App(op, a), b) with the inner application
                 // marked infix; a metavariable on either side is an operand
                 let boolOperandSpans =
-                    let acc = Dictionary<int, string>()
+                    let acc = Dictionary<int, string * bool>()
 
                     let rec walk (e: SynExpr) =
                         match e with
@@ -338,9 +339,9 @@ let parseRule (rule: string) : Hint option =
                             argExpr = rhs) when op.idText = "op_BooleanAnd" || op.idText = "op_BooleanOr" ->
                             let opText = if op.idText = "op_BooleanAnd" then "&&" else "||"
 
-                            for side in [ lhs; rhs ] do
+                            for side, isLeft in [ lhs, true; rhs, false ] do
                                 match side with
-                                | MetaVar _ -> acc.[side.Range.StartColumn - ParsePrefix.Length] <- opText
+                                | MetaVar _ -> acc.[side.Range.StartColumn - ParsePrefix.Length] <- (opText, isLeft)
                                 | _ -> walk side
                         | SynExpr.App(funcExpr = f; argExpr = a) ->
                             walk f
@@ -744,7 +745,7 @@ let private maybeNamedArgument (path: SyntaxNode list) (e: SynExpr) =
 /// and `||` — the sweep found `not ((List.isEmpty a) && (List.isEmpty b))`
 /// and `not ((json.ContainsKey "Case") && (json.ContainsKey "Fields"))`,
 /// which read worse than the code they replaced.
-let private boolOperandText (source: ISourceText) (op: string) (bound: SynExpr) =
+let private boolOperandText (source: ISourceText) (op: string) (isLeft: bool) (bound: SynExpr) =
     let inner = stripParens bound
     let text = textOfRange source inner.Range
 
@@ -755,15 +756,19 @@ let private boolOperandText (source: ISourceText) (op: string) (bound: SynExpr) 
         | _ -> None
 
     // `&&` binds tighter than `||`: an `&&` operand under `||` stands bare,
-    // an `||` operand under `&&` keeps its brackets, and equal precedence
-    // keeps them too so the grouping stays visible
+    // an `||` operand under `&&` keeps its brackets. Equal precedence on
+    // the LEFT is the grammar's own grouping - `a || b || c` IS
+    // `(a || b) || c` - so those brackets go: the De Morgan rules fold
+    // `not a && not b && not c` in two steps, and the second used to
+    // bracket the first's result, `not ((a || b) || c)`. On the right the
+    // brackets keep the grouping visible
     let lowOrEqualPrecedence (opText: string) =
         match opText with
         | "||"
-        | "or"
+        | "or" -> not (isLeft && op = "||")
         | ":=" -> true
         | "&&"
-        | "&" -> op = "&&"
+        | "&" -> op = "&&" && not isLeft
         | _ -> false
 
     let bare =
@@ -966,7 +971,7 @@ let find
                             (fun (text: string) (v, s, e) ->
                                 let inserted =
                                     match hint.RhsBoolOperandSpans.TryFind s with
-                                    | Some op -> boolOperandText source op bindings.[v]
+                                    | Some(op, isLeft) -> boolOperandText source op isLeft bindings.[v]
                                     | None -> argumentText source bindings.[v]
 
                                 text.Substring(0, s) + inserted + text.Substring e)

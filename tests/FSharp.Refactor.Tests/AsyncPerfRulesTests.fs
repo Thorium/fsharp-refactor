@@ -1031,6 +1031,20 @@ let ``a call already passing the token is left alone`` () =
     )
 
 [<Fact>]
+let ``a trailing lambda argument is wrapped before the token is appended`` () =
+    // Paket's PackageResolver.fs: `ContinueWith(fun (_: Task) -> (), ct)`
+    // made the lambda return `unit * CancellationToken`
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet f (ct: CancellationToken) (t: Task) = task {\n    do! t.ContinueWith(fun (_: Task) -> ())\n    return 1\n}"
+
+    match cancellationIn source with
+    | [ s ] ->
+        let patched = applyEdit source s.Range s.Replacement
+        Assert.Contains("t.ContinueWith((fun (_: Task) -> ()), ct)", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one token suggestion, got %A" other
+
+[<Fact>]
 let ``a token passed as the PAYLOAD is not appended again`` () =
     // CreateLinkedTokenSource(ct) takes the token as its argument — a
     // params/two-token sibling overload would happily compile `(ct, ct)`
@@ -1495,7 +1509,7 @@ let ``FR0055: a one-call Parse body becomes TryParse`` () =
             offer.Edits
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
-        Assert.Contains("match System.Int32.TryParse s with\n    | true, v -> v\n    | _ -> 0", patched)
+        Assert.Contains("match System.Int32.TryParse s with\n    | true, v -> v\n    | false, _ -> 0", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two findings, got %A" other
 
@@ -2143,7 +2157,7 @@ let ``FR0049: an antecedent read with no free binder name is noted without a rew
 
 [<Fact>]
 let ``FR0049: Task.Run around a RunSynchronously becomes Async.StartAsTask`` () =
-    // Task.Run queues the lambda to the thread pool and hands back its Task â€”
+    // Task.Run queues the lambda to the thread pool and hands back its Task -
     // Async.StartAsTask does exactly that without parking a pool thread on the
     // result, so the lambda (and the blocking wait inside it) goes away
     let source =
@@ -2207,8 +2221,8 @@ let ``FR0049: a thread-choreographed body still gets the Task.Run rewrite`` () =
 
 [<Fact>]
 let ``FR0049: a name merely ENDING in Thread is not thread choreography`` () =
-    // the veto read "Thread(" as a substring, so ThrowIfNotOnUIThread() â€”
-    // and every other VS threading helper, they are all spelled that way â€”
+    // the veto read "Thread(" as a substring, so ThrowIfNotOnUIThread() -
+    // and every other VS threading helper, they are all spelled that way -
     // counted as choreography and withheld the fixes for a whole file
     let source =
         "let throwIfNotOnUIThread () = ()\nlet f (t: System.Threading.Tasks.Task) = task {\n    throwIfNotOnUIThread()\n    t.Wait()\n    return 1\n}"

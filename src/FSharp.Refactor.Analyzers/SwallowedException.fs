@@ -733,7 +733,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       Edits =
                                         [ expr.Range,
                                           textOfRange source expr.Range,
-                                          $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| _ -> {failure}" ] } ]
+                                          // the miss arm spelled out, as FR0014
+                                          // spells its TryGetValue one: a bare
+                                          // `_` hides what a two-case tuple
+                                          // match falls through on
+                                          $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| false, _ -> {failure}" ] } ]
                               | _ -> []
 
                           // 3. a narrower catch for file IO — for a body that IS the IO call: a

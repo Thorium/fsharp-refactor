@@ -49,6 +49,7 @@ let private testAttributes =
           "TestCaseSource" ]
 
 let private aZRegex = Regex "(?=[A-Z])"
+
 /// The double-backtick spelling, when the name earns one: five or more
 /// words, plain camel/snake, no acronym runs.
 let quotedForm (name: string) : string option =

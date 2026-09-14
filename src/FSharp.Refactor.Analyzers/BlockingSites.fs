@@ -513,7 +513,7 @@ let threadBound (source: ISourceText) (body: SynExpr) =
     |> List.exists text.Contains
     // The two Thread spellings need a word boundary, which a substring test
     // cannot give them: plain "Thread(" also reads ThrowIfNotOnUIThread(),
-    // SwitchToMainThread( and every other name ENDING in Thread â€” the VS
+    // SwitchToMainThread( and every other name ENDING in Thread - the VS
     // threading helpers are called that, and a whole file's fixes were
     // withheld over it. `\bThread` matches the type and nothing built on
     // its name (ThreadHelper, ThreadPool, ThreadStatic keep their own

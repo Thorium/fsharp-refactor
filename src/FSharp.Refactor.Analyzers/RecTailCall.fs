@@ -47,13 +47,14 @@ type Suggestion =
     }
 
 let private versiondRegex = Regex @"Version=(\d+)\."
+
 /// [<TailCall>] ships in FSharp.Core 8.0 — in EVERY FSharp.Core the file
 /// compiles against: a multi-targeted project's wide pass is asked about
 /// the narrowest target's too (FsToolkit's List.fs, offered five under
 /// net9.0 and put back by its netstandard2.0 build on FSharp.Core 6).
-let private coreHasAttribute (check: FSharpCheckFileResults) =
+let private coreHasAttribute (check: FSharpCheckFileResults) (fileName: string) =
     let projectMinAllows =
-        match CapabilityFix.minFSharpCoreMajor check.ProjectContext.ProjectOptions.ProjectFileName with
+        match CapabilityFix.minFSharpCoreMajorFor check.ProjectContext.ProjectOptions.ProjectFileName fileName with
         | ValueSome projectMin -> projectMin >= 8
         | ValueNone -> true
 
@@ -175,7 +176,7 @@ let rec private ok (c: Ctx) (isTail: bool) (e: SynExpr) : bool =
     | _ -> mentionFree c e.Range
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
-    if not (coreHasAttribute check) then
+    if not (coreHasAttribute check parseTree.FileName) then
         []
     else
         let index = AstIndex.ofTree parseTree

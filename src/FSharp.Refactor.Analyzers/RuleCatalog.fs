@@ -254,6 +254,7 @@ let private categories =
       "an exception handler reading only .Message from a type whose diagnosis is elsewhere"
       "FR0152", Category.Correctness, "GetOrAdd caching a Task or Lazy, so one failure is cached for every later reader"
       "FR0153", Category.Correctness, "a credential in a [<Literal>], which should be a development one"
+      "FR0154", Category.Performance, "TryGetValue then a store on a ConcurrentDictionary becomes one GetOrAdd"
       "FR0073",
       Category.Idiom,
       "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"

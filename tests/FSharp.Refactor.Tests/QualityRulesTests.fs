@@ -1699,6 +1699,12 @@ let private commentDocIn (source: string) =
     CommentDoc.find tree sourceText
 
 [<Fact>]
+let ``a trailing comment spelling code is not a summary`` () =
+    // Thoth.Json: `// d >> Result.map box` beside `let inline boxDecoder`
+    // notes an equivalent spelling, and became public API doc
+    Assert.Empty(commentDocIn "module M\nlet boxDecoder (d: int -> Result<int, string>) = d // d >> Result.map box")
+
+[<Fact>]
 let ``a trailing comment on a public binding becomes its XML doc`` () =
     let source = "module M\nlet interestRate r n = r * n // monthly, non-compounding"
 

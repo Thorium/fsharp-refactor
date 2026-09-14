@@ -1280,6 +1280,24 @@ let ``FR0147: the tupled-call guard holds for any namespace with the extension, 
     | other -> failwithf "Expected a declined Ext finding, got %A" other
 
 [<Fact>]
+let ``FR0147: a tupled call that already resolves to an instance overload of that arity is no clash`` () =
+    // `s.EndsWith("x", StringComparison.Ordinal)` is String's own
+    // two-parameter overload; System's MemoryExtensions.EndsWith cannot
+    // take it over, so `open System` goes in. Files of this repository
+    // spelling `System.` sixteen times were held to a note by that name
+    let source =
+        "module Test\nlet a (s: string) = s.EndsWith(\"x\", System.StringComparison.Ordinal)\nlet b () = System.DateTime.UtcNow\nlet c () = System.Environment.TickCount\nlet d () = System.GC.Collect()"
+
+    match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System") with
+    | [ s ] ->
+        Assert.Equal(None, s.Reason)
+        let patched = applyAll source s.Edits
+        Assert.Contains("open System", patched)
+        Assert.Contains("s.EndsWith(\"x\", StringComparison.Ordinal)", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected an offered System finding, got %A" other
+
+[<Fact>]
 let ``FR0147: only the namespace part goes, a type stays qualified by its name`` () =
     let source =
         "module Test\nlet a (p: string) = System.IO.File.Exists p\nlet b (p: string) = System.IO.File.ReadAllText p\nlet c (p: string) = System.IO.Path.GetFileName p"

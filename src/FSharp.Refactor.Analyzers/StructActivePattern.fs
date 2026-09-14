@@ -157,7 +157,16 @@ let findWith
                         decl.Range.StartColumn = 0
                         || (source.GetLineString(decl.Range.StartLine - 1)).Substring(0, decl.Range.StartColumn).Trim() = ""
 
-                    if ownLine && collectResults results body && results.Count > 0 then
+                    // a body split by `#if` has a branch the parse tree
+                    // never shows: only the active one would turn
+                    // ValueSome, and the attribute constrains both
+                    // (Thoth.Json.Core.Auto's Fable build failed FS0001)
+                    if
+                        ownLine
+                        && not (spansDirective source decl.Range)
+                        && collectResults results body
+                        && results.Count > 0
+                    then
                         // below any XML doc, so the attribute sits against
                         // the binding it marks
                         let insertPos = attributeInsertPos source decl.Range

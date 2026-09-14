@@ -258,12 +258,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                       let after = lineText.Substring wildRange.EndColumn
                                       let barIndex = before.LastIndexOf '|'
 
+                                      // the wildcard's `|` must sit where the
+                                      // first arm's does before a case may take
+                                      // a line of its own under it: FSharpPlus's
+                                      // Seq.fs has a `| _ -> return false }` arm
+                                      // indented four deeper than its match, and
+                                      // the parser read the continuation line
+                                      // as anything but an or-pattern
+                                      let alignedWithFirstArm =
+                                          match explicitClauses with
+                                          | SynMatchClause(pat = first) :: _ ->
+                                              let firstLine = source.GetLineString(first.Range.StartLine - 1)
+
+                                              firstLine.Substring(0, first.Range.StartColumn).LastIndexOf '|' = barIndex
+                                          | [] -> false
+
                                       let replacement =
                                           if
                                               cases.Length > 1
                                               && (before + joined + after).Length > 100
                                               && barIndex >= 0
                                               && before.Substring(0, barIndex).Trim() = ""
+                                              && alignedWithFirstArm
                                           then
                                               let bar = "\n" + System.String(' ', barIndex) + "| "
                                               String.concat bar cases

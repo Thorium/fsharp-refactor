@@ -10,6 +10,7 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
+open System
 
 [<Literal>]
 let private HelpBase = "https://github.com/Thorium/fsharp-refactor"
@@ -60,7 +61,7 @@ module private DeepStack =
 
     let private workers =
         lazy
-            (for i in 1 .. max 2 System.Environment.ProcessorCount do
+            (for i in 1 .. max 2 Environment.ProcessorCount do
                 let t =
                     Thread(
                         (fun () ->
@@ -157,7 +158,7 @@ let private whenAnyEnabled (fileName: string) (codes: string list) (name: string
 /// one: a multi-targeted project varies its defines and references per
 /// framework, never its OutputType or whether it is a script.
 let private leafCompilations =
-    System.Collections.Concurrent.ConcurrentDictionary<string, bool>(System.StringComparer.OrdinalIgnoreCase)
+    System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
 
 let private shapeScopeOpen (fileName: string) (options: AnalyzerProjectOptions) =
     Visibility.apiChangesAllowed ()
@@ -262,9 +263,9 @@ let patternBoundInSibling (fileName: string) (options: AnalyzerProjectOptions) :
     let siblings =
         options.SourceFiles
         |> Seq.filter (fun p ->
-            not (System.String.Equals(full p, analyzed, System.StringComparison.OrdinalIgnoreCase))
+            not (String.Equals(full p, analyzed, StringComparison.OrdinalIgnoreCase))
             // a signature file declares, it never binds a pattern
-            && not (p.EndsWith(".fsi", System.StringComparison.OrdinalIgnoreCase)))
+            && not (p.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase)))
         |> List.ofSeq
 
     match siblings with
@@ -304,7 +305,7 @@ let patternBoundInSibling (fileName: string) (options: AnalyzerProjectOptions) :
             |> List.exists (fun pattern -> System.Text.RegularExpressions.Regex.IsMatch(text, pattern))
 
         fun name ->
-            let lowercase = name.Length > 0 && not (System.Char.IsUpper name.[0])
+            let lowercase = name.Length > 0 && not (Char.IsUpper name.[0])
 
             patterns.Value
             |> List.exists (fun sibling ->
@@ -431,7 +432,7 @@ let private langVersionAtLeast (major: float) (options: AnalyzerProjectOptions) 
     | Some("latest" | "preview" | "latestmajor") -> true
     | Some v ->
         match
-            System.Double.TryParse(
+            Double.TryParse(
                 v,
                 System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture
@@ -466,7 +467,10 @@ let private fsharpCoreVersions =
 /// files its netstandard2.0 target compiles against FSharp.Core 6. The
 /// apply tool hands the lowest FSharp.Core it has resolved for the project
 /// to CapabilityFix.minFSharpCoreMajor, and the gate answers for that one.
-let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
+/// A file OTHER projects of the run compile too holds to theirs as well
+/// (CapabilityFix.minFSharpCoreMajorFor): elmish's src/program.fs sits in
+/// Elmish.fsproj on FSharp.Core 10 and in Fable.Elmish.fsproj on 4.7.
+let private fsharpCoreAtLeast (major: int) (fileName: string) (options: AnalyzerProjectOptions) =
     let referencePath =
         options.OtherOptions
         |> List.tryPick (fun (arg: string) ->
@@ -475,7 +479,7 @@ let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
                 // would miss it and silently wave the project through
                 let path = (arg.Substring 3).Trim '"'
 
-                if path.EndsWith("FSharp.Core.dll", System.StringComparison.OrdinalIgnoreCase) then
+                if path.EndsWith("FSharp.Core.dll", StringComparison.OrdinalIgnoreCase) then
                     Some path
                 else
                     None
@@ -484,7 +488,7 @@ let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
 
     let own =
         match referencePath with
-        | None -> System.Int32.MaxValue
+        | None -> Int32.MaxValue
         | Some path ->
             fsharpCoreVersions.GetOrAdd(
                 path,
@@ -492,11 +496,11 @@ let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
                     try
                         System.Reflection.AssemblyName.GetAssemblyName(p).Version.Major
                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                        System.Int32.MaxValue
+                        Int32.MaxValue
             )
 
     let found =
-        match CapabilityFix.minFSharpCoreMajor options.ProjectFileName with
+        match CapabilityFix.minFSharpCoreMajorFor options.ProjectFileName fileName with
         | ValueSome projectMin -> min own projectMin
         | ValueNone -> own
 
@@ -504,8 +508,8 @@ let private fsharpCoreAtLeast (major: int) (options: AnalyzerProjectOptions) =
 
 /// Interpolation needs BOTH halves: the F# 5 syntax and the FSharp.Core
 /// that backs it.
-let private canInterpolate (options: AnalyzerProjectOptions) =
-    langVersionAtLeast 5.0 options && fsharpCoreAtLeast 5 options
+let private canInterpolate (fileName: string) (options: AnalyzerProjectOptions) =
+    langVersionAtLeast 5.0 options && fsharpCoreAtLeast 5 fileName options
 
 /// Does the project reference an assembly of this simple name?
 let private referencesAssembly (name: string) (options: AnalyzerProjectOptions) =
@@ -513,14 +517,15 @@ let private referencesAssembly (name: string) (options: AnalyzerProjectOptions) 
     |> List.exists (fun (arg: string) ->
         arg.StartsWith "-r:"
         && System.IO.Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"')
-           |> fun n -> n.Equals(name, System.StringComparison.OrdinalIgnoreCase))
+           |> fun n -> n.Equals(name, StringComparison.OrdinalIgnoreCase))
 
 /// `task { }` needs FSharp.Core 6, and a Fable project compiles to a
 /// target where a test's blocking IS the behaviour under test — Fable's
 /// own suites assert `Async.RunSynchronously` semantics — so neither may
 /// have its tests rewritten around a Task.
-let private canReturnTask (options: AnalyzerProjectOptions) =
-    fsharpCoreAtLeast 6 options && not (referencesAssembly "Fable.Core" options)
+let private canReturnTask (fileName: string) (options: AnalyzerProjectOptions) =
+    fsharpCoreAtLeast 6 fileName options
+    && not (referencesAssembly "Fable.Core" options)
 
 // ---- FR0001 MatchToIf ----
 
@@ -1035,17 +1040,26 @@ let private recGroupMessages check (parseTree: ParsedInput) (source: ISourceText
         RecGroup.find check parseTree source
         |> List.map (fun s ->
             let explanation =
-                if s.IsSelfRecursive then
+                match s.Members with
+                | [ _ ] when s.IsSelfRecursive ->
                     $"'{s.MemberName}' calls only itself, no other member of its `let rec` group; its own `let rec` above the group narrows the knot."
-                else
+                | [ _ ] ->
                     $"'{s.MemberName}' references no member of its `let rec` group; a plain `let` above the group says it takes part in no recursion."
+                | members ->
+                    let named = members |> List.map (fun (n, _) -> $"'{n}'") |> String.concat ", "
+
+                    $"{named} reference no member of their `let rec` group beyond each other; their own `let`s above the group say they take part in no recursion."
 
             hint
                 "FR0116"
                 explanation
                 s.RemoveRange
-                [ fix s.InsertRange "" s.InsertText
-                  fix s.RemoveRange (Text.textOfRange source s.RemoveRange) "" ])
+                // explicit yields: an element followed by a `for` in a list
+                // is a discarded statement (FS0020), and the insert was
+                // silently lost - FAKE's Wix.fs had a member deleted and
+                // never put back
+                (fix s.InsertRange "" s.InsertText
+                 :: [ for r in s.Removes -> fix r (Text.textOfRange source r) "" ]))
 
     let recrowns =
         RecGroup.findHeadRecrowns check parseTree source
@@ -1192,7 +1206,7 @@ let activePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
         whenChecked
             ctx
             (activePatternMessages
-                (fsharpCoreAtLeast 6 ctx.ProjectOptions)
+                (fsharpCoreAtLeast 6 ctx.FileName ctx.ProjectOptions)
                 ctx.ParseFileResults.ParseTree
                 ctx.SourceText))
 
@@ -1200,7 +1214,7 @@ let activePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let activePatternCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0006" "ActivePattern" (fun () ->
         activePatternMessages
-            (fsharpCoreAtLeast 6 ctx.ProjectOptions)
+            (fsharpCoreAtLeast 6 ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText
             ctx.CheckFileResults)
@@ -1281,7 +1295,7 @@ let resultModuleEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
         whenChecked
             ctx
             (resultModuleMessages
-                (fsharpCoreAtLeast 9 ctx.ProjectOptions)
+                (fsharpCoreAtLeast 9 ctx.FileName ctx.ProjectOptions)
                 ctx.ParseFileResults.ParseTree
                 ctx.SourceText)
         |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
@@ -1290,7 +1304,7 @@ let resultModuleEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let resultModuleCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0009" "ResultModule" (fun () ->
         resultModuleMessages
-            (fsharpCoreAtLeast 9 ctx.ProjectOptions)
+            (fsharpCoreAtLeast 9 ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText
             ctx.CheckFileResults)
@@ -1347,7 +1361,7 @@ let private structActivePatternMessages
 let structActivePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0011" "StructActivePattern" (fun () ->
         whenChecked ctx (fun check ->
-            if fsharpCoreAtLeast 6 ctx.ProjectOptions then
+            if fsharpCoreAtLeast 6 ctx.FileName ctx.ProjectOptions then
                 structActivePatternMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     (seenByLaterFile ctx.FileName ctx.ProjectOptions)
@@ -1360,7 +1374,7 @@ let structActivePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list>
 [<CliAnalyzer("StructActivePattern", "Make trivial partial active patterns struct-returning", HelpBase)>]
 let structActivePatternCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0011" "StructActivePattern" (fun () ->
-        if fsharpCoreAtLeast 6 ctx.ProjectOptions then
+        if fsharpCoreAtLeast 6 ctx.FileName ctx.ProjectOptions then
             structActivePatternMessages
                 (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                 (seenByLaterFile ctx.FileName ctx.ProjectOptions)
@@ -1832,6 +1846,28 @@ let dictTryAddCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0018" "DictTryAdd" (fun () ->
         dictTryAddMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
+// ---- FR0154 DictGetOrAdd ----
+
+let private dictGetOrAddMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    DictTryGet.findGetOrAdd parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0154"
+            "TryGetValue followed by a store looks the key up twice and leaves a window for another thread to store first; GetOrAdd does both in one call."
+            s.Range
+            [ fix s.Range s.OriginalText s.ReplacementText ])
+
+[<EditorAnalyzer("DictGetOrAdd", "Replace TryGetValue-then-store on ConcurrentDictionary with GetOrAdd", HelpBase)>]
+let dictGetOrAddEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0154" "DictGetOrAdd" (fun () ->
+        whenChecked ctx (dictGetOrAddMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("DictGetOrAdd", "Replace TryGetValue-then-store on ConcurrentDictionary with GetOrAdd", HelpBase)>]
+let dictGetOrAddCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0154" "DictGetOrAdd" (fun () ->
+        dictGetOrAddMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
 // ---- FR0019 / FR0020 / FR0054 ObjectRules ----
 
 let private objectRulesMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
@@ -2138,7 +2174,7 @@ let private stringConcatMessages
 [<EditorAnalyzer("StringConcat", "Rewrite string + chains as interpolated strings", HelpBase)>]
 let stringConcatEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0031" "StringConcat" (fun () ->
-        if canInterpolate ctx.ProjectOptions then
+        if canInterpolate ctx.FileName ctx.ProjectOptions then
             whenChecked ctx (stringConcatMessages true ctx.ParseFileResults.ParseTree ctx.SourceText)
         else
             [])
@@ -2146,7 +2182,7 @@ let stringConcatEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("StringConcat", "Rewrite string + chains as interpolated strings", HelpBase)>]
 let stringConcatCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0031" "StringConcat" (fun () ->
-        if canInterpolate ctx.ProjectOptions then
+        if canInterpolate ctx.FileName ctx.ProjectOptions then
             stringConcatMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         else
             [])
@@ -2630,7 +2666,7 @@ let private vectorizedLinqMessages (parseTree: ParsedInput) (source: ISourceText
                     "%s.%s over an array is a scalar loop; on .NET 8+ System.Linq's %s%s() is SIMD-vectorized for '%s''s element type (note: LINQ Sum throws on overflow where F#'s sum wraps)."
                     s.ModuleName
                     s.FunctionName
-                    (string (System.Char.ToUpperInvariant s.FunctionName.[0]))
+                    (string (Char.ToUpperInvariant s.FunctionName.[0]))
                     (s.FunctionName.Substring 1)
                     s.ArrayName
 
@@ -2668,7 +2704,7 @@ let private sprintfInterpolationMessages (parseTree: ParsedInput) (source: ISour
 [<EditorAnalyzer("SprintfInterpolation", "Rewrite fully applied sprintf as typed interpolation", HelpBase)>]
 let sprintfInterpolationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0042" "SprintfInterpolation" (fun () ->
-        if canInterpolate ctx.ProjectOptions then
+        if canInterpolate ctx.FileName ctx.ProjectOptions then
             whenChecked ctx (sprintfInterpolationMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
         else
             [])
@@ -2676,7 +2712,7 @@ let sprintfInterpolationEditorAnalyzer (ctx: EditorContext) : Async<Message list
 [<CliAnalyzer("SprintfInterpolation", "Rewrite fully applied sprintf as typed interpolation", HelpBase)>]
 let sprintfInterpolationCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0042" "SprintfInterpolation" (fun () ->
-        if canInterpolate ctx.ProjectOptions then
+        if canInterpolate ctx.FileName ctx.ProjectOptions then
             sprintfInterpolationMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         else
             [])
@@ -2941,7 +2977,7 @@ let syncOverAsyncEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
         whenChecked ctx (fun check ->
             // the antecedent bind and the taskify fix both write `task { }`:
             // FSharp.Core 6+ on a non-Fable target only
-            let taskAvailable = canReturnTask ctx.ProjectOptions
+            let taskAvailable = canReturnTask ctx.FileName ctx.ProjectOptions
 
             syncOverAsyncMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.FileName true taskAvailable check
             @ (if taskAvailable then
@@ -2952,7 +2988,7 @@ let syncOverAsyncEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("SyncOverAsync", "Blocking waits inside async/task expressions", HelpBase)>]
 let syncOverAsyncCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0049" "SyncOverAsync" (fun () ->
-        let taskAvailable = canReturnTask ctx.ProjectOptions
+        let taskAvailable = canReturnTask ctx.FileName ctx.ProjectOptions
 
         syncOverAsyncMessages
             ctx.ParseFileResults.ParseTree
@@ -4793,7 +4829,7 @@ let private failwithContextMessages
 [<EditorAnalyzer("FailwithContext", "Static failwith messages that could carry their arguments", HelpBase)>]
 let failwithContextEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0092" "FailwithContext" (fun () ->
-        if canInterpolate ctx.ProjectOptions then
+        if canInterpolate ctx.FileName ctx.ProjectOptions then
             whenChecked ctx (failwithContextMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
         else
             [])
@@ -4801,7 +4837,7 @@ let failwithContextEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("FailwithContext", "Static failwith messages that could carry their arguments", HelpBase)>]
 let failwithContextCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0092" "FailwithContext" (fun () ->
-        if canInterpolate ctx.ProjectOptions then
+        if canInterpolate ctx.FileName ctx.ProjectOptions then
             failwithContextMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         else
             [])
@@ -4820,7 +4856,7 @@ let private testReturnsTaskMessages (parseTree: ParsedInput) (source: ISourceTex
 [<EditorAnalyzer("TestReturnsTask", "Tests that block on async work return a Task instead", HelpBase)>]
 let testReturnsTaskEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0142" "TestReturnsTask" (fun () ->
-        if canReturnTask ctx.ProjectOptions then
+        if canReturnTask ctx.FileName ctx.ProjectOptions then
             whenChecked ctx (testReturnsTaskMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
             |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText
         else
@@ -4829,7 +4865,7 @@ let testReturnsTaskEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("TestReturnsTask", "Tests that block on async work return a Task instead", HelpBase)>]
 let testReturnsTaskCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0142" "TestReturnsTask" (fun () ->
-        if canReturnTask ctx.ProjectOptions then
+        if canReturnTask ctx.FileName ctx.ProjectOptions then
             testReturnsTaskMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         else
             [])
@@ -5342,7 +5378,7 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
                 let digits = s.ConstantText.Replace("_", "").TrimEnd('l', 'L', 'u', 'U', 'y', 's')
 
                 match
-                    System.Int64.TryParse(
+                    Int64.TryParse(
                         digits,
                         System.Globalization.NumberStyles.AllowLeadingSign,
                         System.Globalization.CultureInfo.InvariantCulture
@@ -5354,7 +5390,7 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
                         s.ConstantText
                         // one times any int32 fits, so the threshold is
                         // never below 1 (the minimum's magnitude is 2^31)
-                        (max 1L (int64 System.Int32.MaxValue / abs n))
+                        (max 1L (int64 Int32.MaxValue / abs n))
                         digits
                 | _ ->
                     sprintf

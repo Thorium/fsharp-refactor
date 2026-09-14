@@ -5,6 +5,7 @@ module FSharp.Refactor.Text
 
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
+open System
 open System.Text.RegularExpressions
 
 /// The exact source text covered by a range.
@@ -82,7 +83,7 @@ let rangesNest (ranges: range list) =
         ranges
         |> List.skip (i + 1)
         |> List.exists (fun other ->
-            r.FileName.Equals(other.FileName, System.StringComparison.OrdinalIgnoreCase)
+            r.FileName.Equals(other.FileName, StringComparison.OrdinalIgnoreCase)
             && (Range.rangeContainsRange r other || Range.rangeContainsRange other r)))
 
 /// Strip redundant outer parens from an expression whose new context makes
@@ -432,6 +433,40 @@ let spansDirective (source: ISourceText) (r: range) =
 
         text.StartsWith "#if" || text.StartsWith "#else" || text.StartsWith "#endif")
 
+/// Does the first non-blank line below `line` stand at `column` or beyond
+/// it? `column` is where an edit ENDS: a line that far in is aligned to
+/// text after the edit on the line above - the operand of a paren block,
+/// a tuple element under its sibling - and an edit that changes the
+/// length of its line shifts that anchor without shifting the line. (A
+/// line past the edit's start but short of its end is the body under an
+/// `if` header, anchored to nothing the edit moves.) fparsec's
+/// CharParsers.fs:
+///
+///     && stream.SkipCaseFolded("inf") && (flags <- flags ||| NLF.IsInfinity
+///                                         stream.SkipCaseFolded("inity") |> ignore
+///
+/// dropping the parens moved `flags` two columns left, the lines under it
+/// stayed, and the block re-parsed as an application. A rule that changes
+/// a line's length holds off while such a line follows; a line indented no
+/// further starts a construct of its own and is anchored to nothing past
+/// the edit. `lineAt` is 1-based, like a range's lines.
+let alignedLineBelow (lineAt: int -> string) (lineCount: int) (line: int) (column: int) =
+    let mutable l = line + 1
+    let mutable verdict = None
+
+    while verdict.IsNone && l <= lineCount do
+        let text = lineAt l
+
+        if String.IsNullOrWhiteSpace text then
+            l <- l + 1
+        else
+            verdict <- Some(text.Length - text.TrimStart().Length >= column)
+
+    defaultArg verdict false
+
+let alignedContinuationBelow (source: ISourceText) (line: int) (column: int) =
+    alignedLineBelow (fun l -> source.GetLineString(l - 1)) (source.GetLineCount()) line column
+
 /// Does a directive open on the first non-blank line AFTER the range? The
 /// parse tree ends at the last construct the ACTIVE defines leave visible,
 /// so a `#if` block starting just below it can hold further match arms that
@@ -473,7 +508,7 @@ let insideQuotedCode (path: SyntaxNode list) =
         match node with
         | SyntaxNode.SynExpr(SynExpr.Quote _) -> true
         | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.Ident id)) ->
-            id.idText.EndsWith("query", System.StringComparison.OrdinalIgnoreCase)
+            id.idText.EndsWith("query", StringComparison.OrdinalIgnoreCase)
         | _ -> false)
 
 /// Does the file `open System` at any top-level line? Textual, cheap and
@@ -502,9 +537,9 @@ let identifierPattern (name: string) =
 /// identifier rather than as a mention of `naive` — plus the `'` that
 /// identifierPattern guards alongside it.
 let private isIdentifierChar (c: char) =
-    System.Char.IsLetterOrDigit c
+    Char.IsLetterOrDigit c
     || c = '''
-    || (match System.Char.GetUnicodeCategory c with
+    || (match Char.GetUnicodeCategory c with
         | System.Globalization.UnicodeCategory.NonSpacingMark
         | System.Globalization.UnicodeCategory.ConnectorPunctuation -> true
         | _ -> false)
@@ -516,10 +551,10 @@ let private isIdentifierChar (c: char) =
 /// these analyzers for days), or a pattern-cache lookup on every call; two
 /// boundary checks around an ordinal IndexOf need neither.
 let mentionsIdentifier (text: string) (name: string) =
-    if System.String.IsNullOrEmpty name then
+    if String.IsNullOrEmpty name then
         false
     else
-        let mutable i = text.IndexOf(name, System.StringComparison.Ordinal)
+        let mutable i = text.IndexOf(name, StringComparison.Ordinal)
         let mutable found = false
 
         while not found && i >= 0 do
@@ -529,7 +564,7 @@ let mentionsIdentifier (text: string) (name: string) =
             if openedBefore && (ended >= text.Length || not (isIdentifierChar text.[ended])) then
                 found <- true
             else
-                i <- text.IndexOf(name, i + 1, System.StringComparison.Ordinal)
+                i <- text.IndexOf(name, i + 1, StringComparison.Ordinal)
 
         found
 
@@ -561,7 +596,7 @@ let commentsWithText (parseTree: ParsedInput) (source: ISourceText) =
 /// rule can do that, it stands down here.
 let hasSignatureFile (fileName: string) =
     try
-        not (System.String.IsNullOrEmpty fileName)
+        not (String.IsNullOrEmpty fileName)
         && System.IO.File.Exists(System.IO.Path.ChangeExtension(fileName, ".fsi"))
     with _ -> // an unreadable path simply is not a signature; fsharpanalyzer: ignore-line FR0055
         false
@@ -588,7 +623,7 @@ let hasSignatureFile (fileName: string) =
 /// does not compile.
 let signatureMentions (fileName: string) (name: string) =
     try
-        if System.String.IsNullOrEmpty fileName || System.String.IsNullOrEmpty name then
+        if String.IsNullOrEmpty fileName || String.IsNullOrEmpty name then
             false
         else
             let signature = System.IO.Path.ChangeExtension(fileName, ".fsi")
@@ -783,7 +818,7 @@ let reindentBlock (target: int) (firstColumn: int) (text: string) : string optio
     let lines = text.Replace("\r\n", "\n").Split '\n'
 
     if lines.Length = 1 then
-        Some(System.String(' ', target) + lines.[0])
+        Some(String(' ', target) + lines.[0])
     else
         let shift = target - firstColumn
         let continuation = lines |> Array.skip 1
@@ -792,7 +827,7 @@ let reindentBlock (target: int) (firstColumn: int) (text: string) : string optio
         if
             (shift < 0
              && continuation
-                |> Array.exists (fun l -> not (System.String.IsNullOrWhiteSpace l) && leading l < -shift))
+                |> Array.exists (fun l -> not (String.IsNullOrWhiteSpace l) && leading l < -shift))
             // a continuation line that belongs to a string literal (or a
             // block comment) is content, not layout: moving it edits the
             // program's data
@@ -803,8 +838,8 @@ let reindentBlock (target: int) (firstColumn: int) (text: string) : string optio
             let moved =
                 continuation
                 |> Array.map (fun l ->
-                    if System.String.IsNullOrWhiteSpace l then ""
-                    elif shift >= 0 then System.String(' ', shift) + l
+                    if String.IsNullOrWhiteSpace l then ""
+                    elif shift >= 0 then String(' ', shift) + l
                     else l.Substring(-shift))
 
-            Some(String.concat "\n" (Array.append [| System.String(' ', target) + lines.[0] |] moved))
+            Some(String.concat "\n" (Array.append [| String(' ', target) + lines.[0] |] moved))

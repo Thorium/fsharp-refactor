@@ -122,6 +122,7 @@ let private parseVersioned (segment: string) =
         None
 
 let private refnetd0Regex = Regex @"[\\/]ref[\\/]net(\d+)\.0[\\/]"
+
 /// The major version of the SDK the script is checked against, read off
 /// its reference assemblies (`...\ref\net10.0\...`).
 let sdkMajorOf (compilerOptions: string seq) =

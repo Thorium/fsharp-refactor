@@ -91,7 +91,7 @@ let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) 
             override _.WalkSynModuleDecl(path, decl) =
                 match decl with
                 | SynModuleDecl.Let(bindings = bindings) ->
-                    for SynBinding(headPat = headPat) in bindings do
+                    for SynBinding(headPat = headPat; attributes = attrs) in bindings do
                         match headPat with
                         | SynPat.LongIdent(
                             longDotId = SynLongIdent(id = [ ident ])
@@ -100,6 +100,13 @@ let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) 
                             elements.Length >= 2
                             && isSingleLine paren.Range
                             && scopeMatches path accessibility
+                            // an attribute makes the parameter shape someone
+                            // else's business: Feliz's `[<ReactComponent>]`
+                            // and `[<ReactMemoComponent(areEqual = ...)>]`
+                            // derive the props object from the tuple, and a
+                            // Fable plugin's reading of the curried form
+                            // cannot be checked here
+                            && attrs.IsEmpty
                             // an ACTIVE PATTERN's tuple is its one input:
                             // `(|A|B|) (xs, names)` is matched as `A pairs` on
                             // a tuple, and curried it would expect an

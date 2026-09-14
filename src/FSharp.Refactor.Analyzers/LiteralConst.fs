@@ -136,7 +136,14 @@ let findWith
                           // there too: the same veto, project-wide
                           let clashesElsewhere = not declaredPrivately && boundAsPatternElsewhere id.idText
 
-                          if ownLine && not clashesElsewhere then
+                          // a body split by `#if` is a constant only in the
+                          // branch the parse tree shows: Paket's
+                          // `runningOnMono` is `false` here and a `try` under
+                          // ENABLE_MONO_SUPPORT, where the attribute would
+                          // not compile
+                          let splitBody = spansDirective source decl.Range
+
+                          if ownLine && not clashesElsewhere && not splitBody then
                               let indent = String.replicate kw.StartColumn " "
                               let at = Position.mkPos kw.StartLine 0
 

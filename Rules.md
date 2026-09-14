@@ -22,7 +22,7 @@ and its category and default state match the code.
 | FR0011 | Performance | v | v | | `let private (\|Even\|_\|) n = if n % 2 = 0 then Some n else None` | `[<return: Struct>] let private (\|Even\|_\|) n = if n % 2 = 0 then ValueSome n else ValueNone` |
 | FR0012 | Idiom | v | | | `not (a = b)` | `a <> b` |
 | FR0013 | Cosmetic | v | | | `List.max([4; 3])` | `List.max [4; 3]` |
-| FR0014 | Performance | v | | | `if d.ContainsKey k then f d.[k] else e` | `match d.TryGetValue k with true, value -> f value \| _ -> e` |
+| FR0014 | Performance | v | | | `if d.ContainsKey k then f d.[k] else e` | `match d.TryGetValue k with true, value -> f value \| false, _ -> e` |
 | FR0015 | Performance | v | | | `Regex.IsMatch(s, "^abc")` | `s.StartsWith "abc"` |
 | FR0016 | Performance | v | v | | `type private Shape = \| Circle of radius: float \| Square of side: float` | `[<Struct>] type private Shape = \| Circle of radius: float \| Square of side: float` |
 | FR0017 | Correctness | v | | | `comp \|> ignore` | — |
@@ -161,6 +161,7 @@ and its category and default state match the code.
 | FR0151 | Correctness | v | | | `with :? ReflectionTypeLoadException as e -> log e.Message`, `with :? WebException as wex -> log wex.Message` | in place of a `reraise()` under a `GetTypes()` try: `let loaded = ... e.Types filtered of nulls ... in if Array.isEmpty loaded then reraise () else loaded`, plus a `// TODO: log e.LoaderExceptions` where it ends the line (editor, offered FIRST); then the `e.LoaderExceptions \|> ... \|> String.concat "; "` join. Reading EITHER member, in the body or the `when` guard, already counts as handled; WebException note-only |
 | FR0152 | Correctness | v | | | `cache.GetOrAdd(args, addCache)` where the value type is `Task`/`ValueTask`/`Lazy` | note only - a faulted value stays cached and every later reader gets it; remove the entry when it faults |
 | FR0153 | Correctness | v | | | `[<Literal>] let cs = "Server=...;Password=..."` on a non-loopback server | — |
+| FR0154 | Performance | v | | | `match xs.TryGetValue key with<br>\| true, x -> x<br>\| false, _ -><br>    let res = compute ()<br>    xs.[key] <- res<br>    res` on a `ConcurrentDictionary` | `xs.GetOrAdd(key, fun _ -> compute ())` |
 
 \*) Enabled by default. A blank cell means the rule is off until
 `fsharprefactor.json` turns it on (`"FR0099": true`) or a run asks for it
@@ -194,7 +195,7 @@ Manual `Some/None` (and `ValueSome/ValueNone`) match → `Option`/`ValueOption` 
 
 ### FR0003 — idiom
 
-Extract function composition (`f >> g`) from pipeline/nested-application lambdas
+Extract function composition (`f >> g`) from pipeline/nested-application lambdas. Argument-position lambdas only, and not one sitting in the right-hand side of a GENERIC value with no lambda of its own above it (`let self : AT<'a, _> = AT (fun aCh -> ...)`): a constructor over a lambda generalises, a constructor over `f >> g` falls under the value restriction
 
 ### FR0004 — performance
 
@@ -214,7 +215,7 @@ Remove `mutable` from never-mutated local bindings and type-level `let mutable` 
 
 ### FR0008 — idiom
 
-Tupled → curried parameters for `private` functions (definition + all call sites)
+Tupled → curried parameters for `private` functions (definition + all call sites). A function carrying any attribute keeps its tuple: a compiler plugin (`[<ReactComponent>]`) may derive its props from the parameter shape
 
 ### FR0009 — idiom
 
@@ -226,11 +227,11 @@ Simplifications: `if c then true else false` → `c`; `x = None` → `x.IsNone` 
 
 ### FR0011 — performance
 
-Trivial partial active patterns → `[<return: Struct>]` `ValueSome`/`ValueNone` (perf: no allocation per match attempt)
+Trivial partial active patterns → `[<return: Struct>]` `ValueSome`/`ValueNone` (perf: no allocation per match attempt). A body split by `#if`/`#else` is left alone: only the active branch would be rewritten, and the attribute constrains both
 
 ### FR0012 — idiom
 
-Term-rewriting hints (fsharplint-style `lhs ===> rhs` rules): comparison flips, `x = true`, null checks via `isNull`, map fusion, `isEmpty (filter ...)` → `exists`, `sum (map ...)` → `sumBy`, `map id`, `id >>`, `compare ... = 0`, and more — extensible per repository
+Term-rewriting hints (fsharplint-style `lhs ===> rhs` rules): comparison flips, `x = true`, null checks via `isNull`, map fusion, `isEmpty (filter ...)` → `exists`, `sum (map ...)` → `sumBy`, `map id`, `id >>`, `compare ... = 0`, and more - extensible per repository. A De Morgan result brackets an operand only where precedence needs it: `not (a || b || c)`, never `not ((a || b) || c)`
 
 ### FR0013 — cosmetic
 
@@ -466,7 +467,7 @@ A pure binding inside a `for`/`while`/collection lambda that depends on nothing 
 
 ### FR0072 — correctness
 
-A DU match wildcard standing in for only 1-2 concrete cases is an open else; the fix expands them (`_` → `D`), so future union growth raises incomplete-match warnings
+A DU match wildcard standing in for only 1-2 concrete cases is an open else; the fix expands them (`_` → `D`), so future union growth raises incomplete-match warnings. Two cases share the wildcard's line; past 100 columns each takes a line under the arm's `|`, but only where that `|` sits at the first arm's column (an arm indented deeper than its match reads a continuation line as no or-pattern)
 
 ### FR0073 — idiom
 
@@ -538,11 +539,11 @@ The pattern `x :: []` → `[ x ]`
 
 ### FR0090 — idiom
 
-Tupled → curried for internal/public functions with every call site rewritten — across the project, in `#load`ing scripts, and in the sibling projects of the same solution that reference it (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0008). A public function changes shape only once every project referencing it in the run — the test project, typically, found through the solution the run was pointed at or the nearest one listing the project — is an F# project that typechecks, its call sites read and rewritten in the same atomic edit set; a referencing C# or VB project, a sibling with errors, a script `#r`ing the built assembly, or a bare project with no solution above it holds every public function as it is, and the run says so once per project. An internal function of an assembly naming friends in `InternalsVisibleTo` waits the same way for every friend to be read. A project that compiles one of this project's sources directly (a `<Compile Include="..\Common\X.fs">` link) is read the same way — another compilation of the same declaration, its own call sites rewritten in the same set, the fix line saying ` note: linked file` once per such file — and its shared files keep their shape only when it cannot be read; a vendored or generated source (an ignored path, git-ignored) is never reshaped and never counts as shared. The reading is paid only once a file holds a tupled definition worth reshaping: a project with none costs nothing
+Tupled → curried for internal/public functions with every call site rewritten - across the project, in scripts that `#load` it or `#r` its built assembly (read and rechecked against the sources through a redirected reference, so the stale dll never gets a say), and in the sibling projects of the same solution that reference it (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0008). A public function changes shape only once every project referencing it in the run - the test project, typically, found through the solution the run was pointed at or the nearest one listing the project - is an F# project that typechecks, its call sites read and rewritten in the same atomic edit set; a referencing C# or VB project, a sibling with errors, a `#r` script that does not typecheck against the sources, or a bare project with no solution above it holds every public function as it is, and the run says so once per project. An internal function of an assembly naming friends in `InternalsVisibleTo` waits the same way for every friend to be read. A project that compiles one of this project's sources directly (a `<Compile Include="..\Common\X.fs">` link) is read the same way - another compilation of the same declaration, its own call sites rewritten in the same set, the fix line saying ` note: linked file` once per such file - and its shared files keep their shape only when it cannot be read; a vendored or generated source (an ignored path, git-ignored) is never reshaped and never counts as shared. The reading is paid only once a file holds a tupled definition worth reshaping: a project with none costs nothing
 
 ### FR0091 — idiom
 
-Data-last parameter reorder for internal/public functions with every call site rewritten — across the project, in `#load`ing scripts, and in the sibling projects of the same solution that reference it, read and vetoed exactly as FR0090 describes (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0023). The two parameters must have different concrete types, so that a call site outside the run — another repository, which nothing can see or fix — fails to compile rather than silently swapping two interchangeable arguments
+Data-last parameter reorder for internal/public functions with every call site rewritten - across the project, in scripts that `#load` it or `#r` its built assembly (read and rechecked against the sources through a redirected reference, so the stale dll never gets a say), and in the sibling projects of the same solution that reference it, read and vetoed exactly as FR0090 describes (cross-file; `fsharp-refactor --api-changes` only, editors get the private-only FR0023). The two parameters must have different concrete types, so that a call site outside the run - another repository, which nothing can see or fix - fails to compile rather than silently swapping two interchangeable arguments
 
 ### FR0092 — idiom
 
@@ -554,7 +555,7 @@ A private/internal record field `X: int * int` is a reference tuple — one heap
 
 ### FR0094 — cosmetic
 
-Redundant parentheses around a single atomic argument to an instance *method*: `s.Contains("x")` → `s.Contains "x"`. Separate from FR0013 so either preference can be switched off alone. Left alone where the line continues into an application (`s.Contains("x") <> false` would read as if `"x" <> false` were the argument), under a projection, and for uppercase-headed paths — `System.Uri("x")` is a constructor, whose parens are load-bearing
+Redundant parentheses around a single atomic argument to an instance *method*: `s.Contains("x")` → `s.Contains "x"`. Separate from FR0013 so either preference can be switched off alone. Left alone where the line continues into an application (`s.Contains("x") <> false` would read as if `"x" <> false` were the argument), under a projection, and for uppercase-headed paths - `System.Uri("x")` is a constructor, whose parens are load-bearing - and where the next non-blank line stands aligned past the argument (a paren block continued under text after it would end up offside two columns to the left). The same alignment check holds for FR0013, and the apply tool applies it to every single-line edit that changes a line's length
 
 ### FR0095 — idiom
 
@@ -610,7 +611,7 @@ Arithmetic (`+`, `-`, `*`) on a NEAR-LIMIT integer constant — within a factor 
 
 ### FR0108 — idiom
 
-Boolean identity literals drop (fix): `x && true`, `true && x`, `x || false`, `false || x` — the literal contributes nothing, the expression is the other operand. `x && false` and `true || x` stay: their value is constant but `x`'s evaluation (and its effects) changes. Deliberately fires inside `query { }` too — removing a node leaves a strictly simpler tree of shapes the translator already accepted
+Boolean identity literals drop (fix): `x && true`, `true && x`, `x || false`, `false || x` - the literal contributes nothing, the expression is the other operand. `x && false` and `true || x` stay: their value is constant but `x`'s evaluation (and its effects) changes. A CALL as the other operand keeps its literal outside a bool-pinning context (`if`, `while`, a guard, another `&&`/`||`, `not`): `let v = parse "true" && true` in FSharpPlus owes the SRTP result its `bool` to the literal. Deliberately fires inside `query { }` too - removing a node leaves a strictly simpler tree of shapes the translator already accepted
 
 ### FR0109 — idiom
 
@@ -622,7 +623,7 @@ An incomplete DU match with no wildcard (the FS0025 warning shape) gains the mis
 
 ### FR0111 — cosmetic
 
-`else` holding a whole nested `if` flattens to `elif` (fix) — only when the `else` sits at the outer `if`'s column (offside rules for `elif`) and nothing but whitespace separates the keywords. A ladder of them flattens in one pass: one fix per link where the blocks stay put, one fix for the whole ladder where they move left
+`else` holding a whole nested `if` flattens to `elif` (fix) - only when the `else` sits at the outer `if`'s column (offside rules for `elif`) and nothing but whitespace separates the keywords. A ladder of them flattens in one pass: one fix per link where the blocks stay put, one fix for the whole ladder where they move left. A condition continuing on further lines moves two columns less than the body, `elif` being two characters longer than `if`
 
 ### FR0112 — idiom
 
@@ -642,7 +643,7 @@ Base case first behind a compound guard (note): `match v with | x when a && b ->
 
 ### FR0116 — idiom
 
-A member of a `let rec ... and` group that references no sibling takes part in no recursion and moves out, as a plain `let` above the group (fix) — callers in the group still see it, and it can call nothing in the group by construction. A self-recursive member (calls itself, nobody else) leaves as its own `let rec`; when the group's HEAD is the non-recursive one nothing moves at all — its `let rec` becomes `let` and the next binding is re-crowned `let rec`. No attributes on moved bindings, membership judged conservatively (any textual mention of a sibling keeps it in)
+A member of a `let rec ... and` group that references no sibling takes part in no recursion and moves out, as a plain `let` above the group (fix) - callers in the group still see it, and it can call nothing in the group by construction. A self-recursive member (calls itself, nobody else) leaves as its own `let rec`; when the group's HEAD is the non-recursive one nothing moves at all - its `let rec` becomes `let` and the next binding is re-crowned `let rec`. No attributes on moved bindings, membership judged conservatively (any textual mention of a sibling keeps it in). Every member that can leave goes in ONE pass, in dependency order (a member referencing only members already out follows them); a `//` comment directly above a member travels with it (left behind it would head the next binding), a comment separated by a blank line stays
 
 ### FR0117 — idiom
 
@@ -650,7 +651,7 @@ Adjacent match arms with identical single-line bodies and no guards fold into on
 
 ### FR0118 — correctness
 
-A CancellationToken in scope should reach the calls that take one (fix, two shapes): a call omitting the token when the resolved method has a same-name overload with the same parameter prefix plus a trailing token (or a trailing optional token) gains `, ct`; and `CancellationToken.None` passed as an argument while a real token is in scope is replaced by it — the chain was being cut one call too early. Typed-gated end to end; requires exactly ONE token parameter on the enclosing binding (two make the choice a human call), .NET tupled call shapes, and never rewrites a stored `None` binding
+A CancellationToken in scope should reach the calls that take one (fix, two shapes): a call omitting the token when the resolved method has a same-name overload with the same parameter prefix plus a trailing token (or a trailing optional token) gains `, ct` - a trailing lambda, match or if argument is wrapped in parentheses first, or the token would join its body as a tuple; and `CancellationToken.None` passed as an argument while a real token is in scope is replaced by it - the chain was being cut one call too early. Typed-gated end to end; requires exactly ONE token parameter on the enclosing binding (two make the choice a human call), .NET tupled call shapes, and never rewrites a stored `None` binding
 
 ### FR0119 — correctness
 
@@ -706,7 +707,7 @@ A module-level `let rec` whose every self-call provably sits in tail position ga
 
 ### FR0132 — idiom
 
-A PUBLIC declaration (binding, type, union case) with no XML doc but a trailing same-line `//` comment gets that comment promoted to the `///` position (fix) — same text, but only the doc position reaches tooltips and generated docs. Instruction comments (`fsharpanalyzer:`, TODO/FIXME/HACK) and private declarations are left alone; the insert spells `/` + the original comment, so the comment-loss guards pass by construction
+A PUBLIC declaration (binding, type, union case) with no XML doc but a trailing same-line `//` comment gets that comment promoted to the `///` position (fix) - same text, but only the doc position reaches tooltips and generated docs. Instruction comments (`fsharpanalyzer:`, TODO/FIXME/HACK), a comment spelling code (`// d >> Result.map box`) and private declarations are left alone; the insert spells `/` + the original comment, so the comment-loss guards pass by construction
 
 ### FR0133 — cosmetic
 
@@ -766,7 +767,7 @@ A SQL command whose text carries no parameter at all — a full-table statement,
 
 ### FR0147 — idiom
 
-A namespace spelled out at every use — six times, or four when three segments deep, tunable with `{ "FR0147": { "uses": 6, "deepUses": 4 } }` — becomes one `open` after the file's last open, and every use loses the prefix; namespaces only, by the symbol's own namespace, so `System.IO.File.Exists` shortens to `File.Exists` and the longest namespace wins; a namespace whose open would clash with a name the file defines or already uses unqualified is noted, never fixed — the note names the clashing identifiers and where they come from (the file's own definition, another open, an FSharp.Core abbreviation, an unqualified use); likewise when the namespace exports an extension member named like a method the file calls with a tupled argument — `seen.Contains (e, ct)` under an `open System.Linq` would hand the tuple to `Enumerable.Contains(value, comparer)` as two arguments — checked against every namespace by mechanism, not by name, and only when a fresh open is about to go in
+A namespace spelled out at every use - six times, or four when three segments deep, tunable with `{ "FR0147": { "uses": 6, "deepUses": 4 } }` - becomes one `open` after the file's last open, and every use loses the prefix; namespaces only, by the symbol's own namespace, so `System.IO.File.Exists` shortens to `File.Exists` and the longest namespace wins; a spelling whose shortened head is also a value, union case or active pattern in scope keeps its prefix - an expression resolves its first name among those before any module (`FParsec.Error.NoErrorMessages` under `open FParsec`, where bare `Error` is `ReplyStatus.Error`); a namespace whose open would clash with a name the file defines or already uses unqualified is noted, never fixed - the note names the clashing identifiers and where they come from (the file's own definition, another open, an FSharp.Core abbreviation, an unqualified use); likewise when the namespace exports an extension member named like a method the file calls with a tupled argument that call hands over WHOLE (one it already resolves to an instance overload of that arity, or a params array, is safe: an instance member wins over any extension) - `seen.Contains (e, ct)` under an `open System.Linq` would hand the tuple to `Enumerable.Contains(value, comparer)` as two arguments - checked against every namespace by mechanism, not by name, and only when a fresh open is about to go in
 
 ### FR0148 — correctness
 
@@ -791,4 +792,8 @@ An exception handler that reads only `.Message` (or `.ToString()`) from a type w
 ### FR0153 — correctness
 
 A credential in a `[<Literal>]`. A literal is a compile-time constant, baked into every use site, so FR0127's remedy does not apply - it cannot move to configuration or a secret store. The check is a different one, so it gets its own code and stays a note rather than a warning: the value should be a DEVELOPMENT credential. A loopback server (`localhost`, `127.0.0.1`, `::1`, `(local)`, `(localdb)...`, a bare `.`, each allowing an instance or port suffix) is not reported at all, under either code - it names a developer's own machine whatever its password looks like, which is a far better signal than guessing at the password's shape: `p4ssw0rd` reads as a sample and `Hunter2Real9x` does not, yet both are equally local
+
+### FR0154 — performance
+
+`TryGetValue` followed by a store on a `ConcurrentDictionary` - `match xs.TryGetValue key with | true, x -> x | false, _ -> let res = compute () in xs.[key] <- res; res` - becomes one `xs.GetOrAdd(key, fun _ -> compute ())`: one lookup where there were two, and no window between them for another thread to store first, after which two callers hold two different values for the same key. The factory runs outside the dictionary's locks, as the original arm did, so under contention it may still run twice; what changes is that every caller then holds the value the dictionary holds. Recognised stores: the indexer (both spellings), `TryAdd(key, res) |> ignore` and `AddOrUpdate(key, res, fun _ _ -> res)`. A miss arm of several `let`s keeps them as the lambda's body, the store line dropped. Declined where the container is any other dictionary (nothing else has `GetOrAdd`), where the value type is a `Task`, `ValueTask`, `Lazy`, `Async` or a function (FR0152 says why a cached Task is a design of its own, and a function value would make the lambda ambiguous with the plain-value overload), where the key is not a pure atom or a tuple of them spelled the same in the lookup and the store, where the hit arm does anything but return the binder, where the arm reads a mutable local or byref of the enclosing scope (FS0407 inside the lambda), holds a `Span` or takes an address (neither can be captured either) or contains `reraise`, and where the store shares its line with anything else. FR0014, which produces this `TryGetValue` match from a `ContainsKey` check, spells its miss arm `false, _` for the same reason this rule wants it explicit: a bare `_` on a two-case tuple reads as "anything else" and hides what it matches
 

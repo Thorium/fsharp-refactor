@@ -19,6 +19,13 @@ let private assertPatched (source: string) (expectedPatched: string) =
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 
 [<Fact>]
+let ``a line aligned past the argument keeps the parens`` () =
+    // the `(flags = 1` block's second line is aligned under text after
+    // the argument; one character shorter, it would stand offside
+    assertNoSuggestion
+        "module Test\nlet g (x: int) = x > 0\nlet f (x: int) (flags: int) =\n    g (x) && (flags = 1\n              || flags = 2)"
+
+[<Fact>]
 let ``list literal argument loses its parens`` () =
     assertPatched "module Test\nlet m = List.max([ 4; 3 ])" "module Test\nlet m = List.max [ 4; 3 ]"
 
@@ -128,3 +135,9 @@ let ``the same application outside a tuple still sheds them`` () =
             "module Test
 let f (score: float) = ValueSome(score)"
     )
+
+[<Fact>]
+let ``a body indented past the argument's start but short of its end is no alignment`` () =
+    assertPatched
+        "module Test\nlet g (x: int) = x > 0\nlet f (x: int) =\n    if g (x) then\n        1\n    else\n        2"
+        "module Test\nlet g (x: int) = x > 0\nlet f (x: int) =\n    if g x then\n        1\n    else\n        2"

@@ -107,7 +107,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     isInfix = false
                     funcExpr = (FunctionCallee as callee)
                     argExpr = (SynExpr.Paren(expr = inner; rightParenRange = Some _) as argExpr)) when
-                    isSingleLine argExpr.Range && isBareableArgument source inner
+                    isSingleLine argExpr.Range
+                    && isBareableArgument source inner
+                    // two characters shorter, the line no longer anchors a
+                    // block aligned under text after the argument (see
+                    // Text.alignedLineBelow)
+                    && not (alignedContinuationBelow source argExpr.Range.EndLine argExpr.Range.EndColumn)
                     ->
                     // `f(x).Length` needs the atomic application: skip under
                     // projections, and under the dynamic `?` for the same

@@ -1,3 +1,8 @@
+/// In the "ProjectSources" collection: one test below installs and removes
+/// the process-wide cross-file parser, which the sibling-reading tests of
+/// that collection depend on - run beside them, its None-answering parser
+/// made a sibling unreadable mid-test (the FR0130 sweep test flapped).
+[<Xunit.Collection("ProjectSources")>]
 module FSharp.Refactor.Tests.ConfigurationTests
 
 open System

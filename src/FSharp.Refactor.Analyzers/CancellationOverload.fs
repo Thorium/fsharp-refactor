@@ -226,14 +226,47 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         TokenName = token
                                         Kind = TokenGap.Omitted }
                                   | SynExpr.Paren(expr = inner) ->
-                                      let at = Range.mkRange expr.Range.FileName inner.Range.End inner.Range.End
+                                      // a trailing lambda, match or if runs
+                                      // to the closing parenthesis: `, ct`
+                                      // appended bare joins its BODY as a
+                                      // tuple — Paket's
+                                      // `ContinueWith(fun (_: Task) -> (), ct)`
+                                      // returned `unit * CancellationToken`
+                                      // and the pass rolled back. Such an
+                                      // argument is wrapped first
+                                      let lastElement =
+                                          match inner with
+                                          | SynExpr.Tuple(exprs = es) -> List.last es
+                                          | e -> e
 
-                                      { Range = at
-                                        Original = ""
-                                        Replacement = $", {token}"
-                                        MethodName = methodId.idText
-                                        TokenName = token
-                                        Kind = TokenGap.Omitted }
+                                      let openEnded =
+                                          match lastElement with
+                                          | SynExpr.Lambda _
+                                          | SynExpr.MatchLambda _
+                                          | SynExpr.Match _
+                                          | SynExpr.IfThenElse _
+                                          | SynExpr.TryWith _
+                                          | SynExpr.TryFinally _
+                                          | SynExpr.Sequential _
+                                          | SynExpr.LetOrUse _ -> true
+                                          | _ -> false
+
+                                      if openEnded then
+                                          { Range = lastElement.Range
+                                            Original = textOfRange source lastElement.Range
+                                            Replacement = $"({textOfRange source lastElement.Range}), {token}"
+                                            MethodName = methodId.idText
+                                            TokenName = token
+                                            Kind = TokenGap.Omitted }
+                                      else
+                                          let at = Range.mkRange expr.Range.FileName inner.Range.End inner.Range.End
+
+                                          { Range = at
+                                            Original = ""
+                                            Replacement = $", {token}"
+                                            MethodName = methodId.idText
+                                            TokenName = token
+                                            Kind = TokenGap.Omitted }
                                   | _ -> ()
                           | _ -> ()
                       | None -> ()

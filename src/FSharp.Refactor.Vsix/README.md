@@ -66,7 +66,7 @@ set. Not as a standalone manifest resource:
 
 `PackageRegistration(UseManagedResourcesOnly = true)` makes the shell resolve
 `ProvideMenuResource("Menus.ctmenu", 1)` as an ENTRY INSIDE the package's
-resource set â€” which is what the VSSDK's `MergeWithCTO=true` on a `.resx`
+resource set - which is what the VSSDK's `MergeWithCTO=true` on a `.resx`
 produces, and the one thing the VSSDK does for you that this hand-rolled
 packaging did not. Nothing ever looks in the standalone stream, and the miss
 is completely silent: no error, no warning, no ActivityLog entry.
@@ -74,7 +74,7 @@ is completely silent: no error, no warning, no ActivityLog entry.
 So `EmbedCto.ps1` writes `VSPackage.resources` and
 `FSharpRefactorPackage.resources`, each holding one entry `Menus.ctmenu` whose
 value is the `.cto` bytes, and both are embedded. Its target uses
-`DependsOnTargets="CompileCommandTable"` â€” with `AfterTargets` MSBuild ran it
+`DependsOnTargets="CompileCommandTable"` - with `AfterTargets` MSBuild ran it
 BEFORE VSCT and cheerfully embedded a 0-byte table.
 
 There were TWO faults, and fixing either alone changed nothing visible. The
@@ -86,7 +86,7 @@ second: a `<Menu type="Menu">` needs
 
 or the shell declines to create the submenu when it cannot see children at
 merge time. With merging fixed but this missing, a probe button parented into
-a built-in group appeared while our submenu still did not â€” which is exactly
+a built-in group appeared while our submenu still did not - which is exactly
 how the two faults were told apart.
 
 Placement matters separately: do not parent a submenu to
@@ -120,7 +120,7 @@ And what is NOT worth doing, all of it tried:
 
 - `1033\devenv.CTM` is a COMPRESSED CFCT v5. VSCT 17.9 refuses it
   (`VSCTCompressionReadUInt32 returned failure`) and grep finds nothing in it
-  â€” not our strings, not our GUIDs, not even built-in menu names. Only its
+  - not our strings, not our GUIDs, not even built-in menu names. Only its
   SIZE carries any signal.
 - `Error loading UI library ... HrLoadNativeUILibrary failed with 0x800a006f`
   is noise. XamlLanguagePackage, TypeScriptPackage and friends log it too,
@@ -136,12 +136,12 @@ And what is NOT worth doing, all of it tried:
 `/log` last, with nothing after it.
 
 `CreatePkgDef.exe` still cannot run here (`ReflectionTypeLoadException` on
-`IAsyncServiceProvider3`), so the pkgdef stays hand-written â€” including the
+`IAsyncServiceProvider3`), so the pkgdef stays hand-written - including the
 `[$RootKey$\BindingPaths\{pkg guid}]` block that `[<ProvideBindingPath>]`
 would have generated.
 
 F#, unrelated but adjacent: `base.InitializeAsync(...)` cannot be called from
-inside `task { }` (FS0491 â€” the CE body is a closure). Start it outside the
+inside `task { }` (FS0491 - the CE body is a closure). Start it outside the
 builder and `do!` the resulting task.
 ## Status
 

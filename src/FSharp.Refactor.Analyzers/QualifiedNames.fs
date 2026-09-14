@@ -35,13 +35,16 @@
 module FSharp.Refactor.QualifiedNames
 
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
+open System.Collections.Generic
 
 /// The identifier a shortened spelling starts with once its prefix is gone.
-let private identifierHead = System.Text.RegularExpressions.Regex(@"^[A-Za-z_][\w']*")
+let private identifierHead =
+    System.Text.RegularExpressions.Regex(@"^[A-Za-z_][\w']*")
 
 type Suggestion =
     {
@@ -354,8 +357,7 @@ let find
         // the namespace of each spelling, when the spelling starts with it
         // the same spelling resolves the same way everywhere in the file:
         // one typed lookup per distinct spelling, not per occurrence
-        let namespaceOfSpelling =
-            System.Collections.Generic.Dictionary<string, (string * string list) option>()
+        let namespaceOfSpelling = Dictionary<string, (string * string list) option>()
 
         let resolveSpelling (ids: Ident list) (names: string list) =
             let key = String.concat "." names
@@ -437,6 +439,107 @@ let find
             | Some scopes -> scopes |> List.exists (fun scope -> Range.rangeContainsRange scope at)
             | None -> false
 
+        // the heads of TYPE spellings: a type resolves in the type
+        // namespace, where no value can stand in its way
+        let typeHeads =
+            lazy
+                (HashSet<range>(
+                    [ for _, t in index.Types do
+                          match t with
+                          | SynType.LongIdent(SynLongIdent(id = head :: _ :: _)) -> head.idRange
+                          | _ -> () ]
+                ))
+
+        // in an EXPRESSION the first identifier resolves among the values,
+        // union cases and active patterns in scope before any module or
+        // type of that name: FAKE's UsageParser.fs spelled
+        // `FParsec.Error.NoErrorMessages` under `open FParsec`, and bare
+        // `Error` is FParsec's `ReplyStatus.Error` case - "The type
+        // 'ReplyStatus' does not define ... 'NoErrorMessages'". Asked of
+        // the typed scope once per name and TOP-LEVEL DECLARATION: what a
+        // declaration's lines see of module-level values, cases and
+        // patterns is one environment (an `open` inside a nested module
+        // is the exception, and a nested module is a declaration of its
+        // own), and a local of the name is `shadowedLocally`'s business
+        // - a declaration list per spelling line cost a large file
+        // hundreds of scope walks. Locals are left out of the answer for
+        // the same reason: FCS lists them at the queried position only
+        let declarationStarts =
+            lazy
+                (index.Decls
+                 |> Array.choose (fun (path, d) ->
+                     if
+                         path
+                         |> List.exists (fun n ->
+                             match n with
+                             | SyntaxNode.SynModule _ -> true
+                             | _ -> false)
+                     then
+                         None
+                     else
+                         Some d.Range.StartLine)
+                 |> Array.distinct
+                 |> Array.sort)
+
+        let declarationOf (line: int) =
+            let starts = declarationStarts.Value
+            let i = System.Array.BinarySearch(starts, line)
+
+            if i >= 0 then starts.[i]
+            elif ~~~i > 0 then starts.[~~~i - 1]
+            else 0
+
+        let shadowedByItem =
+            let memo = Dictionary<string * int, bool>()
+
+            fun (head: Ident) ->
+                let key = head.idText, declarationOf head.idRange.StartLine
+
+                match memo.TryGetValue key with
+                | true, known -> known
+                | _ ->
+                    let shadowed =
+                        try
+                            let at = head.idRange.Start
+                            let lineText = source.GetLineString(at.Line - 1)
+
+                            check.GetDeclarationListSymbols(
+                                None,
+                                at.Line,
+                                lineText,
+                                PartialLongName.Empty at.Column,
+                                (fun () -> [])
+                            )
+                            |> List.exists (fun group ->
+                                group
+                                |> List.exists (fun symbolUse ->
+                                    symbolUse.Symbol.DisplayName = head.idText
+                                    && (match symbolUse.Symbol with
+                                        // a type's constructor group is listed
+                                        // under the type's own name: `Version`
+                                        // for System.Version - a value, not
+                                        | :? FSharpMemberOrFunctionOrValue as v ->
+                                            (try
+                                                (not (v.IsConstructor || v.IsMember)) && v.IsModuleValueOrMember
+                                             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                                 true)
+                                        | :? FSharpActivePatternCase -> true
+                                        // a case of a [<RequireQualifiedAccess>]
+                                        // union is listed, but cannot be
+                                        // spelled bare
+                                        | :? FSharpUnionCase as c ->
+                                            not (
+                                                c.DeclaringEntity.Attributes
+                                                |> Seq.exists (fun a ->
+                                                    a.AttributeType.DisplayName = "RequireQualifiedAccessAttribute")
+                                            )
+                                        | _ -> false)))
+                        with _ -> // a scope we cannot read is one we do not rewrite in; fsharpanalyzer: ignore-line FR0055
+                            true
+
+                    memo.[key] <- shadowed
+                    shadowed
+
         let resolved =
             worthResolving
             |> List.choose (fun ids ->
@@ -465,6 +568,8 @@ let find
                         // right as it is
                         if shadowedLocally afterNamespace.idText prefixRange then
                             None
+                        elif not (typeHeads.Value.Contains first.idRange) && shadowedByItem afterNamespace then
+                            None
                         else
                             Some(ns, prefixRange)
                     else
@@ -484,7 +589,7 @@ let find
         // open under the same one — a namespace needed only there must not
         // become a dependency of every build
         let conditionalRegion (line: int) =
-            let stack = System.Collections.Generic.Stack<int>()
+            let stack = Stack<int>()
 
             for l in 0 .. min (line - 2) (source.GetLineCount() - 1) do
                 let text = source.GetLineString(l).TrimStart()
@@ -854,20 +959,61 @@ let find
         // compiling sixty lines from the edit. The same happens under any
         // namespace that exports an extension member of the name: the check
         // is on the mechanism, not on System.Linq
+        //
+        // Only a tuple the call hands over WHOLE is at risk. `s.EndsWith
+        // ("x", StringComparison.Ordinal)` already resolves to the
+        // two-parameter instance overload, and an instance member wins over
+        // any extension of the name - so that call is safe under `open
+        // System`, whose MemoryExtensions.EndsWith kept every file spelling
+        // `System.` sixteen times from its open. A call the typed tree
+        // resolves to a non-extension method taking as many parameters as
+        // the tuple has elements drops out; one that resolves to fewer (the
+        // tuple IS the one argument), to an extension, or to nothing stays
         let tupledMethodCalls =
             lazy
-                (set
-                    [ for _, e in index.Exprs do
-                          match e with
-                          | SynExpr.App(
-                              funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-                              argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false))) when ids.Length >= 2 ->
-                              yield (List.last ids).idText
-                          | SynExpr.App(
-                              funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))
-                              argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false))) ->
-                              yield (List.last ids).idText
-                          | _ -> () ])
+                (let takesWhole (ids: Ident list) (elements: int) =
+                    let last = List.last ids
+                    let r = last.idRange
+
+                    try
+                        match
+                            check.GetSymbolUseAtLocation(
+                                r.EndLine,
+                                r.EndColumn,
+                                source.GetLineString(r.EndLine - 1),
+                                ids |> List.map (fun i -> i.idText)
+                            )
+                        with
+                        | Some su ->
+                            match su.Symbol with
+                            | :? FSharpMemberOrFunctionOrValue as m ->
+                                m.IsExtensionMember
+                                || (match List.ofSeq m.CurriedParameterGroups with
+                                    // a params array takes any arity: String.TrimEnd('a', 'b')
+                                    | [ ps ] when ps.Count = 1 && ps.[0].IsParamArrayArg -> false
+                                    | [ ps ] -> ps.Count <> elements
+                                    | _ -> true)
+                            | _ -> true
+                        | None -> true
+                    with _ -> // an unreadable call stays on the safe side; fsharpanalyzer: ignore-line FR0055
+                        true
+
+                 set
+                     [ for _, e in index.Exprs do
+                           match e with
+                           | SynExpr.App(
+                               funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                               argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false; exprs = es))) when
+                               ids.Length >= 2 && takesWhole ids es.Length
+                               ->
+                               yield (List.last ids).idText
+                           | SynExpr.App(
+                               funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))
+                               argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false; exprs = es))) when
+                               takesWhole ids es.Length
+                               ->
+                               yield (List.last ids).idText
+                           | _ -> () ])
 
         // the extension members a namespace exports, by name: F# type
         // extensions and `[<Extension>]` functions in its modules, C#

@@ -241,3 +241,106 @@ let ``a linking project that does not typecheck keeps the shared declarations as
         Assert.Contains("let add (a: int, b: int) = a + b", library)
         Assert.Contains("Lib.add (2, 2)", provider)
         Assert.Contains("Provider.fsproj cannot be read", output))
+
+// ---- a script that #r's the built assembly ----
+
+/// A library alone, with a script beside it that `#r`s the library's built
+/// dll and calls its public tupled function; `broken` gives the script a
+/// type error of its own.
+let private writeScriptSolution (root: string) (broken: bool) =
+    let write (relative: string) (content: string) =
+        let path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, content)
+
+    write
+        "src/Lib/Lib.fsproj"
+        $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Library.fs\" />\n  </ItemGroup>\n</Project>\n"
+
+    write "src/Lib/Library.fs" "module Lib\n\nlet add (a: int, b: int) = a + b\n"
+
+    let call =
+        if broken then
+            "Lib.add (1, 2) + \"x\""
+        else
+            "Lib.add (1, 2)"
+
+    write
+        "docs/faq.fsx"
+        $"#r \"../src/Lib/bin/Debug/{framework}/Lib.dll\"\n\nlet three = {call}\nprintfn \"%%d\" three\n"
+
+    Path.Combine(root, "src", "Lib", "Lib.fsproj")
+
+let private withScriptSolution (broken: bool) (body: string -> unit) =
+    let root =
+        Path.Combine(Path.GetTempPath(), "fsref-rscript-" + Guid.NewGuid().ToString "N")
+
+    try
+        body (writeScriptSolution root broken)
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+/// `dotnet fsi` of a script, as the developer would run it.
+let private runsScript (script: string) =
+    let psi =
+        ProcessStartInfo(
+            "dotnet",
+            $"fsi \"{script}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            WorkingDirectory = Path.GetDirectoryName script
+        )
+
+    use proc = Process.Start psi
+    let output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd()
+    proc.WaitForExit()
+    proc.ExitCode = 0, output
+
+[<Fact>]
+let ``a script that #r's the built assembly is rewritten together with the public function`` () : unit =
+    // farmer's amortisationFaq.fsx: read against the sources through the
+    // redirected reference, the script's calls match like a sibling's
+    withScriptSolution false (fun project ->
+        let root =
+            Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName project))
+
+        let code, output =
+            runTool [| root; "--api-changes"; "--codes"; "FR0090"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+        let script = Path.Combine(root, "docs", "faq.fsx")
+        let scriptText = File.ReadAllText script
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("let add (a: int) (b: int) = a + b", library)
+        Assert.Contains("Lib.add 1 2", scriptText)
+        Assert.Contains("of them in scripts", output)
+
+        // the dll is stale until the project is built again; then the
+        // rewritten script runs against the rewritten library
+        let built, buildOutput = builds project
+        Assert.True(built, $"the rewritten project should build:\n{buildOutput}\n\ntool output:\n{output}")
+        let ran, scriptOutput = runsScript script
+        Assert.True(ran, $"the rewritten script should run:\n{scriptOutput}\n\ntool output:\n{output}")
+        Assert.Contains("3", scriptOutput))
+
+[<Fact>]
+let ``a #r script that does not typecheck keeps the public function as it is`` () : unit =
+    withScriptSolution true (fun project ->
+        let root =
+            Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName project))
+
+        let code, output =
+            runTool [| root; "--api-changes"; "--codes"; "FR0090"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+        let scriptText = File.ReadAllText(Path.Combine(root, "docs", "faq.fsx"))
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("let add (a: int, b: int) = a + b", library)
+        Assert.Contains("Lib.add (1, 2)", scriptText)
+        Assert.Contains("could not be checked against its sources", output))

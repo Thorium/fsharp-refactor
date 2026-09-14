@@ -78,6 +78,38 @@ let ``recordExtra keeps the first text only and ignores the snapshot's own files
         cleanup root
 
 [<Fact>]
+let ``a later compilation's build failure puts back the files an earlier one rewrote`` () =
+    // elmish: src/program.fs interpolated under Elmish.fsproj, then
+    // Fable.Elmish.fsproj (FSharp.Core 4.7) would not build on it - the run
+    // used to blame the tree; the file goes back to the run's original
+    let root = tempRoot "fsref-audit-runedit-"
+
+    try
+        let shared = Path.Combine(root, "program.fs")
+        let untouched = Path.Combine(root, "other.fs")
+        File.WriteAllText(shared, "let s = sprintf \"%d\" 1\n")
+        File.WriteAllText(untouched, "let t = 2\n")
+
+        // the first compilation snapshots and rewrites the file
+        Program.takeSnapshot [| shared |] |> ignore
+        File.WriteAllText(shared, "let s = $\"%d{1}\"\n")
+
+        // the second compilation snapshots its own files (afresh) and fails
+        Program.takeSnapshot [| untouched |] |> ignore
+
+        let message =
+            $"dotnet build failed - fix the build before applying fixes:\n{shared}(1,9): error FS3349: Feature 'string interpolation' requires the F# library for language version 5.0 or greater.\n{untouched}(1,1): error FS0001: unrelated"
+
+        Assert.Equal(1, (Program.putBackRunEdits message "Fable.Elmish.fsproj").Length)
+        Assert.Equal("let s = sprintf \"%d\" 1\n", File.ReadAllText shared)
+        Assert.Equal("let t = 2\n", File.ReadAllText untouched)
+        // nothing left to put back
+        Assert.Empty(Program.putBackRunEdits message "Fable.Elmish.fsproj")
+    finally
+        Program.takeSnapshot [||] |> ignore
+        cleanup root
+
+[<Fact>]
 let ``without a snapshot nothing outside it is recorded either`` () =
     // --dry-run and a skipped compilation check take an empty snapshot,
     // and a put-back that covers nothing must not start covering siblings

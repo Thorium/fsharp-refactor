@@ -67,6 +67,20 @@ let ``a structural parent on the same line still gets fixed`` () =
         "module Test\nlet f (s: string) = if s.Contains(\"x\") then 1 else 2"
         "module Test\nlet f (s: string) = if s.Contains \"x\" then 1 else 2"
 
+[<Fact>]
+let ``a line aligned past the argument keeps the parens`` () =
+    // fparsec's CharParsers.fs: two characters shorter, the `(flags <- ...`
+    // block's continuation line stood right of `flags` and the block
+    // re-parsed as an application
+    assertNoSuggestion
+        "module Test\nlet f (s: string) (flags: int) =\n    let mutable flags = flags\n    s.Contains(\"inf\") && (flags <- flags ||| 1\n                          true)"
+
+[<Fact>]
+let ``a deeper line that is a body, not an alignment, still gets fixed`` () =
+    assertPatched
+        "module Test\nlet f (s: string) =\n    if s.Contains(\"x\") then\n        1\n    else\n        2"
+        "module Test\nlet f (s: string) =\n    if s.Contains \"x\" then\n        1\n    else\n        2"
+
 // --- constructors and static paths stay untouched ---
 
 [<Fact>]

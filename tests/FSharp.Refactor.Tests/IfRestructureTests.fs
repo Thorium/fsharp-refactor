@@ -40,6 +40,26 @@ let ``an else with more than the if keeps its shape`` () =
             "module Test\nlet g () = ()\nlet f (x: int) (y: int) =\n    if x = 1 then\n        0\n    else\n        g ()\n        if y = 2 then 1 else 2"
     )
 
+[<Fact>]
+let ``a condition continuing on a second line keeps its alignment under elif`` () =
+    // fparsec's Emit.fs: `elif ` is two characters longer than `if `, and
+    // the condition's second line moved four columns left with the block
+    // while its first moved two - offside, and the file stopped parsing
+    let source =
+        "module Test\nlet f (a: bool) (b: bool) (c: bool) =\n    if a then\n        1\n    else\n        if (if b then c\n            else not c)\n        then\n            2\n        else\n            3"
+
+    match elseIfsIn source with
+    | [ s ] ->
+        let patched = applyEdit source s.Range s.ReplacementText
+
+        Assert.Equal(
+            "module Test\nlet f (a: bool) (b: bool) (c: bool) =\n    if a then\n        1\n    elif (if b then c\n          else not c)\n    then\n        2\n    else\n        3",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one elif suggestion, got %A" other
+
 // ---- FR0112 equality chain -> match ----
 
 let private chainsIn (source: string) =
@@ -474,14 +494,28 @@ let ``a name-mentioning plain comment travels too`` () =
     | other -> failwithf "Expected one extraction with its comment, got %A" other
 
 [<Fact>]
-let ``an unrelated comment above the member stays put`` () =
+let ``a comment directly above the member travels with it`` () =
+    // left behind, it would head `and f3` instead - a comment with no
+    // blank line under it belongs to the binding it sits on (ProvidedTypes.fs
+    // had `// REVIEW ...` re-attached to an unrelated member that way)
     let source =
         "module Test\nlet rec f1 (x: int) : int = if x = 0 then 0 else f3 (x - 1)\n// general remark about the algorithm\nand f2 (y: int) = y + 1\nand f3 (z: int) : int = if z = 0 then 0 else f1 (z - 1)"
 
     match recGroupsIn source with
     | [ s ] ->
+        Assert.StartsWith("// general remark about the algorithm\nlet f2", s.InsertText)
+        Assert.Equal(3, s.RemoveRange.StartLine)
+    | other -> failwithf "Expected one extraction with the comment, got %A" other
+
+[<Fact>]
+let ``a comment separated by a blank line stays put`` () =
+    let source =
+        "module Test\nlet rec f1 (x: int) : int = if x = 0 then 0 else f3 (x - 1)\n// general remark about the algorithm\n\nand f2 (y: int) = y + 1\nand f3 (z: int) : int = if z = 0 then 0 else f1 (z - 1)"
+
+    match recGroupsIn source with
+    | [ s ] ->
         Assert.StartsWith("let f2", s.InsertText)
-        Assert.Equal(4, s.RemoveRange.StartLine)
+        Assert.Equal(5, s.RemoveRange.StartLine)
     | other -> failwithf "Expected one extraction without the comment, got %A" other
 
 [<Fact>]

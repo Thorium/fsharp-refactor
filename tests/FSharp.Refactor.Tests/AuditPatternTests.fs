@@ -189,7 +189,7 @@ let ``B12: a rec group member under #if carries the module's indentation`` () =
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "namespace N\nmodule M =\n#if !FOO\n    let g (y: int) : int = y + 1\n#endif\n\n    let rec f (x: int) : int = if x = 0 then 0 else g x\n#if !FOO\n    \n#endif",
+            "namespace N\nmodule M =\n#if !FOO\n    let g (y: int) : int = y + 1\n#endif\n\n    let rec f (x: int) : int = if x = 0 then 0 else g x\n#if !FOO\n\n#endif",
             patched
         )
 
@@ -206,5 +206,122 @@ let ``B12: an unconditioned extraction still rides on the group's indentation`` 
         Assert.Equal(4, s.InsertRange.StartColumn)
         Assert.Equal("let g (y: int) : int = y + 1\n\n    ", s.InsertText)
         let patched = applyExtraction source s
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+// ---- FR0116: every leaver in one pass, comments along, no whitespace tail ----
+
+[<Fact>]
+let ``every member that can leave goes in one pass, in dependency order`` () =
+    // `h` calls `g`, which leaves in the first wave; `h` follows it above
+    // the group, so the order compiles. Adjacent blocks merge into one
+    // removal
+    let source =
+        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x\nand g (y: int) : int = y + 1\nand h (z: int) : int = g z * 2"
+
+    match recGroupsIn source with
+    | [ s ] ->
+        Assert.Equal<(string * bool) list>([ "g", false; "h", false ], s.Members)
+        Assert.Equal(1, s.Removes.Length)
+        Assert.Equal("let g (y: int) : int = y + 1\n\nlet h (z: int) : int = g z * 2\n\n", s.InsertText)
+        let patched = applyExtraction source s
+
+        Assert.Equal(
+            "module Test\nlet g (y: int) : int = y + 1\n\nlet h (z: int) : int = g z * 2\n\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``the last member leaves no whitespace-only line behind`` () =
+    // ProvidedTypes.fs:10841 - the removed block began after the line's
+    // indentation, which stayed as a line of eight spaces
+    let source =
+        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x\n\n    and g (y: int) : int = y + 1"
+
+    match recGroupsIn source with
+    | [ s ] ->
+        let patched = applyExtraction source s
+
+        Assert.Equal(
+            "namespace N\nmodule M =\n    let g (y: int) : int = y + 1\n\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``a plain comment directly above the member travels with it`` () =
+    // left behind, `// REVIEW ...` headed whatever binding came next
+    let source =
+        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x\n// REVIEW: write into an accumulating buffer\nand g (y: int) : int = y + 1"
+
+    match recGroupsIn source with
+    | [ s ] ->
+        Assert.StartsWith("// REVIEW: write into an accumulating buffer\nlet g", s.InsertText)
+        let patched = applyExtraction source s
+
+        Assert.Equal(
+            "module Test\n// REVIEW: write into an accumulating buffer\nlet g (y: int) : int = y + 1\n\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``a commented member and the plain last member leave as one removal`` () =
+    // the comment-extended block ends at column 0 of the last member's
+    // line; as two removals the second's tail trim reached back into the
+    // first and the edits overlapped
+    let source =
+        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x\n    // g's note\n    and g (y: int) : int = y + 1\n    and h (z: int) : int = z * 2"
+
+    match recGroupsIn source with
+    | [ s ] ->
+        Assert.Equal(1, s.Removes.Length)
+        let patched = applyExtraction source s
+
+        Assert.Equal(
+            "namespace N\nmodule M =\n    // g's note\n    let g (y: int) : int = y + 1\n\n    let h (z: int) : int = z * 2\n\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``a member referencing a sibling under #if waits for it`` () =
+    // g leaves alone on its own pass (it is last, so its block spans no directive); h references it and must wait, or it would sit above the group with g still below
+    let source =
+        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x\nand h (z: int) : int = g z * 2\n#if !FOO\nand g (y: int) : int = y + 1\n#endif"
+
+    match recGroupsIn source with
+    | [ s ] ->
+        Assert.Equal<(string * bool) list>([ "g", false ], s.Members)
+        Assert.StartsWith("#if !FOO\nlet g", s.InsertText)
+    | other -> failwithf "Expected one extraction, got %A" other
+
+[<Fact>]
+let ``a merged removal headed by a comment ends at column 0 before a staying member`` () =
+    // ProvidedTypes.fs: the comment-extended head merged with the plain
+    // blocks after it ended at the next `and`'s column, and that `and`
+    // was left at the margin
+    let source =
+        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x + k x\n    // g's note\n    and g (y: int) : int = y + 1\n    and h (z: int) : int = g z * 2\n    and k (w: int) : int = f w + 1"
+
+    match recGroupsIn source with
+    | [ s ] ->
+        Assert.Equal<(string * bool) list>([ "g", false; "h", false ], s.Members)
+        let patched = applyExtraction source s
+
+        Assert.Equal(
+            "namespace N\nmodule M =\n    // g's note\n    let g (y: int) : int = y + 1\n\n    let h (z: int) : int = g z * 2\n\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x + k x\n    and k (w: int) : int = f w + 1",
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one extraction, got %A" other

@@ -134,6 +134,36 @@ let minFSharpCoreMajor (projectFile: string) : int voption =
         | true, n when n >= 0 -> ValueSome n
         | _ -> ValueNone
 
+/// FSharp.Core floors by SOURCE FILE, registered by the apply tool for
+/// the projects of a run: a file several projects compile holds to the
+/// oldest FSharp.Core among them. elmish's src/program.fs is compiled by
+/// Elmish.fsproj on FSharp.Core 10 and by Fable.Elmish.fsproj on 4.7 -
+/// the interpolation FR0042 offered under the first broke the second,
+/// whose build check the run reached only afterwards. Keys are full
+/// paths; an editor registers nothing and a gate falls back to the
+/// project's own.
+let private fileFloors =
+    System.Collections.Concurrent.ConcurrentDictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+
+let clearFileFloors () = fileFloors.Clear()
+
+/// Lower the file's floor to `major` (never raise it).
+let registerFileFloor (file: string) (major: int) =
+    fileFloors.AddOrUpdate(System.IO.Path.GetFullPath file, major, (fun _ existing -> min existing major))
+    |> ignore
+
+/// `minFSharpCoreMajor`, narrowed further by the file's own floor.
+let minFSharpCoreMajorFor (projectFile: string) (file: string) : int voption =
+    let ownFloor = minFSharpCoreMajor projectFile
+
+    if fileFloors.IsEmpty || String.IsNullOrEmpty file then
+        ownFloor
+    else
+        match fileFloors.TryGetValue(System.IO.Path.GetFullPath file), ownFloor with
+        | (true, f), ValueSome p -> ValueSome(min p f)
+        | (true, f), ValueNone -> ValueSome f
+        | (false, _), p -> p
+
 /// Does the file already use conditional compilation? Only then may a
 /// fix introduce more of it.
 let usesConditionals (source: ISourceText) =

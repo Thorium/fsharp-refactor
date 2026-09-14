@@ -27,6 +27,11 @@
 ///
 ///   - a projection still blocks the fix (`s.Trim(' ').Length`), exactly as
 ///     it does for FR0013: there the parens make the application atomic.
+///
+///   - the next line must not stand aligned past the argument: dropping
+///     two characters shifts everything after them on the line, and a
+///     block aligned under that text (`&& (flags <- ...` continued on the
+///     lines below, fparsec) would end up offside.
 module FSharp.Refactor.MethodCallParens
 
 open System
@@ -90,6 +95,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     isSingleLine argExpr.Range
                     && RedundantParens.isBareableArgument source inner
                     && not (continuedOnItsLine path expr.Range)
+                    // two characters shorter, the line no longer anchors a
+                    // block aligned under text after the argument
+                    && not (alignedContinuationBelow source argExpr.Range.EndLine argExpr.Range.EndColumn)
                     ->
                     // `s.Trim(' ').Length` needs the atomic application, and
                     // so does the dynamic operator: bare, the argument of

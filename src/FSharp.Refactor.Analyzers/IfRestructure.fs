@@ -77,7 +77,8 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
     /// its `if` will occupy once the links above it are flat.
     let rec chain (expr: SynExpr) (elseColumn: int) : (range * string) list =
         match expr with
-        | SynExpr.IfThenElse(elseExpr = Some(SynExpr.IfThenElse(trivia = innerTrivia) as innerIf); trivia = trivia) ->
+        | SynExpr.IfThenElse(
+            elseExpr = Some(SynExpr.IfThenElse(ifExpr = innerCond; trivia = innerTrivia) as innerIf); trivia = trivia) ->
             match trivia.ElseKeyword, innerTrivia.IfKeyword with
             | Some elseKw, ifKw when
                 not innerTrivia.IsElif
@@ -129,12 +130,27 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
 
                     let lines = tail.Split '\n'
 
+                    // `elif ` is two characters longer than `if `, so the
+                    // condition's text lands two columns right of where the
+                    // block shift alone would put it. A condition continuing
+                    // on further lines keeps its alignment only when those
+                    // lines move two less than the block (fparsec's Emit.fs:
+                    // `if (if rangesAreConnected then checkRight` with its
+                    // `else ...)` on the next line went offside, and the
+                    // file stopped parsing)
+                    let conditionLines = innerCond.Range.EndLine - ifKw.StartLine
+
+                    let shiftOf i =
+                        if i <= conditionLines then dedent - 2 else dedent
+
                     let movable =
                         lines
+                        |> Array.mapi (fun i l -> shiftOf i, l)
                         |> Array.skip 1
-                        |> Array.forall (fun l ->
-                            System.String.IsNullOrWhiteSpace l
-                            || (l.Length >= dedent && System.String.IsNullOrWhiteSpace(l.Substring(0, dedent))))
+                        |> Array.forall (fun (shift, l) ->
+                            shift <= 0
+                            || System.String.IsNullOrWhiteSpace l
+                            || (l.Length >= shift && System.String.IsNullOrWhiteSpace(l.Substring(0, shift))))
                         && not (
                             multiLineLiterals
                             |> Array.exists (fun r -> Range.rangeContainsRange innerIf.Range r)
@@ -144,8 +160,11 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
                         let moved =
                             lines
                             |> Array.mapi (fun i l ->
+                                let shift = shiftOf i
+
                                 if i = 0 then l
-                                elif l.Length >= dedent then l.Substring dedent
+                                elif shift < 0 then System.String(' ', -shift) + l
+                                elif l.Length >= shift then l.Substring shift
                                 else l.TrimStart())
                             |> String.concat "\n"
 

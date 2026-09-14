@@ -148,3 +148,24 @@ let ``a lambda handed to an ordinary parameter is still composed`` () =
             "module Test\nlet apply (f: int -> int) (x: int) = f x\nlet g (a: int -> int) (b: int -> int) = apply (fun v -> b (a v)) 1"
 
     Assert.NotEmpty(Composition.find tree sourceText check)
+
+[<Fact>]
+let ``a lambda under a constructor in a generic value keeps its generalization`` () =
+    // Hopac's ActorAndHopacModels.fs: `AT (A >> Job.result)` is an
+    // application, the value restriction pins 'a, and the annotation
+    // fails "the respective type parameter counts differ"
+    assertNoSuggestion
+        "module Test\ntype AT<'a, 'x> = AT of ('a -> 'x list)\ntype Actor<'a> = A of 'a\nlet self : AT<'a, Actor<'a>> =\n    AT (fun aCh -> List.singleton (A aCh))"
+
+[<Fact>]
+let ``a lambda under a constructor in a monomorphic value is composed`` () =
+    assertSingleSuggestion
+        "module Test\ntype AT<'a, 'x> = AT of ('a -> 'x list)\ntype Actor<'a> = A of 'a\nlet self : AT<int, Actor<int>> =\n    AT (fun aCh -> List.singleton (A aCh))"
+        "A >> List.singleton"
+
+[<Fact>]
+let ``a lambda inside another lambda of a generic value is composed`` () =
+    // the enclosing lambda keeps the whole a syntactic function
+    assertSingleSuggestion
+        "module Test\nlet h : 'a list -> ('a -> 'b) -> ('b -> 'c) -> 'c list =\n    fun xs f g -> xs |> List.map (fun x -> g (f x))"
+        "f >> g"

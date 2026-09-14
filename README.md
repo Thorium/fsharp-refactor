@@ -282,7 +282,7 @@ Every rule is one of four kinds, shown in the last column of
 | Kind | | Count |
 |---|---|---|
 | `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 52 |
-| `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 32 |
+| `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 33 |
 | `idiom` | The same behaviour written the way F# writes it. Worth doing, and worth agreeing on first — it is a matter of house style as much as anything | 51 |
 | `cosmetic` | The punctuation and spelling of code. Real cleanups, and nobody's idea of a welcome pull request from a stranger | 17 |
 
@@ -410,18 +410,18 @@ But that could affect to external users and serialization.
 `--api-changes` opts into rewrites that change internal or public
 signatures — currying a tupled function (FR0090) and reordering its
 parameters data-last (FR0091) — rewriting every call site in the project,
-in the scripts that `#load` it, and in the sibling projects of the same
-solution that reference it (the test project, typically) or compile one
-of its sources directly (a linked file; such a fix line says
-` note: linked file`). Without it those are held back and only counted. It
+in the scripts that `#load` it or `#r` its built assembly, and in the
+sibling projects of the same solution that reference it (the test
+project, typically) or compile one of its sources directly (a linked
+file; such a fix line says ` note: linked file`). Without it those are held back and only counted. It
 also widens the contained-type hints (FR0022, FR0069, FR0070, FR0093) to
 public types. Consumers outside
 the run are why this is opt-in: their call sites cannot be rewritten, so
 a public function changes shape only when every project referencing it
 in the run is an F# project that typechecks — a referencing C# project, a
-sibling with errors, a script `#r`ing the built assembly or a bare project
-with no solution above it holds the public surface as it is, and the run
-says so — and each rule only fires where a call site it still cannot see
+sibling with errors, a `#r` script that does not typecheck against the
+sources, or a bare project with no solution above it holds the public
+surface as it is, and the run says so - and each rule only fires where a call site it still cannot see
 would fail to compile rather than change behaviour silently. Naming a
 single source file skips these entirely — asking for one file and getting
 edits in its callers would be a surprise.

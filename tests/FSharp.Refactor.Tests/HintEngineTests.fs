@@ -247,6 +247,11 @@ let ``De Morgan combines negated conjuncts`` () =
     assertSingleSuggestion "module Test\nlet f (a: bool) b = not a && not b" "not (a || b)"
 
 [<Fact>]
+let ``De Morgan folds a third conjunct without re-bracketing the pair`` () =
+    // the second step used to bracket the first's result: `not ((a || b) || c)`
+    assertSingleSuggestion "module Test\nlet f (a: bool) (b: bool) c = not (a || b) && not c" "not (a || b || c)"
+
+[<Fact>]
 let ``De Morgan combines negated disjuncts`` () =
     assertSingleSuggestion "module Test\nlet f (a: bool) b = not a || not b" "not (a && b)"
 
@@ -320,8 +325,10 @@ let ``De Morgan leaves a pipeline operand bare`` () =
         "not (xs |> List.isEmpty || b)"
 
 [<Fact>]
-let ``De Morgan keeps parentheses around an operand of equal precedence`` () =
-    assertSingleSuggestion "module Test\nlet f (a: bool) b c = not (a || b) && not c" "not ((a || b) || c)"
+let ``De Morgan keeps parentheses around an equal-precedence operand on the right`` () =
+    // on the left the grammar's own grouping makes them redundant (see
+    // `folds a third conjunct`); on the right they keep it visible
+    assertSingleSuggestion "module Test\nlet f (a: bool) b c = not a && not (b || c)" "not (a || (b || c))"
 
 [<Fact>]
 let ``De Morgan keeps parentheses around a lower-precedence operand`` () =
@@ -365,9 +372,9 @@ let ``De Morgan keeps comparisons and applications bare`` () =
         "not (g x = 1 || h x)"
 
 [<Fact>]
-let ``De Morgan brackets an or under an or`` () =
-    // equal precedence keeps the grouping visible; the result still compiles
-    assertTypedRewrite "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (a || b) && not c" "not ((a || b) || c)"
+let ``De Morgan leaves a left or under an or bare`` () =
+    // `(a || b) || c` is what `a || b || c` parses to; the result still compiles
+    assertTypedRewrite "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (a || b) && not c" "not (a || b || c)"
 
 [<Fact>]
 let ``De Morgan brackets an or under an and`` () =

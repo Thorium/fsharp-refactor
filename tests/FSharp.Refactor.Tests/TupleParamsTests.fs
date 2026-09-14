@@ -104,3 +104,10 @@ let ``definition without a space before the tuple keeps its name`` () =
 let ``call with a projection continuation is not rewritten`` () =
     // review regression: `key 1 2.Length` loses the atomic grouping
     assertNoSuggestion "let private key (a, b) = sprintf \"%d-%d\" a b\nlet n = key(1, 2).Length"
+
+[<Fact>]
+let ``an attributed function keeps its tuple`` () =
+    // Feliz's [<ReactComponent>] derives the props object from the tuple;
+    // what a plugin makes of the curried form cannot be checked here
+    assertNoSuggestion
+        "type MarkAttribute() =\n    inherit System.Attribute()\n[<Mark>]\nlet private add (a, b) = a + b\nlet total = add (1, 2)"

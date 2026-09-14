@@ -79,3 +79,21 @@ let ``a duplicated function application is untouched`` () =
 [<Fact>]
 let ``different operands stay`` () =
     Assert.Empty(findIn "module Test\nlet f (x: int) (y: int) = x > 1 || y > 1")
+
+// ---- FR0108: a call whose type the literal pins ----
+
+[<Fact>]
+let ``a call bound as a value keeps the literal that types it`` () =
+    // FSharpPlus: `let _111 = parse "true" && true` — `parse` is SRTP and
+    // the `&& true` is what makes its result a bool
+    Assert.Empty(
+        findIn "module Test\nlet inline parse (s: string) = Unchecked.defaultof<'a>\nlet v = parse \"true\" && true"
+    )
+
+[<Fact>]
+let ``a call under an if still drops the literal`` () =
+    assertRewrite "module Test\nlet f (g: int -> bool) = if g 1 && true then 1 else 2" "g 1"
+
+[<Fact>]
+let ``a comparison bound as a value still drops the literal`` () =
+    assertRewrite "module Test\nlet f (x: int) =\n    let v = x > 1 && true\n    v" "x > 1"

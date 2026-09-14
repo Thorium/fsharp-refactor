@@ -173,7 +173,8 @@ let namesFromCaseName (caseName: string) (arity: int) : string list option =
         None
 
 /// A lowercase identifier, the only shape a comment's word can name a field by.
-let private fieldNamePattern = Text.RegularExpressions.Regex(@"^[a-z][A-Za-z0-9_]*$")
+let private fieldNamePattern =
+    Text.RegularExpressions.Regex(@"^[a-z][A-Za-z0-9_]*$")
 
 /// Names from a trailing same-line comment with a clear list format:
 /// `// interest and rate`, `// interest * rate`, `// interest, rate`.
@@ -187,8 +188,7 @@ let namesFromComment (commentText: string) (arity: int) : string list option =
     if
         parts.Length = arity
         && parts
-           |> Array.forall (fun p ->
-               fieldNamePattern.IsMatch p && not (notFieldNames.Contains p))
+           |> Array.forall (fun p -> fieldNamePattern.IsMatch p && not (notFieldNames.Contains p))
     then
         let names = List.ofArray parts
 

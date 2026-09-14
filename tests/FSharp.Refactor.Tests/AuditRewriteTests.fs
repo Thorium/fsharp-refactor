@@ -482,3 +482,85 @@ let ``FR0147: a primary-constructor parameter of the same name keeps the prefix 
         Assert.Contains("let b () = Version(2, 0, 0, 0)", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one System finding, got %A" other
+
+[<Fact>]
+let ``FR0072: an arm indented deeper than its match keeps the cases on one line`` () =
+    // FSharpPlus's Seq.fs: `| _ -> return false }` four columns deeper than
+    // the match, past 100 columns with both cases; a case on a fresh line
+    // under that `|` read as no or-pattern at all
+    let source =
+        lines
+            [ "type CollectState<'T> ="
+              "    | NotStarted of 'T"
+              "    | HaveInputEnumerator of System.Collections.Generic.IEnumerator<'T>"
+              "    | HaveTheVeryLongNamedIntermediateState of int"
+              "    | Finished"
+              "let f (state: CollectState<int>) (x: int) ="
+              "    async {"
+              "                              match state with"
+              "                              | CollectState.NotStarted inp -> return inp > 0"
+              "                              | CollectState.HaveInputEnumerator e1 ->"
+              "                                  if x > 1 then"
+              "                                      return true"
+              "                                  else"
+              "                                      return e1.MoveNext ()"
+              "                                  | _ -> return false }" ]
+
+    match wildcardsIn source with
+    | [ s ] ->
+        Assert.DoesNotContain("\n", s.ReplacementText)
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one wildcard note, got %A" other
+
+// ---- FR0147: a shortened head shadowed by a value or union case ----
+
+[<Fact>]
+let ``FR0147: a prefix whose remaining head is a union case in scope stays`` () =
+    // FAKE's UsageParser.fs under `open FParsec`: `FParsec.Error.NoErrorMessages`
+    // shortened to `Error.NoErrorMessages`, and bare `Error` is
+    // `ReplyStatus.Error` - an expression resolves its first name among
+    // the values and cases before any module
+    let lib =
+        lines
+            [ "namespace Lib"
+              "[<AutoOpen>]"
+              "module Reply ="
+              "    type ReplyStatus ="
+              "        | Ok"
+              "        | Error"
+              "module Error ="
+              "    let NoErrorMessages = 0" ]
+
+    let user =
+        lines
+            [ "module Test"
+              "open Lib"
+              "let a = Lib.Error.NoErrorMessages"
+              "let b = Lib.Error.NoErrorMessages"
+              "let c = Lib.Error.NoErrorMessages"
+              "let status = Error" ]
+
+    let tree, sourceText, checkResults = parseAndCheckSecond lib user
+
+    for s in QualifiedNames.find 3 2 tree sourceText checkResults do
+        Assert.Empty s.Edits
+
+[<Fact>]
+let ``FR0147: the same prefix shortens when nothing of the head's name is in scope`` () =
+    let lib =
+        lines [ "namespace Lib"; "module Messages ="; "    let NoErrorMessages = 0" ]
+
+    let user =
+        lines
+            [ "module Test"
+              "open Lib"
+              "let a = Lib.Messages.NoErrorMessages"
+              "let b = Lib.Messages.NoErrorMessages"
+              "let c = Lib.Messages.NoErrorMessages" ]
+
+    let tree, sourceText, checkResults = parseAndCheckSecond lib user
+
+    match QualifiedNames.find 3 2 tree sourceText checkResults with
+    | [ s ] -> Assert.Contains("let a = Messages.NoErrorMessages", applyAll user s.Edits)
+    | other -> failwithf "Expected one suggestion, got %A" other
