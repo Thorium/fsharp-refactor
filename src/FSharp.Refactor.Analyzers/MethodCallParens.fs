@@ -95,9 +95,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     isSingleLine argExpr.Range
                     && RedundantParens.isBareableArgument source inner
                     && not (continuedOnItsLine path expr.Range)
-                    // two characters shorter, the line no longer anchors a
+                    // shorter by the parens, the line no longer anchors a
                     // block aligned under text after the argument
-                    && not (alignedContinuationBelow source argExpr.Range.EndLine argExpr.Range.EndColumn)
+                    && not (
+                        alignmentHazardBelow
+                            source
+                            argExpr.Range.EndLine
+                            argExpr.Range.EndColumn
+                            (RedundantParens.bareDelta callee argExpr inner)
+                    )
                     ->
                     // `s.Trim(' ').Length` needs the atomic application, and
                     // so does the dynamic operator: bare, the argument of

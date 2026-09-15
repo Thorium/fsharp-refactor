@@ -777,49 +777,6 @@ let testFilesMentioning (analyzedFile: string) (literal: string) : (string * str
             && not (String.Equals(Path.GetFullPath path, self, StringComparison.OrdinalIgnoreCase)))
         |> List.ofArray
 
-/// The string literals thrown by `failwith` in the repository's PRODUCTION
-/// sources, read once. Projects are analysed in name order, not dependency
-/// order, so a test project can come before the code it tests: the assertion
-/// side cannot wait to be told which messages this run enriched. Instead it
-/// asks the question the other way round - is the text I pin a production
-/// throw at all? - which gives the same answer whichever project goes first.
-let private productionThrows =
-    ConcurrentDictionary<string, string list>(StringComparer.OrdinalIgnoreCase)
-
-let productionFailwithLiterals (analyzedFile: string) : string list =
-    match repositoryRoot analyzedFile with
-    | None -> []
-    | Some root ->
-        productionThrows.GetOrAdd(
-            root,
-            fun root ->
-                try
-                    // a plain string literal handed straight to failwith
-                    let pattern =
-                        System.Text.RegularExpressions.Regex(@"\bfailwith\s+(""(?:[^""\\]|\\.)*"")")
-
-                    Directory.EnumerateFiles(root, "*.fs", SearchOption.AllDirectories)
-                    |> Seq.filter (fun p ->
-                        let lower = relativeLower root p
-
-                        not (isTestSourcePath (relativeTo root p))
-                        && not (
-                            lower.Contains "/obj/"
-                            || lower.Contains "/bin/"
-                            || lower.Contains "/node_modules/"
-                        ))
-                    |> Seq.collect (fun p ->
-                        try
-                            pattern.Matches(File.ReadAllText p) |> Seq.map (fun m -> m.Groups.[1].Value)
-                        with _ -> // fsharpanalyzer: ignore-line FR0055
-                            Seq.empty)
-                    |> Seq.distinct
-                    |> List.ofSeq
-                with _ -> // fsharpanalyzer: ignore-line FR0055
-                    []
-        )
-
-
 /// The effective suppression-comment policy for a file:
 /// "all" | "no-correctness" | "none".
 let suppressionPolicy (analyzedFile: string) : string = (configFor analyzedFile).Suppressions

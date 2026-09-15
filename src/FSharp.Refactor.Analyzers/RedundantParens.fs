@@ -68,6 +68,16 @@ let private (|FunctionCallee|_|) (e: SynExpr) =
         ValueSome()
     | _ -> ValueNone
 
+/// How much shorter the line gets when `argExpr`'s parentheses go: the
+/// inner text stays, and a space goes in where the callee touched the
+/// paren. Shared with FR0094, for the alignment check on the line below.
+let bareDelta (callee: SynExpr) (argExpr: SynExpr) (inner: SynExpr) =
+    let bare =
+        inner.Range.EndColumn - inner.Range.StartColumn
+        + (if callee.Range.End = argExpr.Range.Start then 1 else 0)
+
+    bare - (argExpr.Range.EndColumn - argExpr.Range.StartColumn)
+
 /// An argument that stays unambiguous without its parens. Shared with
 /// FR0094, which applies the same test to instance method calls.
 let isBareableArgument (source: ISourceText) (inner: SynExpr) =
@@ -109,10 +119,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     argExpr = (SynExpr.Paren(expr = inner; rightParenRange = Some _) as argExpr)) when
                     isSingleLine argExpr.Range
                     && isBareableArgument source inner
-                    // two characters shorter, the line no longer anchors a
+                    // shorter by the parens, the line no longer anchors a
                     // block aligned under text after the argument (see
-                    // Text.alignedLineBelow)
-                    && not (alignedContinuationBelow source argExpr.Range.EndLine argExpr.Range.EndColumn)
+                    // Text.alignmentHazard)
+                    && not (
+                        alignmentHazardBelow
+                            source
+                            argExpr.Range.EndLine
+                            argExpr.Range.EndColumn
+                            (bareDelta callee argExpr inner)
+                    )
                     ->
                     // `f(x).Length` needs the atomic application: skip under
                     // projections, and under the dynamic `?` for the same

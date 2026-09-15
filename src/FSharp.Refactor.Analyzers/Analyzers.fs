@@ -4754,45 +4754,42 @@ let private failwithContextMessages
     let applies = Visibility.apiChangesAllowed ()
     let index = AstIndex.ofTree parseTree
 
+    // a test's own failwith is an assertion, and the runner names the test
     if SwallowedException.isTestFile index source then
-        // the test side: an assertion pinning the text of a PRODUCTION throw
-        // loosens to a prefix check, so it stays true once that throw gains
-        // its arguments - whichever of the two projects is analysed first.
-        // Only under --api-changes, the only mode that enriches
-        if applies then
-            // only a literal the production side WILL enrich: one whose every
-            // mention, in every test file, the rewrite can loosen
-            let enriched =
-                Configuration.productionFailwithLiterals fileName
-                |> List.filter (fun literal ->
-                    Configuration.testFilesMentioning fileName literal
-                    |> List.forall (fun (_, text) -> FailwithContext.everyMentionRewritable text literal))
-
-            FailwithContext.findAssertions source fileName enriched
-            |> List.map (fun (r, original, replacement) ->
-                hint
-                    "FR0092"
-                    "This assertion pins the exact text of a message that now carries its call's arguments; a prefix check keeps the assertion true to its intent."
-                    r
-                    [ fix r original replacement ])
-        else
-            []
+        []
     else
         FailwithContext.find parseTree source checkResults
         |> List.map (fun s ->
             // a test pinning the exact text is the observer of this
             // behaviour. Without --api-changes that is the end of it: the
-            // note says where. With it, the message is enriched here and
-            // the assertion loosened to a prefix check when the test file
-            // is analysed - in whichever order the projects come
-            let assertedIn = Configuration.testFilesMentioning fileName s.OriginalText
+            // note says where. With it, the message is enriched and the
+            // assertion loosened to a prefix check IN THE SAME FIX, as
+            // cross-file edits: the two halves apply together or not at
+            // all. (The test file used to loosen on its own turn, for any
+            // literal a production `failwith` spelled - and a `failwith
+            // "Error"` in a doc comment had this repository's own
+            // `Assert.Equal("Error", s.LogMethod)` loosened with nothing
+            // enriched anywhere.)
+            // the test files pinning the text, read FRESH: an earlier pass
+            // may have rewritten one since the repository scan, and a stale
+            // range would not match its text and hold the whole fix. One
+            // that cannot be read now keeps the enrichment out: its
+            // assertions cannot be loosened with it
+            let assertedIn =
+                Configuration.testFilesMentioning fileName s.OriginalText
+                |> List.map (fun (testFile, _) ->
+                    try
+                        testFile, System.IO.File.ReadAllText testFile
+                    with _ -> // an unreadable test file vetoes below; fsharpanalyzer: ignore-line FR0055
+                        testFile, null)
 
             // a mention the loosening cannot rewrite - another assertion
             // dialect, or a test stub throwing the same text - keeps the
             // enrichment out even under --api-changes: the test would go red
             let unrewritable =
                 assertedIn
-                |> List.tryFind (fun (_, text) -> not (FailwithContext.everyMentionRewritable text s.OriginalText))
+                |> List.tryFind (fun (_, text) ->
+                    isNull text || not (FailwithContext.everyMentionRewritable text s.OriginalText))
 
             match assertedIn, unrewritable with
             | (testFile, _) :: _, _ when not applies ->
@@ -4804,7 +4801,7 @@ let private failwithContextMessages
             | _, Some(testFile, _) ->
                 hint
                     "FR0092"
-                    $"This failure message is a constant, but {System.IO.Path.GetFileName testFile} mentions its exact text in a form the rewrite cannot loosen to a prefix check (only FsUnit `should equal` and xUnit `Assert.Equal` are), so it is left alone."
+                    $"This failure message is a constant, but {System.IO.Path.GetFileName testFile} mentions its exact text in a form the rewrite cannot loosen to a prefix check (only FsUnit `should equal` and xUnit `Assert.Equal` on an exception's `Message` are), so it is left alone."
                     s.Range
                     []
             | _ ->
@@ -4817,7 +4814,16 @@ let private failwithContextMessages
                            // `let f = function ... | _ -> failwith`: the wildcard
                            // arm is named in the same fix
                            for r, original, replacement in Option.toList s.PatternEdit do
-                               fix r original replacement ]
+                               fix r original replacement
+                           // the assertions pinning the text loosen in the
+                           // same atomic set
+                           for testFile, text in assertedIn do
+                               for r, original, replacement in
+                                   FailwithContext.findAssertions
+                                       (SourceText.ofString text)
+                                       testFile
+                                       [ s.OriginalText ] do
+                                   fix r original replacement ]
                      else
                          []))
 

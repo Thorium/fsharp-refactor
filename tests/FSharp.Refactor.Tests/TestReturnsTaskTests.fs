@@ -261,6 +261,16 @@ let ``a continuation aligned with the bound expression follows the bang`` () =
          + "[<Fact>]\nlet ``aligned`` () =\n    let res = load ()\n              |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\"")
         "task {\n        let! res = load ()\n                   |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
 
+[<Fact>]
+let ``an expression starting on the line below its let keeps its indentation`` () =
+    // FunStripe's tests: the `!` moves nothing on a line below the `let`,
+    // whose lines stand relative to the `let` column, not to the `=` - the
+    // body came out one column deeper than its block's first line
+    assertRewrite
+        (scaffold
+         + "[<Fact>]\nlet ``below`` () =\n    let res =\n        async {\n            let! r = load ()\n            return r\n        }\n        |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\"")
+        "task {\n        let! res =\n            async {\n                let! r = load ()\n                return r\n            }\n            |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+
 // ---- placement shapes: namespaces, nested modules, fixture classes ----
 
 /// The attribute in a real `Xunit` namespace, the tests in another

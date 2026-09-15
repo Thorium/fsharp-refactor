@@ -2579,6 +2579,37 @@ let ``FR0092: a mention the loosening cannot rewrite vetoes the enrichment`` () 
     // no mention at all is trivially fine
     Assert.True(FailwithContext.everyMentionRewritable "let x = 1" literal)
 
+    // a prefix check an earlier enrichment left behind stays true under the next
+    Assert.True(
+        FailwithContext.everyMentionRewritable
+            "Assert.StartsWith(\"model inference failed\", ex.Message)\nex.Message |> should startWith \"model inference failed\""
+            literal
+    )
+
+[<Fact>]
+let ``FR0092: an assertion on anything but a Message is neither loosened nor covered`` () =
+    // this repository's own QualityRulesTests: `Assert.Equal("Error",
+    // s.LogMethod)` spelled the text of a `failwith "Error"` in a doc
+    // comment, and the test-side pass turned it into StartsWith with nothing
+    // enriched. A mention about something other than an exception's text is
+    // not an assertion the enrichment can keep true - it vetoes instead
+    let literal = "\"Error\""
+
+    let source =
+        "module Tests\nlet a (s: Finding) = Assert.Equal(\"Error\", s.LogMethod)"
+
+    let _, sourceText = parse source
+    Assert.Empty(FailwithContext.findAssertions sourceText "Tests.fs" [ literal ])
+    Assert.False(FailwithContext.everyMentionRewritable source literal)
+
+    // the same text on a Message still loosens, with its receiver spelled any way
+    let onMessage =
+        "module Tests\nlet a (ex: exn) = Assert.Equal(\"Error\", ex.InnerException.Message)\nlet b (ex: exn) = ex.Message |> should equal \"Error\""
+
+    let _, onMessageText = parse onMessage
+    Assert.Equal(2, (FailwithContext.findAssertions onMessageText "Tests.fs" [ literal ]).Length)
+    Assert.True(FailwithContext.everyMentionRewritable onMessage literal)
+
 [<Fact>]
 let ``FR0147: an F#-style extension in the namespace's AutoOpen module is seen by the tupled-call guard`` () =
     // `open Ext` opens the AutoOpen module with it, and the optional

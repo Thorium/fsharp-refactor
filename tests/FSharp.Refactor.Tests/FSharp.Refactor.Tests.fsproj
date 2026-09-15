@@ -84,6 +84,7 @@
     <Compile Include="AuditRewriteTests.fs" />
     <Compile Include="AuditGateTests.fs" />
     <Compile Include="AuditDriverTests.fs" />
+    <Compile Include="AlignmentHazardTests.fs" />
     <Compile Include="AuditMiscTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 

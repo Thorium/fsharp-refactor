@@ -325,9 +325,20 @@ let rec private spineEdits
                 | Some b ->
                     // `let x = <blocking>` → `let! x = <awaitable>`; the
                     // `!` moves the expression one column right, and a
-                    // continuation line aligned with it must follow
+                    // continuation line aligned with it must follow - when
+                    // the expression starts on the `let` line. One starting
+                    // on the line below stands relative to the `let` itself
+                    // and moves nothing (FunStripe's tests came out with
+                    // their bodies one column deeper than the block's head)
                     let kw = trivia.LeadingKeyword.Range
-                    Some [ (kw, "let!"); (b.Site, b.Awaitable.Replace("\n", "\n ")) ]
+
+                    let awaitable =
+                        if b.Site.StartLine = kw.StartLine then
+                            b.Awaitable.Replace("\n", "\n ")
+                        else
+                            b.Awaitable
+
+                    Some [ (kw, "let!"); (b.Site, awaitable) ]
                 | None -> Some []
             | _ -> Some []
 

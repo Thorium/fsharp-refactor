@@ -420,37 +420,46 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
 /// The other half of the contract, in the TEST file. An enrichment appends
 /// to the message, so an assertion pinning the exact text has to become a
-/// prefix check to keep saying what it said. Two dialects are recognised:
+/// prefix check to keep saying what it said. Two dialects are recognised,
+/// and only on an exception's `Message` - the text an enrichment changes:
 ///
 ///     ex.Message |> should equal "model inference failed"
 ///                    → should startWith "model inference failed"
 ///     Assert.Equal("model inference failed", ex.Message)
 ///                    → Assert.StartsWith("model inference failed", ex.Message)
 ///
-/// The literals come from `Configuration.productionFailwithLiterals` - the
-/// text a production `failwith` throws - so an assertion on any other text
-/// is someone else's contract. The production side enriches only where
-/// `everyMentionRewritable` holds for every test file that mentions the
-/// literal, and this side loosens under the same condition: the two halves
-/// then agree whichever project is analysed first.
+/// `Assert.Equal("Error", s.LogMethod)` spells the same text about
+/// something else, and loosening it would only weaken the test; it is a
+/// mention the rewrite cannot cover, and vetoes the enrichment instead.
+/// The edits ride in the production message's own fix (see
+/// `failwithContextMessages`), so the two halves apply together or not at
+/// all.
 let private assertionForms (literal: string) : (Regex * string) list =
     let escaped = Regex.Escape literal
 
     [ // FsUnit
-      Regex($@"should\s+equal\s+{escaped}"), "should startWith " + literal
+      Regex($@"(?<=\.Message\s*\|>\s*)should\s+equal\s+{escaped}"), "should startWith " + literal
       // xUnit
-      Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,"), $"Assert.StartsWith({literal}," ]
+      Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,(?=\s*[^,()]*\.Message\s*\))"), $"Assert.StartsWith({literal}," ]
 
 /// Every occurrence of the literal in this test text sits inside an
-/// assertion form the rewrite knows. An NUnit `Assert.AreEqual`, an Expecto
-/// `Expect.equal`, an Unquote `=!`, or a test-side stub throwing the same
-/// text (Fuuga's DraftAndRefineTests) is a mention the rewrite cannot
-/// loosen, and enriching the production message under it turns the test
-/// red - so it vetoes the enrichment instead.
+/// assertion form the rewrite knows - or one it already produced: a prefix
+/// check an earlier enrichment of the same text left behind stays true
+/// under the next. An NUnit `Assert.AreEqual`, an Expecto `Expect.equal`,
+/// an Unquote `=!`, or a test-side stub throwing the same text (Fuuga's
+/// DraftAndRefineTests) is a mention the rewrite cannot loosen, and
+/// enriching the production message under it turns the test red - so it
+/// vetoes the enrichment instead.
 let everyMentionRewritable (text: string) (literal: string) : bool =
+    let escaped = Regex.Escape literal
+
+    let loosened =
+        [ Regex($@"should\s+startWith\s+{escaped}")
+          Regex($@"Assert\.StartsWith\s*\(\s*{escaped}\s*,") ]
+
     let covered =
-        assertionForms literal
-        |> List.collect (fun (pattern, _) -> [ for m in pattern.Matches text -> m.Index, m.Index + m.Length ])
+        (assertionForms literal |> List.map fst) @ loosened
+        |> List.collect (fun pattern -> [ for m in pattern.Matches text -> m.Index, m.Index + m.Length ])
 
     let rec mentions (from: int) =
         match text.IndexOf(literal, from, StringComparison.Ordinal) with

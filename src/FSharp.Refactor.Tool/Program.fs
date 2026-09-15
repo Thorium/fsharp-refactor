@@ -4818,13 +4818,13 @@ let private runPass
                 && String.Equals(target, companionSignature, StringComparison.OrdinalIgnoreCase))
 
         // a single-line edit that changes its line's length, with the next
-        // line standing at or beyond the edit's END: that line is aligned
-        // to text after the edit - the operand of a paren block, a tuple
-        // element under its sibling - and would end up offside (a line
-        // indented past the edit's start but short of its end is a body
-        // under an `if` header, anchored to nothing the edit moves). The
-        // rules that shorten lines most (FR0094, FR0013) check the same
-        // layout themselves; this is the backstop for every rule, found on
+        // line anchored to an offside context that opens after the edit -
+        // the operand of a paren block, a tuple element under its sibling
+        // - and would read differently once that anchor moves (see
+        // Text.alignmentHazard: a line to the right of every anchor is a
+        // continuation before and after, and is not held). The rules that
+        // shorten lines most (FR0094, FR0013) check the same layout
+        // themselves; this is the backstop for every rule, found on
         // fparsec's CharParsers.fs where FR0094 dropped two characters and
         // the `(flags <- ...` block's lines under them stayed put. Held at
         // MESSAGE level: a compound fix applies whole or not at all
@@ -4838,15 +4838,15 @@ let private runPass
         let breaksAlignment (f: Fix) =
             f.FromRange.StartLine = f.FromRange.EndLine
             && not (f.ToText.Contains '\n')
-            && f.ToText.Length <> f.FromRange.EndColumn - f.FromRange.StartColumn
             && (let lines = sourceLines.Value
 
                 f.FromRange.StartLine <= lines.Length
-                && Text.alignedLineBelow
+                && Text.alignmentHazard
                     (fun l -> lines.[l - 1])
                     lines.Length
                     f.FromRange.StartLine
-                    f.FromRange.EndColumn)
+                    f.FromRange.EndColumn
+                    (f.ToText.Length - (f.FromRange.EndColumn - f.FromRange.StartColumn)))
 
         for msg in outcome.Messages do
             nextGroup <- nextGroup + 1

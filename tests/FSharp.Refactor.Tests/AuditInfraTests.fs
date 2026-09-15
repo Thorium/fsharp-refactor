@@ -400,5 +400,65 @@ let ``FR0092: a real test asserting on the text still pins it`` () =
     | [ (path, _) ] -> Assert.Equal(Path.GetFullPath testFile, Path.GetFullPath path)
     | other -> failwithf "Expected the one test file, got %A" other
 
-    // and the Contest file is production code for the assertion side
-    Assert.Contains("\"negative\"", Configuration.productionFailwithLiterals testFile)
+/// The production side of FR0092 with a test pinning its text, analysed
+/// under --api-changes: `Rules.fs` under `src`, one test file under `tests`.
+let private enrichmentWith (assertion: string) =
+    let root, rules = repository ()
+    let tests = Path.Combine(root, "tests")
+    Directory.CreateDirectory tests |> ignore
+    let testFile = Path.Combine(tests, "RulesTests.fs")
+    File.WriteAllText(testFile, $"module RulesTests\n\nlet check (ex: exn) (s: string) =\n    {assertion}\n")
+    Environment.SetEnvironmentVariable("FSREF_API_CHANGES", "1")
+
+    try
+        let messages =
+            run Analyzers.failwithContextCliAnalyzer (scriptContext rules (File.ReadAllText rules))
+
+        testFile, messages
+    finally
+        Environment.SetEnvironmentVariable("FSREF_API_CHANGES", null)
+
+[<Fact>]
+let ``FR0092: the assertion loosens in the production message's own fix`` () =
+    // the two halves are one atomic set: the enrichment never lands without
+    // the prefix check, and the prefix check never lands without it
+    let testFile, messages = enrichmentWith "Assert.Equal(\"negative\", ex.Message)"
+
+    match messages with
+    | [ m ] ->
+        let byFile =
+            m.Fixes
+            |> List.map (fun f -> Path.GetFileName f.FromRange.FileName, f.ToText)
+            |> List.sort
+
+        Assert.Equal<(string * string) list>(
+            [ "Rules.fs", "$\"negative, calling score with r: {r}\""
+              "RulesTests.fs", "Assert.StartsWith(\"negative\"," ],
+            byFile
+        )
+
+        Assert.Equal(
+            Path.GetFullPath testFile,
+            Path.GetFullPath(
+                m.Fixes
+                |> List.pick (fun f ->
+                    if f.ToText.StartsWith "Assert" then
+                        Some f.FromRange.FileName
+                    else
+                        None)
+            )
+        )
+    | other -> failwithf "Expected one FR0092 message, got %A" other
+
+[<Fact>]
+let ``FR0092: a test spelling the text about something else vetoes the enrichment`` () =
+    // `Assert.Equal("negative", s)` is not about an exception's message:
+    // loosening it would weaken the test for nothing, and enriching
+    // without loosening would turn it red - so neither happens
+    let _, messages = enrichmentWith "Assert.Equal(\"negative\", s)"
+
+    match messages with
+    | [ m ] ->
+        Assert.Empty m.Fixes
+        Assert.Contains("RulesTests.fs mentions its exact text", m.Message)
+    | other -> failwithf "Expected one FR0092 note, got %A" other

@@ -5,7 +5,9 @@ module FSharp.Refactor.Text
 
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
+open FSharp.Compiler.Tokenization
 open System
+open System.Collections.Generic
 open System.Text.RegularExpressions
 
 /// The exact source text covered by a range.
@@ -433,39 +435,147 @@ let spansDirective (source: ISourceText) (r: range) =
 
         text.StartsWith "#if" || text.StartsWith "#else" || text.StartsWith "#endif")
 
-/// Does the first non-blank line below `line` stand at `column` or beyond
-/// it? `column` is where an edit ENDS: a line that far in is aligned to
-/// text after the edit on the line above - the operand of a paren block,
-/// a tuple element under its sibling - and an edit that changes the
-/// length of its line shifts that anchor without shifting the line. (A
-/// line past the edit's start but short of its end is the body under an
-/// `if` header, anchored to nothing the edit moves.) fparsec's
+/// The indentations of the lines continuing the construct on `line`: every
+/// code line below it standing deeper than `line` itself, up to the first
+/// that does not (that one closes every context `line` opened). Blank and
+/// comment-only lines carry no offside meaning and are passed over.
+/// `lineAt` is 1-based, like a range's lines.
+let private continuationIndents (lineAt: int -> string) (lineCount: int) (line: int) =
+    let indentOf (text: string) = text.Length - text.TrimStart().Length
+    let own = indentOf (lineAt line)
+    let mutable l = line + 1
+    let mutable inside = true
+
+    [ while inside && l <= lineCount do
+          let text = lineAt l
+          let trimmed = text.TrimStart()
+
+          if trimmed = "" || trimmed.StartsWith "//" then ()
+          elif indentOf text > own then yield indentOf text
+          else inside <- false
+
+          l <- l + 1 ]
+
+/// The tokens that open an offside context: the first token after one of
+/// them sets the column its block continues at on the lines below - a line
+/// standing exactly there is the block's next item, one further in a
+/// continuation of the current item, one short of it closes the block.
+let private contextOpeners =
+    set
+        [ "LPAREN"
+          "LBRACK"
+          "LBRACE"
+          "LBRACK_BAR"
+          "LBRACE_BAR"
+          "BEGIN"
+          "EQUALS"
+          "RARROW"
+          "THEN"
+          "ELSE"
+          "DO"
+          "WITH"
+          "FUN"
+          "FUNCTION"
+          "TRY"
+          "FINALLY"
+          "LAZY"
+          "YIELD"
+          "YIELD_BANG"
+          "LARROW"
+          "COLON_EQUALS"
+          "ASSERT" ]
+
+let private bracketOpeners =
+    set [ "LPAREN"; "LBRACK"; "LBRACE"; "LBRACK_BAR"; "LBRACE_BAR"; "BEGIN" ]
+
+let private bracketClosers =
+    set [ "RPAREN"; "RBRACK"; "RBRACE"; "BAR_RBRACK"; "BAR_RBRACE"; "END" ]
+
+/// The columns of `lineText` a line below may be anchored to: for every
+/// context opener still open at the end of the line, the column of the
+/// token that follows it. A bracket closed on the same line takes every
+/// anchor inside it with it - nothing below can be aligned to text inside
+/// `(Guid.NewGuid())`. An opener that ends the line anchors nothing here:
+/// the next line's own first token sets that block's column. The line is
+/// lexed on its own, so a line inside a multi-line string or comment lexes
+/// as code; the caller edits code, so that is the line it asks about.
+let offsideAnchors (lineText: string) : int list =
+    let tokenizer = FSharpSourceTokenizer([], None, None, None)
+    let lineTokenizer = tokenizer.CreateLineTokenizer lineText
+    let tokens = ResizeArray<FSharpTokenInfo>()
+    let mutable state = FSharpTokenizerLexState.Initial
+    let mutable scanning = true
+
+    while scanning do
+        match lineTokenizer.ScanToken state with
+        | Some token, next ->
+            state <- next
+
+            if
+                token.TokenName <> "WHITESPACE"
+                && token.ColorClass <> FSharpTokenColorKind.Comment
+            then
+                tokens.Add token
+        | None, _ -> scanning <- false
+
+    let anchors = ResizeArray<int>()
+    // how many anchors were recorded when each still-open bracket opened:
+    // closing it discards everything recorded since
+    let openBrackets = Stack<int>()
+
+    for i in 0 .. tokens.Count - 1 do
+        let name = tokens.[i].TokenName
+
+        if bracketClosers.Contains name then
+            if openBrackets.Count > 0 then
+                let mark = openBrackets.Pop()
+                anchors.RemoveRange(mark, anchors.Count - mark)
+        else
+            if bracketOpeners.Contains name then
+                openBrackets.Push anchors.Count
+
+            if contextOpeners.Contains name && i + 1 < tokens.Count then
+                anchors.Add tokens.[i + 1].LeftColumn
+
+    List.ofSeq anchors
+
+/// Would an edit on a single line, replacing a stretch ending at `endColumn`
+/// with text `delta` characters longer (negative: shorter),
+/// change how a line continuing it reads (see `continuationIndents`)? Those
+/// lines do not move; the anchors after the edit do (see `offsideAnchors`),
+/// and the hazard is a line whose standing against one of them - on it, to
+/// its right, to its left - is not the same after the shift. fparsec's
 /// CharParsers.fs:
 ///
 ///     && stream.SkipCaseFolded("inf") && (flags <- flags ||| NLF.IsInfinity
 ///                                         stream.SkipCaseFolded("inity") |> ignore
 ///
-/// dropping the parens moved `flags` two columns left, the lines under it
-/// stayed, and the block re-parsed as an application. A rule that changes
-/// a line's length holds off while such a line follows; a line indented no
-/// further starts a construct of its own and is anchored to nothing past
-/// the edit. `lineAt` is 1-based, like a range's lines.
-let alignedLineBelow (lineAt: int -> string) (lineCount: int) (line: int) (column: int) =
-    let mutable l = line + 1
-    let mutable verdict = None
+/// dropping the parens around `"inf"` moved `flags` two columns left, the
+/// line under it stayed, and the block re-parsed as an application. The
+/// earlier form of this check called ANY line indented past the edit's end
+/// aligned - which is every arm body under a `| _ ->` it would have
+/// expanded, every argument continued on the next line, and it silently
+/// withheld whole files of FR0072 and FR0147 fixes (ClearBank.Net's tests,
+/// management-portal's hubs). A line to the right of every anchor before
+/// and after the shift is a continuation either way, and reads the same.
+/// `lineAt` is 1-based, like a range's lines.
+let alignmentHazard (lineAt: int -> string) (lineCount: int) (line: int) (endColumn: int) (delta: int) =
+    delta <> 0
+    && (match continuationIndents lineAt lineCount line with
+        | [] -> false
+        | indents ->
+            // an anchor inside the edited stretch is replaced with it; one
+            // before it does not move
+            let moving =
+                offsideAnchors (lineAt line) |> List.filter (fun anchor -> anchor >= endColumn)
 
-    while verdict.IsNone && l <= lineCount do
-        let text = lineAt l
+            indents
+            |> List.exists (fun indent ->
+                moving
+                |> List.exists (fun anchor -> compare indent anchor <> compare indent (anchor + delta))))
 
-        if String.IsNullOrWhiteSpace text then
-            l <- l + 1
-        else
-            verdict <- Some(text.Length - text.TrimStart().Length >= column)
-
-    defaultArg verdict false
-
-let alignedContinuationBelow (source: ISourceText) (line: int) (column: int) =
-    alignedLineBelow (fun l -> source.GetLineString(l - 1)) (source.GetLineCount()) line column
+let alignmentHazardBelow (source: ISourceText) (line: int) (endColumn: int) (delta: int) =
+    alignmentHazard (fun l -> source.GetLineString(l - 1)) (source.GetLineCount()) line endColumn delta
 
 /// Does a directive open on the first non-blank line AFTER the range? The
 /// parse tree ends at the last construct the ACTIVE defines leave visible,
@@ -668,7 +778,7 @@ let patNames (p: SynPat) : string list = patNamesLoop [] [ p ]
 /// inside `#if DEBUG ... #endif`, `Some "!(DEBUG)"` under its `#else`,
 /// None at top level.
 let conditionAt (source: ISourceText) (line: int) : string option =
-    let stack = System.Collections.Generic.Stack<string>()
+    let stack = Stack<string>()
 
     for l in 0 .. min (line - 2) (source.GetLineCount() - 1) do
         let text = source.GetLineString(l).Trim()
