@@ -55,8 +55,10 @@ let private cultureSensitiveMethods =
     set [ "StartsWith"; "EndsWith"; "IndexOf"; "LastIndexOf" ]
 
 let private enclosingEntities =
-    [ "System.String", ordinalSafeMethods + cultureSensitiveMethods
-      "System.Text.StringBuilder", set [ "Append" ] ]
+    [
+        "System.String", ordinalSafeMethods + cultureSensitiveMethods
+        "System.Text.StringBuilder", set [ "Append" ]
+    ]
 
 /// Render a char literal for the single character of a string constant.
 let private charLiteral (c: char) =
@@ -173,82 +175,90 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              // inside query { } / <@ @> the STRING overload is the shape
-              // a LINQ translator recognizes (Contains -> SQL LIKE); the
-              // char overload is a tree it has never seen
-              | SynExpr.App(isInfix = false; funcExpr = funcExpr; argExpr = arg) when not (insideQuotedCode path) ->
-                  let methodId =
-                      match funcExpr with
-                      | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
-                          Some(List.last ids)
-                      | SynExpr.DotGet(longDotId = SynLongIdent(id = [ id ])) -> Some id
-                      | _ -> None
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                // inside query { } / <@ @> the STRING overload is the shape
+                // a LINQ translator recognizes (Contains -> SQL LIKE); the
+                // char overload is a tree it has never seen
+                | SynExpr.App(isInfix = false; funcExpr = funcExpr; argExpr = arg) when not (insideQuotedCode path) ->
+                    let methodId =
+                        match funcExpr with
+                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                            Some(List.last ids)
+                        | SynExpr.DotGet(longDotId = SynLongIdent(id = [ id ])) -> Some id
+                        | _ -> None
 
-                  match methodId with
-                  | Some methodId when
-                      (ordinalSafeMethods.Contains methodId.idText
-                       || cultureSensitiveMethods.Contains methodId.idText
-                       || methodId.idText = "Append")
-                      && resolvesToGatedMethod check source methodId
-                      ->
-                      let cultureSensitive = cultureSensitiveMethods.Contains methodId.idText
+                    match methodId with
+                    | Some methodId when
+                        (ordinalSafeMethods.Contains methodId.idText
+                         || cultureSensitiveMethods.Contains methodId.idText
+                         || methodId.idText = "Append")
+                        && resolvesToGatedMethod check source methodId
+                        ->
+                        let cultureSensitive = cultureSensitiveMethods.Contains methodId.idText
 
-                      match stripParens arg with
-                      | SingleCharString(c, literalRange) ->
-                          // bare culture-sensitive calls get advice only —
-                          // plus an editor offer of the ordinal char
-                          // overload, the author's call to take; ordinal-safe
-                          // ones get the literal replaced
-                          let range, replacement =
-                              if cultureSensitive then
-                                  expr.Range, None
-                              else
-                                  literalRange, Some(charLiteral c)
+                        match stripParens arg with
+                        | SingleCharString(c, literalRange) ->
+                            // bare culture-sensitive calls get advice only —
+                            // plus an editor offer of the ordinal char
+                            // overload, the author's call to take; ordinal-safe
+                            // ones get the literal replaced
+                            let range, replacement =
+                                if cultureSensitive then
+                                    expr.Range, None
+                                else
+                                    literalRange, Some(charLiteral c)
 
-                          // the receiver, for the portable IndexOf form
-                          let receiverText =
-                              match funcExpr with
-                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
-                                  let prefix = ids |> List.take (ids.Length - 1)
+                            // the receiver, for the portable IndexOf form
+                            let receiverText =
+                                match funcExpr with
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                                    let prefix = ids |> List.take (ids.Length - 1)
 
-                                  Some(
-                                      textOfRange
-                                          source
-                                          (Range.mkRange
-                                              expr.Range.FileName
-                                              (List.head prefix).idRange.Start
-                                              (List.last prefix).idRange.End)
-                                  )
-                              | SynExpr.DotGet(expr = recv) -> Some(textOfRange source recv.Range)
-                              | _ -> None
+                                    Some(
+                                        textOfRange
+                                            source
+                                            (Range.mkRange
+                                                expr.Range.FileName
+                                                (List.head prefix).idRange.Start
+                                                (List.last prefix).idRange.End)
+                                    )
+                                | SynExpr.DotGet(expr = recv) -> Some(textOfRange source recv.Range)
+                                | _ -> None
 
-                          { Range = range
-                            OriginalText = textOfRange source range
-                            ReplacementText = replacement
-                            OrdinalOffer =
-                              if cultureSensitive then
-                                  Some(literalRange, textOfRange source literalRange, charLiteral c)
-                              else
-                                  None
-                            PortableOffer =
-                              if methodId.idText = "Contains" && isSingleLine expr.Range then
-                                  receiverText
-                                  |> Option.map (fun r ->
-                                      expr.Range, textOfRange source expr.Range, $"{r}.IndexOf {charLiteral c} >= 0")
-                              else
-                                  None
-                            MethodName = methodId.idText }
-                      | SynExpr.Tuple(exprs = [ SingleCharString(c, _); OrdinalComparison ]) when cultureSensitive ->
-                          // explicit Ordinal matches the char overload: fix
-                          // by replacing the whole argument list
-                          { Range = arg.Range
-                            OriginalText = textOfRange source arg.Range
-                            ReplacementText = Some $"({charLiteral c})"
-                            OrdinalOffer = None
-                            PortableOffer = None
-                            MethodName = methodId.idText }
-                      | _ -> ()
-                  | _ -> ()
-              | _ -> () ]
+                            {
+                                Range = range
+                                OriginalText = textOfRange source range
+                                ReplacementText = replacement
+                                OrdinalOffer =
+                                    if cultureSensitive then
+                                        Some(literalRange, textOfRange source literalRange, charLiteral c)
+                                    else
+                                        None
+                                PortableOffer =
+                                    if methodId.idText = "Contains" && isSingleLine expr.Range then
+                                        receiverText
+                                        |> Option.map (fun r ->
+                                            expr.Range,
+                                            textOfRange source expr.Range,
+                                            $"{r}.IndexOf {charLiteral c} >= 0")
+                                    else
+                                        None
+                                MethodName = methodId.idText
+                            }
+                        | SynExpr.Tuple(exprs = [ SingleCharString(c, _); OrdinalComparison ]) when cultureSensitive ->
+                            // explicit Ordinal matches the char overload: fix
+                            // by replacing the whole argument list
+                            {
+                                Range = arg.Range
+                                OriginalText = textOfRange source arg.Range
+                                ReplacementText = Some $"({charLiteral c})"
+                                OrdinalOffer = None
+                                PortableOffer = None
+                                MethodName = methodId.idText
+                            }
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]

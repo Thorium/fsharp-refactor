@@ -18,15 +18,19 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type ConsSuggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 type WildFieldsSuggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string
-      CaseName: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+        CaseName: string
+    }
 
 type TupleInListSuggestion =
     {
@@ -76,9 +80,11 @@ let find
             isSingleLine p.Range && not ((textOfRange source lhs.Range).Contains ';')
             ->
             conses.Add
-                { Range = p.Range
-                  OriginalText = textOfRange source p.Range
-                  ReplacementText = $"[ {textOfRange source lhs.Range} ]" }
+                {
+                    Range = p.Range
+                    OriginalText = textOfRange source p.Range
+                    ReplacementText = $"[ {textOfRange source lhs.Range} ]"
+                }
         // FR0088: Case(_, _) — every field a wildcard
         | SynPat.LongIdent(longDotId = SynLongIdent(id = ids); argPats = SynArgPats.Pats [ SynPat.Paren(inner, _) ]) when
             not ids.IsEmpty
@@ -99,11 +105,13 @@ let find
                 let editRange = Range.mkRange p.Range.FileName caseEnd p.Range.End
 
                 wilds.Add
-                    { Range = editRange
-                      OriginalText = textOfRange source editRange
-                      // a nullary case takes no wildcard at all
-                      ReplacementText = if fields = 0 then "" else " _"
-                      CaseName = (List.last ids).idText }
+                    {
+                        Range = editRange
+                        OriginalText = textOfRange source editRange
+                        // a nullary case takes no wildcard at all
+                        ReplacementText = if fields = 0 then "" else " _"
+                        CaseName = (List.last ids).idText
+                    }
             | None -> ()
         | _ -> ()
 
@@ -244,9 +252,11 @@ let find
                 + closing
 
             tuples.Add
-                { Fix = (e.Range, original, separated)
-                  Range = e.Range
-                  Elements = elems.Length }
+                {
+                    Fix = (e.Range, original, separated)
+                    Range = e.Range
+                    Elements = elems.Length
+                }
         | _ -> ()
 
     List.ofSeq conses, List.ofSeq wilds, List.ofSeq tuples

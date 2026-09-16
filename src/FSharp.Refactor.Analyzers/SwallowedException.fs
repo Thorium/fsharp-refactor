@@ -42,8 +42,10 @@ open System.Text.RegularExpressions
 
 /// One editor offer: what it does, and its edits.
 type Offer =
-    { Label: string
-      Edits: (range * string * string) list }
+    {
+        Label: string
+        Edits: (range * string * string) list
+    }
 
 type Suggestion =
     {
@@ -144,12 +146,14 @@ let private isBoolProbe (tryBody: SynExpr) (fallback: bool) =
 
 let private arithmeticOps =
     set
-        [ "op_Addition"
-          "op_Subtraction"
-          "op_Multiply"
-          "op_Division"
-          "op_Modulus"
-          "op_UnaryNegation" ]
+        [
+            "op_Addition"
+            "op_Subtraction"
+            "op_Multiply"
+            "op_Division"
+            "op_Modulus"
+            "op_UnaryNegation"
+        ]
 
 /// Is the expression arithmetic over names and literals only — nothing
 /// that can throw but a division? Returns the non-literal divisors. A
@@ -219,20 +223,22 @@ let private dottedOperandIsPure (check: FSharpCheckFileResults option) (source: 
 
 let private parseTypes =
     set
-        [ "Int32"
-          "Int64"
-          "Int16"
-          "Byte"
-          "UInt32"
-          "UInt64"
-          "Double"
-          "Single"
-          "Decimal"
-          "DateTime"
-          "DateTimeOffset"
-          "TimeSpan"
-          "Guid"
-          "Boolean" ]
+        [
+            "Int32"
+            "Int64"
+            "Int16"
+            "Byte"
+            "UInt32"
+            "UInt64"
+            "Double"
+            "Single"
+            "Decimal"
+            "DateTime"
+            "DateTimeOffset"
+            "TimeSpan"
+            "Guid"
+            "Boolean"
+        ]
 
 /// `T.Parse arg` / `T.Parse(arg)` with one argument.
 let private parseCall (e: SynExpr) =
@@ -262,12 +268,14 @@ type private LogIdiom =
 
 let private melMethods =
     set
-        [ "LogError"
-          "LogWarning"
-          "LogInformation"
-          "LogDebug"
-          "LogCritical"
-          "LogTrace" ]
+        [
+            "LogError"
+            "LogWarning"
+            "LogInformation"
+            "LogDebug"
+            "LogCritical"
+            "LogTrace"
+        ]
 
 let private serilogMethods =
     set [ "Error"; "Warning"; "Information"; "Debug"; "Fatal"; "Verbose" ]
@@ -489,18 +497,20 @@ let rec private isValueFallback (e: SynExpr) =
 /// nowhere to report.
 let private teardownMethods =
     set
-        [ "dispose"
-          "close"
-          "shutdown"
-          "cancel"
-          "complete"
-          "delete"
-          "reset"
-          "abort"
-          "disconnect"
-          "kill"
-          "release"
-          "unregister" ]
+        [
+            "dispose"
+            "close"
+            "shutdown"
+            "cancel"
+            "complete"
+            "delete"
+            "reset"
+            "abort"
+            "disconnect"
+            "kill"
+            "release"
+            "unregister"
+        ]
 
 /// The method name a call applies: `x.Dispose()`, `File.Delete path`,
 /// `conn.shutdown()`.
@@ -535,19 +545,21 @@ let private isTeardown (tryBody: SynExpr) =
 /// throw for a malformed one): a try around them adds nothing.
 let private probeApis =
     set
-        [ "File.Exists"
-          "Directory.Exists"
-          "Path.Exists"
-          "File.GetLastWriteTime"
-          "File.GetLastWriteTimeUtc"
-          "File.GetCreationTime"
-          "File.GetCreationTimeUtc"
-          "File.GetLastAccessTime"
-          "File.GetLastAccessTimeUtc"
-          "Directory.GetLastWriteTime"
-          "Directory.GetLastWriteTimeUtc"
-          "Directory.GetCreationTime"
-          "Directory.GetCreationTimeUtc" ]
+        [
+            "File.Exists"
+            "Directory.Exists"
+            "Path.Exists"
+            "File.GetLastWriteTime"
+            "File.GetLastWriteTimeUtc"
+            "File.GetCreationTime"
+            "File.GetCreationTimeUtc"
+            "File.GetLastAccessTime"
+            "File.GetLastAccessTimeUtc"
+            "Directory.GetLastWriteTime"
+            "Directory.GetLastWriteTimeUtc"
+            "Directory.GetCreationTime"
+            "Directory.GetCreationTimeUtc"
+        ]
 
 let private probeOf (tryBody: SynExpr) =
     match stripParens tryBody with
@@ -642,265 +654,292 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 not ids.IsEmpty && (List.last ids).idText = "Checked"
             | _ -> false)
 
-    [ for path, expr in exprs do
-          match expr with
-          | SynExpr.TryWith(tryExpr = tryBody; withCases = clauses) when not (continuationRaises path expr.Range) ->
-              for i, clause in List.indexed clauses do
-                  // a guard that never looks at the exception (`with _ when
-                  // watch -> ()`) still swallows every one of them; a guard
-                  // on the exception itself is a decision
-                  let guarded =
-                      match clause with
-                      | SynMatchClause(pat = pat; whenExpr = Some whenGuard; resultExpr = result) ->
-                          let guardText = textOfRange source whenGuard.Range
+    [
+        for path, expr in exprs do
+            match expr with
+            | SynExpr.TryWith(tryExpr = tryBody; withCases = clauses) when not (continuationRaises path expr.Range) ->
+                for i, clause in List.indexed clauses do
+                    // a guard that never looks at the exception (`with _ when
+                    // watch -> ()`) still swallows every one of them; a guard
+                    // on the exception itself is a decision
+                    let guarded =
+                        match clause with
+                        | SynMatchClause(pat = pat; whenExpr = Some whenGuard; resultExpr = result) ->
+                            let guardText = textOfRange source whenGuard.Range
 
-                          match binderOf pat with
-                          | ValueSome name when Regex.IsMatch(guardText, $@"\b{Regex.Escape name}\b") -> None
-                          | _ -> Some(pat, result, Some whenGuard)
-                      | SynMatchClause(pat = pat; whenExpr = None; resultExpr = result) -> Some(pat, result, None)
+                            match binderOf pat with
+                            | ValueSome name when Regex.IsMatch(guardText, $@"\b{Regex.Escape name}\b") -> None
+                            | _ -> Some(pat, result, Some whenGuard)
+                        | SynMatchClause(pat = pat; whenExpr = None; resultExpr = result) -> Some(pat, result, None)
 
-                  match guarded with
-                  | Some(pat, result, whenGuard) when
-                      isCatchAll pat
-                      && not (acknowledged source clause result)
-                      && not (cancellationRethrown (List.take i clauses))
-                      ->
-                      let fallback =
-                          match stripParens result with
-                          | UnitConst -> Some None
-                          | SynExpr.Const(SynConst.Bool b, _) as body when not (isBoolProbe tryBody b) ->
-                              Some(Some(textOfRange source body.Range))
-                          // a tuple keeps its parentheses: `(istate, Completed None)`
-                          | SynExpr.Tuple _ as body when isValueFallback body ->
-                              Some(Some(textOfRange source result.Range))
-                          | IsValueFallback body -> Some(Some(textOfRange source body.Range))
-                          | _ -> None
+                    match guarded with
+                    | Some(pat, result, whenGuard) when
+                        isCatchAll pat
+                        && not (acknowledged source clause result)
+                        && not (cancellationRethrown (List.take i clauses))
+                        ->
+                        let fallback =
+                            match stripParens result with
+                            | UnitConst -> Some None
+                            | SynExpr.Const(SynConst.Bool b, _) as body when not (isBoolProbe tryBody b) ->
+                                Some(Some(textOfRange source body.Range))
+                            // a tuple keeps its parentheses: `(istate, Completed None)`
+                            | SynExpr.Tuple _ as body when isValueFallback body ->
+                                Some(Some(textOfRange source result.Range))
+                            | IsValueFallback body -> Some(Some(textOfRange source body.Range))
+                            | _ -> None
 
-                      match fallback with
-                      | Some fallbackText ->
-                          let bodyText = textOfRange source tryBody.Range
+                        match fallback with
+                        | Some fallbackText ->
+                            let bodyText = textOfRange source tryBody.Range
 
-                          let patText =
-                              match whenGuard with
-                              | Some g -> textOfRange source (Range.unionRanges pat.Range g.Range)
-                              | None -> textOfRange source pat.Range
+                            let patText =
+                                match whenGuard with
+                                | Some g -> textOfRange source (Range.unionRanges pat.Range g.Range)
+                                | None -> textOfRange source pat.Range
 
-                          // 1. the guard: pure arithmetic, one non-literal
-                          // divisor, nothing else that throws
-                          let guard =
-                              match fallbackText, pureArithmetic dottedIsPure (stripParens tryBody) with
-                              | Some fb, (true, [ divisor ]) when isSingleLine tryBody.Range && not checkedOpen ->
-                                  // the zero is the divisor's own — 0, 0L,
-                                  // 0uy — from the typed check; without the
-                                  // type (or for a float or decimal) the
-                                  // guard is not offered
-                                  match zeroOf check source divisor with
-                                  | Some zero ->
-                                      let d = textOfRange source divisor.Range
+                            // 1. the guard: pure arithmetic, one non-literal
+                            // divisor, nothing else that throws
+                            let guard =
+                                match fallbackText, pureArithmetic dottedIsPure (stripParens tryBody) with
+                                | Some fb, (true, [ divisor ]) when isSingleLine tryBody.Range && not checkedOpen ->
+                                    // the zero is the divisor's own — 0, 0L,
+                                    // 0uy — from the typed check; without the
+                                    // type (or for a float or decimal) the
+                                    // guard is not offered
+                                    match zeroOf check source divisor with
+                                    | Some zero ->
+                                        let d = textOfRange source divisor.Range
 
-                                      [ { Label =
-                                            $"Fix: guard the division instead of catching — `if {d} = {zero} then {fb} else ...`; the catch goes, nothing else in the body throws"
-                                          Edits =
-                                            [ expr.Range,
-                                              textOfRange source expr.Range,
-                                              $"if {d} = {zero} then {fb} else {bodyText}" ] } ]
-                                  | None -> []
-                              | _ -> []
+                                        [
+                                            {
+                                                Label =
+                                                    $"Fix: guard the division instead of catching — `if {d} = {zero} then {fb} else ...`; the catch goes, nothing else in the body throws"
+                                                Edits =
+                                                    [
+                                                        expr.Range,
+                                                        textOfRange source expr.Range,
+                                                        $"if {d} = {zero} then {fb} else {bodyText}"
+                                                    ]
+                                            }
+                                        ]
+                                    | None -> []
+                                | _ -> []
 
-                          // 2. TryParse, for a one-call Parse body
-                          let tryParse =
-                              match fallbackText, parseCall tryBody with
-                              | Some fb, Some(typeName, arg) ->
-                                  let a = textOfRange source arg.Range
+                            // 2. TryParse, for a one-call Parse body
+                            let tryParse =
+                                match fallbackText, parseCall tryBody with
+                                | Some fb, Some(typeName, arg) ->
+                                    let a = textOfRange source arg.Range
 
-                                  let a =
-                                      match arg with
-                                      | SynExpr.Ident _
-                                      | SynExpr.Const _
-                                      | SynExpr.LongIdent _ -> a
-                                      | _ -> $"({a})"
+                                    let a =
+                                        match arg with
+                                        | SynExpr.Ident _
+                                        | SynExpr.Const _
+                                        | SynExpr.LongIdent _ -> a
+                                        | _ -> $"({a})"
 
-                                  let success, failure =
-                                      match fb with
-                                      | "None" -> "Some v", "None"
-                                      | "ValueNone" -> "ValueSome v", "ValueNone"
-                                      | other -> "v", other
+                                    let success, failure =
+                                        match fb with
+                                        | "None" -> "Some v", "None"
+                                        | "ValueNone" -> "ValueSome v", "ValueNone"
+                                        | other -> "v", other
 
-                                  let pad = String.replicate expr.Range.StartColumn " "
+                                    let pad = String.replicate expr.Range.StartColumn " "
 
-                                  [ { Label =
-                                        $"Fix: {typeName}.TryParse instead of a catch — the parse failing is the expected case, not an exception"
-                                      Edits =
-                                        [ expr.Range,
-                                          textOfRange source expr.Range,
-                                          // the miss arm spelled out, as FR0014
-                                          // spells its TryGetValue one: a bare
-                                          // `_` hides what a two-case tuple
-                                          // match falls through on
-                                          $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| false, _ -> {failure}" ] } ]
-                              | _ -> []
+                                    [
+                                        {
+                                            Label =
+                                                $"Fix: {typeName}.TryParse instead of a catch — the parse failing is the expected case, not an exception"
+                                            Edits =
+                                                [
+                                                    expr.Range,
+                                                    textOfRange source expr.Range,
+                                                    // the miss arm spelled out, as FR0014
+                                                    // spells its TryGetValue one: a bare
+                                                    // `_` hides what a two-case tuple
+                                                    // match falls through on
+                                                    $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| false, _ -> {failure}"
+                                                ]
+                                        }
+                                    ]
+                                | _ -> []
 
-                          // 3. a narrower catch for file IO — for a body that IS the IO call: a
-                          // multi-line body mentioning a Path beside native calls (Kasino's
-                          // SDL icon) throws more than IOException
-                          let narrower =
-                              if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range then
-                                  let narrowed =
-                                      match binderOf pat with
-                                      | ValueSome name ->
-                                          $"(:? System.IO.IOException | :? System.UnauthorizedAccessException) as {name}"
-                                      | ValueNone -> ":? System.IO.IOException | :? System.UnauthorizedAccessException"
+                            // 3. a narrower catch for file IO — for a body that IS the IO call: a
+                            // multi-line body mentioning a Path beside native calls (Kasino's
+                            // SDL icon) throws more than IOException
+                            let narrower =
+                                if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range then
+                                    let narrowed =
+                                        match binderOf pat with
+                                        | ValueSome name ->
+                                            $"(:? System.IO.IOException | :? System.UnauthorizedAccessException) as {name}"
+                                        | ValueNone ->
+                                            ":? System.IO.IOException | :? System.UnauthorizedAccessException"
 
-                                  [ { Label =
-                                        "Alternative: catch the IO exceptions only — IOException and UnauthorizedAccessException — and let the rest surface"
-                                      Edits = [ pat.Range, patText, narrowed ] } ]
-                              else
-                                  []
+                                    [
+                                        {
+                                            Label =
+                                                "Alternative: catch the IO exceptions only — IOException and UnauthorizedAccessException — and let the rest surface"
+                                            Edits = [ pat.Range, patText, narrowed ]
+                                        }
+                                    ]
+                                else
+                                    []
 
-                          // 4. a log line in the file's own idiom — when its
-                          // receiver is reachable from THIS catch: a parameter
-                          // of the enclosing function, a module-level value, a
-                          // class `let`, or a local `let` whose scope holds the
-                          // site (Fuuga: a `logger` from one function was written
-                          // into six functions that have none)
-                          let receiverInScope (idiom: LogIdiom) =
-                              match idiom with
-                              | Mel receiver ->
-                                  let root = receiver.Split('.').[0]
+                            // 4. a log line in the file's own idiom — when its
+                            // receiver is reachable from THIS catch: a parameter
+                            // of the enclosing function, a module-level value, a
+                            // class `let`, or a local `let` whose scope holds the
+                            // site (Fuuga: a `logger` from one function was written
+                            // into six functions that have none)
+                            let receiverInScope (idiom: LogIdiom) =
+                                match idiom with
+                                | Mel receiver ->
+                                    let root = receiver.Split('.').[0]
 
-                                  // the VALUE a binding defines, not a function's parameters:
-                                  // those are in scope only inside that function
-                                  let bindsRoot (SynBinding(headPat = p)) =
-                                      match p with
-                                      | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = root
-                                      | SynPat.LongIdent(
-                                          longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-                                          id.idText = root
-                                      | _ -> false
+                                    // the VALUE a binding defines, not a function's parameters:
+                                    // those are in scope only inside that function
+                                    let bindsRoot (SynBinding(headPat = p)) =
+                                        match p with
+                                        | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = root
+                                        | SynPat.LongIdent(
+                                            longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
+                                            id.idText = root
+                                        | _ -> false
 
-                                  let parameters = enclosingFunction path |> Option.map snd |> Option.defaultValue []
+                                    let parameters = enclosingFunction path |> Option.map snd |> Option.defaultValue []
 
-                                  root = "this"
-                                  || root = "self"
-                                  || List.contains root parameters
-                                  || index.Decls
-                                     |> Array.exists (fun (_, d) ->
-                                         match d with
-                                         // defined ABOVE the site: F# scopes top-down
-                                         | SynModuleDecl.Let(bindings = bs) when
-                                             d.Range.EndLine < clause.Range.StartLine
-                                             ->
-                                             bs |> List.exists bindsRoot
-                                         | SynModuleDecl.Types(typeDefns = defns) ->
-                                             defns
-                                             |> List.exists (fun (SynTypeDefn(typeRepr = repr; range = tr)) ->
-                                                 Range.rangeContainsRange tr clause.Range
-                                                 && (match repr with
-                                                     | SynTypeDefnRepr.ObjectModel(members = ms) ->
-                                                         ms
-                                                         |> List.exists (fun m ->
-                                                             match m with
-                                                             | SynMemberDefn.LetBindings(bindings = bs) ->
-                                                                 bs |> List.exists bindsRoot
-                                                             | _ -> false)
-                                                     | _ -> false))
-                                         | _ -> false)
-                                  || index.Exprs
-                                     |> Array.exists (fun (_, e) ->
-                                         match e with
-                                         | LetOrUseE lou when Range.rangeContainsRange e.Range clause.Range ->
-                                             lou.Bindings |> List.exists bindsRoot
-                                         | _ -> false)
-                              | Serilog
-                              | Logary _ -> true
+                                    root = "this"
+                                    || root = "self"
+                                    || List.contains root parameters
+                                    || index.Decls
+                                       |> Array.exists (fun (_, d) ->
+                                           match d with
+                                           // defined ABOVE the site: F# scopes top-down
+                                           | SynModuleDecl.Let(bindings = bs) when
+                                               d.Range.EndLine < clause.Range.StartLine
+                                               ->
+                                               bs |> List.exists bindsRoot
+                                           | SynModuleDecl.Types(typeDefns = defns) ->
+                                               defns
+                                               |> List.exists (fun (SynTypeDefn(typeRepr = repr; range = tr)) ->
+                                                   Range.rangeContainsRange tr clause.Range
+                                                   && (match repr with
+                                                       | SynTypeDefnRepr.ObjectModel(members = ms) ->
+                                                           ms
+                                                           |> List.exists (fun m ->
+                                                               match m with
+                                                               | SynMemberDefn.LetBindings(bindings = bs) ->
+                                                                   bs |> List.exists bindsRoot
+                                                               | _ -> false)
+                                                       | _ -> false))
+                                           | _ -> false)
+                                    || index.Exprs
+                                       |> Array.exists (fun (_, e) ->
+                                           match e with
+                                           | LetOrUseE lou when Range.rangeContainsRange e.Range clause.Range ->
+                                               lou.Bindings |> List.exists bindsRoot
+                                           | _ -> false)
+                                | Serilog
+                                | Logary _ -> true
 
-                          // the exception's name for the log line: the
-                          // handler's own binder, or for `_` and a bare
-                          // `:? Exception` a fresh one — `ex` unless the
-                          // enclosing declaration already says `ex`, in which
-                          // case the fallback (or the log line's parameters)
-                          // could name the wrong one
-                          let binder =
-                              match binderOf pat with
-                              | ValueSome name -> Some name
-                              | ValueNone ->
-                                  let scope =
-                                      path
-                                      |> List.tryPick (fun node ->
-                                          match node with
-                                          | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
-                                          | _ -> None)
+                            // the exception's name for the log line: the
+                            // handler's own binder, or for `_` and a bare
+                            // `:? Exception` a fresh one — `ex` unless the
+                            // enclosing declaration already says `ex`, in which
+                            // case the fallback (or the log line's parameters)
+                            // could name the wrong one
+                            let binder =
+                                match binderOf pat with
+                                | ValueSome name -> Some name
+                                | ValueNone ->
+                                    let scope =
+                                        path
+                                        |> List.tryPick (fun node ->
+                                            match node with
+                                            | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                                            | _ -> None)
 
-                                  let text =
-                                      match scope with
-                                      | Some r -> textOfRange source r
-                                      | None ->
-                                          String.concat
-                                              "\n"
-                                              [ for i in 0 .. source.GetLineCount() - 1 -> source.GetLineString i ]
+                                    let text =
+                                        match scope with
+                                        | Some r -> textOfRange source r
+                                        | None ->
+                                            String.concat
+                                                "\n"
+                                                [ for i in 0 .. source.GetLineCount() - 1 -> source.GetLineString i ]
 
-                                  [ "ex"; "exn"; "err" ]
-                                  |> List.tryFind (fun candidate ->
-                                      not (Regex.IsMatch(text, identifierPattern candidate)))
+                                    [ "ex"; "exn"; "err" ]
+                                    |> List.tryFind (fun candidate ->
+                                        not (Regex.IsMatch(text, identifierPattern candidate)))
 
-                          let logging =
-                              match idiom.Value, binder with
-                              | Some idiom, Some ex when receiverInScope idiom ->
-                                  let method', parameters = enclosingFunction path |> Option.defaultValue ("?", [])
+                            let logging =
+                                match idiom.Value, binder with
+                                | Some idiom, Some ex when receiverInScope idiom ->
+                                    let method', parameters = enclosingFunction path |> Option.defaultValue ("?", [])
 
-                                  // the logger itself is not a parameter worth
-                                  // logging
-                                  let parameters =
-                                      match idiom with
-                                      | Mel receiver -> parameters |> List.filter (fun p -> p <> receiver)
-                                      | Logary sink -> parameters |> List.filter (fun p -> not (sink.Contains p))
-                                      | Serilog -> parameters
+                                    // the logger itself is not a parameter worth
+                                    // logging
+                                    let parameters =
+                                        match idiom with
+                                        | Mel receiver -> parameters |> List.filter (fun p -> p <> receiver)
+                                        | Logary sink -> parameters |> List.filter (fun p -> not (sink.Contains p))
+                                        | Serilog -> parameters
 
-                                  let line = logLine idiom ex method' parameters
+                                    let line = logLine idiom ex method' parameters
 
-                                  // a fallback already on its own line keeps its column and
-                                  // gets the log line above it; one after the arrow moves
-                                  // down under the clause with the log line first
-                                  let onOwnLine = result.Range.StartLine > clause.Range.StartLine
+                                    // a fallback already on its own line keeps its column and
+                                    // gets the log line above it; one after the arrow moves
+                                    // down under the clause with the log line first
+                                    let onOwnLine = result.Range.StartLine > clause.Range.StartLine
 
-                                  let indent =
-                                      if onOwnLine then
-                                          String.replicate result.Range.StartColumn " "
-                                      else
-                                          String.replicate (clause.Range.StartColumn + 4) " "
+                                    let indent =
+                                        if onOwnLine then
+                                            String.replicate result.Range.StartColumn " "
+                                        else
+                                            String.replicate (clause.Range.StartColumn + 4) " "
 
-                                  let prefix = if onOwnLine then "" else $"\n{indent}"
+                                    let prefix = if onOwnLine then "" else $"\n{indent}"
 
-                                  let bindEdit =
-                                      match pat with
-                                      | SynPat.Wild _ -> [ pat.Range, patText, ex ]
-                                      // `:? Exception` binds nothing: without
-                                      // `as ex` the log line's `ex` is FS0039
-                                      | SynPat.IsInst _ ->
-                                          let original = textOfRange source pat.Range
-                                          [ pat.Range, original, $"{original} as {ex}" ]
-                                      | _ -> []
+                                    let bindEdit =
+                                        match pat with
+                                        | SynPat.Wild _ -> [ pat.Range, patText, ex ]
+                                        // `:? Exception` binds nothing: without
+                                        // `as ex` the log line's `ex` is FS0039
+                                        | SynPat.IsInst _ ->
+                                            let original = textOfRange source pat.Range
+                                            [ pat.Range, original, $"{original} as {ex}" ]
+                                        | _ -> []
 
-                                  let bodyEdit =
-                                      match stripParens result with
-                                      | UnitConst ->
-                                          [ result.Range, textOfRange source result.Range, $"{prefix}{line}" ]
-                                      | _ ->
-                                          [ result.Range,
-                                            textOfRange source result.Range,
-                                            $"{prefix}{line}\n{indent}{textOfRange source result.Range}" ]
+                                    let bodyEdit =
+                                        match stripParens result with
+                                        | UnitConst ->
+                                            [ result.Range, textOfRange source result.Range, $"{prefix}{line}" ]
+                                        | _ ->
+                                            [
+                                                result.Range,
+                                                textOfRange source result.Range,
+                                                $"{prefix}{line}\n{indent}{textOfRange source result.Range}"
+                                            ]
 
-                                  [ { Label =
-                                        $"Alternative: log it the way this file logs — the exception, the method '{method'}' and its parameters — before the fallback"
-                                      Edits = bindEdit @ bodyEdit } ]
-                              | _ -> []
+                                    [
+                                        {
+                                            Label =
+                                                $"Alternative: log it the way this file logs — the exception, the method '{method'}' and its parameters — before the fallback"
+                                            Edits = bindEdit @ bodyEdit
+                                        }
+                                    ]
+                                | _ -> []
 
-                          { Range = clause.Range
-                            PatternText = patText
-                            FallbackText = fallbackText
-                            Teardown = fallbackText.IsNone && isTeardown tryBody
-                            Probe = probeOf tryBody
-                            Offers = guard @ tryParse @ narrower @ logging }
-                      | None -> ()
-                  | _ -> ()
-          | _ -> () ]
+                            {
+                                Range = clause.Range
+                                PatternText = patText
+                                FallbackText = fallbackText
+                                Teardown = fallbackText.IsNone && isTeardown tryBody
+                                Probe = probeOf tryBody
+                                Offers = guard @ tryParse @ narrower @ logging
+                            }
+                        | None -> ()
+                    | _ -> ()
+            | _ -> ()
+    ]

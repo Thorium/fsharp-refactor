@@ -15,6 +15,18 @@ open FSharp.Compiler.Text
 open FSharp.Refactor
 open FSharp.Refactor.Tool
 
+/// A driver function called directly, with the prose it writes to stderr
+/// (put-backs, rolled-back fixes) kept out of the test run's output.
+let private quietly (f: unit -> 'T) : 'T =
+    use captured = new StringWriter()
+    let oldErr = Console.Error
+    Console.SetError captured
+
+    try
+        f ()
+    finally
+        Console.SetError oldErr
+
 let private tempRoot (prefix: string) =
     let root = Path.Combine(Path.GetTempPath(), prefix + Guid.NewGuid().ToString "N")
     Directory.CreateDirectory root |> ignore
@@ -100,7 +112,7 @@ let ``a later compilation's build failure puts back the files an earlier one rew
         let message =
             $"dotnet build failed - fix the build before applying fixes:\n{shared}(1,9): error FS3349: Feature 'string interpolation' requires the F# library for language version 5.0 or greater.\n{untouched}(1,1): error FS0001: unrelated"
 
-        Assert.Equal(1, (Program.putBackRunEdits message "Fable.Elmish.fsproj").Length)
+        Assert.Equal(1, (quietly (fun () -> Program.putBackRunEdits message "Fable.Elmish.fsproj")).Length)
         Assert.Equal("let s = sprintf \"%d\" 1\n", File.ReadAllText shared)
         Assert.Equal("let t = 2\n", File.ReadAllText untouched)
         // nothing left to put back

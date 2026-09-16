@@ -97,6 +97,17 @@ type Hint =
             /// `let inline isNull (node: Node)`, and `x = null ===> isNull x`
             /// handed it a list: the rewrite did not compile.
             RhsNames: string list
+            /// The names the left side spells that are not metavariables -
+            /// `id`, `not`, `List.map` - each of which must resolve to
+            /// FSharp.Core's at the site: inside a computation expression
+            /// `id "rule"` is the builder's custom operation (FsCDK's
+            /// `lifecycleRule { id "x" }`), and `id x ===> x` erased it.
+            LhsNames: string list
+            /// Whether those names are FSharp.Core's - true for the built-in
+            /// rules, false for a repository's own (`hints` in its config),
+            /// which name the repository's functions and are its author's
+            /// to aim.
+            CoreNames: bool
             /// Coarse first-token key of the left side, for indexing.
             HeadKey: string
             /// The metavariable that is the LAST argument of a right side
@@ -277,7 +288,8 @@ let private parseSide (text: string) : SynExpr option =
 
         let parsingOptions =
             { FSharpParsingOptions.Default with
-                SourceFiles = [| "Hint.fsx" |] }
+                SourceFiles = [| "Hint.fsx" |]
+            }
 
         let result =
             // cold path: rules parse once per session and are cached
@@ -368,15 +380,17 @@ let parseRule (rule: string) : Hint option =
                 // NaN-sound and deliberately absent.
                 let nanSensitiveHeads =
                     set
-                        [ "op_GreaterThan"
-                          "op_GreaterThanOrEqual"
-                          "op_LessThan"
-                          "op_LessThanOrEqual"
-                          "compare"
-                          "sort"
-                          "sortBy"
-                          "sortDescending"
-                          "sortByDescending" ]
+                        [
+                            "op_GreaterThan"
+                            "op_GreaterThanOrEqual"
+                            "op_LessThan"
+                            "op_LessThanOrEqual"
+                            "compare"
+                            "sort"
+                            "sortBy"
+                            "sortDescending"
+                            "sortByDescending"
+                        ]
 
                 let notFloat =
                     let acc = HashSet<string>()
@@ -429,17 +443,21 @@ let parseRule (rule: string) : Hint option =
                     | _ -> None
 
                 Some
-                    { RuleText = $"{lhsText} ===> {rhsText}"
-                      Lhs = lhs
-                      RhsText = rhsText
-                      RhsVarSpans = spans
-                      RhsBoolOperandSpans = boolOperandSpans
-                      PureOnlyVars = pureOnly
-                      BoolTypedVars = boolTyped
-                      NotFloatVars = notFloat
-                      RhsNames = collectNames rhs |> List.distinct
-                      HeadKey = headKey lhs
-                      PipeTail = pipeTail }
+                    {
+                        RuleText = $"{lhsText} ===> {rhsText}"
+                        Lhs = lhs
+                        RhsText = rhsText
+                        RhsVarSpans = spans
+                        RhsBoolOperandSpans = boolOperandSpans
+                        PureOnlyVars = pureOnly
+                        BoolTypedVars = boolTyped
+                        NotFloatVars = notFloat
+                        RhsNames = collectNames rhs |> List.distinct
+                        LhsNames = collectNames lhs |> List.distinct
+                        CoreNames = false
+                        HeadKey = headKey lhs
+                        PipeTail = pipeTail
+                    }
         | _ -> None
     | _ -> None
 
@@ -447,88 +465,94 @@ let parseRule (rule: string) : Hint option =
 /// already covered by other analyzers (length = 0, if-bool identities) and
 /// rules that change how often a function argument is evaluated are excluded.
 let defaultRules =
-    [ "not (a = b) ===> a <> b"
-      "not (a <> b) ===> a = b"
-      "not (a > b) ===> a <= b"
-      "not (a >= b) ===> a < b"
-      "not (a < b) ===> a >= b"
-      "not (a <= b) ===> a > b"
-      "not (not x) ===> x"
-      "not a && not b ===> not (a || b)"
-      "not a || not b ===> not (a && b)"
-      "compare x y = 0 ===> x = y"
-      "compare x y <> 0 ===> x <> y"
-      "compare x y < 0 ===> x < y"
-      "compare x y <= 0 ===> x <= y"
-      "compare x y > 0 ===> x > y"
-      "compare x y >= 0 ===> x >= y"
-      "List.head (List.sort x) ===> List.min x"
-      "List.head (List.sortBy f x) ===> List.minBy f x"
-      "List.map f (List.map g x) ===> List.map (g >> f) x"
-      "Array.map f (Array.map g x) ===> Array.map (g >> f) x"
-      "Seq.map f (Seq.map g x) ===> Seq.map (g >> f) x"
-      "List.rev (List.rev x) ===> x"
-      "Array.rev (Array.rev x) ===> x"
-      "List.map id x ===> x"
-      "Array.map id x ===> x"
-      "List.concat (List.map f x) ===> List.collect f x"
-      "Array.concat (Array.map f x) ===> Array.collect f x"
-      "Seq.concat (Seq.map f x) ===> Seq.collect f x"
-      // one-element-of-transformed shapes: same result, no full scan/sort.
-      // head-of-filter → find is deliberately absent: the empty-input
-      // exception types differ (ArgumentException vs KeyNotFoundException)
-      "List.tryHead (List.filter f x) ===> List.tryFind f x"
-      "Array.tryHead (Array.filter f x) ===> Array.tryFind f x"
-      "Seq.tryHead (Seq.filter f x) ===> Seq.tryFind f x"
-      "List.head (List.sort x) ===> List.min x"
-      "Array.head (Array.sort x) ===> Array.min x"
-      "Seq.head (Seq.sort x) ===> Seq.min x"
-      "List.head (List.sortBy f x) ===> List.minBy f x"
-      "Array.head (Array.sortBy f x) ===> Array.minBy f x"
-      "Seq.head (Seq.sortBy f x) ===> Seq.minBy f x"
-      "List.head (List.sortDescending x) ===> List.max x"
-      "Array.head (Array.sortDescending x) ===> Array.max x"
-      "List.head (List.sortByDescending f x) ===> List.maxBy f x"
-      "Array.head (Array.sortByDescending f x) ===> Array.maxBy f x"
-      "List.head (List.rev x) ===> List.last x"
-      "Array.head (Array.rev x) ===> Array.last x"
-      "List.item 0 x ===> List.head x"
-      "Seq.item 0 x ===> Seq.head x"
-      "Array.item 0 x ===> Array.head x"
-      "List.isEmpty (List.filter f x) ===> not (List.exists f x)"
-      "Array.isEmpty (Array.filter f x) ===> not (Array.exists f x)"
-      "Seq.isEmpty (Seq.filter f x) ===> not (Seq.exists f x)"
-      "not (List.isEmpty (List.filter f x)) ===> List.exists f x"
-      "not (Array.isEmpty (Array.filter f x)) ===> Array.exists f x"
-      "not (Seq.isEmpty (Seq.filter f x)) ===> Seq.exists f x"
-      "x = true ===> x"
-      "true = a ===> a"
-      "false = a ===> not a"
-      "a <> true ===> not a"
-      "a <> false ===> a"
-      "true <> a ===> not a"
-      "false <> a ===> a"
-      "true && x ===> x"
-      "false || x ===> x"
-      // `fold (+) 0` -> `sum` is NOT here: the fold adds unchecked and
-      // wraps, `sum` adds checked and throws OverflowException (Mibo's
-      // Tests.fs; verified in fsi on [| Int32.MaxValue; 1 |])
-      "List.sum (List.map f x) ===> List.sumBy f x"
-      "Array.sum (Array.map f x) ===> Array.sumBy f x"
-      "Seq.sum (Seq.map f x) ===> Seq.sumBy f x"
-      "List.average (List.map f x) ===> List.averageBy f x"
-      "Array.average (Array.map f x) ===> Array.averageBy f x"
-      "Seq.average (Seq.map f x) ===> Seq.averageBy f x"
-      "id x ===> x"
-      "id >> f ===> f"
-      "f >> id ===> f"
-      "x = null ===> isNull x"
-      "null = x ===> isNull x"
-      "x <> null ===> not (isNull x)"
-      "null <> x ===> not (isNull x)"
-      "Array.append a (Array.append b c) ===> Array.concat [| a; b; c |]" ]
+    [
+        "not (a = b) ===> a <> b"
+        "not (a <> b) ===> a = b"
+        "not (a > b) ===> a <= b"
+        "not (a >= b) ===> a < b"
+        "not (a < b) ===> a >= b"
+        "not (a <= b) ===> a > b"
+        "not (not x) ===> x"
+        "not a && not b ===> not (a || b)"
+        "not a || not b ===> not (a && b)"
+        "compare x y = 0 ===> x = y"
+        "compare x y <> 0 ===> x <> y"
+        "compare x y < 0 ===> x < y"
+        "compare x y <= 0 ===> x <= y"
+        "compare x y > 0 ===> x > y"
+        "compare x y >= 0 ===> x >= y"
+        "List.head (List.sort x) ===> List.min x"
+        "List.head (List.sortBy f x) ===> List.minBy f x"
+        "List.map f (List.map g x) ===> List.map (g >> f) x"
+        "Array.map f (Array.map g x) ===> Array.map (g >> f) x"
+        "Seq.map f (Seq.map g x) ===> Seq.map (g >> f) x"
+        "List.rev (List.rev x) ===> x"
+        "Array.rev (Array.rev x) ===> x"
+        "List.map id x ===> x"
+        "Array.map id x ===> x"
+        "List.concat (List.map f x) ===> List.collect f x"
+        "Array.concat (Array.map f x) ===> Array.collect f x"
+        "Seq.concat (Seq.map f x) ===> Seq.collect f x"
+        // one-element-of-transformed shapes: same result, no full scan/sort.
+        // head-of-filter → find is deliberately absent: the empty-input
+        // exception types differ (ArgumentException vs KeyNotFoundException)
+        "List.tryHead (List.filter f x) ===> List.tryFind f x"
+        "Array.tryHead (Array.filter f x) ===> Array.tryFind f x"
+        "Seq.tryHead (Seq.filter f x) ===> Seq.tryFind f x"
+        "List.head (List.sort x) ===> List.min x"
+        "Array.head (Array.sort x) ===> Array.min x"
+        "Seq.head (Seq.sort x) ===> Seq.min x"
+        "List.head (List.sortBy f x) ===> List.minBy f x"
+        "Array.head (Array.sortBy f x) ===> Array.minBy f x"
+        "Seq.head (Seq.sortBy f x) ===> Seq.minBy f x"
+        "List.head (List.sortDescending x) ===> List.max x"
+        "Array.head (Array.sortDescending x) ===> Array.max x"
+        "List.head (List.sortByDescending f x) ===> List.maxBy f x"
+        "Array.head (Array.sortByDescending f x) ===> Array.maxBy f x"
+        "List.head (List.rev x) ===> List.last x"
+        "Array.head (Array.rev x) ===> Array.last x"
+        "List.item 0 x ===> List.head x"
+        "Seq.item 0 x ===> Seq.head x"
+        "Array.item 0 x ===> Array.head x"
+        "List.isEmpty (List.filter f x) ===> not (List.exists f x)"
+        "Array.isEmpty (Array.filter f x) ===> not (Array.exists f x)"
+        "Seq.isEmpty (Seq.filter f x) ===> not (Seq.exists f x)"
+        "not (List.isEmpty (List.filter f x)) ===> List.exists f x"
+        "not (Array.isEmpty (Array.filter f x)) ===> Array.exists f x"
+        "not (Seq.isEmpty (Seq.filter f x)) ===> Seq.exists f x"
+        "x = true ===> x"
+        "true = a ===> a"
+        "false = a ===> not a"
+        "a <> true ===> not a"
+        "a <> false ===> a"
+        "true <> a ===> not a"
+        "false <> a ===> a"
+        "true && x ===> x"
+        "false || x ===> x"
+        // `fold (+) 0` -> `sum` is NOT here: the fold adds unchecked and
+        // wraps, `sum` adds checked and throws OverflowException (Mibo's
+        // Tests.fs; verified in fsi on [| Int32.MaxValue; 1 |])
+        "List.sum (List.map f x) ===> List.sumBy f x"
+        "Array.sum (Array.map f x) ===> Array.sumBy f x"
+        "Seq.sum (Seq.map f x) ===> Seq.sumBy f x"
+        "List.average (List.map f x) ===> List.averageBy f x"
+        "Array.average (Array.map f x) ===> Array.averageBy f x"
+        "Seq.average (Seq.map f x) ===> Seq.averageBy f x"
+        "id x ===> x"
+        "id >> f ===> f"
+        "f >> id ===> f"
+        "x = null ===> isNull x"
+        "null = x ===> isNull x"
+        "x <> null ===> not (isNull x)"
+        "null <> x ===> not (isNull x)"
+        "Array.append a (Array.append b c) ===> Array.concat [| a; b; c |]"
+    ]
 
-let private defaultHints = lazy (defaultRules |> List.choose parseRule)
+let private defaultHints =
+    lazy
+        (defaultRules
+         |> List.choose parseRule
+         |> List.map (fun h -> { h with CoreNames = true }))
 
 /// Parse a list of rule strings into usable hints (invalid ones skipped) and
 /// index them together with the defaults by their head key.
@@ -543,14 +567,16 @@ let private extraCache =
 /// Operators whose application is boolean by construction.
 let private boolOperators =
     set
-        [ "op_Equality"
-          "op_Inequality"
-          "op_LessThan"
-          "op_GreaterThan"
-          "op_LessThanOrEqual"
-          "op_GreaterThanOrEqual"
-          "op_BooleanAnd"
-          "op_BooleanOr" ]
+        [
+            "op_Equality"
+            "op_Inequality"
+            "op_LessThan"
+            "op_GreaterThan"
+            "op_LessThanOrEqual"
+            "op_GreaterThanOrEqual"
+            "op_BooleanAnd"
+            "op_BooleanOr"
+        ]
 
 /// The resolved type of an operand — a name's own type, a call or
 /// projection's return type. ValueNone for anything unresolvable (a lambda,
@@ -589,6 +615,54 @@ let private resolvedOperandType
     | SynExpr.App(funcExpr = f) -> (lastIdentOf f) |> ValueOption.bind resolve
     | stripped -> (lastIdentOf stripped) |> ValueOption.bind resolve
 
+/// Does `name`, as the matched expression spells it, resolve to FSharp.Core
+/// at the site? Asked of every non-operator left-side name of a built-in
+/// rule once it matches: a plain `id` inside a computation expression is
+/// the builder's custom operation (FsCDK's `lifecycleRule { id "rule" }`),
+/// which `id x ===> x` erased, and `not` or `List.map` can be shadowed the
+/// same way. Unresolvable is not proven: the hint stands down.
+let private nameResolvesToCore (check: FSharpCheckFileResults) (source: ISourceText) (expr: SynExpr) (name: string) =
+    if name.StartsWith "op_" then
+        true
+    else
+        let last = (name.Split '.') |> Array.last
+
+        // the ident spelling the name, with the whole dotted path FCS
+        // wants for a `List.rev` (`[ "rev" ]` alone resolves to nothing)
+        let rec idents (e: SynExpr) =
+            match e with
+            | SynExpr.Ident id -> [ id, [ id.idText ] ]
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                [ List.last ids, ids |> List.map (fun i -> i.idText) ]
+            | SynExpr.App(funcExpr = f; argExpr = a) -> idents f @ idents a
+            | SynExpr.Paren(expr = inner)
+            | SynExpr.Typed(expr = inner) -> idents inner
+            | SynExpr.Tuple(exprs = es)
+            | SynExpr.ArrayOrList(exprs = es) -> es |> List.collect idents
+            | _ -> []
+
+        match idents expr |> List.tryFind (fun (id, _) -> id.idText = last) with
+        | None -> false
+        | Some(id, names) ->
+            let r = id.idRange
+            let lineText = source.GetLineString(r.EndLine - 1)
+
+            try
+                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, names) with
+                | Some symbolUse ->
+                    // the member's own qualified name: the base FSharpSymbol
+                    // FullName of a module entity is its short name
+                    let qualified =
+                        match symbolUse.Symbol with
+                        | :? FSharpMemberOrFunctionOrValue as v -> v.FullName
+                        | :? FSharpEntity as e -> e.TryFullName |> Option.defaultValue ""
+                        | _ -> ""
+
+                    qualified.StartsWith "Microsoft.FSharp."
+                | None -> false
+            with _ -> // a scope FCS cannot answer for is one the hint does not rewrite; fsharpanalyzer: ignore-line FR0055
+                false
+
 /// Is the expression provably of type bool — syntactically boolean (a
 /// comparison, a logical operator, `not`, a literal), or a name or call
 /// whose resolved symbol type is System.Boolean?
@@ -619,10 +693,12 @@ let private isProvablyBool (check: FSharpCheckFileResults) (source: ISourceText)
 let private isProvablyNotFloat (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) : bool =
     let floatNames =
         set
-            [ "System.Double"
-              "System.Single"
-              "Microsoft.FSharp.Core.float`1"
-              "Microsoft.FSharp.Core.float32`1" ]
+            [
+                "System.Double"
+                "System.Single"
+                "Microsoft.FSharp.Core.float`1"
+                "Microsoft.FSharp.Core.float32`1"
+            ]
 
     // instance-level stripping: the ENTITY's AbbreviatedType is the open
     // generic (list<int> would strip to FSharpList<'T>, losing the int),
@@ -694,7 +770,9 @@ let private isOverloadedMethodGroup (check: FSharpCheckFileResults) (source: ISo
                         entity.MembersFunctionsAndValues
                         |> Seq.filter (fun sibling -> sibling.LogicalName = m.LogicalName)
                         |> Seq.truncate 2
-                        |> Seq.length > 1
+                        |> Seq.length
+                            >
+                            1
                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                         false
                 | None -> false
@@ -955,6 +1033,14 @@ let find
                     not hint.RhsNames.IsEmpty
                     && hint.RhsNames |> List.exists shadowing.Value.Contains
 
+                // a built-in rule's left side spelling a name that is not
+                // FSharp.Core's at the site matched something else by shape
+                let lhsForeign =
+                    match typedCheck with
+                    | Some c when hint.CoreNames ->
+                        hint.LhsNames |> List.exists (nameResolvesToCore c source expr >> not)
+                    | _ -> false
+
                 if
                     pureOk
                     && boolTypedOk
@@ -962,6 +1048,7 @@ let find
                     && not namedArgumentPosition
                     && not (inAttributeArg expr.Range)
                     && not shadowed
+                    && not lhsForeign
                     && not (inExpressionTree path expr.Range)
                     && matchedRanges.Add rangeKey
                 then
@@ -1019,10 +1106,12 @@ let find
                             replacement
 
                     suggestions.Add
-                        { Range = expr.Range
-                          OriginalText = textOfRange source expr.Range
-                          ReplacementText = replacement
-                          Rule = hint.RuleText }
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ReplacementText = replacement
+                            Rule = hint.RuleText
+                        }
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -1052,7 +1141,8 @@ let find
                         // under the pipe's right side (pipe normalization)
                         match expr with
                         | PipeApp(_, rhs) -> index.TryFind(headKey rhs) |> Option.iter (tryRules path expr)
-                        | _ -> () }
+                        | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
 

@@ -155,3 +155,10 @@ let ``a parenthesised unit argument keeps its parens`` () =
     // `x.log ()` is a call with no arguments — a different thing
     assertNoSuggestion
         "module Test\ntype T() =\n    member x.log<'t> (v: 't, tag: string) = ()\n    member x.Exit() = x.log (())"
+
+[<Fact>]
+let ``a call in a shorthand lambda keeps its parens`` () =
+    // welendus's `configureEndpoint _.WithName("x").WithGroupName(g)`: the
+    // `_.` body must stay atomic, or the bare argument applies the lambda
+    assertNoSuggestion
+        "module Test\ntype E() =\n    member x.WithName(n: string) = x\n    member x.WithGroupName(g: string) = x\nlet configure (f: E -> E) (e: E) = f e\nlet r (e: E) = e |> configure _.WithName(\"a\").WithGroupName(\"g\")"

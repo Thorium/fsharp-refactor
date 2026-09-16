@@ -87,11 +87,13 @@ let private pairModule (someId: Ident) (noneId: Ident) =
 /// TestIdent is the isNull/operator identifier, None for the match form
 /// (a `null` pattern cannot be shadowed).
 type private Candidate =
-    { Expr: SynExpr
-      Tested: Ident
-      SomeIdent: Ident
-      NoneIdent: Ident
-      TestIdent: Ident option }
+    {
+        Expr: SynExpr
+        Tested: Ident
+        SomeIdent: Ident
+        NoneIdent: Ident
+        TestIdent: Ident option
+    }
 
 let private findCandidates (parseTree: ParsedInput) : Candidate list =
     let candidates = ResizeArray<Candidate>()
@@ -109,11 +111,13 @@ let private findCandidates (parseTree: ParsedInput) : Candidate list =
                     match wrapArm, noneArm with
                     | SomeOfIdent(someId, arg), NoneIdent noneId when arg.idText = x.idText ->
                         candidates.Add
-                            { Expr = expr
-                              Tested = x
-                              SomeIdent = someId
-                              NoneIdent = noneId
-                              TestIdent = Some testId }
+                            {
+                                Expr = expr
+                                Tested = x
+                                SomeIdent = someId
+                                NoneIdent = noneId
+                                TestIdent = Some testId
+                            }
                     | _ -> ()
                 | SynExpr.Match(expr = SynExpr.Ident x; clauses = [ nullClause; wrapClause ]) ->
                     match simpleClause nullClause, simpleClause wrapClause with
@@ -126,13 +130,16 @@ let private findCandidates (parseTree: ParsedInput) : Candidate list =
 
                         if bindsTested then
                             candidates.Add
-                                { Expr = expr
-                                  Tested = x
-                                  SomeIdent = someId
-                                  NoneIdent = noneId
-                                  TestIdent = None }
+                                {
+                                    Expr = expr
+                                    Tested = x
+                                    SomeIdent = someId
+                                    NoneIdent = noneId
+                                    TestIdent = None
+                                }
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq candidates
@@ -153,8 +160,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 && (c.TestIdent |> Option.forall (OptionModule.resolvesToCoreOperator check source))
                 ->
                 Some
-                    { Range = c.Expr.Range
-                      OriginalText = textOfRange source c.Expr.Range
-                      ReplacementText = $"{moduleName}.ofObj {c.Tested.idText}"
-                      ModuleName = moduleName }
+                    {
+                        Range = c.Expr.Range
+                        OriginalText = textOfRange source c.Expr.Range
+                        ReplacementText = $"{moduleName}.ofObj {c.Tested.idText}"
+                        ModuleName = moduleName
+                    }
             | _ -> None)

@@ -72,7 +72,8 @@ let ``every analyzer stays fast on a large file`` () =
             checker.GetProjectOptionsFromScript("Test.fsx", sourceText, assumeDotNetFramework = false)
             |> Async.StartImmediateAsTask
 
-        let! projectResults = checker.ParseAndCheckProject options |> Async.StartImmediateAsTask
+        let! projectResults =
+            checker.ParseAndCheckProject options |> Async.StartImmediateAsTask
 
         let! parseResults, answer =
             checker.ParseAndCheckFileInProject("Test.fsx", bigSource.GetHashCode(), sourceText, options)
@@ -84,20 +85,24 @@ let ``every analyzer stays fast on a large file`` () =
             | FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
 
         let context: CliContext =
-            { FileName = "Test.fsx"
-              SourceText = sourceText
-              ParseFileResults = parseResults
-              CheckFileResults = checkResults
-              TypedTree = checkResults.ImplementationFile
-              CheckProjectResults = projectResults
-              ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
-              AnalyzerIgnoreRanges = Map.empty }
+            {
+                FileName = "Test.fsx"
+                SourceText = sourceText
+                ParseFileResults = parseResults
+                CheckFileResults = checkResults
+                TypedTree = checkResults.ImplementationFile
+                CheckProjectResults = projectResults
+                ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
+                AnalyzerIgnoreRanges = Map.empty
+            }
 
         let analyzers =
-            [ for t in typeof<FSharp.Refactor.RedundantParens.Suggestion>.Assembly.GetTypes() do
-                  for m in t.GetMethods(BindingFlags.Static ||| BindingFlags.Public) do
-                      if m.GetCustomAttributes(typeof<CliAnalyzerAttribute>, false).Length > 0 then
-                          m ]
+            [
+                for t in typeof<FSharp.Refactor.RedundantParens.Suggestion>.Assembly.GetTypes() do
+                    for m in t.GetMethods(BindingFlags.Static ||| BindingFlags.Public) do
+                        if m.GetCustomAttributes(typeof<CliAnalyzerAttribute>, false).Length > 0 then
+                            m
+            ]
 
         let runOne (m: MethodInfo) =
             m.Invoke(null, [| box context |]) :?> Async<Message list>
@@ -108,17 +113,21 @@ let ``every analyzer stays fast on a large file`` () =
             runOne m |> ignore
 
         let timings =
-            [ for m in analyzers do
-                  let sw = Stopwatch.StartNew()
-                  let messages = runOne m
-                  sw.Stop()
-                  m.Name, sw.Elapsed.TotalMilliseconds, messages.Length ]
+            [
+                for m in analyzers do
+                    let sw = Stopwatch.StartNew()
+                    let messages = runOne m
+                    sw.Stop()
+                    m.Name, sw.Elapsed.TotalMilliseconds, messages.Length
+            ]
             |> List.sortByDescending (fun (_, ms, _) -> ms)
 
         let report =
-            [ yield $"lines: {sourceText.GetLineCount()}, analyzers: {analyzers.Length}"
-              for name, ms, hits in timings do
-                  yield $"%-45s{name} %8.1f{ms} ms  %d{hits} hits" ]
+            [
+                yield $"lines: {sourceText.GetLineCount()}, analyzers: {analyzers.Length}"
+                for name, ms, hits in timings do
+                    yield $"%-45s{name} %8.1f{ms} ms  %d{hits} hits"
+            ]
             |> String.concat "\n"
 
         do! File.WriteAllTextAsync(Path.Combine(Path.GetTempPath(), "fsref-perf.txt"), report)

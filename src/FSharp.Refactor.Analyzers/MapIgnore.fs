@@ -33,9 +33,11 @@ type Suggestion =
     }
 
 let private mapModules =
-    [ "List", "Microsoft.FSharp.Collections.ListModule"
-      "Array", "Microsoft.FSharp.Collections.ArrayModule"
-      "Seq", "Microsoft.FSharp.Collections.SeqModule" ]
+    [
+        "List", "Microsoft.FSharp.Collections.ListModule"
+        "Array", "Microsoft.FSharp.Collections.ArrayModule"
+        "Seq", "Microsoft.FSharp.Collections.SeqModule"
+    ]
     |> Map.ofList
 
 /// Does the `map` ident resolve to the FSharp.Core module function?
@@ -91,36 +93,40 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 argExpr = sourceExpr) -> Some(sourceExpr, m, mapId, mapArg)
             | _ -> None
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | IgnoredExpr(MapCall(sourceExpr, m, mapId, mapArg)) when
-                  mapId.idText = "map"
-                  && mapModules.ContainsKey m.idText
-                  && isSingleLine expr.Range
-                  && resolvesToCoreMap check source m.idText mapId
-                  ->
-                  // `ignore` itself must be FSharp.Core's, not a shadow
-                  let ignoreIsCore =
-                      index.Exprs
-                      |> Array.exists (fun (_, e) ->
-                          match e with
-                          | SynExpr.Ident id when
-                              id.idText = "ignore" && Range.rangeContainsRange expr.Range id.idRange
-                              ->
-                              OptionModule.resolvesToCoreOperator check source id
-                          | _ -> false)
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | IgnoredExpr(MapCall(sourceExpr, m, mapId, mapArg)) when
+                    mapId.idText = "map"
+                    && mapModules.ContainsKey m.idText
+                    && isSingleLine expr.Range
+                    && resolvesToCoreMap check source m.idText mapId
+                    ->
+                    // `ignore` itself must be FSharp.Core's, not a shadow
+                    let ignoreIsCore =
+                        index.Exprs
+                        |> Array.exists (fun (_, e) ->
+                            match e with
+                            | SynExpr.Ident id when
+                                id.idText = "ignore" && Range.rangeContainsRange expr.Range id.idRange
+                                ->
+                                OptionModule.resolvesToCoreOperator check source id
+                            | _ -> false)
 
-                  if ignoreIsCore then
-                      let replacement =
-                          if m.idText = "Seq" then
-                              None
-                          else
-                              Some(
-                                  $"{textOfRange source sourceExpr.Range} |> {m.idText}.iter ({argumentText source mapArg} >> ignore)"
-                              )
+                    if ignoreIsCore then
+                        let replacement =
+                            if m.idText = "Seq" then
+                                None
+                            else
+                                Some(
+                                    $"{textOfRange source sourceExpr.Range} |> {m.idText}.iter ({argumentText source mapArg} >> ignore)"
+                                )
 
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
-                        ModuleName = m.idText
-                        ReplacementText = replacement }
-              | _ -> () ]
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ModuleName = m.idText
+                            ReplacementText = replacement
+                        }
+                | _ -> ()
+        ]

@@ -169,84 +169,90 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | _ -> false
             | None -> false
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
-                  op.idText = "op_Equality" || op.idText = "op_Inequality"
-                  ->
-                  let lowered =
-                      match stripParens lhs, stripParens rhs with
-                      | (LoweredCall m as call), other
-                      | other, (LoweredCall m as call) -> Some(m, call, other)
-                      | _ -> None
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
+                    op.idText = "op_Equality" || op.idText = "op_Inequality"
+                    ->
+                    let lowered =
+                        match stripParens lhs, stripParens rhs with
+                        | (LoweredCall m as call), other
+                        | other, (LoweredCall m as call) -> Some(m, call, other)
+                        | _ -> None
 
-                  match lowered with
-                  | Some(m, call, other) when resolvesToStringMethod check source m ->
-                      let replacementWith (comparison: string) =
-                          // same case-agreement gate as the method-call
-                          // shape: `x.ToLower() = "ABC"` is always false,
-                          // and making it start matching is a behavior
-                          // change only a human signs
-                          if
-                              isAsciiLiteral other
-                              && literalAgreesWithLowering m.idText (stripParens other)
-                              && isSingleLine expr.Range
-                          then
-                              receiverTextOf call
-                              |> Option.map (fun receiver ->
-                                  let literal = textOfRange source other.Range
+                    match lowered with
+                    | Some(m, call, other) when resolvesToStringMethod check source m ->
+                        let replacementWith (comparison: string) =
+                            // same case-agreement gate as the method-call
+                            // shape: `x.ToLower() = "ABC"` is always false,
+                            // and making it start matching is a behavior
+                            // change only a human signs
+                            if
+                                isAsciiLiteral other
+                                && literalAgreesWithLowering m.idText (stripParens other)
+                                && isSingleLine expr.Range
+                            then
+                                receiverTextOf call
+                                |> Option.map (fun receiver ->
+                                    let literal = textOfRange source other.Range
 
-                                  // without `open System` in the file the
-                                  // short spelling would not compile — the
-                                  // qualified one always does
-                                  let prefix = if opensSystemNamespace source then "" else "System."
+                                    // without `open System` in the file the
+                                    // short spelling would not compile — the
+                                    // qualified one always does
+                                    let prefix = if opensSystemNamespace source then "" else "System."
 
-                                  let equals =
-                                      $"{prefix}String.Equals({receiver}, {literal}, {prefix}StringComparison.{comparison})"
+                                    let equals =
+                                        $"{prefix}String.Equals({receiver}, {literal}, {prefix}StringComparison.{comparison})"
 
-                                  if op.idText = "op_Inequality" then
-                                      $"not ({equals})"
-                                  else
-                                      equals)
-                          else
-                              None
+                                    if op.idText = "op_Inequality" then
+                                        $"not ({equals})"
+                                    else
+                                        equals)
+                            else
+                                None
 
-                      { Range = expr.Range
-                        Kind = CaseKind.Equality
-                        LoweringName = m.idText
-                        Replacement = replacementWith "OrdinalIgnoreCase"
-                        CultureReplacement = replacementWith "InvariantCultureIgnoreCase" }
-                  | _ -> ()
-              | SynExpr.App(
-                  isInfix = false
-                  funcExpr = SynExpr.DotGet(
-                      expr = (LoweredCall lowering as loweredExpr); longDotId = SynLongIdent(id = [ methodId ]))
-                  argExpr = arg) when comparisonMethods.Contains methodId.idText ->
-                  if resolvesToStringMethod check source lowering then
-                      let literalArg =
-                          match stripParens arg with
-                          | SynExpr.Const(SynConst.String _, _) as lit -> Some lit
-                          | _ -> None
+                        {
+                            Range = expr.Range
+                            Kind = CaseKind.Equality
+                            LoweringName = m.idText
+                            Replacement = replacementWith "OrdinalIgnoreCase"
+                            CultureReplacement = replacementWith "InvariantCultureIgnoreCase"
+                        }
+                    | _ -> ()
+                | SynExpr.App(
+                    isInfix = false
+                    funcExpr = SynExpr.DotGet(
+                        expr = (LoweredCall lowering as loweredExpr); longDotId = SynLongIdent(id = [ methodId ]))
+                    argExpr = arg) when comparisonMethods.Contains methodId.idText ->
+                    if resolvesToStringMethod check source lowering then
+                        let literalArg =
+                            match stripParens arg with
+                            | SynExpr.Const(SynConst.String _, _) as lit -> Some lit
+                            | _ -> None
 
-                      let replacementWith (comparison: string) =
-                          match literalArg with
-                          | Some lit when
-                              isAsciiLiteral lit
-                              && literalAgreesWithLowering lowering.idText lit
-                              && isSingleLine expr.Range
-                              && (methodId.idText <> "Contains" || hasComparisonOverload methodId)
-                              ->
-                              receiverTextOf loweredExpr
-                              |> Option.map (fun receiver ->
-                                  let literal = textOfRange source lit.Range
-                                  let prefix = if opensSystemNamespace source then "" else "System."
+                        let replacementWith (comparison: string) =
+                            match literalArg with
+                            | Some lit when
+                                isAsciiLiteral lit
+                                && literalAgreesWithLowering lowering.idText lit
+                                && isSingleLine expr.Range
+                                && (methodId.idText <> "Contains" || hasComparisonOverload methodId)
+                                ->
+                                receiverTextOf loweredExpr
+                                |> Option.map (fun receiver ->
+                                    let literal = textOfRange source lit.Range
+                                    let prefix = if opensSystemNamespace source then "" else "System."
 
-                                  $"{receiver}.{methodId.idText}({literal}, {prefix}StringComparison.{comparison})")
-                          | _ -> None
+                                    $"{receiver}.{methodId.idText}({literal}, {prefix}StringComparison.{comparison})")
+                            | _ -> None
 
-                      { Range = expr.Range
-                        Kind = CaseKind.MethodCall methodId.idText
-                        LoweringName = lowering.idText
-                        Replacement = replacementWith "OrdinalIgnoreCase"
-                        CultureReplacement = replacementWith "InvariantCultureIgnoreCase" }
-              | _ -> () ]
+                        {
+                            Range = expr.Range
+                            Kind = CaseKind.MethodCall methodId.idText
+                            LoweringName = lowering.idText
+                            Replacement = replacementWith "OrdinalIgnoreCase"
+                            CultureReplacement = replacementWith "InvariantCultureIgnoreCase"
+                        }
+                | _ -> ()
+        ]

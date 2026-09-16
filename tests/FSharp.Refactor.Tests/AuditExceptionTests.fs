@@ -324,16 +324,18 @@ let private editorMessages (source: string) (analyzer: EditorContext -> Async<Me
         | FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
 
     let context: EditorContext =
-        { FileName = "Test.fsx"
-          SourceText = sourceText
-          ParseFileResults = parseResults
-          // no keepAssemblyContents on this checker, and the rule reads
-          // the check results, not the typed tree
-          TypedTree = None
-          CheckFileResults = Some checkResults
-          CheckProjectResults = None
-          ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
-          AnalyzerIgnoreRanges = Map.empty }
+        {
+            FileName = "Test.fsx"
+            SourceText = sourceText
+            ParseFileResults = parseResults
+            // no keepAssemblyContents on this checker, and the rule reads
+            // the check results, not the typed tree
+            TypedTree = None
+            CheckFileResults = Some checkResults
+            CheckProjectResults = None
+            ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
+            AnalyzerIgnoreRanges = Map.empty
+        }
 
     analyzer context |> Async.RunSynchronously
 

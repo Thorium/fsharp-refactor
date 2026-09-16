@@ -6,17 +6,19 @@ open FSharp.Refactor.Tests.Parsing
 
 let private adviceIn (source: string) =
     let tree, sourceText = parse source
-    TaskStateMachine.find tree sourceText 4 false Set.empty
+    TaskStateMachine.find tree sourceText None 4 false Set.empty
 
 /// The same, with the `hoistReturnOnAsync` knob turned on.
 let private adviceInAsyncOn (source: string) =
     let tree, sourceText = parse source
-    TaskStateMachine.find tree sourceText 4 true Set.empty
+    TaskStateMachine.find tree sourceText None 4 true Set.empty
 
 
 /// n `let! xi = Task.FromResult i` lines, enough to cross the size gate.
 let private awaits n =
-    [ for i in 1..n -> $"    let! x%d{i} = System.Threading.Tasks.Task.FromResult %d{i}" ]
+    [
+        for i in 1..n -> $"    let! x%d{i} = System.Threading.Tasks.Task.FromResult %d{i}"
+    ]
     |> String.concat "\n"
 
 [<Fact>]
@@ -282,6 +284,29 @@ let ``the non-awaiting tail wraps into a local function and typechecks`` () =
     Assert.Contains("return runTail ()", patched)
     // the comment travels inside the wrapper region untouched
     Assert.Contains("// combine everything", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``a return whose value hides behind a block comment keeps its keyword`` () =
+    // welendus's SignalRHubs.fs: `return (*{...*) transferdataNow` minus the
+    // keyword puts the line's first token right of the comment, deeper than
+    // the let above it, which the parser then reads as that let's
+    // continuation. The plain closure stands down; the task-returning
+    // wrapper, which keeps the `return`, is still fine
+    let source =
+        "module Test\nlet f () =\n    task {\n"
+        + (awaits 8).Replace("    let!", "        let!")
+        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        return (*{Sum = *) s1 + s2 + s3 //; }\n    }"
+
+    let edits =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.ExtractTail _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty edits
+    let patched = applyEdits source edits
+    Assert.Contains("return (*{Sum = *) s1 + s2 + s3", patched)
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
@@ -808,7 +833,7 @@ let ``the tail threshold is a parameter, not a constant`` () =
     let tree, sourceText = parse source
 
     let kindsAt threshold =
-        TaskStateMachine.find tree sourceText threshold false Set.empty
+        TaskStateMachine.find tree sourceText None threshold false Set.empty
         |> List.choose (fun s ->
             match s.Kind with
             | TaskStateMachine.AdviceKind.ExtractTail n -> Some n
@@ -936,7 +961,7 @@ let ``the tail extraction is a quickfix or nothing, never a note`` () =
     let tree, sourceText = parse source
 
     let tails threshold warnedLines =
-        TaskStateMachine.find tree sourceText threshold false warnedLines
+        TaskStateMachine.find tree sourceText None threshold false warnedLines
         |> List.choose (fun s ->
             match s.Kind with
             | TaskStateMachine.AdviceKind.ExtractTail _ -> Some s.Edits

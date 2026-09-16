@@ -63,13 +63,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 match toStringReceiver source fill with
                                 | Some receiverText ->
                                     suggestions.Add
-                                        { Range = fill.Range
-                                          OriginalText = textOfRange source fill.Range
-                                          ReplacementText = receiverText }
+                                        {
+                                            Range = fill.Range
+                                            OriginalText = textOfRange source fill.Range
+                                            ReplacementText = receiverText
+                                        }
                                 | None -> ()
 
                             precededBySpecifier <- false
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

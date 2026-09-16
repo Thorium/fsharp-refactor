@@ -38,23 +38,25 @@ type Suggestion =
 /// not its abbreviation, and the two behave differently in signatures.
 let private abbreviations =
     Map.ofList
-        [ "Boolean", "bool"
-          "Byte", "byte"
-          "SByte", "sbyte"
-          "Int16", "int16"
-          "UInt16", "uint16"
-          "Int32", "int"
-          "UInt32", "uint32"
-          "Int64", "int64"
-          "UInt64", "uint64"
-          "Single", "float32"
-          "Double", "float"
-          "Decimal", "decimal"
-          "Char", "char"
-          "String", "string"
-          "Object", "obj"
-          "IntPtr", "nativeint"
-          "UIntPtr", "unativeint" ]
+        [
+            "Boolean", "bool"
+            "Byte", "byte"
+            "SByte", "sbyte"
+            "Int16", "int16"
+            "UInt16", "uint16"
+            "Int32", "int"
+            "UInt32", "uint32"
+            "Int64", "int64"
+            "UInt64", "uint64"
+            "Single", "float32"
+            "Double", "float"
+            "Decimal", "decimal"
+            "Char", "char"
+            "String", "string"
+            "Object", "obj"
+            "IntPtr", "nativeint"
+            "UIntPtr", "unativeint"
+        ]
 
 /// A type that reads the same without parentheses around it.
 let private isAtomicType (t: SynType) =
@@ -72,9 +74,11 @@ let findRedundantParens (parseTree: ParsedInput) (source: ISourceText) : Suggest
         match synType with
         | SynType.Paren(innerType = inner) when isSingleLine synType.Range && isAtomicType inner ->
             suggestions.Add
-                { Range = synType.Range
-                  OriginalText = textOfRange source synType.Range
-                  ReplacementText = textOfRange source inner.Range }
+                {
+                    Range = synType.Range
+                    OriginalText = textOfRange source synType.Range
+                    ReplacementText = textOfRange source inner.Range
+                }
         | _ -> ()
 
     List.ofSeq suggestions
@@ -90,9 +94,11 @@ let findAbbreviations (parseTree: ParsedInput) (source: ISourceText) : Suggestio
             match abbreviations.TryFind name.idText with
             | Some abbreviation ->
                 suggestions.Add
-                    { Range = synType.Range
-                      OriginalText = textOfRange source synType.Range
-                      ReplacementText = abbreviation }
+                    {
+                        Range = synType.Range
+                        OriginalText = textOfRange source synType.Range
+                        ReplacementText = abbreviation
+                    }
             | None -> ()
         | _ -> ()
 

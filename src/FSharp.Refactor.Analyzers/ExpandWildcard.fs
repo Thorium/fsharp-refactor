@@ -101,17 +101,19 @@ let private unionCasesOf (check: FSharpCheckFileResults) (source: ISourceText) (
 /// qualified (`Result.Error _`), which is right in every scope.
 let private unionsInScope (check: FSharpCheckFileResults) =
     let rec unions (entities: FSharpEntity seq) : FSharpEntity list =
-        [ for e in entities do
-              let isUnion, nested =
-                  try
-                      e.IsFSharpUnion, (e.NestedEntities :> FSharpEntity seq)
-                  with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                      false, Seq.empty
+        [
+            for e in entities do
+                let isUnion, nested =
+                    try
+                        e.IsFSharpUnion, (e.NestedEntities :> FSharpEntity seq)
+                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                        false, Seq.empty
 
-              if isUnion then
-                  yield e
+                if isUnion then
+                    yield e
 
-              yield! unions nested ]
+                yield! unions nested
+        ]
 
     // only a PUBLIC union of another assembly reaches this file (FSharp.Core
     // keeps an internal Result-like union whose `Error` would otherwise
@@ -180,117 +182,122 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let index = AstIndex.ofTree parseTree
         let unions = lazy (unionsInScope check)
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.Match(clauses = clauses)
-              | SynExpr.MatchBang(clauses = clauses)
-              | SynExpr.MatchLambda(matchClauses = clauses) when clauses.Length >= 2 ->
-                  let unguarded =
-                      clauses |> List.forall (fun (SynMatchClause(whenExpr = g)) -> g.IsNone)
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.Match(clauses = clauses)
+                | SynExpr.MatchBang(clauses = clauses)
+                | SynExpr.MatchLambda(matchClauses = clauses) when clauses.Length >= 2 ->
+                    let unguarded =
+                        clauses |> List.forall (fun (SynMatchClause(whenExpr = g)) -> g.IsNone)
 
-                  let explicitClauses, lastClause = List.splitAt (clauses.Length - 1) clauses
+                    let explicitClauses, lastClause = List.splitAt (clauses.Length - 1) clauses
 
-                  match lastClause with
-                  | [ SynMatchClause(pat = SynPat.Wild wildRange) ] when unguarded ->
-                      let covered =
-                          explicitClauses |> List.map (fun (SynMatchClause(pat = p)) -> coveredCases p)
+                    match lastClause with
+                    | [ SynMatchClause(pat = SynPat.Wild wildRange) ] when unguarded ->
+                        let covered =
+                            explicitClauses |> List.map (fun (SynMatchClause(pat = p)) -> coveredCases p)
 
-                      if covered |> List.forall Option.isSome then
-                          let coveredIdents = covered |> List.choose id |> List.concat
+                        if covered |> List.forall Option.isSome then
+                            let coveredIdents = covered |> List.choose id |> List.concat
 
-                          match coveredIdents with
-                          | first :: _ ->
-                              match unionCasesOf check source (List.last first) with
-                              | Some(union, allCases) ->
-                                  let coveredNames =
-                                      coveredIdents |> List.map (fun ids -> (List.last ids).idText) |> Set.ofList
+                            match coveredIdents with
+                            | first :: _ ->
+                                match unionCasesOf check source (List.last first) with
+                                | Some(union, allCases) ->
+                                    let coveredNames =
+                                        coveredIdents |> List.map (fun ids -> (List.last ids).idText) |> Set.ofList
 
-                                  let missing =
-                                      allCases |> List.filter (fun (name, _) -> not (coveredNames.Contains name))
+                                    let missing =
+                                        allCases |> List.filter (fun (name, _) -> not (coveredNames.Contains name))
 
-                                  // a [<RequireQualifiedAccess>] union needs
-                                  // its qualifier: reuse the first clause's,
-                                  // which provably compiles in this scope
-                                  let clauseQualifier =
-                                      first
-                                      |> List.rev
-                                      |> List.tail
-                                      |> List.rev
-                                      |> List.map (fun i -> i.idText + ".")
-                                      |> String.concat ""
+                                    // a [<RequireQualifiedAccess>] union needs
+                                    // its qualifier: reuse the first clause's,
+                                    // which provably compiles in this scope
+                                    let clauseQualifier =
+                                        first
+                                        |> List.rev
+                                        |> List.tail
+                                        |> List.rev
+                                        |> List.map (fun i -> i.idText + ".")
+                                        |> String.concat ""
 
-                                  // ...and a bare name another union in scope
-                                  // also declares needs the union's own
-                                  let qualifier =
-                                      if
-                                          clauseQualifier = ""
-                                          && missing
-                                             |> List.exists (fun (name, _) ->
-                                                 caseNamedElsewhere unions.Value union name)
-                                      then
-                                          union.DisplayName + "."
-                                      else
-                                          clauseQualifier
+                                    // ...and a bare name another union in scope
+                                    // also declares needs the union's own
+                                    let qualifier =
+                                        if
+                                            clauseQualifier = ""
+                                            && missing
+                                               |> List.exists (fun (name, _) ->
+                                                   caseNamedElsewhere unions.Value union name)
+                                        then
+                                            union.DisplayName + "."
+                                        else
+                                            clauseQualifier
 
-                                  // every explicit name must belong to this
-                                  // union, and 1-2 cases are hidden
-                                  if
-                                      coveredNames.Count = coveredIdents.Length
-                                      && (allCases |> List.length) - missing.Length = coveredNames.Count
-                                      && not missing.IsEmpty
-                                      && missing.Length <= 2
-                                  then
-                                      let cases =
-                                          missing
-                                          |> List.map (fun (name, hasFields) ->
-                                              if hasFields then
-                                                  $"{qualifier}{name} _"
-                                              else
-                                                  $"{qualifier}{name}")
+                                    // every explicit name must belong to this
+                                    // union, and 1-2 cases are hidden
+                                    if
+                                        coveredNames.Count = coveredIdents.Length
+                                        && (allCases |> List.length) - missing.Length = coveredNames.Count
+                                        && not missing.IsEmpty
+                                        && missing.Length <= 2
+                                    then
+                                        let cases =
+                                            missing
+                                            |> List.map (fun (name, hasFields) ->
+                                                if hasFields then
+                                                    $"{qualifier}{name} _"
+                                                else
+                                                    $"{qualifier}{name}")
 
-                                      // two short cases share the wildcard's line;
-                                      // when that line would run past 100 columns
-                                      // each case takes its own line under the
-                                      // clause's `|`, the last one keeping the `->`
-                                      let joined = String.concat " | " cases
-                                      let lineText = source.GetLineString(wildRange.StartLine - 1)
-                                      let before = lineText.Substring(0, wildRange.StartColumn)
-                                      let after = lineText.Substring wildRange.EndColumn
-                                      let barIndex = before.LastIndexOf '|'
+                                        // two short cases share the wildcard's line;
+                                        // when that line would run past 100 columns
+                                        // each case takes its own line under the
+                                        // clause's `|`, the last one keeping the `->`
+                                        let joined = String.concat " | " cases
+                                        let lineText = source.GetLineString(wildRange.StartLine - 1)
+                                        let before = lineText.Substring(0, wildRange.StartColumn)
+                                        let after = lineText.Substring wildRange.EndColumn
+                                        let barIndex = before.LastIndexOf '|'
 
-                                      // the wildcard's `|` must sit where the
-                                      // first arm's does before a case may take
-                                      // a line of its own under it: FSharpPlus's
-                                      // Seq.fs has a `| _ -> return false }` arm
-                                      // indented four deeper than its match, and
-                                      // the parser read the continuation line
-                                      // as anything but an or-pattern
-                                      let alignedWithFirstArm =
-                                          match explicitClauses with
-                                          | SynMatchClause(pat = first) :: _ ->
-                                              let firstLine = source.GetLineString(first.Range.StartLine - 1)
+                                        // the wildcard's `|` must sit where the
+                                        // first arm's does before a case may take
+                                        // a line of its own under it: FSharpPlus's
+                                        // Seq.fs has a `| _ -> return false }` arm
+                                        // indented four deeper than its match, and
+                                        // the parser read the continuation line
+                                        // as anything but an or-pattern
+                                        let alignedWithFirstArm =
+                                            match explicitClauses with
+                                            | SynMatchClause(pat = first) :: _ ->
+                                                let firstLine = source.GetLineString(first.Range.StartLine - 1)
 
-                                              firstLine.Substring(0, first.Range.StartColumn).LastIndexOf '|' = barIndex
-                                          | [] -> false
+                                                firstLine.Substring(0, first.Range.StartColumn).LastIndexOf '|' =
+                                                    barIndex
+                                            | [] -> false
 
-                                      let replacement =
-                                          if
-                                              cases.Length > 1
-                                              && (before + joined + after).Length > 100
-                                              && barIndex >= 0
-                                              && before.Substring(0, barIndex).Trim() = ""
-                                              && alignedWithFirstArm
-                                          then
-                                              let bar = "\n" + System.String(' ', barIndex) + "| "
-                                              String.concat bar cases
-                                          else
-                                              joined
+                                        let replacement =
+                                            if
+                                                cases.Length > 1
+                                                && (before + joined + after).Length > 100
+                                                && barIndex >= 0
+                                                && before.Substring(0, barIndex).Trim() = ""
+                                                && alignedWithFirstArm
+                                            then
+                                                let bar = "\n" + System.String(' ', barIndex) + "| "
+                                                String.concat bar cases
+                                            else
+                                                joined
 
-                                      { Range = wildRange
-                                        OriginalText = textOfRange source wildRange
-                                        ReplacementText = replacement
-                                        HiddenCases = missing |> List.map fst }
-                              | None -> ()
-                          | [] -> ()
-                  | _ -> ()
-              | _ -> () ]
+                                        {
+                                            Range = wildRange
+                                            OriginalText = textOfRange source wildRange
+                                            ReplacementText = replacement
+                                            HiddenCases = missing |> List.map fst
+                                        }
+                                | None -> ()
+                            | [] -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]

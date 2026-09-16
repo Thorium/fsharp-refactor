@@ -119,6 +119,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // next to a spaced application makes the reader run
                         // the precedence table to see which side owns it
                         | SyntaxNode.SynExpr(SynExpr.Tuple _) :: _ -> true
+                        // the `_.` shorthand lambda demands an ATOMIC body,
+                        // as FR0013 already knows: welendus's
+                        // `configureEndpoint _.WithName("x").WithGroupName(g)`
+                        // bare became `(fun e -> e.WithName("x").WithGroupName) g`
+                        | SyntaxNode.SynExpr(SynExpr.DotLambda _) :: _ -> true
                         | _ -> false
 
                     if not projected then
@@ -132,10 +137,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 innerText
 
                         suggestions.Add
-                            { Range = argExpr.Range
-                              OriginalText = textOfRange source argExpr.Range
-                              ReplacementText = replacement }
-                | _ -> () }
+                            {
+                                Range = argExpr.Range
+                                OriginalText = textOfRange source argExpr.Range
+                                ReplacementText = replacement
+                            }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

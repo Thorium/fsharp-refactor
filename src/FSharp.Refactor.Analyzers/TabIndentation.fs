@@ -136,16 +136,18 @@ let find (fileName: string) (source: ISourceText) : Suggestion list =
         let insideCommentOrString = lineOpensInsideCommentOrString source
 
         let edits =
-            [ for i in 0 .. lineCount - 1 do
-                  let line = source.GetLineString i
-                  let leadingLen = line.Length - line.TrimStart().Length
-                  let leading = line.Substring(0, leadingLen)
+            [
+                for i in 0 .. lineCount - 1 do
+                    let line = source.GetLineString i
+                    let leadingLen = line.Length - line.TrimStart().Length
+                    let leading = line.Substring(0, leadingLen)
 
-                  if leading.Contains '\t' && not insideCommentOrString.[i] then
-                      let range =
-                          Range.mkRange fileName (Position.mkPos (i + 1) 0) (Position.mkPos (i + 1) leadingLen)
+                    if leading.Contains '\t' && not insideCommentOrString.[i] then
+                        let range =
+                            Range.mkRange fileName (Position.mkPos (i + 1) 0) (Position.mkPos (i + 1) leadingLen)
 
-                      range, leading, expand leading ]
+                        range, leading, expand leading
+            ]
 
         match edits with
         | [] -> []

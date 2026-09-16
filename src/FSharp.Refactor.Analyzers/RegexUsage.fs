@@ -349,10 +349,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 sprintf "%s.%s \"%s\"" (argumentText source input) operation literal
 
                             suggestions.Add
-                                { Range = expr.Range
-                                  OriginalText = textOfRange source expr.Range
-                                  Kind = RegexSuggestionKind.StringOperation
-                                  Edits = [ expr.Range, textOfRange source expr.Range, replacement ] }
+                                {
+                                    Range = expr.Range
+                                    OriginalText = textOfRange source expr.Range
+                                    Kind = RegexSuggestionKind.StringOperation
+                                    Edits = [ expr.Range, textOfRange source expr.Range, replacement ]
+                                }
                         | None -> ()
                     | _ -> ()
 
@@ -374,10 +376,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     literalReplacement
 
                             suggestions.Add
-                                { Range = expr.Range
-                                  OriginalText = textOfRange source expr.Range
-                                  Kind = RegexSuggestionKind.StringOperation
-                                  Edits = [ expr.Range, textOfRange source expr.Range, text ] }
+                                {
+                                    Range = expr.Range
+                                    OriginalText = textOfRange source expr.Range
+                                    Kind = RegexSuggestionKind.StringOperation
+                                    Edits = [ expr.Range, textOfRange source expr.Range, text ]
+                                }
                         | _ -> ()
                     | _ -> ()
 
@@ -424,19 +428,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 if callReplacement = "" then
                                     []
                                 else
-                                    [ hoistInsert
-                                          decl
-                                          expr.Range.StartLine
-                                          name
-                                          (sprintf "Regex %s" (textOfRange source patternExpr.Range))
-                                      expr.Range, textOfRange source expr.Range, callReplacement ]
+                                    [
+                                        hoistInsert
+                                            decl
+                                            expr.Range.StartLine
+                                            name
+                                            (sprintf "Regex %s" (textOfRange source patternExpr.Range))
+                                        expr.Range, textOfRange source expr.Range, callReplacement
+                                    ]
                             | _ -> []
 
                         suggestions.Add
-                            { Range = expr.Range
-                              OriginalText = textOfRange source expr.Range
-                              Kind = RegexSuggestionKind.HoistFromLoop
-                              Edits = edits }
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                Kind = RegexSuggestionKind.HoistFromLoop
+                                Edits = edits
+                            }
                     | _ -> ()
                 // rule 3: a Regex constructed inside a loop, pattern literal
                 // and options constant. The construction's own source text
@@ -458,14 +466,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                         if not (fileText.Value.Contains name) then
                             suggestions.Add
-                                { Range = expr.Range
-                                  OriginalText = textOfRange source expr.Range
-                                  Kind = RegexSuggestionKind.HoistConstruction
-                                  Edits =
-                                    [ hoistInsert decl expr.Range.StartLine name (textOfRange source expr.Range)
-                                      expr.Range, textOfRange source expr.Range, name ] }
+                                {
+                                    Range = expr.Range
+                                    OriginalText = textOfRange source expr.Range
+                                    Kind = RegexSuggestionKind.HoistConstruction
+                                    Edits =
+                                        [
+                                            hoistInsert decl expr.Range.StartLine name (textOfRange source expr.Range)
+                                            expr.Range, textOfRange source expr.Range, name
+                                        ]
+                                }
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
 
@@ -562,49 +575,52 @@ let findInvalidPatterns (parseTree: ParsedInput) : (range * string * string) lis
                 Some(patternExpr.Range, pattern, ex.Message)
         | _ -> None
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          // Regex.IsMatch(input, pattern) and friends: pattern is arg 2
-          | StaticRegexCall(methodName, arg) when
-              (methodName = "IsMatch"
-               || methodName = "Match"
-               || methodName = "Matches"
-               || methodName = "Replace"
-               || methodName = "Split")
-              ->
-              match argsOf arg with
-              | _ :: patternArg :: rest ->
-                  match check (optionsOf rest) patternArg with
-                  | Some bad -> bad
-                  | None -> ()
-              | _ -> ()
-          // Regex(pattern) / new Regex(pattern): pattern is arg 1
-          | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = tids)); expr = arg) when
-              not tids.IsEmpty && (List.last tids).idText = "Regex"
-              ->
-              match argsOf arg with
-              | first :: rest ->
-                  match check (optionsOf rest) first with
-                  | Some bad -> bad
-                  | None -> ()
-              | [] -> ()
-          // the dotted spelling anywhere, the bare one under the open
-          | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
-              not ids.IsEmpty && (List.last ids).idText = "Regex"
-              ->
-              match argsOf arg with
-              | first :: rest ->
-                  match check (optionsOf rest) first with
-                  | Some bad -> bad
-                  | None -> ()
-              | [] -> ()
-          | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ctor; argExpr = arg) when
-              ctor.idText = "Regex" && regexOpened
-              ->
-              match argsOf arg with
-              | first :: rest ->
-                  match check (optionsOf rest) first with
-                  | Some bad -> bad
-                  | None -> ()
-              | [] -> ()
-          | _ -> () ]
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            // Regex.IsMatch(input, pattern) and friends: pattern is arg 2
+            | StaticRegexCall(methodName, arg) when
+                (methodName = "IsMatch"
+                 || methodName = "Match"
+                 || methodName = "Matches"
+                 || methodName = "Replace"
+                 || methodName = "Split")
+                ->
+                match argsOf arg with
+                | _ :: patternArg :: rest ->
+                    match check (optionsOf rest) patternArg with
+                    | Some bad -> bad
+                    | None -> ()
+                | _ -> ()
+            // Regex(pattern) / new Regex(pattern): pattern is arg 1
+            | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = tids)); expr = arg) when
+                not tids.IsEmpty && (List.last tids).idText = "Regex"
+                ->
+                match argsOf arg with
+                | first :: rest ->
+                    match check (optionsOf rest) first with
+                    | Some bad -> bad
+                    | None -> ()
+                | [] -> ()
+            // the dotted spelling anywhere, the bare one under the open
+            | SynExpr.App(
+                isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
+                not ids.IsEmpty && (List.last ids).idText = "Regex"
+                ->
+                match argsOf arg with
+                | first :: rest ->
+                    match check (optionsOf rest) first with
+                    | Some bad -> bad
+                    | None -> ()
+                | [] -> ()
+            | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ctor; argExpr = arg) when
+                ctor.idText = "Regex" && regexOpened
+                ->
+                match argsOf arg with
+                | first :: rest ->
+                    match check (optionsOf rest) first with
+                    | Some bad -> bad
+                    | None -> ()
+                | [] -> ()
+            | _ -> ()
+    ]

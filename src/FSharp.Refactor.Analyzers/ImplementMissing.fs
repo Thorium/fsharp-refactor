@@ -47,22 +47,24 @@ type Suggestion =
 /// F# keywords that need escaping when used as parameter names.
 let private keywords =
     set
-        [ "type"
-          "member"
-          "val"
-          "end"
-          "begin"
-          "open"
-          "module"
-          "done"
-          "function"
-          "process"
-          "method"
-          "params"
-          "base"
-          "default"
-          "to"
-          "fixed" ]
+        [
+            "type"
+            "member"
+            "val"
+            "end"
+            "begin"
+            "open"
+            "module"
+            "done"
+            "function"
+            "process"
+            "method"
+            "params"
+            "base"
+            "default"
+            "to"
+            "fixed"
+        ]
 
 let private paramName (i: int) (p: FSharpParameter) =
     let name = p.Name |> Option.defaultValue $"arg{i}"
@@ -125,9 +127,11 @@ let private requiredMembers (entity: FSharpEntity) : (string * Required list) op
             None
         else
             let props =
-                [ for kv in properties ->
-                      let g, s, t = kv.Value
-                      Property(kv.Key, g, s, t) ]
+                [
+                    for kv in properties ->
+                        let g, s, t = kv.Value
+                        Property(kv.Key, g, s, t)
+                ]
 
             Some(entity.DisplayName, List.ofSeq methods @ props)
     with OptionModule.FcsSymbolFailure ->
@@ -196,123 +200,131 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.ObjExpr(objType = objType; members = members; extraImpls = impls; newExprRange = newExprRange) when
-                  not members.IsEmpty
-                  ->
-                  // the interface's name ident, e.g. IDbConnection in
-                  // `IDbConnection` or `IEnumerable<int>`
-                  let typeIdent =
-                      match objType with
-                      | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
-                      | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
-                          Some(List.last ids)
-                      | _ -> None
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.ObjExpr(objType = objType; members = members; extraImpls = impls; newExprRange = newExprRange) when
+                    not members.IsEmpty
+                    ->
+                    // the interface's name ident, e.g. IDbConnection in
+                    // `IDbConnection` or `IEnumerable<int>`
+                    let typeIdent =
+                        match objType with
+                        | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+                        | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
+                            Some(List.last ids)
+                        | _ -> None
 
-                  match typeIdent with
-                  | Some typeIdent ->
-                      let r = typeIdent.idRange
-                      let lineText = source.GetLineString(r.EndLine - 1)
+                    match typeIdent with
+                    | Some typeIdent ->
+                        let r = typeIdent.idRange
+                        let lineText = source.GetLineString(r.EndLine - 1)
 
-                      let entity =
-                          match
-                              check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ typeIdent.idText ])
-                          with
-                          | Some symbolUse ->
-                              match symbolUse.Symbol with
-                              | :? FSharpEntity as e when e.IsInterface -> Some e
-                              | _ -> None
-                          | None -> None
+                        let entity =
+                            match
+                                check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ typeIdent.idText ])
+                            with
+                            | Some symbolUse ->
+                                match symbolUse.Symbol with
+                                | :? FSharpEntity as e when e.IsInterface -> Some e
+                                | _ -> None
+                            | None -> None
 
-                      match entity with
-                      | Some entity ->
-                          let implementedMain = implementedNames members
+                        match entity with
+                        | Some entity ->
+                            let implementedMain = implementedNames members
 
-                          let implementedPerInterface =
-                              impls
-                              |> List.map (fun (SynInterfaceImpl(interfaceTy = t; members = ms)) ->
-                                  (match t with
-                                   | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty ->
-                                       (List.last ids).idText
-                                   | _ -> ""),
-                                  implementedNames ms)
+                            let implementedPerInterface =
+                                impls
+                                |> List.map (fun (SynInterfaceImpl(interfaceTy = t; members = ms)) ->
+                                    (match t with
+                                     | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                         (List.last ids).idText
+                                     | _ -> ""),
+                                    implementedNames ms)
 
-                          // the main interface's own missing members
-                          let mainMissing =
-                              match requiredMembers entity with
-                              | Some(_, required) ->
-                                  required |> List.filter (nameOf >> implementedMain.Contains >> not) |> Some
-                              | None -> None
+                            // the main interface's own missing members
+                            let mainMissing =
+                                match requiredMembers entity with
+                                | Some(_, required) ->
+                                    required |> List.filter (nameOf >> implementedMain.Contains >> not) |> Some
+                                | None -> None
 
-                          // inherited interfaces stub in their own sections
-                          let inheritedMissing =
-                              try
-                                  [ for baseType in entity.AllInterfaces do
-                                        // AllInterfaces includes the entity itself
-                                        if
-                                            baseType.HasTypeDefinition
-                                            && not (baseType.TypeDefinition.IsEffectivelySameAs entity)
-                                        then
-                                            let baseEntity = baseType.TypeDefinition
+                            // inherited interfaces stub in their own sections
+                            let inheritedMissing =
+                                try
+                                    [
+                                        for baseType in entity.AllInterfaces do
+                                            // AllInterfaces includes the entity itself
+                                            if
+                                                baseType.HasTypeDefinition
+                                                && not (baseType.TypeDefinition.IsEffectivelySameAs entity)
+                                            then
+                                                let baseEntity = baseType.TypeDefinition
 
-                                            // members implemented in the MAIN block satisfy inherited
-                                            // interfaces too: `{ new IDbConnection with ...
-                                            // member _.Dispose() = ... }` compiles, Dispose covering
-                                            // IDisposable — stubbing it again would double-implement
-                                            let implemented =
-                                                implementedPerInterface
-                                                |> List.tryPick (fun (n, ns) ->
-                                                    if n = baseEntity.DisplayName then Some ns else None)
-                                                |> Option.defaultValue Set.empty
-                                                |> Set.union implementedMain
+                                                // members implemented in the MAIN block satisfy inherited
+                                                // interfaces too: `{ new IDbConnection with ...
+                                                // member _.Dispose() = ... }` compiles, Dispose covering
+                                                // IDisposable — stubbing it again would double-implement
+                                                let implemented =
+                                                    implementedPerInterface
+                                                    |> List.tryPick (fun (n, ns) ->
+                                                        if n = baseEntity.DisplayName then Some ns else None)
+                                                    |> Option.defaultValue Set.empty
+                                                    |> Set.union implementedMain
 
-                                            match requiredMembers baseEntity with
-                                            | Some(baseName, required) ->
-                                                let missing =
-                                                    required |> List.filter (nameOf >> implemented.Contains >> not)
+                                                match requiredMembers baseEntity with
+                                                | Some(baseName, required) ->
+                                                    let missing =
+                                                        required |> List.filter (nameOf >> implemented.Contains >> not)
 
-                                                if not missing.IsEmpty then
-                                                    yield Some(baseName, missing)
-                                            | None -> yield None ]
-                              with OptionModule.FcsSymbolFailure ->
-                                  [ None ]
+                                                    if not missing.IsEmpty then
+                                                        yield Some(baseName, missing)
+                                                | None -> yield None
+                                    ]
+                                with OptionModule.FcsSymbolFailure ->
+                                    [ None ]
 
-                          match mainMissing with
-                          | Some mainMissing when inheritedMissing |> List.forall Option.isSome ->
-                              let inherited = inheritedMissing |> List.choose id
+                            match mainMissing with
+                            | Some mainMissing when inheritedMissing |> List.forall Option.isSome ->
+                                let inherited = inheritedMissing |> List.choose id
 
-                              if not (mainMissing.IsEmpty && inherited.IsEmpty) then
-                                  // anchors: main-member stubs at the members'
-                                  // indentation; `interface Base with` sections
-                                  // dedent to the `new` keyword's column, as the
-                                  // object-expression grammar requires
-                                  let lastMember = List.last members
-                                  let memberIndent = System.String(' ', lastMember.Range.StartColumn)
-                                  let interfaceIndent = System.String(' ', newExprRange.StartColumn)
+                                if not (mainMissing.IsEmpty && inherited.IsEmpty) then
+                                    // anchors: main-member stubs at the members'
+                                    // indentation; `interface Base with` sections
+                                    // dedent to the `new` keyword's column, as the
+                                    // object-expression grammar requires
+                                    let lastMember = List.last members
+                                    let memberIndent = System.String(' ', lastMember.Range.StartColumn)
+                                    let interfaceIndent = System.String(' ', newExprRange.StartColumn)
 
-                                  let niPrefix = if opensSystemNamespace source then "" else "System."
+                                    let niPrefix = if opensSystemNamespace source then "" else "System."
 
-                                  let textWith (body: Body) =
-                                      [ for m in mainMissing -> $"\n{memberIndent}{stubFor niPrefix body m}"
-                                        for baseName, missing in inherited do
-                                            yield $"\n{interfaceIndent}interface {baseName} with"
+                                    let textWith (body: Body) =
+                                        [
+                                            for m in mainMissing -> $"\n{memberIndent}{stubFor niPrefix body m}"
+                                            for baseName, missing in inherited do
+                                                yield $"\n{interfaceIndent}interface {baseName} with"
 
-                                            for m in missing do
-                                                yield $"\n{interfaceIndent}    {stubFor niPrefix body m}" ]
-                                      |> String.concat ""
+                                                for m in missing do
+                                                    yield $"\n{interfaceIndent}    {stubFor niPrefix body m}"
+                                        ]
+                                        |> String.concat ""
 
-                                  let insertAt =
-                                      Range.mkRange expr.Range.FileName lastMember.Range.End lastMember.Range.End
+                                    let insertAt =
+                                        Range.mkRange expr.Range.FileName lastMember.Range.End lastMember.Range.End
 
-                                  { Range = insertAt
-                                    InsertText = textWith Raise
-                                    EmptyInsertText = textWith Empty
-                                    InterfaceName = entity.DisplayName
-                                    MissingNames =
-                                      (mainMissing |> List.map nameOf)
-                                      @ (inherited |> List.collect (fun (_, ms) -> ms |> List.map nameOf)) }
-                          | _ -> ()
-                      | None -> ()
-                  | None -> ()
-              | _ -> () ]
+                                    {
+                                        Range = insertAt
+                                        InsertText = textWith Raise
+                                        EmptyInsertText = textWith Empty
+                                        InterfaceName = entity.DisplayName
+                                        MissingNames =
+                                            (mainMissing |> List.map nameOf)
+                                            @ (inherited |> List.collect (fun (_, ms) -> ms |> List.map nameOf))
+                                    }
+                            | _ -> ()
+                        | None -> ()
+                    | None -> ()
+                | _ -> ()
+        ]

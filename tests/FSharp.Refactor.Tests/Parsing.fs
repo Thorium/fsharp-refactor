@@ -19,7 +19,8 @@ let parseNamed (fileName: string) (source: string) : ParsedInput * ISourceText =
 
     let parsingOptions =
         { FSharpParsingOptions.Default with
-            SourceFiles = [| fileName |] }
+            SourceFiles = [| fileName |]
+        }
 
     let result =
         checker.ParseFile(fileName, sourceText, parsingOptions)
@@ -39,7 +40,8 @@ let tryParseNamed (fileName: string) (source: string) : ParsedInput * bool * ISo
 
     let parsingOptions =
         { FSharpParsingOptions.Default with
-            SourceFiles = [| fileName |] }
+            SourceFiles = [| fileName |]
+        }
 
     let result =
         checker.ParseFile(fileName, sourceText, parsingOptions)
@@ -53,7 +55,8 @@ let parsesCleanlyNamed (fileName: string) (source: string) : bool =
 
     let parsingOptions =
         { FSharpParsingOptions.Default with
-            SourceFiles = [| fileName |] }
+            SourceFiles = [| fileName |]
+        }
 
     let result =
         checker.ParseFile(fileName, sourceText, parsingOptions)
@@ -137,7 +140,8 @@ let parseAndCheckPair (sourceA: string) (sourceB: string) =
     let options =
         { probeOptions with
             ProjectFileName = Path.Combine(dir, "Pair.fsproj")
-            SourceFiles = [| pathA; pathB |] }
+            SourceFiles = [| pathA; pathB |]
+        }
 
     let projectResults = checker.ParseAndCheckProject options |> Async.RunSynchronously
 
@@ -198,7 +202,8 @@ let parseAndCheckSecond (sourceA: string) (sourceB: string) : ParsedInput * ISou
     let options =
         { probeOptions with
             ProjectFileName = Path.Combine(dir, "Second.fsproj")
-            SourceFiles = [| pathA; pathB |] }
+            SourceFiles = [| pathA; pathB |]
+        }
 
     let sourceTextB = SourceText.ofString sourceB
 
@@ -236,7 +241,8 @@ let parseAndCheckSigned (signature: string) (implementation: string) =
     let options =
         { probeOptions with
             ProjectFileName = Path.Combine(dir, "Signed.fsproj")
-            SourceFiles = [| pathSig; pathImpl |] }
+            SourceFiles = [| pathSig; pathImpl |]
+        }
 
     let projectErrors (results: FSharpCheckProjectResults) =
         results.Diagnostics

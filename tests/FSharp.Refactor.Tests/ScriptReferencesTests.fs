@@ -35,7 +35,9 @@ let private withPackage
         let options =
             match sdkMajor with
             | Some major ->
-                [ $"-r:C:\\dotnet\\packs\\Microsoft.NETCore.App.Ref\\{major}.0.0\\ref\\net{major}.0\\System.Runtime.dll" ]
+                [
+                    $"-r:C:\\dotnet\\packs\\Microsoft.NETCore.App.Ref\\{major}.0.0\\ref\\net{major}.0\\System.Runtime.dll"
+                ]
             | None -> []
 
         test (ScriptReferences.find script tree sourceText options)
@@ -53,9 +55,11 @@ let private single (suggestions: ScriptReferences.Suggestion list) =
 [<Fact>]
 let ``a net45 reference moves to the newest net4y the package has`` () =
     withPackage
-        [ "packages/Sql.1.2.3/lib/net461"
-          "packages/Sql.1.2.3/lib/net451"
-          "packages/Sql.1.2.3/lib/netstandard2.0" ]
+        [
+            "packages/Sql.1.2.3/lib/net461"
+            "packages/Sql.1.2.3/lib/net451"
+            "packages/Sql.1.2.3/lib/netstandard2.0"
+        ]
         "#r @\"../packages/Sql.1.2.3/lib/net45/Sql.dll\""
         None
         (fun suggestions ->
@@ -67,8 +71,10 @@ let ``a net45 reference moves to the newest net4y the package has`` () =
 let ``a net45 reference prefers netstandard2.0 over 2.1 when no net4y is left`` () =
     // the .NET Framework loads netstandard2.0, never 2.1
     withPackage
-        [ "packages/Sql.1.2.3/lib/netstandard2.1"
-          "packages/Sql.1.2.3/lib/netstandard2.0" ]
+        [
+            "packages/Sql.1.2.3/lib/netstandard2.1"
+            "packages/Sql.1.2.3/lib/netstandard2.0"
+        ]
         "#r \"../packages/Sql.1.2.3/lib/net45/Sql.dll\""
         None
         (fun suggestions ->
@@ -79,9 +85,11 @@ let ``a net45 reference prefers netstandard2.0 over 2.1 when no net4y is left`` 
 [<Fact>]
 let ``a netstandard reference prefers the newest netX not above the SDK`` () =
     withPackage
-        [ "packages/Sql.1.2.3/lib/net10.0"
-          "packages/Sql.1.2.3/lib/net8.0"
-          "packages/Sql.1.2.3/lib/netstandard2.0" ]
+        [
+            "packages/Sql.1.2.3/lib/net10.0"
+            "packages/Sql.1.2.3/lib/net8.0"
+            "packages/Sql.1.2.3/lib/netstandard2.0"
+        ]
         "#r @\"../packages/Sql.1.2.3/lib/netstandard1.6/Sql.dll\""
         (Some 8)
         (fun suggestions ->
@@ -115,8 +123,10 @@ let ``an existing path and a package reference are left alone`` () =
 [<Fact>]
 let ``netcoreapp is the last resort, behind any netstandard`` () =
     withPackage
-        [ "packages/Sql.1.2.3/lib/netcoreapp3.1"
-          "packages/Sql.1.2.3/lib/netstandard2.0" ]
+        [
+            "packages/Sql.1.2.3/lib/netcoreapp3.1"
+            "packages/Sql.1.2.3/lib/netstandard2.0"
+        ]
         "#r @\"../packages/Sql.1.2.3/lib/netstandard1.6/Sql.dll\""
         (Some 8)
         (fun suggestions ->

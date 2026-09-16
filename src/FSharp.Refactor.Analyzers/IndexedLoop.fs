@@ -261,9 +261,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 match alias with
                 | Some(element, aliasRange) ->
                     suggestions.Add
-                        { Range = expr.Range
-                          CollectionText = collText
-                          Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ] }
+                        {
+                            Range = expr.Range
+                            CollectionText = collText
+                            Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ]
+                        }
                 | None ->
                     // the element is `item`, or `item2`, `item3`... when a
                     // name is already taken: mentioned inside the loop, or
@@ -281,9 +283,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         |> Array.toList
 
                     suggestions.Add
-                        { Range = expr.Range
-                          CollectionText = collText
-                          Edits = headerEdit element :: useEdits }
+                        {
+                            Range = expr.Range
+                            CollectionText = collText
+                            Edits = headerEdit element :: useEdits
+                        }
         | _ -> ()
 
     List.ofSeq suggestions

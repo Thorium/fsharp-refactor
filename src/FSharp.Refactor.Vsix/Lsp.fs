@@ -93,9 +93,11 @@ type JsonRpc(input: Stream, output: Stream, onError: string -> unit) =
                             | true, idTok ->
                                 send (
                                     JObject(
-                                        [ JProperty("jsonrpc", "2.0")
-                                          JProperty("id", idTok)
-                                          JProperty("result", JValue.CreateNull()) ]
+                                        [
+                                            JProperty("jsonrpc", "2.0")
+                                            JProperty("id", idTok)
+                                            JProperty("result", JValue.CreateNull())
+                                        ]
                                     )
                                 )
                             | _ -> ()
@@ -118,9 +120,11 @@ type JsonRpc(input: Stream, output: Stream, onError: string -> unit) =
     member _.Notify(name: string, parameters: JToken) =
         send (
             JObject(
-                [ JProperty("jsonrpc", "2.0")
-                  JProperty("method", name)
-                  JProperty("params", parameters) ]
+                [
+                    JProperty("jsonrpc", "2.0")
+                    JProperty("method", name)
+                    JProperty("params", parameters)
+                ]
             )
         )
 
@@ -134,10 +138,12 @@ type JsonRpc(input: Stream, output: Stream, onError: string -> unit) =
 
         send (
             JObject(
-                [ JProperty("jsonrpc", "2.0")
-                  JProperty("id", id)
-                  JProperty("method", name)
-                  JProperty("params", parameters) ]
+                [
+                    JProperty("jsonrpc", "2.0")
+                    JProperty("id", id)
+                    JProperty("method", name)
+                    JProperty("params", parameters)
+                ]
             )
         )
 
@@ -164,24 +170,28 @@ let parseDiagnostics (p: JToken) : string * Diag list =
     let diags =
         match p["diagnostics"] with
         | :? JArray as arr ->
-            [ for d in arr do
-                  let range = d["range"]
+            [
+                for d in arr do
+                    let range = d["range"]
 
-                  let code =
-                      match d["code"] with
-                      | null -> ""
-                      | c -> c.ToString()
+                    let code =
+                        match d["code"] with
+                        | null -> ""
+                        | c -> c.ToString()
 
-                  { StartLine = range["start"].["line"].Value<int>()
-                    StartCol = range["start"].["character"].Value<int>()
-                    EndLine = range["end"].["line"].Value<int>()
-                    EndCol = range["end"].["character"].Value<int>()
-                    Code = code
-                    Message =
-                      (match d["message"] with
-                       | null -> ""
-                       | m -> m.Value<string>())
-                    Raw = d } ]
+                    {
+                        StartLine = range["start"].["line"].Value<int>()
+                        StartCol = range["start"].["character"].Value<int>()
+                        EndLine = range["end"].["line"].Value<int>()
+                        EndCol = range["end"].["character"].Value<int>()
+                        Code = code
+                        Message =
+                            (match d["message"] with
+                             | null -> ""
+                             | m -> m.Value<string>())
+                        Raw = d
+                    }
+            ]
         | _ -> []
 
     uri, diags

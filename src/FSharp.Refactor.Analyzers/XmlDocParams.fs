@@ -112,10 +112,12 @@ let private checkBinding
 
         if not (missing.IsEmpty || actual.IsEmpty) then
             suggestions.Add
-                { Range = headPat.Range
-                  MissingParams = missing
-                  BindingName = name
-                  Insertion = insertionFor source xmlDoc missing }
+                {
+                    Range = headPat.Range
+                    MissingParams = missing
+                    BindingName = name
+                    Insertion = insertionFor source xmlDoc missing
+                }
 
 /// Find bindings whose doc comments document only some parameters.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =

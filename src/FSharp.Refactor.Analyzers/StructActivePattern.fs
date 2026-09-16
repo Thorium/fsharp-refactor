@@ -39,9 +39,11 @@ open FSharp.Refactor.Text
 
 /// A single text edit: range, original text, replacement text.
 type Edit =
-    { Range: range
-      Original: string
-      Replacement: string }
+    {
+        Range: range
+        Original: string
+        Replacement: string
+    }
 
 type Suggestion =
     {
@@ -155,7 +157,8 @@ let findWith
                     // spliced against the WRONG construct)
                     let ownLine =
                         decl.Range.StartColumn = 0
-                        || (source.GetLineString(decl.Range.StartLine - 1)).Substring(0, decl.Range.StartColumn).Trim() = ""
+                        || (source.GetLineString(decl.Range.StartLine - 1)).Substring(0, decl.Range.StartColumn).Trim() =
+                            ""
 
                     // a body split by `#if` has a branch the parse tree
                     // never shows: only the active one would turn
@@ -173,16 +176,20 @@ let findWith
                         let indent = String(' ', insertPos.Column)
 
                         let insertEdit =
-                            { Range = Range.mkRange decl.Range.FileName insertPos insertPos
-                              Original = ""
-                              Replacement = "[<return: Struct>]\n" + indent }
+                            {
+                                Range = Range.mkRange decl.Range.FileName insertPos insertPos
+                                Original = ""
+                                Replacement = "[<return: Struct>]\n" + indent
+                            }
 
                         let tokenEdits =
                             results
                             |> Seq.map (fun (r, replacement) ->
-                                { Range = r
-                                  Original = textOfRange source r
-                                  Replacement = replacement })
+                                {
+                                    Range = r
+                                    Original = textOfRange source r
+                                    Replacement = replacement
+                                })
                             |> List.ofSeq
 
                         let gated =
@@ -194,10 +201,13 @@ let findWith
 
                         if gated then
                             suggestions.Add
-                                { PatternName = nameIdent.idText
-                                  NameRange = nameIdent.idRange
-                                  Edits = insertEdit :: tokenEdits }
-                | _ -> () }
+                                {
+                                    PatternName = nameIdent.idText
+                                    NameRange = nameIdent.idRange
+                                    Edits = insertEdit :: tokenEdits
+                                }
+                | _ -> ()
+        }
 
     if OptionModule.hasErrors check then
         []

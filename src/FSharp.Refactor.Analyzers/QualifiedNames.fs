@@ -291,11 +291,13 @@ let find
                         | _ when not ids.IsEmpty -> Some(r.FileName, (List.last ids).idRange.EndLine + 1)
                         | _ -> Some(r.FileName, r.StartLine + 1)
 
-                    {| Range = r
-                       InsertAt = insertAt
-                       Opened = opens
-                       Decls = decls
-                       Own = Set.ofList (own :: ownPrefixes) |})
+                    {|
+                        Range = r
+                        InsertAt = insertAt
+                        Opened = opens
+                        Decls = decls
+                        Own = Set.ofList (own :: ownPrefixes)
+                    |})
             | _ -> []
 
         let blockOf (r: range) =
@@ -319,20 +321,30 @@ let find
 
         // every qualified spelling in expressions and types
         let spellings =
-            [ for _, e in index.Exprs do
-                  match e with
-                  | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
-                  | SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when ids.Length >= 2 ->
-                      yield ids
-                  // an assignment target is a spelling too: fsharp.formatting's
-                  // `System.Diagnostics.Trace.AutoFlush <- true` kept its prefix
-                  // while the reads beside it lost theirs
-                  | SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _) when ids.Length >= 2 -> yield ids
-                  | _ -> ()
-              for _, t in index.Types do
-                  match t with
-                  | SynType.LongIdent(SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
-                  | _ -> () ]
+            [
+                for _, e in index.Exprs do
+                    match e with
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
+                    | SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when ids.Length >= 2 ->
+                        yield ids
+                    // an assignment target is a spelling too: fsharp.formatting's
+                    // `System.Diagnostics.Trace.AutoFlush <- true` kept its prefix
+                    // while the reads beside it lost theirs
+                    | SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _) when ids.Length >= 2 -> yield ids
+                    | _ -> ()
+                for _, t in index.Types do
+                    match t with
+                    | SynType.LongIdent(SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
+                    | _ -> ()
+                // a union case matched by its qualified spelling: `| Lib.Kind.A
+                // ->` beside the expressions that build it. Only a spelling
+                // that resolves to a case is shortened (below): a pattern head
+                // that stopped resolving would silently become a binder
+                for _, p in index.Pats do
+                    match p with
+                    | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
+                    | _ -> ()
+            ]
             |> List.distinctBy (fun ids -> (List.head ids).idRange)
 
         // early-out before the typed check, which is the expensive part: a
@@ -413,23 +425,25 @@ let find
 
         let localBindings =
             lazy
-                ([ for path, p in index.Pats do
-                       match patBoundNames p with
-                       | [] -> ()
-                       | names ->
-                           match scopeOf path with
-                           | Some scope ->
-                               for name in names do
-                                   yield name, scope
-                           | None -> ()
-                   for _, e in index.Exprs do
-                       match e with
-                       | SynExpr.Lambda(parsedData = Some(pats, _)) ->
-                           for p in pats do
-                               for name in patBoundNames p do
-                                   yield name, e.Range
-                       | SynExpr.For(ident = id) -> yield id.idText, e.Range
-                       | _ -> () ]
+                ([
+                    for path, p in index.Pats do
+                        match patBoundNames p with
+                        | [] -> ()
+                        | names ->
+                            match scopeOf path with
+                            | Some scope ->
+                                for name in names do
+                                    yield name, scope
+                            | None -> ()
+                    for _, e in index.Exprs do
+                        match e with
+                        | SynExpr.Lambda(parsedData = Some(pats, _)) ->
+                            for p in pats do
+                                for name in patBoundNames p do
+                                    yield name, e.Range
+                        | SynExpr.For(ident = id) -> yield id.idText, e.Range
+                        | _ -> ()
+                 ]
                  |> List.groupBy fst
                  |> List.map (fun (name, scopes) -> name, scopes |> List.map snd)
                  |> Map.ofList)
@@ -444,11 +458,42 @@ let find
         let typeHeads =
             lazy
                 (HashSet<range>(
-                    [ for _, t in index.Types do
-                          match t with
-                          | SynType.LongIdent(SynLongIdent(id = head :: _ :: _)) -> head.idRange
-                          | _ -> () ]
+                    [
+                        for _, t in index.Types do
+                            match t with
+                            | SynType.LongIdent(SynLongIdent(id = head :: _ :: _)) -> head.idRange
+                            | _ -> ()
+                    ]
                 ))
+
+        // the heads of PATTERN spellings, shortened only when the spelling
+        // resolves to a union case, exception or active pattern case
+        let patternHeads =
+            lazy
+                (HashSet<range>(
+                    [
+                        for _, p in index.Pats do
+                            match p with
+                            | SynPat.LongIdent(longDotId = SynLongIdent(id = head :: _ :: _)) -> head.idRange
+                            | _ -> ()
+                    ]
+                ))
+
+        let resolvesToCase (last: Ident) =
+            let r = last.idRange
+            let lineText = source.GetLineString(r.EndLine - 1)
+
+            try
+                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
+                | Some symbolUse ->
+                    match symbolUse.Symbol with
+                    | :? FSharpUnionCase
+                    | :? FSharpActivePatternCase -> true
+                    | :? FSharpEntity as e -> e.IsFSharpExceptionDeclaration
+                    | _ -> false
+                | None -> false
+            with _ -> // a scope we cannot read is one we do not rewrite in; fsharpanalyzer: ignore-line FR0055
+                false
 
         // in an EXPRESSION the first identifier resolves among the values,
         // union cases and active patterns in scope before any module or
@@ -567,6 +612,11 @@ let find
                         // goes in for the others, and this spelling stays
                         // right as it is
                         if shadowedLocally afterNamespace.idText prefixRange then
+                            None
+                        elif
+                            patternHeads.Value.Contains first.idRange
+                            && not (resolvesToCase (List.last ids))
+                        then
                             None
                         elif not (typeHeads.Value.Contains first.idRange) && shadowedByItem afterNamespace then
                             None
@@ -896,59 +946,64 @@ let find
                             name = "RequireQualifiedAccess" || name = "RequireQualifiedAccessAttribute"
                         | _ -> false))
 
-            [ for _, decl in index.Decls do
-                  match decl with
-                  | SynModuleDecl.Types(typeDefns = defns) ->
-                      for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids; attributes = attrs); typeRepr = repr) in
-                          defns do
-                          yield (List.last ids).idText
+            [
+                for _, decl in index.Decls do
+                    match decl with
+                    | SynModuleDecl.Types(typeDefns = defns) ->
+                        for SynTypeDefn(typeInfo = SynComponentInfo(longId = ids; attributes = attrs); typeRepr = repr) in
+                            defns do
+                            yield (List.last ids).idText
 
-                          match repr with
-                          | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Union(unionCases = cases)) when
-                              not (requiresQualifiedAccess attrs)
-                              ->
-                              for SynUnionCase(ident = SynIdent(ident = caseId)) in cases do
-                                  yield caseId.idText
-                          | _ -> ()
-                  | SynModuleDecl.Exception(
-                      exnDefn = SynExceptionDefn(
-                          exnRepr = SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(ident = exnId))))) ->
-                      yield exnId.idText
-                  | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids)) ->
-                      yield (List.last ids).idText
-                  | SynModuleDecl.Let(bindings = bindings) ->
-                      for SynBinding(headPat = p) in bindings do
-                          match p with
-                          // a function's name is the module's; its
-                          // parameters reach only its own body, and
-                          // localBindings below holds them to it
-                          | SynPat.LongIdent(longDotId = SynLongIdent(id = [ fn ]); argPats = SynArgPats.Pats(_ :: _)) ->
-                              yield fn.idText
-                          | _ -> yield! patBoundNames p
-                  | _ -> () ]
+                            match repr with
+                            | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Union(unionCases = cases)) when
+                                not (requiresQualifiedAccess attrs)
+                                ->
+                                for SynUnionCase(ident = SynIdent(ident = caseId)) in cases do
+                                    yield caseId.idText
+                            | _ -> ()
+                    | SynModuleDecl.Exception(
+                        exnDefn = SynExceptionDefn(
+                            exnRepr = SynExceptionDefnRepr(caseName = SynUnionCase(ident = SynIdent(ident = exnId))))) ->
+                        yield exnId.idText
+                    | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids)) ->
+                        yield (List.last ids).idText
+                    | SynModuleDecl.Let(bindings = bindings) ->
+                        for SynBinding(headPat = p) in bindings do
+                            match p with
+                            // a function's name is the module's; its
+                            // parameters reach only its own body, and
+                            // localBindings below holds them to it
+                            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ fn ]); argPats = SynArgPats.Pats(_ :: _)) ->
+                                yield fn.idText
+                            | _ -> yield! patBoundNames p
+                    | _ -> ()
+            ]
             |> Set.ofList
 
         // names the file uses unqualified, with what they resolve to: a type
-        // annotation, a construction, or the head of a dotted expression
+        // annotation, a construction, the head of a dotted expression, or
+        // any bare name - a value or a case as well as a type. An
+        // [<AutoOpen>] module of the namespace brings its VALUES with the
+        // open, and a `helper 4` reaching Other.Z.helper today would reach
+        // Lib.Auto.helper once `open Lib` sits below `open Other.Z`; a union
+        // case `A` beside a value `A` from another open is the same trap.
+        // The uses are filtered to the names the open brings before any is
+        // resolved, so the extra idents cost nothing
         let unqualifiedUses =
-            [ for _, e in index.Exprs do
-                  match e with
-                  | SynExpr.LongIdent(longDotId = SynLongIdent(id = head :: _ :: _)) -> yield head
-                  // a bare construction or call: fsharplint's `Byte('x'B)` is
-                  // its own union case until `open System` makes it the
-                  // System.Byte constructor
-                  | SynExpr.App(funcExpr = SynExpr.Ident head) when
-                      head.idText.Length > 0 && System.Char.IsUpper head.idText.[0]
-                      ->
-                      yield head
-                  | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ id ]))) -> yield id
-                  | SynExpr.New(targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = [ id ])))) ->
-                      yield id
-                  | _ -> ()
-              for _, t in index.Types do
-                  match t with
-                  | SynType.LongIdent(SynLongIdent(id = [ id ])) -> yield id
-                  | _ -> () ]
+            [
+                for _, e in index.Exprs do
+                    match e with
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = head :: _ :: _)) -> yield head
+                    | SynExpr.Ident id -> yield id
+                    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ id ]))) -> yield id
+                    | SynExpr.New(targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = [ id ])))) ->
+                        yield id
+                    | _ -> ()
+                for _, t in index.Types do
+                    match t with
+                    | SynType.LongIdent(SynLongIdent(id = [ id ])) -> yield id
+                    | _ -> ()
+            ]
 
         // the methods the file calls with a parenthesised tuple — `x.M (a, b)`
         // — by name. F# hands that tuple over as TWO arguments the moment a
@@ -999,21 +1054,23 @@ let find
                         true
 
                  set
-                     [ for _, e in index.Exprs do
-                           match e with
-                           | SynExpr.App(
-                               funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-                               argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false; exprs = es))) when
-                               ids.Length >= 2 && takesWhole ids es.Length
-                               ->
-                               yield (List.last ids).idText
-                           | SynExpr.App(
-                               funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))
-                               argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false; exprs = es))) when
-                               takesWhole ids es.Length
-                               ->
-                               yield (List.last ids).idText
-                           | _ -> () ])
+                     [
+                         for _, e in index.Exprs do
+                             match e with
+                             | SynExpr.App(
+                                 funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                                 argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false; exprs = es))) when
+                                 ids.Length >= 2 && takesWhole ids es.Length
+                                 ->
+                                 yield (List.last ids).idText
+                             | SynExpr.App(
+                                 funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))
+                                 argExpr = SynExpr.Paren(expr = SynExpr.Tuple(isStruct = false; exprs = es))) when
+                                 takesWhole ids es.Length
+                                 ->
+                                 yield (List.last ids).idText
+                             | _ -> ()
+                     ])
 
         // the extension members a namespace exports, by name: F# type
         // extensions and `[<Extension>]` functions in its modules, C#
@@ -1109,6 +1166,16 @@ let find
                     && not ((exportedModules ns).Contains id.idText)
                     ->
                     None
+                // a local - a parameter, a let inside a function, a pattern
+                // binder - shadows whatever an open brings, wherever the
+                // open sits: no clash
+                | :? FSharpMemberOrFunctionOrValue as v when
+                    (try
+                        not v.IsModuleValueOrMember
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         false)
+                    ->
+                    None
                 | symbol ->
                     match symbolNamespace symbol with
                     | Some other when other = ns -> None
@@ -1124,11 +1191,13 @@ let find
         // reached FSharp.Core's Map, which has no FromList
         let fsharpCoreNames =
             lazy
-                ([ "Microsoft.FSharp.Core"
-                   "Microsoft.FSharp.Collections"
-                   "Microsoft.FSharp.Control"
-                   "Microsoft.FSharp.Text"
-                   "Microsoft.FSharp.Linq" ]
+                ([
+                    "Microsoft.FSharp.Core"
+                    "Microsoft.FSharp.Collections"
+                    "Microsoft.FSharp.Control"
+                    "Microsoft.FSharp.Text"
+                    "Microsoft.FSharp.Linq"
+                 ]
                  |> Seq.collect (fun ns -> scopeNames ns |> Map.toSeq |> Seq.map fst)
                  |> Set.ofSeq)
 
@@ -1406,18 +1475,22 @@ let find
                         // worth an open, but the open would clash: say so, fix
                         // nothing
                         Some
-                            { Range = snd uses.Head
-                              Namespace = ns
-                              Uses = count
-                              Edits = []
-                              Reason = reason }
+                            {
+                                Range = snd uses.Head
+                                Namespace = ns
+                                Uses = count
+                                Edits = []
+                                Reason = reason
+                            }
                     | None ->
                         Some
-                            { Range = snd uses.Head
-                              Namespace = ns
-                              Uses = count
-                              Edits = insertion @ removals
-                              Reason = None }
+                            {
+                                Range = snd uses.Head
+                                Namespace = ns
+                                Uses = count
+                                Edits = insertion @ removals
+                                Reason = None
+                            }
             else
                 None)
         |> List.sortByDescending (fun s -> (s.Namespace.Split '.').Length)

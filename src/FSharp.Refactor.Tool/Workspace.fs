@@ -203,8 +203,10 @@ let assemblyNameOf (projectPath: string) : string =
 /// walks up.
 let private solutionsListing (project: string) (dir: string) =
     try
-        [ yield! Directory.EnumerateFiles(dir, "*.slnx")
-          yield! Directory.EnumerateFiles(dir, "*.sln") ]
+        [
+            yield! Directory.EnumerateFiles(dir, "*.slnx")
+            yield! Directory.EnumerateFiles(dir, "*.sln")
+        ]
         |> List.filter (fun sln -> projectsInSolution sln |> List.exists (samePath project))
     with
     | :? IOException

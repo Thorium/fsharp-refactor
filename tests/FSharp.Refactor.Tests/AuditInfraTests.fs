@@ -41,7 +41,8 @@ let private exeOptions (projectFile: string) (files: string list) =
             Array.append
                 (probeOptions.OtherOptions
                  |> Array.filter (fun o -> not (o.StartsWith "--target:")))
-                [| "--target:exe" |] }
+                [| "--target:exe" |]
+    }
 
 /// A CLI context for one file of a project, typechecked in it.
 let private cliContext (options: FSharpProjectOptions) (fileName: string) : CliContext =
@@ -65,14 +66,16 @@ let private cliContext (options: FSharpProjectOptions) (fileName: string) : CliC
         | FSharpCheckFileAnswer.Succeeded r -> r
         | FSharpCheckFileAnswer.Aborted -> failwith $"typechecking aborted for {fileName}"
 
-    { FileName = fileName
-      SourceText = sourceText
-      ParseFileResults = parseResults
-      CheckFileResults = checkResults
-      TypedTree = checkResults.ImplementationFile
-      CheckProjectResults = projectResults
-      ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
-      AnalyzerIgnoreRanges = Map.empty }
+    {
+        FileName = fileName
+        SourceText = sourceText
+        ParseFileResults = parseResults
+        CheckFileResults = checkResults
+        TypedTree = checkResults.ImplementationFile
+        CheckProjectResults = projectResults
+        ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
+        AnalyzerIgnoreRanges = Map.empty
+    }
 
 /// A CLI context for a SCRIPT written to `fileName`, so the configuration
 /// beside it applies.
@@ -432,8 +435,10 @@ let ``FR0092: the assertion loosens in the production message's own fix`` () =
             |> List.sort
 
         Assert.Equal<(string * string) list>(
-            [ "Rules.fs", "$\"negative, calling score with r: {r}\""
-              "RulesTests.fs", "Assert.StartsWith(\"negative\"," ],
+            [
+                "Rules.fs", "$\"negative, calling score with r: {r}\""
+                "RulesTests.fs", "Assert.StartsWith(\"negative\","
+            ],
             byFile
         )
 

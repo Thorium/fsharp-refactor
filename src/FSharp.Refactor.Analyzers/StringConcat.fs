@@ -132,127 +132,131 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent opId; argExpr = _); argExpr = _) when
-                  opId.idText = "op_Addition"
-                  && not (isOperandOfPlus path)
-                  // string + translates in queries; String.Concat may not
-                  && not (insideQuotedCode path)
-                  && isSingleLine expr.Range
-                  ->
-                  let operands = collectOperands [] expr
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent opId; argExpr = _); argExpr = _) when
+                    opId.idText = "op_Addition"
+                    && not (isOperandOfPlus path)
+                    // string + translates in queries; String.Concat may not
+                    && not (insideQuotedCode path)
+                    && isSingleLine expr.Range
+                    ->
+                    let operands = collectOperands [] expr
 
-                  // cheap syntactic pre-gates first: three or more operands
-                  // (a two-term `path + ".bak"` reads fine as it is), with a
-                  // string literal among them — only then pay for typed
-                  // symbol resolution on the operands and the operator
-                  let hasStringLiteral =
-                      operands
-                      |> List.exists (fun operand ->
-                          match operand with
-                          | SynExpr.Const(SynConst.String(_, (SynStringKind.Regular | SynStringKind.Verbatim), _), _) ->
-                              true
-                          | _ -> false)
+                    // cheap syntactic pre-gates first: three or more operands
+                    // (a two-term `path + ".bak"` reads fine as it is), with a
+                    // string literal among them — only then pay for typed
+                    // symbol resolution on the operands and the operator
+                    let hasStringLiteral =
+                        operands
+                        |> List.exists (fun operand ->
+                            match operand with
+                            | SynExpr.Const(SynConst.String(_, (SynStringKind.Regular | SynStringKind.Verbatim), _), _) ->
+                                true
+                            | _ -> false)
 
-                  if List.length operands >= 3 && hasStringLiteral then
-                      let pieces =
-                          operands
-                          |> List.map (fun operand ->
-                              match operand with
-                              | SynExpr.Const(SynConst.String(_, SynStringKind.Regular, _), _) ->
-                                  spliceableLiteral false (textOfRange source operand.Range)
-                                  |> Option.map (fun t -> Lit(t, false))
-                              | SynExpr.Const(SynConst.String(_, SynStringKind.Verbatim, _), _) ->
-                                  spliceableLiteral true (textOfRange source operand.Range)
-                                  |> Option.map (fun t -> Lit(t, true))
-                              | SynExpr.Ident id when resolvesToString check source id ->
-                                  // an unannotated parameter the chain alone
-                                  // typed as a string: a plain hole would let
-                                  // it generalise (FS0034 against a signature
-                                  // file, the F# compiler), and a `%s` hole
-                                  // would leave the String.Concat fast path for
-                                  // the printf machinery — so the chain stays
-                                  if (unannotatedParameters path).Contains id.idText then
-                                      None
-                                  else
-                                      Some(Hole(textOfRange source operand.Range))
-                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                                  not ids.IsEmpty && resolvesToString check source (List.last ids)
-                                  ->
-                                  Some(Hole(textOfRange source operand.Range))
-                              | _ -> None)
+                    if List.length operands >= 3 && hasStringLiteral then
+                        let pieces =
+                            operands
+                            |> List.map (fun operand ->
+                                match operand with
+                                | SynExpr.Const(SynConst.String(_, SynStringKind.Regular, _), _) ->
+                                    spliceableLiteral false (textOfRange source operand.Range)
+                                    |> Option.map (fun t -> Lit(t, false))
+                                | SynExpr.Const(SynConst.String(_, SynStringKind.Verbatim, _), _) ->
+                                    spliceableLiteral true (textOfRange source operand.Range)
+                                    |> Option.map (fun t -> Lit(t, true))
+                                | SynExpr.Ident id when resolvesToString check source id ->
+                                    // an unannotated parameter the chain alone
+                                    // typed as a string: a plain hole would let
+                                    // it generalise (FS0034 against a signature
+                                    // file, the F# compiler), and a `%s` hole
+                                    // would leave the String.Concat fast path for
+                                    // the printf machinery — so the chain stays
+                                    if (unannotatedParameters path).Contains id.idText then
+                                        None
+                                    else
+                                        Some(Hole(textOfRange source operand.Range))
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                                    not ids.IsEmpty && resolvesToString check source (List.last ids)
+                                    ->
+                                    Some(Hole(textOfRange source operand.Range))
+                                | _ -> None)
 
-                      // at most TWO holes: the F# compiler turns small
-                      // interpolations into String.Concat, but past that
-                      // part count it emits the String.Format path —
-                      // measured, a 3-hole interpolation runs 4.9x slower
-                      // with 2.3x the allocation of the + chain it would
-                      // replace, and a + chain of strings is already one
-                      // String.Concat call. Readability must not tax the
-                      // customer's hot path.
-                      let holeCount =
-                          pieces
-                          |> List.sumBy (fun p ->
-                              match p with
-                              | Some(Hole _)
-                              | Some(TypedHole _) -> 1
-                              | _ -> 0)
+                        // at most TWO holes: the F# compiler turns small
+                        // interpolations into String.Concat, but past that
+                        // part count it emits the String.Format path —
+                        // measured, a 3-hole interpolation runs 4.9x slower
+                        // with 2.3x the allocation of the + chain it would
+                        // replace, and a + chain of strings is already one
+                        // String.Concat call. Readability must not tax the
+                        // customer's hot path.
+                        let holeCount =
+                            pieces
+                            |> List.sumBy (fun p ->
+                                match p with
+                                | Some(Hole _)
+                                | Some(TypedHole _) -> 1
+                                | _ -> 0)
 
-                      let hasHole = holeCount >= 1 && holeCount <= 2
+                        let hasHole = holeCount >= 1 && holeCount <= 2
 
-                      // a shadowed (+) can have arbitrary semantics; the
-                      // typed operator gate still guards the fix, it just
-                      // runs last
-                      // a verbatim piece anywhere makes the whole result a
-                      // verbatim interpolation ($@"..."), which is only sound
-                      // when every REGULAR piece is escape-free — a `\n` or
-                      // `\"` spliced into verbatim context would go literal
-                      let anyVerbatim =
-                          pieces
-                          |> List.exists (fun p ->
-                              match p with
-                              | Some(Lit(_, true)) -> true
-                              | _ -> false)
+                        // a shadowed (+) can have arbitrary semantics; the
+                        // typed operator gate still guards the fix, it just
+                        // runs last
+                        // a verbatim piece anywhere makes the whole result a
+                        // verbatim interpolation ($@"..."), which is only sound
+                        // when every REGULAR piece is escape-free — a `\n` or
+                        // `\"` spliced into verbatim context would go literal
+                        let anyVerbatim =
+                            pieces
+                            |> List.exists (fun p ->
+                                match p with
+                                | Some(Lit(_, true)) -> true
+                                | _ -> false)
 
-                      let regularsSafeForVerbatim =
-                          pieces
-                          |> List.forall (fun p ->
-                              match p with
-                              | Some(Lit(text, false)) -> not (text.Contains '\\')
-                              | _ -> true)
+                        let regularsSafeForVerbatim =
+                            pieces
+                            |> List.forall (fun p ->
+                                match p with
+                                | Some(Lit(text, false)) -> not (text.Contains '\\')
+                                | _ -> true)
 
-                      if
-                          pieces |> List.forall Option.isSome
-                          && hasHole
-                          && (not anyVerbatim || regularsSafeForVerbatim)
-                          && OptionModule.resolvesToCoreOperator check source opId
-                      then
-                          let body =
-                              pieces
-                              |> List.choose id
-                              |> List.map (fun piece ->
-                                  match piece with
-                                  | Lit(text, _) -> text
-                                  | Hole text -> "{" + text + "}"
-                                  | TypedHole text -> "%s{" + text + "}")
-                              |> String.concat ""
+                        if
+                            pieces |> List.forall Option.isSome
+                            && hasHole
+                            && (not anyVerbatim || regularsSafeForVerbatim)
+                            && OptionModule.resolvesToCoreOperator check source opId
+                        then
+                            let body =
+                                pieces
+                                |> List.choose id
+                                |> List.map (fun piece ->
+                                    match piece with
+                                    | Lit(text, _) -> text
+                                    | Hole text -> "{" + text + "}"
+                                    | TypedHole text -> "%s{" + text + "}")
+                                |> String.concat ""
 
-                          let concatAlternative =
-                              // `String` alone binds to FSharp.Core's module
-                              // without `open System`; qualify when the file
-                              // does not open it
-                              let prefix = if opensSystemNamespace source then "" else "System."
+                            let concatAlternative =
+                                // `String` alone binds to FSharp.Core's module
+                                // without `open System`; qualify when the file
+                                // does not open it
+                                let prefix = if opensSystemNamespace source then "" else "System."
 
-                              let args =
-                                  operands
-                                  |> List.map (fun operand -> textOfRange source operand.Range)
-                                  |> String.concat ", "
+                                let args =
+                                    operands
+                                    |> List.map (fun operand -> textOfRange source operand.Range)
+                                    |> String.concat ", "
 
-                              Some $"{prefix}String.Concat({args})"
+                                Some $"{prefix}String.Concat({args})"
 
-                          { Range = expr.Range
-                            OriginalText = textOfRange source expr.Range
-                            ReplacementText = if anyVerbatim then $"$@\"{body}\"" else $"$\"{body}\""
-                            ConcatAlternative = concatAlternative }
-              | _ -> () ]
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                ReplacementText = if anyVerbatim then $"$@\"{body}\"" else $"$\"{body}\""
+                                ConcatAlternative = concatAlternative
+                            }
+                | _ -> ()
+        ]

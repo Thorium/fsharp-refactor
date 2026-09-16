@@ -21,6 +21,20 @@ let ``IsSome with bare Value becomes a match`` () =
     assertOptionMatch "let f (x: int option) = if x.IsSome then x.Value else 0" "match x with | Some v -> v | None -> 0"
 
 [<Fact>]
+let ``a backticked option keeps its backticks and gets a plain binder`` () =
+    // welendus's SignalRHubs.fs: the match spelled the ident's bare words
+    // and `24h` was read as a numeric literal
+    assertOptionMatch
+        "let f (``in 24h period``: int option) = if ``in 24h period``.IsSome then ``in 24h period``.Value else 0"
+        "match ``in 24h period`` with | Some v -> v | None -> 0"
+
+[<Fact>]
+let ``a backticked option whose v is taken falls back to a plain binder`` () =
+    assertOptionMatch
+        "let f (v: int) (``in 24h period``: int option) = if ``in 24h period``.IsSome then ``in 24h period``.Value + v else v"
+        "match ``in 24h period`` with | Some value -> value + v | None -> v"
+
+[<Fact>]
 let ``IsNone form swaps the branches`` () =
     assertOptionMatch "let f (x: int option) = if x.IsNone then 0 else x.Value" "match x with | Some v -> v | None -> 0"
 
@@ -73,6 +87,14 @@ let ``custom type with IsSome and Value members is left alone`` () =
     Assert.Empty(
         optionMatchIn
             "type Box(v: int) =\n    member _.IsSome = true\n    member _.Value = v\nlet f (x: Box) = if x.IsSome then x.Value else 0"
+    )
+
+[<Fact>]
+let ``a predicate reading a Span keeps the IsSome form`` () =
+    // the fabricated lambda cannot capture a byref-like local
+    Assert.Empty(
+        optionMatchIn
+            "let f (x: int option) (bytes: byte[]) =\n    let span = System.Span<byte>(bytes)\n    x.IsSome && x.Value > span.Length"
     )
 
 [<Fact>]

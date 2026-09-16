@@ -111,47 +111,50 @@ let private geographyOf (parseTree: ParsedInput) (source: ISourceText) =
             | SynExpr.TryWith _ -> [| e.Range |]
             | _ -> [||])
 
-    {| Index = index
-       Ces = ces
-       InnermostCe =
-        fun (r: range) ->
-            ces
-            |> Array.filter (fun (_, ceRange) -> Range.rangeContainsRange ceRange r)
-            |> Array.sortBy (fun (_, ceRange) -> ceRange.EndLine - ceRange.StartLine, ceRange.EndColumn)
-            |> Array.tryHead
-       LambdaRanges = lambdaRanges
-       CeRanges = ceRanges
-       NoBindRanges = noBindRanges
-       InsideAny =
-        fun (ranges: range[]) (r: range) ->
-            ranges
-            |> Array.exists (fun z -> Range.rangeContainsRange z r && not (Range.equals z r))
-       LetBindingOwning =
-        fun (target: range) ->
-            index.Exprs
-            |> Array.tryPick (fun (_, e) ->
-                match e with
-                | LetOrUseE lou when not (lou.IsBang || lou.IsUse || lou.IsRecursive) ->
-                    match lou.Bindings with
-                    | [ SynBinding(
-                            isMutable = false
-                            returnInfo = None
-                            headPat = SynPat.Named _
-                            expr = rhs
-                            trivia = btrivia) ] when Range.equals rhs.Range target -> Some btrivia.LeadingKeyword.Range
-                    | _ -> None
-                | _ -> None)
-       ReturnOwning =
-        fun (target: range) ->
-            index.Exprs
-            |> Array.tryPick (fun (_, e) ->
-                match e with
-                | SynExpr.YieldOrReturn(flags = (false, true); expr = payload) when
-                    Range.equals (stripParens payload).Range target
-                    || Range.equals payload.Range target
-                    ->
-                    Some e.Range
-                | _ -> None) |}
+    {|
+        Index = index
+        Ces = ces
+        InnermostCe =
+            fun (r: range) ->
+                ces
+                |> Array.filter (fun (_, ceRange) -> Range.rangeContainsRange ceRange r)
+                |> Array.sortBy (fun (_, ceRange) -> ceRange.EndLine - ceRange.StartLine, ceRange.EndColumn)
+                |> Array.tryHead
+        LambdaRanges = lambdaRanges
+        CeRanges = ceRanges
+        NoBindRanges = noBindRanges
+        InsideAny =
+            fun (ranges: range[]) (r: range) ->
+                ranges
+                |> Array.exists (fun z -> Range.rangeContainsRange z r && not (Range.equals z r))
+        LetBindingOwning =
+            fun (target: range) ->
+                index.Exprs
+                |> Array.tryPick (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou when not (lou.IsBang || lou.IsUse || lou.IsRecursive) ->
+                        match lou.Bindings with
+                        | [ SynBinding(
+                                isMutable = false
+                                returnInfo = None
+                                headPat = SynPat.Named _
+                                expr = rhs
+                                trivia = btrivia) ] when Range.equals rhs.Range target ->
+                            Some btrivia.LeadingKeyword.Range
+                        | _ -> None
+                    | _ -> None)
+        ReturnOwning =
+            fun (target: range) ->
+                index.Exprs
+                |> Array.tryPick (fun (_, e) ->
+                    match e with
+                    | SynExpr.YieldOrReturn(flags = (false, true); expr = payload) when
+                        Range.equals (stripParens payload).Range target
+                        || Range.equals payload.Range target
+                        ->
+                        Some e.Range
+                    | _ -> None)
+    |}
 
 /// Per-file call-site classifier: is this use of an arity-N function a
 /// bindable statement inside a task/async CE of THAT file, and what are
@@ -246,304 +249,316 @@ let find
             let letBindingOwning = geo.LetBindingOwning
             let classifyThisFile = classifierFor parseTree source
 
-            [ for declPath, decl in index.Decls do
-                  match decl with
-                  | SynModuleDecl.Let(isRecursive = false; bindings = [ binding ]) ->
-                      match binding with
-                      | SynBinding(
-                          accessibility = access
-                          isInline = false
-                          isMutable = false
-                          returnInfo = None
-                          headPat = SynPat.LongIdent(
-                              longDotId = SynLongIdent(id = [ fid ])
-                              argPats = SynArgPats.Pats pats
-                              accessibility = patAccess)
-                          expr = body
-                          trivia = trivia) when not pats.IsEmpty ->
-                          // strictly file-private: its own modifier or a
-                          // private enclosing module
-                          let isFilePrivate =
-                              (match access with
-                               | Some(SynAccess.Private _) -> true
-                               | _ -> false)
-                              || (match patAccess with
-                                  | Some(SynAccess.Private _) -> true
-                                  | _ -> false)
-                              || declPath
-                                 |> List.exists (fun node ->
-                                     match node with
-                                     | SyntaxNode.SynModule(SynModuleDecl.NestedModule(
-                                         moduleInfo = SynComponentInfo(accessibility = Some(SynAccess.Private _)))) ->
-                                         true
-                                     | _ -> false)
+            [
+                for declPath, decl in index.Decls do
+                    match decl with
+                    | SynModuleDecl.Let(isRecursive = false; bindings = [ binding ]) ->
+                        match binding with
+                        | SynBinding(
+                            accessibility = access
+                            isInline = false
+                            isMutable = false
+                            returnInfo = None
+                            headPat = SynPat.LongIdent(
+                                longDotId = SynLongIdent(id = [ fid ])
+                                argPats = SynArgPats.Pats pats
+                                accessibility = patAccess)
+                            expr = body
+                            trivia = trivia) when not pats.IsEmpty ->
+                            // strictly file-private: its own modifier or a
+                            // private enclosing module
+                            let isFilePrivate =
+                                (match access with
+                                 | Some(SynAccess.Private _) -> true
+                                 | _ -> false)
+                                || (match patAccess with
+                                    | Some(SynAccess.Private _) -> true
+                                    | _ -> false)
+                                || declPath
+                                   |> List.exists (fun node ->
+                                       match node with
+                                       | SyntaxNode.SynModule(SynModuleDecl.NestedModule(
+                                           moduleInfo = SynComponentInfo(accessibility = Some(SynAccess.Private _)))) ->
+                                           true
+                                       | _ -> false)
 
-                          let sitesInBody =
-                              boundarySites
-                              |> List.filter (fun s -> Range.rangeContainsRange body.Range s.Range)
+                            let sitesInBody =
+                                boundarySites
+                                |> List.filter (fun s -> Range.rangeContainsRange body.Range s.Range)
 
-                          // internal (or effectively-internal) definitions
-                          // widen to project-wide callers under
-                          // --api-changes — public stays out: callers in a
-                          // sibling repository are invisible to the scan
-                          let assemblyScope =
-                              not isFilePrivate
-                              && Visibility.apiChangesAllowed ()
-                              && ProjectSources.available ()
-                              // InternalsVisibleTo makes "internal ⇒ every
-                              // caller is in this project" false — a friend
-                              // assembly's call sites are invisible to the
-                              // scan AND to the verification build
-                              && (projectCheck |> Option.exists (ProjectSources.hasInternalsVisibleTo >> not))
-                              // and neither is a file #loaded by a script we
-                              // could not read
-                              && not (ProjectSources.isUnreadable parseTree.FileName)
-                              && Visibility.scopeMatches
-                                  Visibility.Scope.Assembly
-                                  declPath
-                                  (match patAccess with
-                                   | Some a -> Some a
-                                   | None -> access)
+                            // internal (or effectively-internal) definitions
+                            // widen to project-wide callers under
+                            // --api-changes — public stays out: callers in a
+                            // sibling repository are invisible to the scan
+                            let assemblyScope =
+                                not isFilePrivate
+                                && Visibility.apiChangesAllowed ()
+                                && ProjectSources.available ()
+                                // InternalsVisibleTo makes "internal ⇒ every
+                                // caller is in this project" false — a friend
+                                // assembly's call sites are invisible to the
+                                // scan AND to the verification build
+                                && (projectCheck |> Option.exists (ProjectSources.hasInternalsVisibleTo >> not))
+                                // and neither is a file #loaded by a script we
+                                // could not read
+                                && not (ProjectSources.isUnreadable parseTree.FileName)
+                                && Visibility.scopeMatches
+                                    Visibility.Scope.Assembly
+                                    declPath
+                                    (match patAccess with
+                                     | Some a -> Some a
+                                     | None -> access)
 
-                          if
-                              (isFilePrivate || assemblyScope)
-                              && not sitesInBody.IsEmpty
-                              // a body choreographed around a thread (a
-                              // signal, a Thread, Interlocked) continues on
-                              // the thread it waited on; task-returning it
-                              // would not — the same refusal as FR0142's
-                              && not (BlockingSites.threadBound source body)
-                              && sitesInBody |> List.forall (fun s -> s.Receiver.IsSome)
-                              // a blocking site under a lambda or inside a
-                              // try/with survives the wrap unconverted
-                              && sitesInBody
-                                 |> List.forall (fun s ->
-                                     not (insideAny lambdaRanges s.Range)
-                                     && not (insideAny ceRanges s.Range)
-                                     && not (insideAny noBindRanges s.Range))
-                              // body on its own line(s) below the `let` line
-                              && body.Range.StartLine > trivia.LeadingKeyword.Range.StartLine
-                              && (source.GetLineString(body.Range.StartLine - 1))
-                                  .Substring(0, body.Range.StartColumn)
-                                  .Trim() = ""
-                          then
-                              // ---- the body rewrite ----
-                              // classify every blocking site: let-RHS or tail
-                              // terminal; walk the tails, prefixing `return `
-                              let siteAt (r: range) =
-                                  sitesInBody |> List.tryFind (fun s -> Range.equals s.Range r)
+                            if
+                                (isFilePrivate || assemblyScope)
+                                && not sitesInBody.IsEmpty
+                                // a body choreographed around a thread (a
+                                // signal, a Thread, Interlocked) continues on
+                                // the thread it waited on; task-returning it
+                                // would not — the same refusal as FR0142's
+                                && not (BlockingSites.threadBound source body)
+                                && sitesInBody |> List.forall (fun s -> s.Receiver.IsSome)
+                                // a blocking site under a lambda or inside a
+                                // try/with survives the wrap unconverted
+                                && sitesInBody
+                                   |> List.forall (fun s ->
+                                       not (insideAny lambdaRanges s.Range)
+                                       && not (insideAny ceRanges s.Range)
+                                       && not (insideAny noBindRanges s.Range))
+                                // body on its own line(s) below the `let` line
+                                && body.Range.StartLine > trivia.LeadingKeyword.Range.StartLine
+                                && (source.GetLineString(body.Range.StartLine - 1))
+                                    .Substring(0, body.Range.StartColumn)
+                                    .Trim()
+                                    =
+                                    ""
+                                // a Span or other byref-like value in the body
+                                // cannot become a state-machine field; asked
+                                // last, of the bodies every cheaper test let
+                                // through
+                                && not (OptionModule.readsByRefLike check index source body.Range)
+                            then
+                                // ---- the body rewrite ----
+                                // classify every blocking site: let-RHS or tail
+                                // terminal; walk the tails, prefixing `return `
+                                let siteAt (r: range) =
+                                    sitesInBody |> List.tryFind (fun s -> Range.equals s.Range r)
 
-                              let bindEdits = ResizeArray<range * string * string>()
-                              let mutable convertible = true
-                              let coveredSites = System.Collections.Generic.HashSet<string>()
+                                let bindEdits = ResizeArray<range * string * string>()
+                                let mutable convertible = true
+                                let coveredSites = System.Collections.Generic.HashSet<string>()
 
-                              let keyOf (r: range) = $"{r.StartLine}:{r.StartColumn}"
+                                let keyOf (r: range) = $"{r.StartLine}:{r.StartColumn}"
 
-                              let rec walkTails (e: SynExpr) =
-                                  match e with
-                                  | SynExpr.Paren(expr = inner) -> walkTails inner
-                                  | SynExpr.Match(clauses = cs) ->
-                                      cs |> List.iter (fun (SynMatchClause(resultExpr = r)) -> walkTails r)
-                                  | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some e2) ->
-                                      walkTails t
-                                      walkTails e2
-                                  | SynExpr.IfThenElse(elseExpr = None) ->
-                                      // one-armed if: no expression tail to return
-                                      convertible <- false
-                                  | LetOrUseE lou when not lou.IsBang -> walkTails lou.Body
-                                  | SynExpr.Sequential(expr2 = e2) -> walkTails e2
-                                  // statement-shaped tails cannot take a
-                                  // `return ` prefix — `return while ...` and
-                                  // `return x <- 1` do not parse
-                                  | SynExpr.TryWith _
-                                  | SynExpr.TryFinally _
-                                  | SynExpr.While _
-                                  | SynExpr.For _
-                                  | SynExpr.ForEach _
-                                  | SynExpr.Do _
-                                  | SynExpr.LongIdentSet _
-                                  | SynExpr.Set _
-                                  | SynExpr.DotSet _
-                                  | SynExpr.DotIndexedSet _ -> convertible <- false
-                                  | terminal ->
-                                      match siteAt terminal.Range with
-                                      | Some site ->
-                                          // the tail IS the blocking drain
-                                          let recv = textOfRange source site.Receiver.Value
-                                          coveredSites.Add(keyOf site.Range) |> ignore
+                                let rec walkTails (e: SynExpr) =
+                                    match e with
+                                    | SynExpr.Paren(expr = inner) -> walkTails inner
+                                    | SynExpr.Match(clauses = cs) ->
+                                        cs |> List.iter (fun (SynMatchClause(resultExpr = r)) -> walkTails r)
+                                    | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some e2) ->
+                                        walkTails t
+                                        walkTails e2
+                                    | SynExpr.IfThenElse(elseExpr = None) ->
+                                        // one-armed if: no expression tail to return
+                                        convertible <- false
+                                    | LetOrUseE lou when not lou.IsBang -> walkTails lou.Body
+                                    | SynExpr.Sequential(expr2 = e2) -> walkTails e2
+                                    // statement-shaped tails cannot take a
+                                    // `return ` prefix — `return while ...` and
+                                    // `return x <- 1` do not parse
+                                    | SynExpr.TryWith _
+                                    | SynExpr.TryFinally _
+                                    | SynExpr.While _
+                                    | SynExpr.For _
+                                    | SynExpr.ForEach _
+                                    | SynExpr.Do _
+                                    | SynExpr.LongIdentSet _
+                                    | SynExpr.Set _
+                                    | SynExpr.DotSet _
+                                    | SynExpr.DotIndexedSet _ -> convertible <- false
+                                    | terminal ->
+                                        match siteAt terminal.Range with
+                                        | Some site ->
+                                            // the tail IS the blocking drain
+                                            let recv = textOfRange source site.Receiver.Value
+                                            coveredSites.Add(keyOf site.Range) |> ignore
 
-                                          bindEdits.Add(
-                                              terminal.Range,
-                                              textOfRange source terminal.Range,
-                                              $"return! {recv}"
-                                          )
-                                      | None ->
-                                          // any other tail returns its value;
-                                          // a try/with or lambda tail hiding a
-                                          // blocking site was vetoed above
-                                          let at =
-                                              Range.mkRange
-                                                  terminal.Range.FileName
-                                                  terminal.Range.Start
-                                                  terminal.Range.Start
+                                            bindEdits.Add(
+                                                terminal.Range,
+                                                textOfRange source terminal.Range,
+                                                $"return! {recv}"
+                                            )
+                                        | None ->
+                                            // any other tail returns its value;
+                                            // a try/with or lambda tail hiding a
+                                            // blocking site was vetoed above
+                                            let at =
+                                                Range.mkRange
+                                                    terminal.Range.FileName
+                                                    terminal.Range.Start
+                                                    terminal.Range.Start
 
-                                          bindEdits.Add(at, "", "return ")
+                                            bindEdits.Add(at, "", "return ")
 
-                              walkTails body
+                                walkTails body
 
-                              // non-tail blocking sites must each be a simple
-                              // let RHS: `let r = t.Result` → `let! r = t`
-                              for site in sitesInBody do
-                                  if convertible && not (coveredSites.Contains(keyOf site.Range)) then
-                                      match letBindingOwning site.Range with
-                                      | Some kw when
-                                          textOfRange source kw = "let" && Range.rangeContainsRange body.Range kw
-                                          ->
-                                          let recv = textOfRange source site.Receiver.Value
-                                          bindEdits.Add(kw, "let", "let!")
-                                          bindEdits.Add(site.Range, textOfRange source site.Range, recv)
-                                      | _ -> convertible <- false
+                                // non-tail blocking sites must each be a simple
+                                // let RHS: `let r = t.Result` → `let! r = t`
+                                for site in sitesInBody do
+                                    if convertible && not (coveredSites.Contains(keyOf site.Range)) then
+                                        match letBindingOwning site.Range with
+                                        | Some kw when
+                                            textOfRange source kw = "let" && Range.rangeContainsRange body.Range kw
+                                            ->
+                                            let recv = textOfRange source site.Receiver.Value
+                                            bindEdits.Add(kw, "let", "let!")
+                                            bindEdits.Add(site.Range, textOfRange source site.Range, recv)
+                                        | _ -> convertible <- false
 
-                              // ---- the wrap ----
-                              let bodyIndent = body.Range.StartColumn
-                              let indentText = System.String(' ', bodyIndent)
+                                // ---- the wrap ----
+                                let bodyIndent = body.Range.StartColumn
+                                let indentText = System.String(' ', bodyIndent)
 
-                              let bodyLines =
-                                  [ body.Range.StartLine .. body.Range.EndLine ]
-                                  |> List.map (fun l -> source.GetLineString(l - 1))
+                                let bodyLines =
+                                    [ body.Range.StartLine .. body.Range.EndLine ]
+                                    |> List.map (fun l -> source.GetLineString(l - 1))
 
-                              let wrappable =
-                                  bodyLines
-                                  |> List.forall (fun l -> not ((l.Contains "\"\"\"") || (l.Contains "@\"")))
-                                  // a PLAIN literal can span lines too; the
-                                  // indent would splice spaces into its text
-                                  && not (
-                                      geo.Index.Exprs
-                                      |> Array.exists (fun (_, e) ->
-                                          (match e with
-                                           | SynExpr.Const(SynConst.String _, _)
-                                           | SynExpr.InterpolatedString _ -> true
-                                           | _ -> false)
-                                          && e.Range.StartLine < e.Range.EndLine
-                                          && e.Range.StartLine <= body.Range.EndLine
-                                          && e.Range.EndLine >= body.Range.StartLine)
-                                  )
+                                let wrappable =
+                                    bodyLines
+                                    |> List.forall (fun l -> not ((l.Contains "\"\"\"") || (l.Contains "@\"")))
+                                    // a PLAIN literal can span lines too; the
+                                    // indent would splice spaces into its text
+                                    && not (
+                                        geo.Index.Exprs
+                                        |> Array.exists (fun (_, e) ->
+                                            (match e with
+                                             | SynExpr.Const(SynConst.String _, _)
+                                             | SynExpr.InterpolatedString _ -> true
+                                             | _ -> false)
+                                            && e.Range.StartLine < e.Range.EndLine
+                                            && e.Range.StartLine <= body.Range.EndLine
+                                            && e.Range.EndLine >= body.Range.StartLine)
+                                    )
 
-                              // ---- the call sites ----
-                              let arity = pats.Length
+                                // ---- the call sites ----
+                                let arity = pats.Length
 
-                              let useEdits = ResizeArray<range * string * string>()
+                                let useEdits = ResizeArray<range * string * string>()
 
-                              let thisFile = System.IO.Path.GetFullPath(fid.idRange.FileName).ToLowerInvariant()
+                                let thisFile = System.IO.Path.GetFullPath(fid.idRange.FileName).ToLowerInvariant()
 
-                              let siblingClassifiers =
-                                  System.Collections.Generic.Dictionary<
-                                      string,
-                                      (int -> range -> (range * string * string) list option) option
-                                   >()
+                                let siblingClassifiers =
+                                    System.Collections.Generic.Dictionary<
+                                        string,
+                                        (int -> range -> (range * string * string) list option) option
+                                     >()
 
-                              let classifierForFile (path: string) =
-                                  let key = System.IO.Path.GetFullPath(path).ToLowerInvariant()
+                                let classifierForFile (path: string) =
+                                    let key = System.IO.Path.GetFullPath(path).ToLowerInvariant()
 
-                                  if key = thisFile then
-                                      Some classifyThisFile
-                                  else
-                                      match siblingClassifiers.TryGetValue key with
-                                      | true, c -> c
-                                      | _ ->
-                                          let c =
-                                              ProjectSources.tryParse path
-                                              |> Option.map (fun (tree, src) -> classifierFor tree src)
+                                    if key = thisFile then
+                                        Some classifyThisFile
+                                    else
+                                        match siblingClassifiers.TryGetValue key with
+                                        | true, c -> c
+                                        | _ ->
+                                            let c =
+                                                ProjectSources.tryParse path
+                                                |> Option.map (fun (tree, src) -> classifierFor tree src)
 
-                                          siblingClassifiers.[key] <- c
-                                          c
+                                            siblingClassifiers.[key] <- c
+                                            c
 
-                              let usesOk =
-                                  let lineText = source.GetLineString(fid.idRange.EndLine - 1)
+                                let usesOk =
+                                    let lineText = source.GetLineString(fid.idRange.EndLine - 1)
 
-                                  match
-                                      check.GetSymbolUseAtLocation(
-                                          fid.idRange.EndLine,
-                                          fid.idRange.EndColumn,
-                                          lineText,
-                                          [ fid.idText ]
-                                      )
-                                  with
-                                  | None -> false
-                                  | Some symbolUse ->
-                                      let uses =
-                                          if isFilePrivate then
-                                              check.GetUsesOfSymbolInFile symbolUse.Symbol
-                                              |> Seq.filter (fun u -> not u.IsFromDefinition)
-                                              |> Seq.toList
-                                          else
-                                              match projectCheck with
-                                              | Some pc ->
-                                                  // a `#load`ing script calls this
-                                                  // definition from outside the
-                                                  // compilation, and no build check
-                                                  // covers it — see ProjectSources
-                                                  Array.append
-                                                      (pc.GetUsesOfSymbol symbolUse.Symbol)
-                                                      (ProjectSources.outsideUsesOf symbolUse.Symbol)
-                                                  |> Seq.filter (fun u -> not u.IsFromDefinition)
-                                                  |> Seq.toList
-                                              | None -> []
+                                    match
+                                        check.GetSymbolUseAtLocation(
+                                            fid.idRange.EndLine,
+                                            fid.idRange.EndColumn,
+                                            lineText,
+                                            [ fid.idText ]
+                                        )
+                                    with
+                                    | None -> false
+                                    | Some symbolUse ->
+                                        let uses =
+                                            if isFilePrivate then
+                                                check.GetUsesOfSymbolInFile symbolUse.Symbol
+                                                |> Seq.filter (fun u -> not u.IsFromDefinition)
+                                                |> Seq.toList
+                                            else
+                                                match projectCheck with
+                                                | Some pc ->
+                                                    // a `#load`ing script calls this
+                                                    // definition from outside the
+                                                    // compilation, and no build check
+                                                    // covers it — see ProjectSources
+                                                    Array.append
+                                                        (pc.GetUsesOfSymbol symbolUse.Symbol)
+                                                        (ProjectSources.outsideUsesOf symbolUse.Symbol)
+                                                    |> Seq.filter (fun u -> not u.IsFromDefinition)
+                                                    |> Seq.toList
+                                                | None -> []
 
-                                      not uses.IsEmpty
-                                      && uses
-                                         |> List.forall (fun u ->
-                                             // no self-recursion
-                                             if
-                                                 System.String.Equals(
-                                                     System.IO.Path.GetFullPath u.Range.FileName,
-                                                     thisFile,
-                                                     System.StringComparison.OrdinalIgnoreCase
-                                                 )
-                                                 && Range.rangeContainsRange binding.RangeOfBindingWithRhs u.Range
-                                             then
-                                                 false
-                                             else
-                                                 match classifierForFile u.Range.FileName with
-                                                 | Some classify ->
-                                                     match classify arity u.Range with
-                                                     | Some edits ->
-                                                         useEdits.AddRange edits
-                                                         true
-                                                     | None -> false
-                                                 | None -> false)
+                                        not uses.IsEmpty
+                                        && uses
+                                           |> List.forall (fun u ->
+                                               // no self-recursion
+                                               if
+                                                   System.String.Equals(
+                                                       System.IO.Path.GetFullPath u.Range.FileName,
+                                                       thisFile,
+                                                       System.StringComparison.OrdinalIgnoreCase
+                                                   )
+                                                   && Range.rangeContainsRange binding.RangeOfBindingWithRhs u.Range
+                                               then
+                                                   false
+                                               else
+                                                   match classifierForFile u.Range.FileName with
+                                                   | Some classify ->
+                                                       match classify arity u.Range with
+                                                       | Some edits ->
+                                                           useEdits.AddRange edits
+                                                           true
+                                                       | None -> false
+                                                   | None -> false)
 
-                              if convertible && wrappable && usesOk then
-                                  let wrapEdits =
-                                      [ // one edit per line start: the first
-                                        // carries the `task {` line too, so no
-                                        // two edits share a position
-                                        for l in body.Range.StartLine .. body.Range.EndLine do
-                                            let text = source.GetLineString(l - 1)
+                                if convertible && wrappable && usesOk then
+                                    let wrapEdits =
+                                        [ // one edit per line start: the first
+                                            // carries the `task {` line too, so no
+                                            // two edits share a position
+                                            for l in body.Range.StartLine .. body.Range.EndLine do
+                                                let text = source.GetLineString(l - 1)
 
-                                            let opening =
-                                                if l = body.Range.StartLine then
-                                                    $"{indentText}task {{\n"
-                                                else
-                                                    ""
+                                                let opening =
+                                                    if l = body.Range.StartLine then
+                                                        $"{indentText}task {{\n"
+                                                    else
+                                                        ""
 
-                                            if l = body.Range.StartLine || not (isBlank text) then
-                                                let at =
-                                                    Range.mkRange
-                                                        body.Range.FileName
-                                                        (Position.mkPos l 0)
-                                                        (Position.mkPos l 0)
+                                                if l = body.Range.StartLine || not (isBlank text) then
+                                                    let at =
+                                                        Range.mkRange
+                                                            body.Range.FileName
+                                                            (Position.mkPos l 0)
+                                                            (Position.mkPos l 0)
 
-                                                at, "", (opening + (if isBlank text then "" else "    "))
-                                        // closing brace below the body
-                                        let atEnd = Range.mkRange body.Range.FileName body.Range.End body.Range.End
-                                        atEnd, "", $"\n{indentText}}}" ]
+                                                    at, "", (opening + (if isBlank text then "" else "    "))
+                                            // closing brace below the body
+                                            let atEnd = Range.mkRange body.Range.FileName body.Range.End body.Range.End
+                                            atEnd, "", $"\n{indentText}}}"
+                                        ]
 
-                                  { Range = fid.idRange
-                                    Name = fid.idText
-                                    Edits =
-                                      wrapEdits
-                                      @ (bindEdits |> Seq.map (fun (r, o, n) -> r, o, n) |> List.ofSeq)
-                                      @ (useEdits |> Seq.map (fun (r, o, n) -> r, o, n) |> List.ofSeq) }
-                      | _ -> ()
-                  | _ -> () ]
+                                    {
+                                        Range = fid.idRange
+                                        Name = fid.idText
+                                        Edits =
+                                            wrapEdits
+                                            @ (bindEdits |> Seq.map (fun (r, o, n) -> r, o, n) |> List.ofSeq)
+                                            @ (useEdits |> Seq.map (fun (r, o, n) -> r, o, n) |> List.ofSeq)
+                                    }
+                        | _ -> ()
+                    | _ -> ()
+            ]

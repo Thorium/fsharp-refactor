@@ -118,13 +118,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              | ArrayAggregation(m, fn, arr, arrText) when
-                  not (insideQuotedCode path) && resolvesToVectorizableArray check source arr
-                  ->
-                  { Range = expr.Range
-                    ModuleName = m
-                    FunctionName = fn
-                    ArrayName = arrText }
-              | _ -> () ]
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                | ArrayAggregation(m, fn, arr, arrText) when
+                    not (insideQuotedCode path) && resolvesToVectorizableArray check source arr
+                    ->
+                    {
+                        Range = expr.Range
+                        ModuleName = m
+                        FunctionName = fn
+                        ArrayName = arrText
+                    }
+                | _ -> ()
+        ]

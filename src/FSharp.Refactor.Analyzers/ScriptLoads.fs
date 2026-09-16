@@ -75,20 +75,24 @@ type Directive =
 let directives (tree: ParsedInput) : Directive list =
     match tree with
     | ParsedInput.ImplFile(ParsedImplFileInput(contents = modules)) ->
-        [ for SynModuleOrNamespace(decls = decls) in modules do
-              for decl in decls do
-                  match decl with
-                  | SynModuleDecl.HashDirective(ParsedHashDirective(ident, args, range), _) ->
-                      for arg in args do
-                          match arg with
-                          | ParsedHashDirectiveArgument.String(value = v; range = argRange) ->
-                              yield
-                                  { Ident = ident
-                                    Value = v
-                                    Range = range
-                                    ArgumentRange = argRange }
-                          | _ -> ()
-                  | _ -> () ]
+        [
+            for SynModuleOrNamespace(decls = decls) in modules do
+                for decl in decls do
+                    match decl with
+                    | SynModuleDecl.HashDirective(ParsedHashDirective(ident, args, range), _) ->
+                        for arg in args do
+                            match arg with
+                            | ParsedHashDirectiveArgument.String(value = v; range = argRange) ->
+                                yield
+                                    {
+                                        Ident = ident
+                                        Value = v
+                                        Range = range
+                                        ArgumentRange = argRange
+                                    }
+                            | _ -> ()
+                    | _ -> ()
+        ]
     | _ -> []
 
 /// The single fsproj of a directory, when there is exactly one.
@@ -178,15 +182,17 @@ let private relativeTo (scriptDir: string) (file: string) =
 
 /// The names FS0039 reports as not defined, with the file each came from.
 let private missingNames (diagnostics: FSharpDiagnostic[]) =
-    [ for d in diagnostics do
-          if d.ErrorNumber = 39 then
-              let m = notDefined.Match d.Message
+    [
+        for d in diagnostics do
+            if d.ErrorNumber = 39 then
+                let m = notDefined.Match d.Message
 
-              // a module, namespace or type is what a #load can supply; a
-              // value (`'x'`, `'fsi'`) is not, and a file that happens to
-              // carry its name would be loaded — and RUN — for nothing
-              if m.Success && Char.IsUpper m.Groups.[1].Value.[0] then
-                  yield m.Groups.[1].Value, normalize d.FileName ]
+                // a module, namespace or type is what a #load can supply; a
+                // value (`'x'`, `'fsi'`) is not, and a file that happens to
+                // carry its name would be loaded — and RUN — for nothing
+                if m.Success && Char.IsUpper m.Groups.[1].Value.[0] then
+                    yield m.Groups.[1].Value, normalize d.FileName
+    ]
     |> List.distinct
 
 let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) : Suggestion list =
@@ -197,14 +203,18 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
         let all = directives tree
 
         let loads =
-            [ for d in all do
-                  if d.Ident = "load" then
-                      yield Path.GetFullPath(Path.Combine(scriptDir, d.Value.Replace('\\', '/'))), d.Range ]
+            [
+                for d in all do
+                    if d.Ident = "load" then
+                        yield Path.GetFullPath(Path.Combine(scriptDir, d.Value.Replace('\\', '/'))), d.Range
+            ]
 
         let references =
-            [ for d in all do
-                  if d.Ident = "r" then
-                      yield Path.GetFileName(d.Value.Replace('\\', '/')).ToLowerInvariant() ]
+            [
+                for d in all do
+                    if d.Ident = "r" then
+                        yield Path.GetFileName(d.Value.Replace('\\', '/')).ToLowerInvariant()
+            ]
 
         // a script whose OWN #load or #r names a file that is not there is
         // stale or unbuilt, and every "not defined" it reports stems from
@@ -227,9 +237,11 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
                 false
 
         let includeDirs =
-            [ for d in all do
-                  if d.Ident = "I" then
-                      yield Path.Combine(scriptDir, d.Value.Replace('\\', '/')) ]
+            [
+                for d in all do
+                    if d.Ident = "I" then
+                        yield Path.Combine(scriptDir, d.Value.Replace('\\', '/'))
+            ]
 
         let brokenDirective =
             all
@@ -275,78 +287,86 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
             let firstLoad = loads |> List.minBy (fun (_, r) -> r.StartLine)
             let lastLoad = loads |> List.maxBy (fun (_, r) -> r.EndLine)
 
-            [ for name, inFile in missingNames diagnostics do
-                  if loadedSet.Contains inFile || inFile = scriptKey then
-                      // a compile item of a loaded project that declares the
-                      // name and is not loaded
-                      let candidate =
-                          projects
-                          |> List.tryPick (fun (fsproj, items) ->
-                              items
-                              |> List.tryFind (fun item ->
-                                  // a signature file cannot be loaded on its own
-                                  // (FS0240: no corresponding implementation);
-                                  // fantomas's docs got `#load "EditorConfig.fsi"`
-                                  not (item.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
-                                  && not (loadedSet.Contains(normalize item))
-                                  && declares name item)
-                              |> Option.map (fun item -> fsproj, items, item))
+            [
+                for name, inFile in missingNames diagnostics do
+                    if loadedSet.Contains inFile || inFile = scriptKey then
+                        // a compile item of a loaded project that declares the
+                        // name and is not loaded
+                        let candidate =
+                            projects
+                            |> List.tryPick (fun (fsproj, items) ->
+                                items
+                                |> List.tryFind (fun item ->
+                                    // a signature file cannot be loaded on its own
+                                    // (FS0240: no corresponding implementation);
+                                    // fantomas's docs got `#load "EditorConfig.fsi"`
+                                    not (item.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
+                                    && not (loadedSet.Contains(normalize item))
+                                    && declares name item)
+                                |> Option.map (fun item -> fsproj, items, item))
 
-                      match candidate with
-                      | Some(_, items, item) ->
-                          let index = items |> List.findIndex (fun i -> normalize i = normalize item)
+                        match candidate with
+                        | Some(_, items, item) ->
+                            let index = items |> List.findIndex (fun i -> normalize i = normalize item)
 
-                          // before the first loaded file that follows it in
-                          // the project; after the last load otherwise
-                          let dependent =
-                              loads
-                              |> List.sortBy (fun (_, r) -> r.StartLine)
-                              |> List.tryFind (fun (file, _) ->
-                                  match items |> List.tryFindIndex (fun i -> normalize i = normalize file) with
-                                  | Some i -> i > index
-                                  | None -> false)
+                            // before the first loaded file that follows it in
+                            // the project; after the last load otherwise
+                            let dependent =
+                                loads
+                                |> List.sortBy (fun (_, r) -> r.StartLine)
+                                |> List.tryFind (fun (file, _) ->
+                                    match items |> List.tryFindIndex (fun i -> normalize i = normalize file) with
+                                    | Some i -> i > index
+                                    | None -> false)
 
-                          let at, insertText =
-                              match dependent with
-                              | Some(_, r) -> lineStart r, $"#load \"{relativeTo scriptDir item}\"\n"
-                              | None -> afterLine (snd lastLoad), $"#load \"{relativeTo scriptDir item}\"\n"
+                            let at, insertText =
+                                match dependent with
+                                | Some(_, r) -> lineStart r, $"#load \"{relativeTo scriptDir item}\"\n"
+                                | None -> afterLine (snd lastLoad), $"#load \"{relativeTo scriptDir item}\"\n"
 
-                          let needing =
-                              if inFile = scriptKey then
-                                  Path.GetFileName script
-                              else
-                                  Path.GetFileName(fst (loads |> List.find (fun (f, _) -> normalize f = inFile)))
+                            let needing =
+                                if inFile = scriptKey then
+                                    Path.GetFileName script
+                                else
+                                    Path.GetFileName(fst (loads |> List.find (fun (f, _) -> normalize f = inFile)))
 
-                          yield
-                              { InsertRange = at
-                                InsertText = Some insertText
-                                Message =
-                                  $"'{name}' is not defined in {needing}: the project defines it in {Path.GetFileName item}, which this script does not #load. The fix loads it in the project's order." }
-                      | None ->
-                          // a namespace of a referenced project: `#r` its assembly
-                          let referenced =
-                              projects
-                              |> List.collect (fun (fsproj, _) -> projectReferences fsproj)
-                              |> List.distinct
-                              |> List.tryFind (fun refProj -> compileItems refProj |> List.exists (declares name))
+                            yield
+                                {
+                                    InsertRange = at
+                                    InsertText = Some insertText
+                                    Message =
+                                        $"'{name}' is not defined in {needing}: the project defines it in {Path.GetFileName item}, which this script does not #load. The fix loads it in the project's order."
+                                }
+                        | None ->
+                            // a namespace of a referenced project: `#r` its assembly
+                            let referenced =
+                                projects
+                                |> List.collect (fun (fsproj, _) -> projectReferences fsproj)
+                                |> List.distinct
+                                |> List.tryFind (fun refProj -> compileItems refProj |> List.exists (declares name))
 
-                          match referenced with
-                          | Some refProj ->
-                              let dll = assemblyName refProj + ".dll"
+                            match referenced with
+                            | Some refProj ->
+                                let dll = assemblyName refProj + ".dll"
 
-                              if not (references |> List.contains (dll.ToLowerInvariant())) then
-                                  match builtAssembly refProj with
-                                  | Some built ->
-                                      yield
-                                          { InsertRange = lineStart (snd firstLoad)
-                                            InsertText = Some $"#r \"{relativeTo scriptDir built}\"\n"
-                                            Message =
-                                              $"'{name}' is not defined: it lives in {Path.GetFileName refProj}, a ProjectReference of the loaded project. The fix references its built assembly." }
-                                  | None ->
-                                      yield
-                                          { InsertRange = lineStart (snd firstLoad)
-                                            InsertText = None
-                                            Message =
-                                              $"'{name}' is not defined: it lives in {Path.GetFileName refProj}, a ProjectReference of the loaded project, which has no built assembly under its bin directory yet — build it, then #r the dll here." }
-                          | None -> () ]
+                                if not (references |> List.contains (dll.ToLowerInvariant())) then
+                                    match builtAssembly refProj with
+                                    | Some built ->
+                                        yield
+                                            {
+                                                InsertRange = lineStart (snd firstLoad)
+                                                InsertText = Some $"#r \"{relativeTo scriptDir built}\"\n"
+                                                Message =
+                                                    $"'{name}' is not defined: it lives in {Path.GetFileName refProj}, a ProjectReference of the loaded project. The fix references its built assembly."
+                                            }
+                                    | None ->
+                                        yield
+                                            {
+                                                InsertRange = lineStart (snd firstLoad)
+                                                InsertText = None
+                                                Message =
+                                                    $"'{name}' is not defined: it lives in {Path.GetFileName refProj}, a ProjectReference of the loaded project, which has no built assembly under its bin directory yet — build it, then #r the dll here."
+                                            }
+                            | None -> ()
+            ]
             |> List.distinctBy (fun s -> s.InsertText, s.InsertRange.StartLine)

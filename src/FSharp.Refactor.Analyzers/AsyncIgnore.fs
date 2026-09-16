@@ -148,12 +148,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     match ignoredComputation operand with
                     | ValueSome(ident, isValueTask) ->
                         suggestions.Add
-                            { Range = expr.Range
-                              OriginalText = textOfRange source expr.Range
-                              Name = ident.idText
-                              IsValueTask = isValueTask }
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                Name = ident.idText
+                                IsValueTask = isValueTask
+                            }
                     | ValueNone -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     if OptionModule.hasErrors check then
         []
@@ -282,14 +285,16 @@ let findUnhandledStart
                     | SynPat.LongIdent(longDotId = SynLongIdent(id = [ f ])), AsyncLiteral body -> Some(f.idText, body)
                     | _ -> None)
 
-            [ for _, e in index.Exprs do
-                  match e with
-                  | LetOrUseE lou when not lou.IsBang -> yield! ofBindings lou.Bindings
-                  | _ -> ()
-              for _, d in index.Decls do
-                  match d with
-                  | SynModuleDecl.Let(bindings = bindings) -> yield! ofBindings bindings
-                  | _ -> () ]
+            [
+                for _, e in index.Exprs do
+                    match e with
+                    | LetOrUseE lou when not lou.IsBang -> yield! ofBindings lou.Bindings
+                    | _ -> ()
+                for _, d in index.Decls do
+                    match d with
+                    | SynModuleDecl.Let(bindings = bindings) -> yield! ofBindings bindings
+                    | _ -> ()
+            ]
             |> Map.ofList
 
         // the started computation's body, when this file can see it
@@ -345,143 +350,147 @@ let findUnhandledStart
                 && Array.contains "Choice1Of2" choiceArms
                 && Array.contains "Choice2Of2" choiceArms
 
-        [ for path, expr in index.Exprs do
-              let started =
-                  match expr with
-                  // Async.Start comp / Async.Start(comp, token)
-                  | SynExpr.App(isInfix = false; funcExpr = StarterPath(ident, name); argExpr = arg) ->
-                      let comp =
-                          match stripParens arg with
-                          | SynExpr.Tuple(exprs = first :: _) -> first
-                          | a -> a
+        [
+            for path, expr in index.Exprs do
+                let started =
+                    match expr with
+                    // Async.Start comp / Async.Start(comp, token)
+                    | SynExpr.App(isInfix = false; funcExpr = StarterPath(ident, name); argExpr = arg) ->
+                        let comp =
+                            match stripParens arg with
+                            | SynExpr.Tuple(exprs = first :: _) -> first
+                            | a -> a
 
-                      Some(ident, name, comp)
-                  // comp |> Async.Start
-                  | PipeApp(comp, StarterPath(ident, name)) -> Some(ident, name, comp)
-                  | _ -> None
+                        Some(ident, name, comp)
+                    // comp |> Async.Start
+                    | PipeApp(comp, StarterPath(ident, name)) -> Some(ident, name, comp)
+                    | _ -> None
 
-              match started with
-              | Some(ident, name, comp) when isCoreAsync ident ->
-                  match bodyOf comp with
-                  | Some body when not (handled body) ->
-                      let loops =
-                          index.Exprs
-                          |> Array.exists (fun (_, e) ->
-                              within body.Range e
-                              && (match e with
-                                  | SynExpr.While _
-                                  | SynExpr.For _
-                                  | SynExpr.ForEach _ -> true
-                                  | _ -> false))
+                match started with
+                | Some(ident, name, comp) when isCoreAsync ident ->
+                    match bodyOf comp with
+                    | Some body when not (handled body) ->
+                        let loops =
+                            index.Exprs
+                            |> Array.exists (fun (_, e) ->
+                                within body.Range e
+                                && (match e with
+                                    | SynExpr.While _
+                                    | SynExpr.For _
+                                    | SynExpr.ForEach _ -> true
+                                    | _ -> false))
 
-                      // a try/with around the START, in this scope: it reads
-                      // as covering the work and catches nothing of it
-                      let wrappedInTry =
-                          path
-                          |> List.takeWhile (fun node ->
-                              match node with
-                              | SyntaxNode.SynExpr(SynExpr.Lambda _ | SynExpr.MatchLambda _ | SynExpr.ObjExpr _) ->
-                                  false
-                              | SyntaxNode.SynBinding _ -> false
-                              | _ -> true)
-                          |> List.exists (fun node ->
-                              match node with
-                              | SyntaxNode.SynExpr(SynExpr.TryWith(tryExpr = tryBody)) ->
-                                  Range.rangeContainsRange tryBody.Range expr.Range
-                              | _ -> false)
+                        // a try/with around the START, in this scope: it reads
+                        // as covering the work and catches nothing of it
+                        let wrappedInTry =
+                            path
+                            |> List.takeWhile (fun node ->
+                                match node with
+                                | SyntaxNode.SynExpr(SynExpr.Lambda _ | SynExpr.MatchLambda _ | SynExpr.ObjExpr _) ->
+                                    false
+                                | SyntaxNode.SynBinding _ -> false
+                                | _ -> true)
+                            |> List.exists (fun node ->
+                                match node with
+                                | SyntaxNode.SynExpr(SynExpr.TryWith(tryExpr = tryBody)) ->
+                                    Range.rangeContainsRange tryBody.Range expr.Range
+                                | _ -> false)
 
-                      // The try/with wraps the start and NOTHING else, so its
-                      // handler was written for this computation and nowhere
-                      // else: move it inside, where it can actually fire. The
-                      // handler travels verbatim — every clause, typed
-                      // patterns and guards included — which the Async.Catch
-                      // spelling could not do (it also does not typecheck
-                      // piped into Async.Start: Start wants Async<unit>,
-                      // Catch yields Async<Choice<_, exn>>).
-                      let tryFix =
-                          path
-                          |> List.tryPick (fun node ->
-                              match node with
-                              | SyntaxNode.SynExpr(SynExpr.TryWith(tryExpr = tryBody; trivia = trivia) as tryExpr) when
-                                  Range.equals (stripParens tryBody).Range expr.Range
-                                  ->
-                                  Some(tryExpr, trivia)
-                              | _ -> None)
-                          |> Option.bind (fun (tryExpr, trivia) ->
-                              // only an inline async { } can take the handler
-                              // in, and only a single-argument start keeps the
-                              // call faithful (a token argument would be lost)
-                              let singleArgument =
-                                  match expr with
-                                  | SynExpr.App(isInfix = false; argExpr = arg) ->
-                                      match stripParens arg with
-                                      | SynExpr.Tuple _ -> false
-                                      | _ -> true
-                                  | _ -> true
+                        // The try/with wraps the start and NOTHING else, so its
+                        // handler was written for this computation and nowhere
+                        // else: move it inside, where it can actually fire. The
+                        // handler travels verbatim — every clause, typed
+                        // patterns and guards included — which the Async.Catch
+                        // spelling could not do (it also does not typecheck
+                        // piped into Async.Start: Start wants Async<unit>,
+                        // Catch yields Async<Choice<_, exn>>).
+                        let tryFix =
+                            path
+                            |> List.tryPick (fun node ->
+                                match node with
+                                | SyntaxNode.SynExpr(SynExpr.TryWith(tryExpr = tryBody; trivia = trivia) as tryExpr) when
+                                    Range.equals (stripParens tryBody).Range expr.Range
+                                    ->
+                                    Some(tryExpr, trivia)
+                                | _ -> None)
+                            |> Option.bind (fun (tryExpr, trivia) ->
+                                // only an inline async { } can take the handler
+                                // in, and only a single-argument start keeps the
+                                // call faithful (a token argument would be lost)
+                                let singleArgument =
+                                    match expr with
+                                    | SynExpr.App(isInfix = false; argExpr = arg) ->
+                                        match stripParens arg with
+                                        | SynExpr.Tuple _ -> false
+                                        | _ -> true
+                                    | _ -> true
 
-                              // the handler lands inside the computation,
-                              // where the compiler makes it a closure: a
-                              // `reraise ()` there is FS0413, not a rethrow
-                              let rethrows = rethrowPattern.IsMatch(textOfRange source trivia.WithToEndRange)
+                                // the handler lands inside the computation,
+                                // where the compiler makes it a closure: a
+                                // `reraise ()` there is FS0413, not a rethrow
+                                let rethrows = rethrowPattern.IsMatch(textOfRange source trivia.WithToEndRange)
 
-                              // the rewrite is rebuilt from the body and the
-                              // handler alone: a comment anywhere else in the
-                              // try - beside `async {`, after the last
-                              // statement, between `}` and the start - would
-                              // be dropped with it
-                              let commentDropped (body: SynExpr) =
-                                  comments.Value
-                                  |> List.exists (fun (r, _) ->
-                                      Range.rangeContainsRange tryExpr.Range r
-                                      && not (Range.rangeContainsRange body.Range r)
-                                      && not (Range.rangeContainsRange trivia.WithToEndRange r))
+                                // the rewrite is rebuilt from the body and the
+                                // handler alone: a comment anywhere else in the
+                                // try - beside `async {`, after the last
+                                // statement, between `}` and the start - would
+                                // be dropped with it
+                                let commentDropped (body: SynExpr) =
+                                    comments.Value
+                                    |> List.exists (fun (r, _) ->
+                                        Range.rangeContainsRange tryExpr.Range r
+                                        && not (Range.rangeContainsRange body.Range r)
+                                        && not (Range.rangeContainsRange trivia.WithToEndRange r))
 
-                              match comp with
-                              | AsyncLiteral body when
-                                  singleArgument
-                                  && not (spansDirective source tryExpr.Range)
-                                  && not rethrows
-                                  && not (commentDropped body)
-                                  ->
-                                  let baseColumn = tryExpr.Range.StartColumn
-                                  let indent = System.String(' ', baseColumn)
+                                match comp with
+                                | AsyncLiteral body when
+                                    singleArgument
+                                    && not (spansDirective source tryExpr.Range)
+                                    && not rethrows
+                                    && not (commentDropped body)
+                                    ->
+                                    let baseColumn = tryExpr.Range.StartColumn
+                                    let indent = System.String(' ', baseColumn)
 
-                                  let bodyBlock =
-                                      reindentBlock
-                                          (baseColumn + 8)
-                                          body.Range.StartColumn
-                                          (textOfRange source body.Range)
+                                    let bodyBlock =
+                                        reindentBlock
+                                            (baseColumn + 8)
+                                            body.Range.StartColumn
+                                            (textOfRange source body.Range)
 
-                                  let handlerBlock =
-                                      reindentBlock
-                                          (baseColumn + 4)
-                                          trivia.WithKeyword.StartColumn
-                                          (textOfRange source trivia.WithToEndRange)
+                                    let handlerBlock =
+                                        reindentBlock
+                                            (baseColumn + 4)
+                                            trivia.WithKeyword.StartColumn
+                                            (textOfRange source trivia.WithToEndRange)
 
-                                  match bodyBlock, handlerBlock with
-                                  | Some bodyBlock, Some handlerBlock ->
-                                      let replacement =
-                                          "async {\n"
-                                          + indent
-                                          + "    try\n"
-                                          + bodyBlock
-                                          + "\n"
-                                          + handlerBlock
-                                          + "\n"
-                                          + indent
-                                          + "}\n"
-                                          + indent
-                                          + "|> "
-                                          + name
+                                    match bodyBlock, handlerBlock with
+                                    | Some bodyBlock, Some handlerBlock ->
+                                        let replacement =
+                                            "async {\n"
+                                            + indent
+                                            + "    try\n"
+                                            + bodyBlock
+                                            + "\n"
+                                            + handlerBlock
+                                            + "\n"
+                                            + indent
+                                            + "}\n"
+                                            + indent
+                                            + "|> "
+                                            + name
 
-                                      Some(tryExpr.Range, textOfRange source tryExpr.Range, replacement)
-                                  | _ -> None
-                              | _ -> None)
+                                        Some(tryExpr.Range, textOfRange source tryExpr.Range, replacement)
+                                    | _ -> None
+                                | _ -> None)
 
-                      { Range = expr.Range
-                        Starter = name
-                        LoopsInBody = loops
-                        WrappedInTry = wrappedInTry
-                        TryFix = tryFix }
-                  | _ -> ()
-              | _ -> () ]
+                        {
+                            Range = expr.Range
+                            Starter = name
+                            LoopsInBody = loops
+                            WrappedInTry = wrappedInTry
+                            TryFix = tryFix
+                        }
+                    | _ -> ()
+                | _ -> ()
+        ]

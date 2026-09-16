@@ -182,9 +182,11 @@ let private analyzerPaths () =
     configured @ (if Directory.Exists beside then [ beside ] else [])
 
 type Session =
-    { Proc: Process
-      Rpc: JsonRpc
-      mutable Initialized: bool }
+    {
+        Proc: Process
+        Rpc: JsonRpc
+        mutable Initialized: bool
+    }
 
 let mutable private session: Session option = None
 let private startLock = obj ()
@@ -244,13 +246,19 @@ let private startSession (rootDir: string) : Session option =
 
         let initParams =
             JObject(
-                [ JProperty("processId", Process.GetCurrentProcess().Id)
-                  JProperty("rootUri", uriOfPath rootDir)
-                  JProperty(
-                      "capabilities",
-                      JObject([ JProperty("textDocument", JObject([ JProperty("publishDiagnostics", JObject()) ])) ])
-                  )
-                  JProperty("initializationOptions", JObject([ JProperty("AutomaticWorkspaceInit", true) ])) ]
+                [
+                    JProperty("processId", Process.GetCurrentProcess().Id)
+                    JProperty("rootUri", uriOfPath rootDir)
+                    JProperty(
+                        "capabilities",
+                        JObject(
+                            [
+                                JProperty("textDocument", JObject([ JProperty("publishDiagnostics", JObject()) ]))
+                            ]
+                        )
+                    )
+                    JProperty("initializationOptions", JObject([ JProperty("AutomaticWorkspaceInit", true) ]))
+                ]
             )
 
         try
@@ -261,27 +269,35 @@ let private startSession (rootDir: string) : Session option =
             // assemblies bundled with this extension
             let settings =
                 JObject(
-                    [ JProperty(
-                          "settings",
-                          JObject(
-                              [ JProperty(
-                                    "FSharp",
-                                    JObject(
-                                        [ JProperty("EnableAnalyzers", true)
-                                          JProperty("AnalyzersPath", JArray(analyzerPaths ())) ]
+                    [
+                        JProperty(
+                            "settings",
+                            JObject(
+                                [
+                                    JProperty(
+                                        "FSharp",
+                                        JObject(
+                                            [
+                                                JProperty("EnableAnalyzers", true)
+                                                JProperty("AnalyzersPath", JArray(analyzerPaths ()))
+                                            ]
+                                        )
                                     )
-                                ) ]
-                          )
-                      ) ]
+                                ]
+                            )
+                        )
+                    ]
                 )
 
             rpc.Notify("workspace/didChangeConfiguration", settings)
             trace $"fsac started for {rootDir}"
 
             Some
-                { Proc = proc
-                  Rpc = rpc
-                  Initialized = true }
+                {
+                    Proc = proc
+                    Rpc = rpc
+                    Initialized = true
+                }
         with ex ->
             trace $"fsac initialize failed: {ex.Message}"
 
@@ -309,15 +325,19 @@ let notifyOpened (path: string) (text: string) =
         s.Rpc.Notify(
             "textDocument/didOpen",
             JObject(
-                [ JProperty(
-                      "textDocument",
-                      JObject(
-                          [ JProperty("uri", uriOfPath path)
-                            JProperty("languageId", "fsharp")
-                            JProperty("version", 1)
-                            JProperty("text", text) ]
-                      )
-                  ) ]
+                [
+                    JProperty(
+                        "textDocument",
+                        JObject(
+                            [
+                                JProperty("uri", uriOfPath path)
+                                JProperty("languageId", "fsharp")
+                                JProperty("version", 1)
+                                JProperty("text", text)
+                            ]
+                        )
+                    )
+                ]
             )
         )
     | None -> ()
@@ -328,11 +348,13 @@ let notifyChanged (path: string) (version: int) (text: string) =
         s.Rpc.Notify(
             "textDocument/didChange",
             JObject(
-                [ JProperty(
-                      "textDocument",
-                      JObject([ JProperty("uri", uriOfPath path); JProperty("version", version) ])
-                  )
-                  JProperty("contentChanges", JArray(JObject([ JProperty("text", text) ]))) ]
+                [
+                    JProperty(
+                        "textDocument",
+                        JObject([ JProperty("uri", uriOfPath path); JProperty("version", version) ])
+                    )
+                    JProperty("contentChanges", JArray(JObject([ JProperty("text", text) ])))
+                ]
             )
         )
     | None -> ()
@@ -346,8 +368,10 @@ let codeActions (path: string) (diags: Diag list) : (string * (int * int * int *
     | Some s ->
         let range (d: Diag) =
             JObject(
-                [ JProperty("start", JObject([ JProperty("line", d.StartLine); JProperty("character", d.StartCol) ]))
-                  JProperty("end", JObject([ JProperty("line", d.EndLine); JProperty("character", d.EndCol) ])) ]
+                [
+                    JProperty("start", JObject([ JProperty("line", d.StartLine); JProperty("character", d.StartCol) ]))
+                    JProperty("end", JObject([ JProperty("line", d.EndLine); JProperty("character", d.EndCol) ]))
+                ]
             )
 
         match diags with
@@ -355,12 +379,14 @@ let codeActions (path: string) (diags: Diag list) : (string * (int * int * int *
         | first :: _ ->
             let ps =
                 JObject(
-                    [ JProperty("textDocument", JObject([ JProperty("uri", uriOfPath path) ]))
-                      JProperty("range", range first)
-                      JProperty(
-                          "context",
-                          JObject([ JProperty("diagnostics", JArray(diags |> List.map (fun d -> d.Raw))) ])
-                      ) ]
+                    [
+                        JProperty("textDocument", JObject([ JProperty("uri", uriOfPath path) ]))
+                        JProperty("range", range first)
+                        JProperty(
+                            "context",
+                            JObject([ JProperty("diagnostics", JArray(diags |> List.map (fun d -> d.Raw))) ])
+                        )
+                    ]
                 )
 
             let task = s.Rpc.Request("textDocument/codeAction", ps)
@@ -371,43 +397,51 @@ let codeActions (path: string) (diags: Diag list) : (string * (int * int * int *
             else
                 match task.Result with
                 | :? JArray as actions ->
-                    [ for a in actions do
-                          let title =
-                              match a["title"] with
-                              | null -> "Fix"
-                              | t -> t.Value<string>()
+                    [
+                        for a in actions do
+                            let title =
+                                match a["title"] with
+                                | null -> "Fix"
+                                | t -> t.Value<string>()
 
-                          let edits =
-                              [ let editNode = a["edit"]
+                            let edits =
+                                [
+                                    let editNode = a["edit"]
 
-                                if not (isNull editNode) then
-                                    // WorkspaceEdit: either documentChanges or changes
-                                    let textEdits =
-                                        match editNode["documentChanges"] with
-                                        | :? JArray as dcs ->
-                                            [ for dc in dcs do
-                                                  match dc["edits"] with
-                                                  | :? JArray as es -> yield! es
-                                                  | _ -> () ]
-                                        | _ ->
-                                            match editNode["changes"] with
-                                            | :? JObject as chs ->
-                                                [ for p in chs.Properties() do
-                                                      match p.Value with
-                                                      | :? JArray as es -> yield! es
-                                                      | _ -> () ]
-                                            | _ -> []
+                                    if not (isNull editNode) then
+                                        // WorkspaceEdit: either documentChanges or changes
+                                        let textEdits =
+                                            match editNode["documentChanges"] with
+                                            | :? JArray as dcs ->
+                                                [
+                                                    for dc in dcs do
+                                                        match dc["edits"] with
+                                                        | :? JArray as es -> yield! es
+                                                        | _ -> ()
+                                                ]
+                                            | _ ->
+                                                match editNode["changes"] with
+                                                | :? JObject as chs ->
+                                                    [
+                                                        for p in chs.Properties() do
+                                                            match p.Value with
+                                                            | :? JArray as es -> yield! es
+                                                            | _ -> ()
+                                                    ]
+                                                | _ -> []
 
-                                    for e in textEdits do
-                                        let r = e["range"]
+                                        for e in textEdits do
+                                            let r = e["range"]
 
-                                        yield
-                                            r["start"].["line"].Value<int>(),
-                                            r["start"].["character"].Value<int>(),
-                                            r["end"].["line"].Value<int>(),
-                                            r["end"].["character"].Value<int>(),
-                                            e["newText"].Value<string>() ]
+                                            yield
+                                                r["start"].["line"].Value<int>(),
+                                                r["start"].["character"].Value<int>(),
+                                                r["end"].["line"].Value<int>(),
+                                                r["end"].["character"].Value<int>(),
+                                                e["newText"].Value<string>()
+                                ]
 
-                          if not edits.IsEmpty then
-                              title, edits ]
+                            if not edits.IsEmpty then
+                                title, edits
+                    ]
                 | _ -> []

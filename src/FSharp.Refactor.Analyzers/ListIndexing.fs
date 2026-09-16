@@ -145,69 +145,73 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | _ -> false
             | None -> false
 
-        [ for path, expr in index.Exprs do
-              let candidate =
-                  match expr with
-                  // xs.[i] and the F#6 xs[i]
-                  | SynExpr.DotIndexedGet(objectExpr = Path(root, last, text); indexArgs = idx) when
-                      not (isConstIndex idx)
-                      ->
-                      Some(root, last, text, true, Some idx)
-                  | SynExpr.App(
-                      flag = ExprAtomicFlag.Atomic
-                      funcExpr = Path(root, last, text)
-                      argExpr = SynExpr.ArrayOrListComputed(expr = idx)) when not (isConstIndex idx) ->
-                      Some(root, last, text, true, Some idx)
-                  // List.item i xs / xs |> List.item i (nth likewise) —
-                  // the module name pins the type, no resolution needed
-                  | SynExpr.App(
-                      funcExpr = SynExpr.App(
-                          funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = idx)
-                      argExpr = Path(root, last, text)) when
-                      m.idText = "List"
-                      && (f.idText = "item" || f.idText = "nth")
-                      && not (isConstIndex idx)
-                      ->
-                      Some(root, last, text, false, Some idx)
-                  | PipeApp(Path(root, last, text),
-                            SynExpr.App(
-                                funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = idx)) when
-                      m.idText = "List"
-                      && (f.idText = "item" || f.idText = "nth")
-                      && not (isConstIndex idx)
-                      ->
-                      Some(root, last, text, false, Some idx)
-                  // xs.Length — the receiver is the path minus its last
-                  // segment; List.length xs / xs |> List.length
-                  | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                      ids.Length >= 2 && (List.last ids).idText = "Length"
-                      ->
-                      let receiver = ids |> List.take (ids.Length - 1)
-                      Some(List.head receiver, List.last receiver, identText receiver, true, None)
-                  | SynExpr.App(
-                      funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
-                      argExpr = Path(root, last, text)) when m.idText = "List" && f.idText = "length" ->
-                      Some(root, last, text, false, None)
-                  | PipeApp(Path(root, last, text), SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))) when
-                      m.idText = "List" && f.idText = "length"
-                      ->
-                      Some(root, last, text, false, None)
-                  | _ -> None
+        [
+            for path, expr in index.Exprs do
+                let candidate =
+                    match expr with
+                    // xs.[i] and the F#6 xs[i]
+                    | SynExpr.DotIndexedGet(objectExpr = Path(root, last, text); indexArgs = idx) when
+                        not (isConstIndex idx)
+                        ->
+                        Some(root, last, text, true, Some idx)
+                    | SynExpr.App(
+                        flag = ExprAtomicFlag.Atomic
+                        funcExpr = Path(root, last, text)
+                        argExpr = SynExpr.ArrayOrListComputed(expr = idx)) when not (isConstIndex idx) ->
+                        Some(root, last, text, true, Some idx)
+                    // List.item i xs / xs |> List.item i (nth likewise) —
+                    // the module name pins the type, no resolution needed
+                    | SynExpr.App(
+                        funcExpr = SynExpr.App(
+                            funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = idx)
+                        argExpr = Path(root, last, text)) when
+                        m.idText = "List"
+                        && (f.idText = "item" || f.idText = "nth")
+                        && not (isConstIndex idx)
+                        ->
+                        Some(root, last, text, false, Some idx)
+                    | PipeApp(Path(root, last, text),
+                              SynExpr.App(
+                                  funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = idx)) when
+                        m.idText = "List"
+                        && (f.idText = "item" || f.idText = "nth")
+                        && not (isConstIndex idx)
+                        ->
+                        Some(root, last, text, false, Some idx)
+                    // xs.Length — the receiver is the path minus its last
+                    // segment; List.length xs / xs |> List.length
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                        ids.Length >= 2 && (List.last ids).idText = "Length"
+                        ->
+                        let receiver = ids |> List.take (ids.Length - 1)
+                        Some(List.head receiver, List.last receiver, identText receiver, true, None)
+                    | SynExpr.App(
+                        funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
+                        argExpr = Path(root, last, text)) when m.idText = "List" && f.idText = "length" ->
+                        Some(root, last, text, false, None)
+                    | PipeApp(Path(root, last, text), SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))) when
+                        m.idText = "List" && f.idText = "length"
+                        ->
+                        Some(root, last, text, false, None)
+                    | _ -> None
 
-              match candidate with
-              | Some(root, last, text, needsTypeProof, idx) ->
-                  match LoopPerf.loopBinders path with
-                  | ValueSome binders when
-                      not (binders.Contains root.idText)
-                      && not (inLoopHeader path expr.Range)
-                      && not (idx |> Option.exists (boundedIndex path))
-                      && (not needsTypeProof || resolvesToList last)
-                      ->
-                      { Range = expr.Range
-                        CollectionText = text
-                        Kind =
-                          match idx with
-                          | Some _ -> AccessKind.Index
-                          | None -> AccessKind.Length }
-                  | _ -> ()
-              | None -> () ]
+                match candidate with
+                | Some(root, last, text, needsTypeProof, idx) ->
+                    match LoopPerf.loopBinders path with
+                    | ValueSome binders when
+                        not (binders.Contains root.idText)
+                        && not (inLoopHeader path expr.Range)
+                        && not (idx |> Option.exists (boundedIndex path))
+                        && (not needsTypeProof || resolvesToList last)
+                        ->
+                        {
+                            Range = expr.Range
+                            CollectionText = text
+                            Kind =
+                                match idx with
+                                | Some _ -> AccessKind.Index
+                                | None -> AccessKind.Length
+                        }
+                    | _ -> ()
+                | None -> ()
+        ]

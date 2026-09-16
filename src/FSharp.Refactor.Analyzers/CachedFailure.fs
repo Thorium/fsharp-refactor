@@ -95,24 +95,30 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             with _ -> // fsharpanalyzer: ignore-line FR0055
                 None
 
-        [ for _, e in index.Exprs do
-              match e with
-              | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
-                  ids.Length >= 2 && (List.last ids).idText = "GetOrAdd"
-                  ->
-                  match valueKind (List.last ids) with
-                  | Some kind ->
-                      yield
-                          { Range = (List.last ids).idRange
-                            ValueKind = kind }
-                  | None -> ()
-              | SynExpr.App(isInfix = false; funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))) when
-                  not ids.IsEmpty && (List.last ids).idText = "GetOrAdd"
-                  ->
-                  match valueKind (List.last ids) with
-                  | Some kind ->
-                      yield
-                          { Range = (List.last ids).idRange
-                            ValueKind = kind }
-                  | None -> ()
-              | _ -> () ]
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
+                    ids.Length >= 2 && (List.last ids).idText = "GetOrAdd"
+                    ->
+                    match valueKind (List.last ids) with
+                    | Some kind ->
+                        yield
+                            {
+                                Range = (List.last ids).idRange
+                                ValueKind = kind
+                            }
+                    | None -> ()
+                | SynExpr.App(isInfix = false; funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = ids))) when
+                    not ids.IsEmpty && (List.last ids).idText = "GetOrAdd"
+                    ->
+                    match valueKind (List.last ids) with
+                    | Some kind ->
+                        yield
+                            {
+                                Range = (List.last ids).idRange
+                                ValueKind = kind
+                            }
+                    | None -> ()
+                | _ -> ()
+        ]

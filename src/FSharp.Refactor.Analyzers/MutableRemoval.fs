@@ -45,25 +45,27 @@ type Suggestion =
 /// Value types on which removing `mutable` cannot change behavior.
 let private immutableValueTypes =
     set
-        [ "System.Boolean"
-          "System.Byte"
-          "System.SByte"
-          "System.Int16"
-          "System.UInt16"
-          "System.Int32"
-          "System.UInt32"
-          "System.Int64"
-          "System.UInt64"
-          "System.IntPtr"
-          "System.UIntPtr"
-          "System.Single"
-          "System.Double"
-          "System.Decimal"
-          "System.Char"
-          "System.DateTime"
-          "System.DateTimeOffset"
-          "System.TimeSpan"
-          "System.Guid" ]
+        [
+            "System.Boolean"
+            "System.Byte"
+            "System.SByte"
+            "System.Int16"
+            "System.UInt16"
+            "System.Int32"
+            "System.UInt32"
+            "System.Int64"
+            "System.UInt64"
+            "System.IntPtr"
+            "System.UIntPtr"
+            "System.Single"
+            "System.Double"
+            "System.Decimal"
+            "System.Char"
+            "System.DateTime"
+            "System.DateTimeOffset"
+            "System.TimeSpan"
+            "System.Guid"
+        ]
 
 /// True when the local's type is safe to bind immutably: reference types,
 /// enums, and whitelisted immutable structs.
@@ -175,9 +177,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match mutableKeywordRange source expr.Range.Start pat.Range.Start expr.Range.FileName with
                         | ValueSome keywordRange ->
                             suggestions.Add
-                                { Range = keywordRange
-                                  OriginalText = textOfRange source keywordRange
-                                  Name = var.idText }
+                                {
+                                    Range = keywordRange
+                                    OriginalText = textOfRange source keywordRange
+                                    Name = var.idText
+                                }
                         | ValueNone -> ()
                     | _ -> ()
                 | _ -> ()
@@ -213,13 +217,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     with
                                     | ValueSome keywordRange ->
                                         suggestions.Add
-                                            { Range = keywordRange
-                                              OriginalText = textOfRange source keywordRange
-                                              Name = var.idText }
+                                            {
+                                                Range = keywordRange
+                                                OriginalText = textOfRange source keywordRange
+                                                Name = var.idText
+                                            }
                                     | ValueNone -> ()
                                 | _ -> ()
                         | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

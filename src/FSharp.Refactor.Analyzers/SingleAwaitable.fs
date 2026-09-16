@@ -33,9 +33,11 @@ type Suggestion =
     }
 
 let private gatedCalls =
-    [ ("Task", "WhenAll"), "System.Threading.Tasks.Task"
-      ("Task", "WaitAll"), "System.Threading.Tasks.Task"
-      ("Async", "Parallel"), "Microsoft.FSharp.Control.FSharpAsync" ]
+    [
+        ("Task", "WhenAll"), "System.Threading.Tasks.Task"
+        ("Task", "WaitAll"), "System.Threading.Tasks.Task"
+        ("Async", "Parallel"), "Microsoft.FSharp.Control.FSharpAsync"
+    ]
     |> Map.ofList
 
 /// A literal collection with exactly one plain element.
@@ -82,30 +84,34 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | SynExpr.ArrayOrListComputed(expr = inner) -> Some inner
             | _ -> None
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(
-                  isInfix = false
-                  funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
-                  argExpr = SingleElementLiteral as arg) ->
-                  match gatedCalls.TryFind(m.idText, f.idText) with
-                  | Some entity when resolvesToGatedEntity check source entity f ->
-                      { Range = expr.Range
-                        CallName = $"{m.idText}.{f.idText}"
-                        Fix =
-                          singleElement arg
-                          |> Option.map (fun only ->
-                              // `Task.WaitAll [| t |]` is a blocking unit
-                              // statement: its element alone would DROP the
-                              // wait (a bare Task in statement position), so
-                              // it keeps one — `t.Wait()`. The awaiting
-                              // combinators unwrap to the element itself
-                              let replacement =
-                                  if f.idText = "WaitAll" then
-                                      $"{atomicText source only}.Wait()"
-                                  else
-                                      textOfRange source only.Range
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(
+                    isInfix = false
+                    funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
+                    argExpr = SingleElementLiteral as arg) ->
+                    match gatedCalls.TryFind(m.idText, f.idText) with
+                    | Some entity when resolvesToGatedEntity check source entity f ->
+                        {
+                            Range = expr.Range
+                            CallName = $"{m.idText}.{f.idText}"
+                            Fix =
+                                singleElement arg
+                                |> Option.map (fun only ->
+                                    // `Task.WaitAll [| t |]` is a blocking unit
+                                    // statement: its element alone would DROP the
+                                    // wait (a bare Task in statement position), so
+                                    // it keeps one — `t.Wait()`. The awaiting
+                                    // combinators unwrap to the element itself
+                                    let replacement =
+                                        if f.idText = "WaitAll" then
+                                            $"{atomicText source only}.Wait()"
+                                        else
+                                            textOfRange source only.Range
 
-                              expr.Range, textOfRange source expr.Range, replacement) }
-                  | _ -> ()
-              | _ -> () ]
+                                    expr.Range, textOfRange source expr.Range, replacement)
+                        }
+                    | _ -> ()
+                | _ -> ()
+        ]

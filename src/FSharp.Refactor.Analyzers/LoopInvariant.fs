@@ -121,20 +121,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // (loop node, loop-bound names, body) for every loop-like shape
         let candidates =
-            [ for path, expr in index.Exprs do
-                  match expr with
-                  | SynExpr.For(ident = loopVar; doBody = body) -> path, expr, Set.singleton loopVar.idText, body
-                  | SynExpr.ForEach(pat = pat; bodyExpr = body) -> path, expr, Set.ofList (patBoundNames pat), body
-                  | SynExpr.While(doExpr = body) -> path, expr, Set.empty, body
-                  // xs |> List.map (fun x -> ...) — the lambda's params are
-                  // the per-element names
-                  | SynExpr.App(
-                      funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; _ ]))
-                      argExpr = SynExpr.Paren(expr = SynExpr.Lambda(parsedData = Some(pats, _); body = body))) when
-                      collectionModules.Contains m.idText
-                      ->
-                      path, expr, Set.ofList (pats |> List.collect patBoundNames), body
-                  | _ -> () ]
+            [
+                for path, expr in index.Exprs do
+                    match expr with
+                    | SynExpr.For(ident = loopVar; doBody = body) -> path, expr, Set.singleton loopVar.idText, body
+                    | SynExpr.ForEach(pat = pat; bodyExpr = body) -> path, expr, Set.ofList (patBoundNames pat), body
+                    | SynExpr.While(doExpr = body) -> path, expr, Set.empty, body
+                    // xs |> List.map (fun x -> ...) — the lambda's params are
+                    // the per-element names
+                    | SynExpr.App(
+                        funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; _ ]))
+                        argExpr = SynExpr.Paren(expr = SynExpr.Lambda(parsedData = Some(pats, _); body = body))) when
+                        collectionModules.Contains m.idText
+                        ->
+                        path, expr, Set.ofList (pats |> List.collect patBoundNames), body
+                    | _ -> ()
+            ]
 
         // one pass of every mention (read or assigned) keyed by name; the
         // per-candidate scans below become dictionary lookups
@@ -252,9 +254,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 && (source.GetLineString(letLine - 1)).Trim() = $"let {bindingText}"
                             then
                                 suggestions.Add
-                                    { Range = binding.RangeOfBindingWithRhs
-                                      Name = name.idText
-                                      Edits = edits }
+                                    {
+                                        Range = binding.RangeOfBindingWithRhs
+                                        Name = name.idText
+                                        Edits = edits
+                                    }
                         | _ -> ()
                     | _ -> ()
 

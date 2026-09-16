@@ -38,9 +38,11 @@ type Suggestion =
 
 /// Entities whose Remove/Add return false instead of throwing on a miss.
 let private gatedEntities =
-    [ "System.Collections.Generic.Dictionary`", set [ "Remove" ]
-      "System.Collections.Generic.HashSet`", set [ "Add"; "Remove" ]
-      "System.Collections.Generic.SortedSet`", set [ "Add"; "Remove" ] ]
+    [
+        "System.Collections.Generic.Dictionary`", set [ "Remove" ]
+        "System.Collections.Generic.HashSet`", set [ "Add"; "Remove" ]
+        "System.Collections.Generic.SortedSet`", set [ "Add"; "Remove" ]
+    ]
 
 /// `<recvIdent>.<method> <atomKey>` (parens tolerated around the key).
 [<return: Struct>]
@@ -92,38 +94,42 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.IfThenElse(
-                  ifExpr = cond
-                  thenExpr = ActionCall(actRecv, actMethod, actKey) as thenExpr
-                  elseExpr = None
-                  trivia = trivia) when not trivia.IsElif && isSingleLine expr.Range ->
-                  // (guard method, negated?) that licenses each action
-                  let guard =
-                      match stripParens cond with
-                      | InstanceCall(gRecv, gMethod, gKey) -> Some(gRecv, gMethod, gKey, false)
-                      | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
-                          match stripParens inner with
-                          | InstanceCall(gRecv, gMethod, gKey) -> Some(gRecv, gMethod, gKey, true)
-                          | _ -> None
-                      | _ -> None
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.IfThenElse(
+                    ifExpr = cond
+                    thenExpr = ActionCall(actRecv, actMethod, actKey) as thenExpr
+                    elseExpr = None
+                    trivia = trivia) when not trivia.IsElif && isSingleLine expr.Range ->
+                    // (guard method, negated?) that licenses each action
+                    let guard =
+                        match stripParens cond with
+                        | InstanceCall(gRecv, gMethod, gKey) -> Some(gRecv, gMethod, gKey, false)
+                        | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
+                            match stripParens inner with
+                            | InstanceCall(gRecv, gMethod, gKey) -> Some(gRecv, gMethod, gKey, true)
+                            | _ -> None
+                        | _ -> None
 
-                  match guard with
-                  | Some(gRecv, gMethod, gKey, negated) when
-                      gRecv.idText = actRecv.idText
-                      && textOfRange source gKey.Range = textOfRange source actKey.Range
-                      && (match gMethod.idText, negated, actMethod.idText with
-                          | "ContainsKey", false, "Remove"
-                          | "Contains", false, "Remove"
-                          | "Contains", true, "Add" -> true
-                          | _ -> false)
-                      && resolvesToGated check source actMethod
-                      ->
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
-                        ReplacementText = textOfRange source thenExpr.Range
-                        GuardName = gMethod.idText
-                        ActionName = actMethod.idText }
-                  | _ -> ()
-              | _ -> () ]
+                    match guard with
+                    | Some(gRecv, gMethod, gKey, negated) when
+                        gRecv.idText = actRecv.idText
+                        && textOfRange source gKey.Range = textOfRange source actKey.Range
+                        && (match gMethod.idText, negated, actMethod.idText with
+                            | "ContainsKey", false, "Remove"
+                            | "Contains", false, "Remove"
+                            | "Contains", true, "Add" -> true
+                            | _ -> false)
+                        && resolvesToGated check source actMethod
+                        ->
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ReplacementText = textOfRange source thenExpr.Range
+                            GuardName = gMethod.idText
+                            ActionName = actMethod.idText
+                        }
+                    | _ -> ()
+                | _ -> ()
+        ]

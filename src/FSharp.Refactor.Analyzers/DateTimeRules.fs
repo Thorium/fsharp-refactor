@@ -139,12 +139,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // written, and UtcNow there would stamp the file hours off
         let localTimeSetters =
             set
-                [ "SetCreationTime"
-                  "SetLastWriteTime"
-                  "SetLastAccessTime"
-                  "CreationTime"
-                  "LastWriteTime"
-                  "LastAccessTime" ]
+                [
+                    "SetCreationTime"
+                    "SetLastWriteTime"
+                    "SetLastAccessTime"
+                    "CreationTime"
+                    "LastWriteTime"
+                    "LastAccessTime"
+                ]
 
         let feedsLocalSetter (path: SyntaxNode list) =
             path
@@ -163,65 +165,75 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     not ids.IsEmpty && localTimeSetters.Contains (List.last ids).idText
                 | _ -> false)
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                  ids.Length >= 2
-                  && not (sameDayCompare path expr.Range)
-                  && not (translatorArm path (ids |> List.map (fun i -> i.idText)))
-                  && not (feedsLocalSetter path)
-                  ->
-                  let names = ids |> List.map (fun i -> i.idText)
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                    ids.Length >= 2
+                    && not (sameDayCompare path expr.Range)
+                    && not (translatorArm path (ids |> List.map (fun i -> i.idText)))
+                    && not (feedsLocalSetter path)
+                    ->
+                    let names = ids |> List.map (fun i -> i.idText)
 
-                  // ...UtcNow.Date ANYWHERE in the chain (`.AddDays` etc may
-                  // follow the cut), and Today likewise
-                  let utcDateAt =
-                      names
-                      |> List.pairwise
-                      |> List.tryFindIndex (fun (a, b) -> a = "UtcNow" && b = "Date")
+                    // ...UtcNow.Date ANYWHERE in the chain (`.AddDays` etc may
+                    // follow the cut), and Today likewise
+                    let utcDateAt =
+                        names
+                        |> List.pairwise
+                        |> List.tryFindIndex (fun (a, b) -> a = "UtcNow" && b = "Date")
 
-                  match utcDateAt with
-                  | Some i when isDateTimeEntity (entityOf check source (List.item i ids)) ->
-                      { Range = expr.Range
-                        Kind = WallClockKind.UtcDateCut(String.concat "." names)
-                        FixRange = None }
-                  | _ ->
-                      let todayAt = names |> List.tryFindIndex ((=) "Today")
-
-                      match todayAt with
-                      | Some i when i > 0 && entityOf check source (List.item i ids) = "System.DateTime" ->
-                          { Range = expr.Range
+                    match utcDateAt with
+                    | Some i when isDateTimeEntity (entityOf check source (List.item i ids)) ->
+                        {
+                            Range = expr.Range
                             Kind = WallClockKind.UtcDateCut(String.concat "." names)
-                            FixRange = None }
-                      | _ ->
-                          // a COMPLETE DateTime.Now — nothing after Now, so
-                          // the UtcNow rewrite cannot create a calendar bug —
-                          // or Now read as an INSTANT (`.Ticks` as a version
-                          // number goes backwards at the DST fall-back;
-                          // `.ToBinary`, `.ToFileTime`), which UtcNow serves
-                          // just as well. `Now.ToString(...)` renders the
-                          // local calendar, so it gets the note but not the
-                          // rewrite. DateTimeOffset.Now stays quiet entirely:
-                          // it CARRIES its offset, which is often the point
-                          let reversed =
-                              match List.rev names with
-                              | "ToString" :: rest -> Some false, rest
-                              | rest -> Some true, rest
+                            FixRange = None
+                        }
+                    | _ ->
+                        let todayAt = names |> List.tryFindIndex ((=) "Today")
 
-                          match reversed with
-                          | Some rewritable, "Now" :: _ ->
-                              let nowId = ids |> List.find (fun i -> i.idText = "Now")
+                        match todayAt with
+                        | Some i when i > 0 && entityOf check source (List.item i ids) = "System.DateTime" ->
+                            {
+                                Range = expr.Range
+                                Kind = WallClockKind.UtcDateCut(String.concat "." names)
+                                FixRange = None
+                            }
+                        | _ ->
+                            // a COMPLETE DateTime.Now — nothing after Now, so
+                            // the UtcNow rewrite cannot create a calendar bug —
+                            // or Now read as an INSTANT (`.Ticks` as a version
+                            // number goes backwards at the DST fall-back;
+                            // `.ToBinary`, `.ToFileTime`), which UtcNow serves
+                            // just as well. `Now.ToString(...)` renders the
+                            // local calendar, so it gets the note but not the
+                            // rewrite. DateTimeOffset.Now stays quiet entirely:
+                            // it CARRIES its offset, which is often the point
+                            let reversed =
+                                match List.rev names with
+                                | "ToString" :: rest -> Some false, rest
+                                | rest -> Some true, rest
 
-                              if entityOf check source nowId = "System.DateTime" then
-                                  { Range = expr.Range
-                                    Kind = WallClockKind.LocalNow
-                                    FixRange = if rewritable then Some nowId.idRange else None }
-                          | Some _, ("Ticks" | "ToBinary" | "ToFileTime") :: "Now" :: _ ->
-                              let nowId = ids |> List.find (fun i -> i.idText = "Now")
+                            match reversed with
+                            | Some rewritable, "Now" :: _ ->
+                                let nowId = ids |> List.find (fun i -> i.idText = "Now")
 
-                              if entityOf check source nowId = "System.DateTime" then
-                                  { Range = expr.Range
-                                    Kind = WallClockKind.LocalNow
-                                    FixRange = Some nowId.idRange }
-                          | _ -> ()
-              | _ -> () ]
+                                if entityOf check source nowId = "System.DateTime" then
+                                    {
+                                        Range = expr.Range
+                                        Kind = WallClockKind.LocalNow
+                                        FixRange = if rewritable then Some nowId.idRange else None
+                                    }
+                            | Some _, ("Ticks" | "ToBinary" | "ToFileTime") :: "Now" :: _ ->
+                                let nowId = ids |> List.find (fun i -> i.idText = "Now")
+
+                                if entityOf check source nowId = "System.DateTime" then
+                                    {
+                                        Range = expr.Range
+                                        Kind = WallClockKind.LocalNow
+                                        FixRange = Some nowId.idRange
+                                    }
+                            | _ -> ()
+                | _ -> ()
+        ]

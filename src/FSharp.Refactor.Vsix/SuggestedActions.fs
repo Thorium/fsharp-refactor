@@ -200,7 +200,10 @@ type FrActionsSource(buffer: ITextBuffer, filePath: string) =
         if actions.IsEmpty then
             Seq.empty
         else
-            [ SuggestedActionSet(PredefinedSuggestedActionCategoryNames.CodeFix, actions, "FSharp.Refactor") ] :> seq<_>
+            [
+                SuggestedActionSet(PredefinedSuggestedActionCategoryNames.CodeFix, actions, "FSharp.Refactor")
+            ]
+            :> seq<_>
 
     do FsacClient.clientTrace $"actions source created for {filePath}"
 

@@ -169,27 +169,33 @@ let private weakHashes = set [ "MD5"; "SHA1" ]
 
 let private weakHashTypes =
     set
-        [ "MD5CryptoServiceProvider"
-          "SHA1CryptoServiceProvider"
-          "SHA1Managed"
-          "MD5Cng" ]
+        [
+            "MD5CryptoServiceProvider"
+            "SHA1CryptoServiceProvider"
+            "SHA1Managed"
+            "MD5Cng"
+        ]
 
 let private weakCiphers = set [ "DES"; "TripleDES"; "RC2" ]
 
 let private weakCipherTypes =
     set
-        [ "DESCryptoServiceProvider"
-          "TripleDESCryptoServiceProvider"
-          "RC2CryptoServiceProvider" ]
+        [
+            "DESCryptoServiceProvider"
+            "TripleDESCryptoServiceProvider"
+            "RC2CryptoServiceProvider"
+        ]
 
 let private commandTypes =
     set
-        [ "SqlCommand"
-          "NpgsqlCommand"
-          "MySqlCommand"
-          "OracleCommand"
-          "SqliteCommand"
-          "SQLiteCommand" ]
+        [
+            "SqlCommand"
+            "NpgsqlCommand"
+            "MySqlCommand"
+            "OracleCommand"
+            "SqliteCommand"
+            "SQLiteCommand"
+        ]
 
 /// A helper whose name says it runs SQL: `executeSql`, `runQuery`,
 /// `ExecuteSql`, `sqlExec`, `queryDb`...
@@ -316,14 +322,18 @@ let find
     let addSql path (range: range) (sink: string) (text: SynExpr) =
         if dynamicText path text then
             sql.Add
-                { Range = range
-                  Sink = sink
-                  Unparametrized = false }
+                {
+                    Range = range
+                    Sink = sink
+                    Unparametrized = false
+                }
         elif unparametrizedText path text then
             sql.Add
-                { Range = range
-                  Sink = sink
-                  Unparametrized = true }
+                {
+                    Range = range
+                    Sink = sink
+                    Unparametrized = true
+                }
 
     let firstArg (arg: SynExpr) =
         match stripParens arg with
@@ -399,18 +409,22 @@ let find
                     ()
                 elif weakHashes.Contains owner then
                     crypto.Add
-                        { Range = e.Range
-                          Kind = WeakKind.Hash owner
-                          AlgoRange = Some ownerId.idRange
-                          ObsoleteOperand = None
-                          AssignmentRange = None }
+                        {
+                            Range = e.Range
+                            Kind = WeakKind.Hash owner
+                            AlgoRange = Some ownerId.idRange
+                            ObsoleteOperand = None
+                            AssignmentRange = None
+                        }
                 elif weakCiphers.Contains owner then
                     crypto.Add
-                        { Range = e.Range
-                          Kind = WeakKind.Cipher owner
-                          AlgoRange = Some ownerId.idRange
-                          ObsoleteOperand = None
-                          AssignmentRange = None }
+                        {
+                            Range = e.Range
+                            Kind = WeakKind.Cipher owner
+                            AlgoRange = Some ownerId.idRange
+                            ObsoleteOperand = None
+                            AssignmentRange = None
+                        }
             | _ -> ()
         // new MD5CryptoServiceProvider() and friends
         | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
@@ -420,18 +434,22 @@ let find
                 ()
             elif weakHashTypes.Contains name then
                 crypto.Add
-                    { Range = e.Range
-                      Kind = WeakKind.Hash name
-                      AlgoRange = None
-                      ObsoleteOperand = None
-                      AssignmentRange = None }
+                    {
+                        Range = e.Range
+                        Kind = WeakKind.Hash name
+                        AlgoRange = None
+                        ObsoleteOperand = None
+                        AssignmentRange = None
+                    }
             elif weakCipherTypes.Contains name then
                 crypto.Add
-                    { Range = e.Range
-                      Kind = WeakKind.Cipher name
-                      AlgoRange = None
-                      ObsoleteOperand = None
-                      AssignmentRange = None }
+                    {
+                        Range = e.Range
+                        Kind = WeakKind.Cipher name
+                        AlgoRange = None
+                        ObsoleteOperand = None
+                        AssignmentRange = None
+                    }
             elif commandTypes.Contains name then
                 // new SqlCommand(sql, ...)
                 match e with
@@ -449,9 +467,11 @@ let find
 
                     if argsOf |> List.exists isDynamicString then
                         processSinks.Add
-                            { Range = e.Range
-                              Sink = "ProcessStartInfo"
-                              Fix = None }
+                            {
+                                Range = e.Range
+                                Sink = "ProcessStartInfo"
+                                Fix = None
+                            }
                 | _ -> ()
         // SqlCommand(sql, ...) without `new`
         | SynExpr.App(isInfix = false; funcExpr = SingleIdent ctor; argExpr = arg) when
@@ -479,9 +499,11 @@ let find
             ->
             if dynamicText path (firstArg arg) then
                 sql.Add
-                    { Range = e.Range
-                      Sink = helper.idText
-                      Unparametrized = false }
+                    {
+                        Range = e.Range
+                        Sink = helper.idText
+                        Unparametrized = false
+                    }
             // `ReadSqlInteger "select max(id) from events" []`: a literal
             // statement and an EMPTY parameter list handed to the helper —
             // the same no-parameter command, one call further out
@@ -495,18 +517,22 @@ let find
 
                 if emptyParameters then
                     sql.Add
-                        { Range = e.Range
-                          Sink = helper.idText
-                          Unparametrized = true }
+                        {
+                            Range = e.Range
+                            Sink = helper.idText
+                            Unparametrized = true
+                        }
         | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
             ids.Length >= 2
             && sqlHelperName.IsMatch (List.last ids).idText
             && dynamicText path (firstArg arg)
             ->
             sql.Add
-                { Range = e.Range
-                  Sink = (List.last ids).idText
-                  Unparametrized = false }
+                {
+                    Range = e.Range
+                    Sink = (List.last ids).idText
+                    Unparametrized = false
+                }
         // cmd.CommandText <- sql; cert validation bypass
         | SynExpr.LongIdentSet(SynLongIdent(id = ids), rhs, _) when not ids.IsEmpty ->
             match (List.last ids).idText with
@@ -514,11 +540,13 @@ let find
             | "ServerCertificateValidationCallback"
             | "ServerCertificateCustomValidationCallback" ->
                 crypto.Add
-                    { Range = e.Range
-                      Kind = WeakKind.CertificateBypass
-                      AlgoRange = None
-                      ObsoleteOperand = None
-                      AssignmentRange = None }
+                    {
+                        Range = e.Range
+                        Kind = WeakKind.CertificateBypass
+                        AlgoRange = None
+                        ObsoleteOperand = None
+                        AssignmentRange = None
+                    }
             // psi.Arguments <- dynamic: the argument-injection sink;
             // FileName is any DTO's field and stays out
             | "Arguments" when isDynamicString rhs ->
@@ -548,9 +576,11 @@ let find
                     | _ -> None
 
                 processSinks.Add
-                    { Range = e.Range
-                      Sink = "Arguments"
-                      Fix = fix }
+                    {
+                        Range = e.Range
+                        Sink = "Arguments"
+                        Fix = fix
+                    }
             | _ -> ()
         | SynExpr.DotSet(_, SynLongIdent(id = ids), rhs, _) when not ids.IsEmpty ->
             match (List.last ids).idText with
@@ -558,16 +588,20 @@ let find
             | "ServerCertificateValidationCallback"
             | "ServerCertificateCustomValidationCallback" ->
                 crypto.Add
-                    { Range = e.Range
-                      Kind = WeakKind.CertificateBypass
-                      AlgoRange = None
-                      ObsoleteOperand = None
-                      AssignmentRange = None }
+                    {
+                        Range = e.Range
+                        Kind = WeakKind.CertificateBypass
+                        AlgoRange = None
+                        ObsoleteOperand = None
+                        AssignmentRange = None
+                    }
             | "Arguments" when isDynamicString rhs ->
                 processSinks.Add
-                    { Range = e.Range
-                      Sink = "Arguments"
-                      Fix = None }
+                    {
+                        Range = e.Range
+                        Sink = "Arguments"
+                        Fix = None
+                    }
             | _ -> ()
         // Process.Start with a dynamically built command — the
         // command-injection sink; distinctive by name, so no typed gate
@@ -618,9 +652,11 @@ let find
                     | _ -> None
 
                 processSinks.Add
-                    { Range = e.Range
-                      Sink = "Process.Start"
-                      Fix = fix }
+                    {
+                        Range = e.Range
+                        Sink = "Process.Start"
+                        Fix = fix
+                    }
         // SecurityProtocolType.Ssl3 / SslProtocols.Tls11 and friends:
         // broken or deprecated on the wire. The modern default is to set
         // NOTHING and let the OS negotiate
@@ -680,12 +716,14 @@ let find
                     |> Array.tryHead
 
                 crypto.Add
-                    { Range = e.Range
-                      Kind = WeakKind.Protocol proto
-                      // the constant ident itself: the Tls12 swap's target
-                      AlgoRange = Some (List.last ids).idRange
-                      ObsoleteOperand = obsoleteOperand
-                      AssignmentRange = assignmentRange }
+                    {
+                        Range = e.Range
+                        Kind = WeakKind.Protocol proto
+                        // the constant ident itself: the Tls12 swap's target
+                        AlgoRange = Some (List.last ids).idRange
+                        ObsoleteOperand = obsoleteOperand
+                        AssignmentRange = assignmentRange
+                    }
             | _ -> ()
         | _ -> ()
 

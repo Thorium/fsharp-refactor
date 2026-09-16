@@ -34,15 +34,17 @@ type Suggestion =
 /// Option/Result cases whose parenthesized payload is idiomatically bare.
 let private coreCaseNames =
     set
-        [ "Some"
-          "ValueSome"
-          "Ok"
-          "Error"
-          "Choice1Of2"
-          "Choice2Of2"
-          "Choice1Of3"
-          "Choice2Of3"
-          "Choice3Of3" ]
+        [
+            "Some"
+            "ValueSome"
+            "Ok"
+            "Error"
+            "Choice1Of2"
+            "Choice2Of2"
+            "Choice1Of3"
+            "Choice2Of3"
+            "Choice3Of3"
+        ]
 
 /// A callee we are confident is an F# function (or core wrapper case), not a
 /// .NET method or constructor: a lowercase bare identifier, a core Option or
@@ -166,10 +168,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 innerText
 
                         suggestions.Add
-                            { Range = argExpr.Range
-                              OriginalText = textOfRange source argExpr.Range
-                              ReplacementText = replacement }
-                | _ -> () }
+                            {
+                                Range = argExpr.Range
+                                OriginalText = textOfRange source argExpr.Range
+                                ReplacementText = replacement
+                            }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

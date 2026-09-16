@@ -68,11 +68,13 @@ let private locallyBound (declText: string) (name: string) =
     // finds no boundary
     let n = identifierPattern name
 
-    [ $@"let[^\n=]*{n}"
-      $@"use[^\n=]*{n}"
-      $@"fun[^\n>]*{n}"
-      $@"for\s+{n}"
-      $@"\|\s*{n}\s*(->|when)" ]
+    [
+        $@"let[^\n=]*{n}"
+        $@"use[^\n=]*{n}"
+        $@"fun[^\n>]*{n}"
+        $@"for\s+{n}"
+        $@"\|\s*{n}\s*(->|when)"
+    ]
     |> List.exists (fun pattern -> Regex.IsMatch(declText, pattern))
 
 let private capitalize (name: string) =
@@ -202,7 +204,9 @@ let find
                                     decl.Range.StartColumn = 0
                                     || (source.GetLineString(decl.Range.StartLine - 1))
                                         .Substring(0, decl.Range.StartColumn)
-                                        .Trim() = ""
+                                        .Trim()
+                                        =
+                                        ""
 
                                 let aligned = contextColumn |> Option.forall (fun c -> c = decl.Range.StartColumn)
 
@@ -275,14 +279,17 @@ let find
                                             | None -> insertAt, $"{binding}\n\n{indent}"
 
                                         suggestions.Add
-                                            { PatternName = patternName
-                                              InsertRange = insertRange
-                                              InsertText = insertText
-                                              ClauseRange = clauseRange
-                                              OriginalClauseText = textOfRange source clauseRange
-                                              ClauseText = $"{patternName} {binder}" }
+                                            {
+                                                PatternName = patternName
+                                                InsertRange = insertRange
+                                                InsertText = insertText
+                                                ClauseRange = clauseRange
+                                                OriginalClauseText = textOfRange source clauseRange
+                                                ClauseText = $"{patternName} {binder}"
+                                            }
                             | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     // two guards using the same function would both insert the same pattern

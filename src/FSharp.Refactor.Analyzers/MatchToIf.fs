@@ -78,11 +78,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 (textOfRange source elseBody.Range)
 
                         suggestions.Add
-                            { Range = m
-                              OriginalText = textOfRange source m
-                              ReplacementText = replacement }
+                            {
+                                Range = m
+                                OriginalText = textOfRange source m
+                                ReplacementText = replacement
+                            }
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

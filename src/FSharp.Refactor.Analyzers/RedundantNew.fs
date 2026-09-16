@@ -18,9 +18,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      TypeName: string }
+    {
+        Range: range
+        OriginalText: string
+        TypeName: string
+    }
 
 let private disposableNames =
     set [ "System.IDisposable"; "System.IAsyncDisposable" ]
@@ -92,7 +94,9 @@ let private capturingUnionCases (check: FSharpCheckFileResults) =
 let private assemblySignatures (check: FSharpCheckFileResults) =
     try
         check.PartialAssemblySignature
-        :: [ for assembly in check.ProjectContext.GetReferencedAssemblies() -> assembly.Contents ]
+        :: [
+            for assembly in check.ProjectContext.GetReferencedAssemblies() -> assembly.Contents
+        ]
     with _ -> // fsharpanalyzer: ignore-line FR0055
         []
 
@@ -229,29 +233,31 @@ let private siblingValues (entity: FSharpEntity) =
 /// Only F# modules carry values, so opening a namespace contributes nothing
 /// and costs one lookup. Collected once per file, lazily.
 let private openedValueNames (signatures: Lazy<FSharpAssemblySignature list>) (index: AstIndex.Index) =
-    [ for _, decl in index.Decls do
-          match decl with
-          | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
-              let path = ids |> List.map (fun i -> i.idText)
+    [
+        for _, decl in index.Decls do
+            match decl with
+            | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
+                let path = ids |> List.map (fun i -> i.idText)
 
-              for signature in signatures.Value do
-                  let entity =
-                      try
-                          signature.FindEntityByPath path
-                      with _ -> // fsharpanalyzer: ignore-line FR0055
-                          None
+                for signature in signatures.Value do
+                    let entity =
+                        try
+                            signature.FindEntityByPath path
+                        with _ -> // fsharpanalyzer: ignore-line FR0055
+                            None
 
-                  match entity with
-                  | Some entity ->
-                      yield!
-                          (try
-                              entity.MembersFunctionsAndValues
-                              |> Seq.choose (fun v -> if v.IsConstructor then None else Some v.DisplayName)
-                              |> List.ofSeq
-                           with _ -> // fsharpanalyzer: ignore-line FR0055
-                               [])
-                  | None -> ()
-          | _ -> () ]
+                    match entity with
+                    | Some entity ->
+                        yield!
+                            (try
+                                entity.MembersFunctionsAndValues
+                                |> Seq.choose (fun v -> if v.IsConstructor then None else Some v.DisplayName)
+                                |> List.ofSeq
+                             with _ -> // fsharpanalyzer: ignore-line FR0055
+                                 [])
+                    | None -> ()
+            | _ -> ()
+    ]
     |> Set.ofList
 
 /// Values and functions this file binds by name, at any level: a `let`
@@ -263,14 +269,16 @@ let private boundValueNames (index: AstIndex.Index) =
         | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> Some id.idText
         | _ -> None
 
-    [ for _, decl in index.Decls do
-          match decl with
-          | SynModuleDecl.Let(bindings = bindings) -> yield! bindings |> List.choose ofBinding
-          | _ -> ()
-      for _, e in index.Exprs do
-          match e with
-          | LetOrUseE lou -> yield! lou.Bindings |> List.choose ofBinding
-          | _ -> () ]
+    [
+        for _, decl in index.Decls do
+            match decl with
+            | SynModuleDecl.Let(bindings = bindings) -> yield! bindings |> List.choose ofBinding
+            | _ -> ()
+        for _, e in index.Exprs do
+            match e with
+            | LetOrUseE lou -> yield! lou.Bindings |> List.choose ofBinding
+            | _ -> ()
+    ]
     |> Set.ofList
 
 /// Names FSharp.Core binds as CONVERSION FUNCTIONS in every scope, where a
@@ -288,27 +296,29 @@ let private boundValueNames (index: AstIndex.Index) =
 /// `new String(...)` names the type, not the function, and still drops.
 let private conversionFunctions =
     set
-        [ "string"
-          "decimal"
-          "nativeint"
-          "unativeint"
-          "int"
-          "int8"
-          "uint8"
-          "int16"
-          "uint16"
-          "int32"
-          "uint32"
-          "int64"
-          "uint64"
-          "byte"
-          "sbyte"
-          "char"
-          "float"
-          "float32"
-          "single"
-          "double"
-          "enum" ]
+        [
+            "string"
+            "decimal"
+            "nativeint"
+            "unativeint"
+            "int"
+            "int8"
+            "uint8"
+            "int16"
+            "uint16"
+            "int32"
+            "uint32"
+            "int64"
+            "uint64"
+            "byte"
+            "sbyte"
+            "char"
+            "float"
+            "float32"
+            "single"
+            "double"
+            "enum"
+        ]
 
 /// Would the bare name mean something else — a conversion function, a union
 /// case, a value bound here, or a type of another arity — once `new` no
@@ -368,55 +378,59 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let openedValues = lazy (openedValueNames signatures index)
         let ambiguousByNamespace = Dictionary<string, Set<string>>()
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.New(targetType = targetType) ->
-                  // a type application carrying STATIC arguments — a type
-                  // provider's `CsvProvider<"Data/GDP.csv", SkipRows=3>()` —
-                  // needs `new`: in expression position the bare form parses
-                  // `CsvProvider < "Data/GDP.csv"` as a comparison, "Invalid
-                  // module/expression/type" (FSharp.Data's tests)
-                  let staticArgument (t: SynType) =
-                      match t with
-                      | SynType.StaticConstant _
-                      | SynType.StaticConstantExpr _
-                      | SynType.StaticConstantNamed _ -> true
-                      | _ -> false
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.New(targetType = targetType) ->
+                    // a type application carrying STATIC arguments — a type
+                    // provider's `CsvProvider<"Data/GDP.csv", SkipRows=3>()` —
+                    // needs `new`: in expression position the bare form parses
+                    // `CsvProvider < "Data/GDP.csv"` as a comparison, "Invalid
+                    // module/expression/type" (FSharp.Data's tests)
+                    let staticArgument (t: SynType) =
+                        match t with
+                        | SynType.StaticConstant _
+                        | SynType.StaticConstantExpr _
+                        | SynType.StaticConstantNamed _ -> true
+                        | _ -> false
 
-                  let typeIdent =
-                      match targetType with
-                      | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
-                      | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)); typeArgs = args) when
-                          not (ids.IsEmpty || args |> List.exists staticArgument)
-                          ->
-                          Some(List.last ids)
-                      | _ -> None
+                    let typeIdent =
+                        match targetType with
+                        | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+                        | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)); typeArgs = args) when
+                            not (ids.IsEmpty || args |> List.exists staticArgument)
+                            ->
+                            Some(List.last ids)
+                        | _ -> None
 
-                  match typeIdent with
-                  | Some typeIdent when
-                      resolvesToNonDisposable check source typeIdent
-                      && not (
-                          bareNameCaptured
-                              check
-                              source
-                              fileUnionCases
-                              fileValues
-                              openedValues
-                              signatures
-                              ambiguousByNamespace
-                              typeIdent
-                      )
-                      ->
-                      // the `new ` keyword: from the expression start to the
-                      // type's start
-                      let newRange =
-                          Range.mkRange expr.Range.FileName expr.Range.Start targetType.Range.Start
+                    match typeIdent with
+                    | Some typeIdent when
+                        resolvesToNonDisposable check source typeIdent
+                        && not (
+                            bareNameCaptured
+                                check
+                                source
+                                fileUnionCases
+                                fileValues
+                                openedValues
+                                signatures
+                                ambiguousByNamespace
+                                typeIdent
+                        )
+                        ->
+                        // the `new ` keyword: from the expression start to the
+                        // type's start
+                        let newRange =
+                            Range.mkRange expr.Range.FileName expr.Range.Start targetType.Range.Start
 
-                      let newText = textOfRange source newRange
+                        let newText = textOfRange source newRange
 
-                      if newText.TrimEnd() = "new" then
-                          { Range = newRange
-                            OriginalText = newText
-                            TypeName = typeIdent.idText }
-                  | _ -> ()
-              | _ -> () ]
+                        if newText.TrimEnd() = "new" then
+                            {
+                                Range = newRange
+                                OriginalText = newText
+                                TypeName = typeIdent.idText
+                            }
+                    | _ -> ()
+                | _ -> ()
+        ]

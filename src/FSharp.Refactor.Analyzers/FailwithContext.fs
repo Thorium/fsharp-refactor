@@ -106,19 +106,23 @@ let private describeBinding (binding: SynBinding) =
         not (ids.IsEmpty || pats.IsEmpty) && pats.Length <= 4
         ->
         Some
-            { BindingRange = binding.RangeOfBindingWithRhs
-              Name = (List.last ids).idText
-              Parameters = pats |> List.choose paramIdent
-              Implicit = None }
+            {
+                BindingRange = binding.RangeOfBindingWithRhs
+                Name = (List.last ids).idText
+                Parameters = pats |> List.choose paramIdent
+                Implicit = None
+            }
     | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = SynExpr.MatchLambda _ as body)
     | SynBinding(
         headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats [])
         expr = SynExpr.MatchLambda _ as body) ->
         Some
-            { BindingRange = binding.RangeOfBindingWithRhs
-              Name = id.idText
-              Parameters = []
-              Implicit = Some(id, body) }
+            {
+                BindingRange = binding.RangeOfBindingWithRhs
+                Name = id.idText
+                Parameters = []
+                Implicit = Some(id, body)
+            }
     | _ -> None
 
 /// A message that states an invariant: the branch was never meant to run,
@@ -336,87 +340,91 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                 [ "value"; "input"; "arg" ] |> List.tryFind (fun n -> not (taken.Contains n))
 
-            [ for path, expr in index.Exprs do
-                  match expr with
-                  | StaticFailwith(failwithIdent, text, literalRange) when
-                      isSingleLine literalRange
-                      && not (text.Contains '{' || text.Contains '}' || text.Contains '%')
-                      && not (invariantMessage.IsMatch text)
-                      ->
-                      // the innermost enclosing function wins: it is the one
-                      // whose arguments explain this particular throw
-                      let enclosing =
-                          functions
-                          |> Seq.filter (fun f -> Range.rangeContainsRange f.BindingRange literalRange)
-                          |> Seq.sortBy (fun f -> f.BindingRange.EndLine - f.BindingRange.StartLine)
-                          |> Seq.tryHead
+            [
+                for path, expr in index.Exprs do
+                    match expr with
+                    | StaticFailwith(failwithIdent, text, literalRange) when
+                        isSingleLine literalRange
+                        && not (text.Contains '{' || text.Contains '}' || text.Contains '%')
+                        && not (invariantMessage.IsMatch text)
+                        ->
+                        // the innermost enclosing function wins: it is the one
+                        // whose arguments explain this particular throw
+                        let enclosing =
+                            functions
+                            |> Seq.filter (fun f -> Range.rangeContainsRange f.BindingRange literalRange)
+                            |> Seq.sortBy (fun f -> f.BindingRange.EndLine - f.BindingRange.StartLine)
+                            |> Seq.tryHead
 
-                      match enclosing with
-                      | Some f when
-                          text.Trim() <> f.Name
-                          // a message already naming an argument was written
-                          // deliberately
-                          && not (f.Parameters |> List.exists (fun p -> mentionsParameter text p.idText))
-                          // secrets in scope are not for the log
-                          && not (sensitiveName.IsMatch f.Name)
-                          && not (f.Parameters |> List.exists (fun p -> sensitiveName.IsMatch p.idText))
-                          && not (enclosingNames path |> List.exists sensitiveName.IsMatch)
-                          && OptionModule.resolvesToCoreOperator check source failwithIdent
-                          ->
-                          let functionName = f.Name
+                        match enclosing with
+                        | Some f when
+                            text.Trim() <> f.Name
+                            // a message already naming an argument was written
+                            // deliberately
+                            && not (f.Parameters |> List.exists (fun p -> mentionsParameter text p.idText))
+                            // secrets in scope are not for the log
+                            && not (sensitiveName.IsMatch f.Name)
+                            && not (f.Parameters |> List.exists (fun p -> sensitiveName.IsMatch p.idText))
+                            && not (enclosingNames path |> List.exists sensitiveName.IsMatch)
+                            && OptionModule.resolvesToCoreOperator check source failwithIdent
+                            ->
+                            let functionName = f.Name
 
-                          // the `function` shape: its one argument is quoted
-                          // by naming the wildcard arm that throws
-                          let implicitArm =
-                              match f.Implicit with
-                              | Some(nameId, body) ->
-                                  match wildcardArmOf path body expr.Range with
-                                  | ValueSome wildRange when
-                                      implicitArgType check source nameId |> Option.exists (printsUsefully 0)
-                                      ->
-                                      freshNameIn f.BindingRange
-                                      |> Option.map (fun fresh -> fresh, (wildRange, "_", fresh))
-                                  | _ -> None
-                              | None -> None
+                            // the `function` shape: its one argument is quoted
+                            // by naming the wildcard arm that throws
+                            let implicitArm =
+                                match f.Implicit with
+                                | Some(nameId, body) ->
+                                    match wildcardArmOf path body expr.Range with
+                                    | ValueSome wildRange when
+                                        implicitArgType check source nameId |> Option.exists (printsUsefully 0)
+                                        ->
+                                        freshNameIn f.BindingRange
+                                        |> Option.map (fun fresh -> fresh, (wildRange, "_", fresh))
+                                    | _ -> None
+                                | None -> None
 
-                          let reportable =
-                              (f.Parameters |> List.filter usefulParameter |> List.map (fun p -> p.idText))
-                              @ (implicitArm |> Option.map fst |> Option.toList)
+                            let reportable =
+                                (f.Parameters |> List.filter usefulParameter |> List.map (fun p -> p.idText))
+                                @ (implicitArm |> Option.map fst |> Option.toList)
 
-                          let literalText = textOfRange source literalRange
+                            let literalText = textOfRange source literalRange
 
-                          // the same text elsewhere in the file is somebody
-                          // reading it back — a test's `should equal "..."`
-                          // (Fuuga), a caller matching on the message
-                          let quotedElsewhere =
-                              let thrown = thrownCounts |> Map.tryFind literalText |> Option.defaultValue 1
+                            // the same text elsewhere in the file is somebody
+                            // reading it back — a test's `should equal "..."`
+                            // (Fuuga), a caller matching on the message
+                            let quotedElsewhere =
+                                let thrown = thrownCounts |> Map.tryFind literalText |> Option.defaultValue 1
 
-                              let rec count (from: int) (acc: int) =
-                                  let next = all.IndexOf(literalText, from, StringComparison.Ordinal)
-                                  if next < 0 then acc else count (next + 1) (acc + 1)
+                                let rec count (from: int) (acc: int) =
+                                    let next = all.IndexOf(literalText, from, StringComparison.Ordinal)
+                                    if next < 0 then acc else count (next + 1) (acc + 1)
 
-                              count 0 0 > thrown
+                                count 0 0 > thrown
 
-                          if
-                              not reportable.IsEmpty
-                              && literalText.StartsWith '"'
-                              && literalText.EndsWith '"'
-                              && not (literalText.StartsWith "\"\"\"")
-                              && literalText.Length >= 2
-                              && not quotedElsewhere
-                          then
-                              let reported =
-                                  reportable |> List.map (fun p -> p + ": {" + p + "}") |> String.concat ", "
+                            if
+                                not reportable.IsEmpty
+                                && literalText.StartsWith '"'
+                                && literalText.EndsWith '"'
+                                && not (literalText.StartsWith "\"\"\"")
+                                && literalText.Length >= 2
+                                && not quotedElsewhere
+                            then
+                                let reported =
+                                    reportable |> List.map (fun p -> p + ": {" + p + "}") |> String.concat ", "
 
-                              let suffix = $", calling {functionName} with {reported}"
+                                let suffix = $", calling {functionName} with {reported}"
 
-                              { Range = literalRange
-                                OriginalText = literalText
-                                ReplacementText = "$" + literalText.Insert(literalText.Length - 1, suffix)
-                                FunctionName = functionName
-                                PatternEdit = implicitArm |> Option.map snd }
-                      | _ -> ()
-                  | _ -> () ]
+                                {
+                                    Range = literalRange
+                                    OriginalText = literalText
+                                    ReplacementText = "$" + literalText.Insert(literalText.Length - 1, suffix)
+                                    FunctionName = functionName
+                                    PatternEdit = implicitArm |> Option.map snd
+                                }
+                        | _ -> ()
+                    | _ -> ()
+            ]
 
 /// The other half of the contract, in the TEST file. An enrichment appends
 /// to the message, so an assertion pinning the exact text has to become a
@@ -438,9 +446,10 @@ let private assertionForms (literal: string) : (Regex * string) list =
     let escaped = Regex.Escape literal
 
     [ // FsUnit
-      Regex($@"(?<=\.Message\s*\|>\s*)should\s+equal\s+{escaped}"), "should startWith " + literal
-      // xUnit
-      Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,(?=\s*[^,()]*\.Message\s*\))"), $"Assert.StartsWith({literal}," ]
+        Regex($@"(?<=\.Message\s*\|>\s*)should\s+equal\s+{escaped}"), "should startWith " + literal
+        // xUnit
+        Regex($@"Assert\.Equal\s*\(\s*{escaped}\s*,(?=\s*[^,()]*\.Message\s*\))"), $"Assert.StartsWith({literal},"
+    ]
 
 /// Every occurrence of the literal in this test text sits inside an
 /// assertion form the rewrite knows - or one it already produced: a prefix
@@ -454,8 +463,10 @@ let everyMentionRewritable (text: string) (literal: string) : bool =
     let escaped = Regex.Escape literal
 
     let loosened =
-        [ Regex($@"should\s+startWith\s+{escaped}")
-          Regex($@"Assert\.StartsWith\s*\(\s*{escaped}\s*,") ]
+        [
+            Regex($@"should\s+startWith\s+{escaped}")
+            Regex($@"Assert\.StartsWith\s*\(\s*{escaped}\s*,")
+        ]
 
     let covered =
         (assertionForms literal |> List.map fst) @ loosened
@@ -474,16 +485,18 @@ let findAssertions
     (fileName: string)
     (enrichedLiterals: string list)
     : (range * string * string) list =
-    [ for literal in enrichedLiterals do
-          for line in 0 .. source.GetLineCount() - 1 do
-              let text = source.GetLineString line
+    [
+        for literal in enrichedLiterals do
+            for line in 0 .. source.GetLineCount() - 1 do
+                let text = source.GetLineString line
 
-              for pattern, replacement in assertionForms literal do
-                  for m in pattern.Matches text do
-                      let r =
-                          Range.mkRange
-                              fileName
-                              (Position.mkPos (line + 1) m.Index)
-                              (Position.mkPos (line + 1) (m.Index + m.Length))
+                for pattern, replacement in assertionForms literal do
+                    for m in pattern.Matches text do
+                        let r =
+                            Range.mkRange
+                                fileName
+                                (Position.mkPos (line + 1) m.Index)
+                                (Position.mkPos (line + 1) (m.Index + m.Length))
 
-                      yield r, m.Value, replacement ]
+                        yield r, m.Value, replacement
+    ]

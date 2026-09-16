@@ -165,9 +165,11 @@ let find
                         match equalsIdent with
                         | Some ident when not hasGetHashCode ->
                             equalsSuggestions.Add
-                                { TypeName = typeName
-                                  Range = ident.idRange
-                                  OriginalText = textOfRange source ident.idRange }
+                                {
+                                    TypeName = typeName
+                                    Range = ident.idRange
+                                    OriginalText = textOfRange source ident.idRange
+                                }
                         | _ -> ()
 
                         // rule 3 (FR0054): raises inside members callers never
@@ -190,8 +192,10 @@ let find
                                         Range.rangeContainsRange body.Range r
                                         && not (handledRanges |> Array.exists (fun h -> Range.rangeContainsRange h r))) do
                                     raiseSuggestions.Add
-                                        { MemberName = nameId.idText
-                                          Range = siteRange }
+                                        {
+                                            MemberName = nameId.idText
+                                            Range = siteRange
+                                        }
                             | _ -> ()
 
                         // rule 2: abstract members referenced during construction
@@ -224,12 +228,15 @@ let find
                                 match referenced with
                                 | Some ident ->
                                     ctorSuggestions.Add
-                                        { MemberName = ident.idText
-                                          Range = ident.idRange
-                                          OriginalText = textOfRange source ident.idRange }
+                                        {
+                                            MemberName = ident.idText
+                                            Range = ident.idRange
+                                            OriginalText = textOfRange source ident.idRange
+                                        }
                                 | None -> ()
                         | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq equalsSuggestions, List.ofSeq ctorSuggestions, List.ofSeq raiseSuggestions

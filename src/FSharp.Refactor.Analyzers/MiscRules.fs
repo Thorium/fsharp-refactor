@@ -83,8 +83,10 @@ let find
                     headPat = (SynPat.Named(ident = SynIdent(ident = var); accessibility = None) | SynPat.LongIdent(
                         longDotId = SynLongIdent(id = [ var ]); argPats = SynArgPats.Pats []; accessibility = None))) ->
                     mutables.Add
-                        { Range = var.idRange
-                          Name = var.idText }
+                        {
+                            Range = var.idRange
+                            Name = var.idText
+                        }
                 | _ -> ()
         | _ -> ()
 
@@ -155,9 +157,11 @@ let find
                                     arg.Range, argText, $"({argText}, {cultureSpelling culture})")
 
                     parses.Add
-                        { Range = e.Range
-                          CallName = owner.idText + ".Parse"
-                          CultureFix = cultureFix }
+                        {
+                            Range = e.Range
+                            CallName = owner.idText + ".Parse"
+                            CultureFix = cultureFix
+                        }
             | _ -> ()
         | _ -> ()
 
@@ -214,9 +218,11 @@ let find
                             | true, (original, originalIndex) ->
                                 if not (declaredAlias k original originalIndex i caseId.idText) then
                                     enums.Add
-                                        { Range = caseId.idRange
-                                          CaseName = caseId.idText
-                                          OriginalName = original }
+                                        {
+                                            Range = caseId.idRange
+                                            CaseName = caseId.idText
+                                            OriginalName = original
+                                        }
                             | _ -> seen.[k] <- (caseId.idText, i)
                         | None -> ()
                 | _ -> ()

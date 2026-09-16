@@ -21,6 +21,18 @@ open FSharp.Refactor.Tool
 
 let private checker = FSharpChecker.Create()
 
+/// A driver function called directly, with the prose it writes to stderr
+/// (put-backs, rolled-back fixes) kept out of the test run's output.
+let private quietly (f: unit -> 'T) : 'T =
+    use captured = new StringWriter()
+    let oldErr = Console.Error
+    Console.SetError captured
+
+    try
+        f ()
+    finally
+        Console.SetError oldErr
+
 let private tempRoot (prefix: string) =
     let root = Path.Combine(Path.GetTempPath(), prefix + Guid.NewGuid().ToString "N")
     Directory.CreateDirectory root |> ignore
@@ -46,7 +58,8 @@ let private projectOptions (projectFile: string) (files: string list) =
 
     { probeOptions with
         ProjectFileName = projectFile
-        SourceFiles = Array.ofList files }
+        SourceFiles = Array.ofList files
+    }
 
 let private errorsOf (results: FSharpCheckProjectResults) =
     results.Diagnostics
@@ -99,15 +112,17 @@ let ``absolutizeArgs rebases the path-carrying arguments against the project dir
     let projectDir = Path.Combine(Path.GetTempPath(), "fsref-proj", "src", "Lib")
 
     let args =
-        [| "--keyfile:../../Key.snk"
-           "--doc:bin\\Debug\\Lib.xml"
-           "-r:..\\..\\packages\\A.dll"
-           "--resource:res\\a.txt,Lib.a.txt,public"
-           "--lib:..\\lib;C:\\absolute\\dir"
-           "-o:obj\\Debug\\Lib.dll"
-           "--target:library"
-           "--define:DEBUG"
-           "Library.fs" |]
+        [|
+            "--keyfile:../../Key.snk"
+            "--doc:bin\\Debug\\Lib.xml"
+            "-r:..\\..\\packages\\A.dll"
+            "--resource:res\\a.txt,Lib.a.txt,public"
+            "--lib:..\\lib;C:\\absolute\\dir"
+            "-o:obj\\Debug\\Lib.dll"
+            "--target:library"
+            "--define:DEBUG"
+            "Library.fs"
+        |]
 
     let rebased = Program.absolutizeArgs projectDir args
 
@@ -199,9 +214,11 @@ let ``a relative AssemblyKeyFile attribute resolves against the project director
 // ---- A11 (driver half): innocent fixes survive a rollback whose culprit is elsewhere ----
 
 let private fix (line: int) (startColumn: int) (endColumn: int) (fromText: string) (toText: string) : Fix =
-    { FromRange = Range.mkRange "" (Position.mkPos line startColumn) (Position.mkPos line endColumn)
-      FromText = fromText
-      ToText = toText }
+    {
+        FromRange = Range.mkRange "" (Position.mkPos line startColumn) (Position.mkPos line endColumn)
+        FromText = fromText
+        ToText = toText
+    }
 
 [<Fact>]
 let ``a pass broken by a fix in a file the errors never name keeps every other fix`` () =
@@ -240,26 +257,36 @@ let ``a pass broken by a fix in a file the errors never name keeps every other f
                 projectOptions (Path.Combine(root, "Tests.fsproj")) [ testData; extra; result ]
 
             { plain with
-                OtherOptions = Array.append plain.OtherOptions [| "--warnaserror:3190" |] }
+                OtherOptions = Array.append plain.OtherOptions [| "--warnaserror:3190" |]
+            }
 
         let literalFix = fix 3 0 15 "let lat = 13.06" "[<Literal>]\nlet lat = 13.06"
         let extraFix = fix 3 21 26 "n + n" "2 * n"
         let resultFix = fix 7 13 19 "id lat" "lat"
 
         let changed: Program.AppliedFile list =
-            [ { Path = testData
-                Before = testDataBefore
-                Fixes = [ 1, "FR0130", literalFix ] }
-              { Path = extra
-                Before = extraBefore
-                Fixes = [ 2, "FR0012", extraFix ] }
-              { Path = result
-                Before = resultBefore
-                Fixes = [ 3, "FR0095", resultFix ] } ]
+            [
+                {
+                    Path = testData
+                    Before = testDataBefore
+                    Fixes = [ 1, "FR0130", literalFix ]
+                }
+                {
+                    Path = extra
+                    Before = extraBefore
+                    Fixes = [ 2, "FR0012", extraFix ]
+                }
+                {
+                    Path = result
+                    Before = resultBefore
+                    Fixes = [ 3, "FR0095", resultFix ]
+                }
+            ]
 
         let suppressed = Collections.Generic.HashSet<string * string * string * string>()
 
-        let clean = Program.verifyPass checker options 0 suppressed changed
+        let clean =
+            quietly (fun () -> Program.verifyPass checker options 0 suppressed changed)
 
         // the pass did introduce errors...
         Assert.False clean
@@ -307,16 +334,22 @@ let ``a pass whose error-site fixes are the culprits still rolls back only those
         let bFix = fix 5 27 31 "\"\"" "1"
 
         let changed: Program.AppliedFile list =
-            [ { Path = a
-                Before = aBefore
-                Fixes = [ 1, "FR0012", aFix ] }
-              { Path = b
-                Before = bBefore
-                Fixes = [ 2, "FR0999", bFix ] } ]
+            [
+                {
+                    Path = a
+                    Before = aBefore
+                    Fixes = [ 1, "FR0012", aFix ]
+                }
+                {
+                    Path = b
+                    Before = bBefore
+                    Fixes = [ 2, "FR0999", bFix ]
+                }
+            ]
 
         let suppressed = Collections.Generic.HashSet<string * string * string * string>()
 
-        Assert.False(Program.verifyPass checker options 0 suppressed changed)
+        Assert.False(quietly (fun () -> Program.verifyPass checker options 0 suppressed changed))
 
         Assert.Equal(aAfter, File.ReadAllText a)
         Assert.Equal(bBefore, File.ReadAllText b)
@@ -406,5 +439,43 @@ let ``a run that exits non-zero says which compilation caused it and why`` () : 
         Assert.True(exitLine.IsSome, $"expected an 'exit 1:' line naming the compilation:\n{output}")
         Assert.Contains("Broken.fsproj", exitLine.Value)
         Assert.Contains("does not build", exitLine.Value)
+    finally
+        cleanup root
+
+// ---- the sweep dedup and #if INTERACTIVE ----
+
+[<Fact>]
+let ``a file whose only directives are INTERACTIVE or COMPILED sweeps once across frameworks`` () : unit =
+    // `#if INTERACTIVE` / `#if !INTERACTIVE` is how a source is written to
+    // serve as both a project file and a #load'ed script (skipping the
+    // email send when run interactively); neither symbol varies between a
+    // project's frameworks, so such a file needs one sweep, not one per
+    // framework. Any other condition keeps the per-defines key
+    let root = tempRoot "fsref-driver-interactive-"
+
+    try
+        let write (name: string) (content: string) =
+            let path = Path.Combine(root, name)
+            File.WriteAllText(path, content)
+            path
+
+        let interactiveOnly =
+            write "A.fs" "module A\n\n#if INTERACTIVE\nlet send () = ()\n#else\nlet send () = Mail.send ()\n#endif\n"
+
+        let negated =
+            write "B.fs" "module B\n\n#if !INTERACTIVE && COMPILED // both spellings\nlet x = 1\n#endif\n"
+
+        let framework =
+            write "C.fs" "module C\n\n#if NET8_0_OR_GREATER\nlet x = 1\n#endif\n"
+
+        let mixed = write "D.fs" "module D\n\n#if INTERACTIVE || DEBUG\nlet x = 1\n#endif\n"
+
+        let plain = write "E.fs" "module E\n\nlet x = 1\n"
+
+        Assert.True(Program.isDirectiveFree interactiveOnly)
+        Assert.True(Program.isDirectiveFree negated)
+        Assert.False(Program.isDirectiveFree framework)
+        Assert.False(Program.isDirectiveFree mixed)
+        Assert.True(Program.isDirectiveFree plain)
     finally
         cleanup root

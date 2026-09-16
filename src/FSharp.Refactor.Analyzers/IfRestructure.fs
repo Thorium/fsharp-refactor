@@ -36,9 +36,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// Parenthesize a condition whose top is `||` before it joins an `&&`:
 /// precedence would otherwise regroup it.
@@ -194,14 +196,18 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
                 | _ -> None)
         )
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.IfThenElse _ when not (nested.Contains(key expr.Range)) ->
-              for replaceRange, replacement in chain expr expr.Range.StartColumn do
-                  { Range = replaceRange
-                    OriginalText = textOfRange source replaceRange
-                    ReplacementText = replacement }
-          | _ -> () ]
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.IfThenElse _ when not (nested.Contains(key expr.Range)) ->
+                for replaceRange, replacement in chain expr expr.Range.StartColumn do
+                    {
+                        Range = replaceRange
+                        OriginalText = textOfRange source replaceRange
+                        ReplacementText = replacement
+                    }
+            | _ -> ()
+    ]
 
 // ---- FR0112: equality chain -> match ----
 
@@ -236,122 +242,132 @@ let findEqualityChains
     : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          // only chain HEADS: elif links carry IsElif and are skipped; a
-          // plain if nested in another's else yields an inner suggestion
-          // too, which the overlap hold-back resolves in the outer's favor
-          | SynExpr.IfThenElse(trivia = trivia) when not trivia.IsElif ->
-              // walk the elif chain collecting (op, ident, literal, branch)
-              let rec collect acc (e: SynExpr) =
-                  match e with
-                  | SynExpr.IfThenElse(ifExpr = cond; thenExpr = t; elseExpr = Some els) ->
-                      match (|IdentEqualsLiteral|_|) source cond with
-                      | ValueSome(op, id, lit) when isSingleLine t.Range -> collect ((op, id, lit, t) :: acc) els
-                      | _ -> None
-                  // an else-less trailing if means the chain has NO terminal
-                  // else: its text starts with `elif`, which would splice a
-                  // keyword into the wildcard arm — caught adversarially, the
-                  // apply-side rollback contained it, an editor would not have
-                  | SynExpr.IfThenElse(elseExpr = None) -> None
-                  | finalElse when isSingleLine finalElse.Range -> Some(List.rev acc, finalElse)
-                  | _ -> None
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            // only chain HEADS: elif links carry IsElif and are skipped; a
+            // plain if nested in another's else yields an inner suggestion
+            // too, which the overlap hold-back resolves in the outer's favor
+            | SynExpr.IfThenElse(trivia = trivia) when not trivia.IsElif ->
+                // walk the elif chain collecting (op, ident, literal, branch)
+                let rec collect acc (e: SynExpr) =
+                    match e with
+                    | SynExpr.IfThenElse(ifExpr = cond; thenExpr = t; elseExpr = Some els) ->
+                        match (|IdentEqualsLiteral|_|) source cond with
+                        | ValueSome(op, id, lit) when isSingleLine t.Range -> collect ((op, id, lit, t) :: acc) els
+                        | _ -> None
+                    // an else-less trailing if means the chain has NO terminal
+                    // else: its text starts with `elif`, which would splice a
+                    // keyword into the wildcard arm — caught adversarially, the
+                    // apply-side rollback contained it, an editor would not have
+                    | SynExpr.IfThenElse(elseExpr = None) -> None
+                    | finalElse when isSingleLine finalElse.Range -> Some(List.rev acc, finalElse)
+                    | _ -> None
 
-              match collect [] expr with
-              | Some(arms, finalElse) when arms.Length >= 2 ->
-                  let (_, firstId, _, _) = List.head arms
+                match collect [] expr with
+                | Some(arms, finalElse) when arms.Length >= 2 ->
+                    let (_, firstId, _, _) = List.head arms
 
-                  let sameIdent =
-                      arms |> List.forall (fun (_, id, _, _) -> id.idText = firstId.idText)
+                    let sameIdent =
+                        arms |> List.forall (fun (_, id, _, _) -> id.idText = firstId.idText)
 
-                  let literals = arms |> List.map (fun (_, _, lit, _) -> lit)
-                  let distinct = (List.distinct literals).Length = literals.Length
+                    let literals = arms |> List.map (fun (_, _, lit, _) -> lit)
+                    let distinct = (List.distinct literals).Length = literals.Length
 
-                  // every `=` must be FSharp.Core's — a custom operator can
-                  // mean anything, and match patterns use structural
-                  // equality
-                  let coreEquality =
-                      arms
-                      |> List.forall (fun (op, _, _, _) -> OptionModule.resolvesToCoreOperator check source op)
+                    // every `=` must be FSharp.Core's — a custom operator can
+                    // mean anything, and match patterns use structural
+                    // equality
+                    let coreEquality =
+                        arms
+                        |> List.forall (fun (op, _, _, _) -> OptionModule.resolvesToCoreOperator check source op)
 
-                  if sameIdent && distinct && coreEquality then
-                      let indent = String.replicate expr.Range.StartColumn " "
+                    if sameIdent && distinct && coreEquality then
+                        let indent = String.replicate expr.Range.StartColumn " "
 
-                      let armLines =
-                          arms
-                          |> List.map (fun (_, _, lit, t) -> $"{indent}| {lit} -> {textOfRange source t.Range}")
-                          |> String.concat "\n"
+                        let armLines =
+                            arms
+                            |> List.map (fun (_, _, lit, t) -> $"{indent}| {lit} -> {textOfRange source t.Range}")
+                            |> String.concat "\n"
 
-                      let replacement =
-                          $"match {firstId.idText} with\n{armLines}\n{indent}| _ -> {textOfRange source finalElse.Range}"
+                        let replacement =
+                            $"match {firstId.idText} with\n{armLines}\n{indent}| _ -> {textOfRange source finalElse.Range}"
 
-                      if not (spansDirective source expr.Range) then
-                          { Range = expr.Range
-                            OriginalText = textOfRange source expr.Range
-                            ReplacementText = replacement }
-              | _ -> ()
-          | _ -> () ]
+                        if not (spansDirective source expr.Range) then
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                ReplacementText = replacement
+                            }
+                | _ -> ()
+            | _ -> ()
+    ]
 
 // ---- FR0113: nested if merge ----
 
 let findNestedIfMerges (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.IfThenElse(ifExpr = outerCond; thenExpr = thenBranch; elseExpr = outerElse; trivia = trivia) when
-              not trivia.IsElif && isSingleLine outerCond.Range
-              ->
-              match stripParens thenBranch, outerElse with
-              // same else on both levels
-              | SynExpr.IfThenElse(
-                  ifExpr = innerCond; thenExpr = innerThen; elseExpr = Some innerElse; trivia = innerTrivia),
-                Some outerElseExpr when
-                  not innerTrivia.IsElif
-                  && isSingleLine innerCond.Range
-                  && isSingleLine innerThen.Range
-                  && isSingleLine innerElse.Range
-                  && isSingleLine outerElseExpr.Range
-                  && textOfRange source innerElse.Range = textOfRange source outerElseExpr.Range
-                  ->
-                  let a = conditionText source outerCond
-                  let b = conditionText source innerCond
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.IfThenElse(ifExpr = outerCond; thenExpr = thenBranch; elseExpr = outerElse; trivia = trivia) when
+                not trivia.IsElif && isSingleLine outerCond.Range
+                ->
+                match stripParens thenBranch, outerElse with
+                // same else on both levels
+                | SynExpr.IfThenElse(
+                    ifExpr = innerCond; thenExpr = innerThen; elseExpr = Some innerElse; trivia = innerTrivia),
+                  Some outerElseExpr when
+                    not innerTrivia.IsElif
+                    && isSingleLine innerCond.Range
+                    && isSingleLine innerThen.Range
+                    && isSingleLine innerElse.Range
+                    && isSingleLine outerElseExpr.Range
+                    && textOfRange source innerElse.Range = textOfRange source outerElseExpr.Range
+                    ->
+                    let a = conditionText source outerCond
+                    let b = conditionText source innerCond
 
-                  let replacement =
-                      if isSingleLine expr.Range then
-                          $"if {a} && {b} then {textOfRange source innerThen.Range} else {textOfRange source innerElse.Range}"
-                      else
-                          let indent = String.replicate expr.Range.StartColumn " "
+                    let replacement =
+                        if isSingleLine expr.Range then
+                            $"if {a} && {b} then {textOfRange source innerThen.Range} else {textOfRange source innerElse.Range}"
+                        else
+                            let indent = String.replicate expr.Range.StartColumn " "
 
-                          $"if {a} && {b} then\n{indent}    {textOfRange source innerThen.Range}\n{indent}else\n{indent}    {textOfRange source innerElse.Range}"
+                            $"if {a} && {b} then\n{indent}    {textOfRange source innerThen.Range}\n{indent}else\n{indent}    {textOfRange source innerElse.Range}"
 
-                  if not (spansDirective source expr.Range) then
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
-                        ReplacementText = replacement }
-              // no else anywhere: unit-typed, nothing to lose
-              | SynExpr.IfThenElse(ifExpr = innerCond; thenExpr = innerThen; elseExpr = None; trivia = innerTrivia),
-                None when
-                  not innerTrivia.IsElif
-                  && isSingleLine innerCond.Range
-                  && isSingleLine innerThen.Range
-                  ->
-                  let a = conditionText source outerCond
-                  let b = conditionText source innerCond
+                    if not (spansDirective source expr.Range) then
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ReplacementText = replacement
+                        }
+                // no else anywhere: unit-typed, nothing to lose
+                | SynExpr.IfThenElse(ifExpr = innerCond; thenExpr = innerThen; elseExpr = None; trivia = innerTrivia),
+                  None when
+                    not innerTrivia.IsElif
+                    && isSingleLine innerCond.Range
+                    && isSingleLine innerThen.Range
+                    ->
+                    let a = conditionText source outerCond
+                    let b = conditionText source innerCond
 
-                  let replacement =
-                      if isSingleLine expr.Range then
-                          $"if {a} && {b} then {textOfRange source innerThen.Range}"
-                      else
-                          let indent = String.replicate expr.Range.StartColumn " "
-                          $"if {a} && {b} then\n{indent}    {textOfRange source innerThen.Range}"
+                    let replacement =
+                        if isSingleLine expr.Range then
+                            $"if {a} && {b} then {textOfRange source innerThen.Range}"
+                        else
+                            let indent = String.replicate expr.Range.StartColumn " "
+                            $"if {a} && {b} then\n{indent}    {textOfRange source innerThen.Range}"
 
-                  if not (spansDirective source expr.Range) then
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
-                        ReplacementText = replacement }
-              | _ -> ()
-          | _ -> () ]
+                    if not (spansDirective source expr.Range) then
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ReplacementText = replacement
+                        }
+                | _ -> ()
+            | _ -> ()
+    ]
 
 // ---- FR0114: pyramid-of-doom flip (default off) ----
 
@@ -367,39 +383,43 @@ let findPyramidFlips
     : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenBranch; elseExpr = Some elseBranch; trivia = trivia) when
-              not trivia.IsElif
-              && isSingleLine cond.Range
-              // flipping across an elif chain is a different rewrite
-              && (match elseBranch with
-                  | SynExpr.IfThenElse _ -> false
-                  | _ -> true)
-              && (thenBranch.Range.EndLine - thenBranch.Range.StartLine + 1) >= thenAtLeast
-              && (elseBranch.Range.EndLine - elseBranch.Range.StartLine + 1) <= elseAtMost
-              // both branches on their own lines at the same depth, so the
-              // blocks swap verbatim
-              && thenBranch.Range.StartLine > expr.Range.StartLine
-              && elseBranch.Range.StartColumn = thenBranch.Range.StartColumn
-              && not (spansDirective source expr.Range)
-              ->
-              let negated =
-                  match stripParens cond with
-                  | SynExpr.App(funcExpr = SingleIdent notId; argExpr = inner) when notId.idText = "not" ->
-                      textOfRange source (stripParens inner).Range
-                  | _ -> $"not ({textOfRange source cond.Range})"
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenBranch; elseExpr = Some elseBranch; trivia = trivia) when
+                not trivia.IsElif
+                && isSingleLine cond.Range
+                // flipping across an elif chain is a different rewrite
+                && (match elseBranch with
+                    | SynExpr.IfThenElse _ -> false
+                    | _ -> true)
+                && (thenBranch.Range.EndLine - thenBranch.Range.StartLine + 1) >= thenAtLeast
+                && (elseBranch.Range.EndLine - elseBranch.Range.StartLine + 1) <= elseAtMost
+                // both branches on their own lines at the same depth, so the
+                // blocks swap verbatim
+                && thenBranch.Range.StartLine > expr.Range.StartLine
+                && elseBranch.Range.StartColumn = thenBranch.Range.StartColumn
+                && not (spansDirective source expr.Range)
+                ->
+                let negated =
+                    match stripParens cond with
+                    | SynExpr.App(funcExpr = SingleIdent notId; argExpr = inner) when notId.idText = "not" ->
+                        textOfRange source (stripParens inner).Range
+                    | _ -> $"not ({textOfRange source cond.Range})"
 
-              let indent = String.replicate expr.Range.StartColumn " "
-              let branchIndent = String.replicate thenBranch.Range.StartColumn " "
+                let indent = String.replicate expr.Range.StartColumn " "
+                let branchIndent = String.replicate thenBranch.Range.StartColumn " "
 
-              let replacement =
-                  $"if {negated} then\n{branchIndent}{textOfRange source elseBranch.Range}\n{indent}else\n{branchIndent}{textOfRange source thenBranch.Range}"
+                let replacement =
+                    $"if {negated} then\n{branchIndent}{textOfRange source elseBranch.Range}\n{indent}else\n{branchIndent}{textOfRange source thenBranch.Range}"
 
-              { Range = expr.Range
-                OriginalText = textOfRange source expr.Range
-                ReplacementText = replacement }
-          | _ -> () ]
+                {
+                    Range = expr.Range
+                    OriginalText = textOfRange source expr.Range
+                    ReplacementText = replacement
+                }
+            | _ -> ()
+    ]
 
 // ---- FR0115: base case first behind a compound guard (note) ----
 
@@ -414,14 +434,16 @@ type GuardOrderNote = { Range: range; Variable: string }
 let private isFailureArm (arm: SynExpr) =
     let failing =
         set
-            [ "raise"
-              "failwith"
-              "failwithf"
-              "invalidArg"
-              "invalidOp"
-              "nullArg"
-              "reraise"
-              "exit" ]
+            [
+                "raise"
+                "failwith"
+                "failwithf"
+                "invalidArg"
+                "invalidOp"
+                "nullArg"
+                "reraise"
+                "exit"
+            ]
 
     let rec head (e: SynExpr) =
         match e with
@@ -455,25 +477,29 @@ let private isFailureArm (arm: SynExpr) =
 let findGuardOrderNotes (parseTree: ParsedInput) (source: ISourceText) : GuardOrderNote list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.Match(
-              clauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
-                          SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ])
-          | SynExpr.MatchBang(
-              clauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
-                          SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ])
-          | SynExpr.MatchLambda(
-              matchClauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
-                               SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ]) ->
-              match stripParens guard with
-              | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
-                  op.idText = "op_BooleanAnd"
-                  && textOfRange source lhs.Range |> fun t -> t.Contains v.idText
-                  && textOfRange source rhs.Range |> fun t -> t.Contains v.idText
-                  && isFailureArm errArm
-                  ->
-                  { Range = expr.Range
-                    Variable = v.idText }
-              | _ -> ()
-          | _ -> () ]
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.Match(
+                clauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
+                            SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ])
+            | SynExpr.MatchBang(
+                clauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
+                            SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ])
+            | SynExpr.MatchLambda(
+                matchClauses = [ SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = v)); whenExpr = Some guard)
+                                 SynMatchClause(pat = SynPat.Wild _; resultExpr = errArm) ]) ->
+                match stripParens guard with
+                | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
+                    op.idText = "op_BooleanAnd"
+                    && textOfRange source lhs.Range |> fun t -> t.Contains v.idText
+                    && textOfRange source rhs.Range |> fun t -> t.Contains v.idText
+                    && isFailureArm errArm
+                    ->
+                    {
+                        Range = expr.Range
+                        Variable = v.idText
+                    }
+                | _ -> ()
+            | _ -> ()
+    ]

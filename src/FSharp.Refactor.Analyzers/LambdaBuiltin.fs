@@ -185,11 +185,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             | ValueNone -> expr.Range
 
                         suggestions.Add
-                            { Range = range
-                              OriginalText = textOfRange source range
-                              ReplacementText = replacement }
+                            {
+                                Range = range
+                                OriginalText = textOfRange source range
+                                ReplacementText = replacement
+                            }
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

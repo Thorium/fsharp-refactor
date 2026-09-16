@@ -59,12 +59,14 @@ type Suggestion =
 /// One member ready to leave its group, before the group's leavers are
 /// folded into a single suggestion.
 type private Part =
-    { Block: range
-      Extracted: string
-      HasComments: bool
-      Condition: string option
-      Name: string
-      SelfRecursive: bool }
+    {
+        Block: range
+        Extracted: string
+        HasComments: bool
+        Condition: string option
+        Name: string
+        SelfRecursive: bool
+    }
 
 /// The HEAD of a group references no sibling: nothing needs to move at
 /// all — the head's `let rec` becomes `let`, and the next binding's
@@ -520,345 +522,359 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
             modules |> List.collect (fun (SynModuleOrNamespace(decls = ds)) -> declsOf ds)
         | _ -> []
 
-    [ for decl in decls do
-          match decl with
-          | SynModuleDecl.Let(isRecursive = true; bindings = bindings) when bindings.Length >= 2 ->
-              let names = bindings |> List.choose bindingName
+    [
+        for decl in decls do
+            match decl with
+            | SynModuleDecl.Let(isRecursive = true; bindings = bindings) when bindings.Length >= 2 ->
+                let names = bindings |> List.choose bindingName
 
-              // every binding must have a recognizable name, or membership
-              // is unknowable
-              if names.Length = bindings.Length then
-                  // each binding's text block runs from its leading keyword
-                  // to the next binding's leading keyword (or the group end)
-                  let keywordStarts =
-                      bindings
-                      |> List.map (fun (SynBinding(trivia = trivia)) -> trivia.LeadingKeyword.Range)
+                // every binding must have a recognizable name, or membership
+                // is unknowable
+                if names.Length = bindings.Length then
+                    // each binding's text block runs from its leading keyword
+                    // to the next binding's leading keyword (or the group end)
+                    let keywordStarts =
+                        bindings
+                        |> List.map (fun (SynBinding(trivia = trivia)) -> trivia.LeadingKeyword.Range)
 
-                  // comment lines directly above a binding's keyword belong
-                  // to it and travel with it: a `///` doc, and equally a
-                  // plain `//` note - left behind, the note re-attaches to
-                  // whatever binding comes next (ProvidedTypes.fs's
-                  // `// REVIEW: write into an accumuating buffer` headed an
-                  // unrelated member once its own had moved out). A blank
-                  // line ends the run, so a section banner above one stays
-                  let commentStartOf i =
-                      let keywordLine = (List.item i keywordStarts).StartLine
-                      let mutable first = keywordLine
-                      let mutable scanning = true
+                    // comment lines directly above a binding's keyword belong
+                    // to it and travel with it: a `///` doc, and equally a
+                    // plain `//` note - left behind, the note re-attaches to
+                    // whatever binding comes next (ProvidedTypes.fs's
+                    // `// REVIEW: write into an accumuating buffer` headed an
+                    // unrelated member once its own had moved out). A blank
+                    // line ends the run, so a section banner above one stays
+                    let commentStartOf i =
+                        let keywordLine = (List.item i keywordStarts).StartLine
+                        let mutable first = keywordLine
+                        let mutable scanning = true
 
-                      while scanning && first > 1 do
-                          let above = source.GetLineString(first - 2).Trim()
+                        while scanning && first > 1 do
+                            let above = source.GetLineString(first - 2).Trim()
 
-                          if above.StartsWith "//" then
-                              first <- first - 1
-                          else
-                              scanning <- false
+                            if above.StartsWith "//" then
+                                first <- first - 1
+                            else
+                                scanning <- false
 
-                      first
+                        first
 
-                  // a binding's block runs from its leading keyword to the
-                  // NEXT binding's own comments, not to its keyword: the doc
-                  // comment above `and g` is g's, and moving f out with it
-                  // orphaned five docs in the F# compiler's Optimizer.fs
-                  let blockOf i =
-                      let start = (List.item i keywordStarts).Start
+                    // a binding's block runs from its leading keyword to the
+                    // NEXT binding's own comments, not to its keyword: the doc
+                    // comment above `and g` is g's, and moving f out with it
+                    // orphaned five docs in the F# compiler's Optimizer.fs
+                    let blockOf i =
+                        let start = (List.item i keywordStarts).Start
 
-                      let finish =
-                          if i = bindings.Length - 1 then
-                              decl.Range.End
-                          else
-                              let nextKeyword = (List.item (i + 1) keywordStarts).Start
-                              let nextComments = commentStartOf (i + 1)
+                        let finish =
+                            if i = bindings.Length - 1 then
+                                decl.Range.End
+                            else
+                                let nextKeyword = (List.item (i + 1) keywordStarts).Start
+                                let nextComments = commentStartOf (i + 1)
 
-                              if nextComments < nextKeyword.Line then
-                                  Position.mkPos nextComments 0
-                              else
-                                  nextKeyword
+                                if nextComments < nextKeyword.Line then
+                                    Position.mkPos nextComments 0
+                                else
+                                    nextKeyword
 
-                      Range.mkRange decl.Range.FileName start finish
+                        Range.mkRange decl.Range.FileName start finish
 
-                  // `remaining`: the names still in the group once earlier
-                  // leavers are out - membership is judged against those
-                  let partFor (remaining: string list) i =
-                      let keywordLine = (List.item i keywordStarts).StartLine
-                      let name = List.item i names
+                    // `remaining`: the names still in the group once earlier
+                    // leavers are out - membership is judged against those
+                    let partFor (remaining: string list) i =
+                        let keywordLine = (List.item i keywordStarts).StartLine
+                        let name = List.item i names
 
-                      let commentStartLine = commentStartOf i
+                        let commentStartLine = commentStartOf i
 
-                      let plainBlock = blockOf i
-                      let binding = List.item i bindings
+                        let plainBlock = blockOf i
+                        let binding = List.item i bindings
 
-                      let rawText = textOfRange source plainBlock
+                        let rawText = textOfRange source plainBlock
 
-                      // a record-building member leaves with its types
-                      // written out, or not at all. So does any member of a
-                      // file with a SIGNATURE: alone, a parameter the body
-                      // never constrains (`accFreeInTupInfo _opts unt acc`,
-                      // the F# compiler) generalises to 'a, and the .fsi's
-                      // concrete type then fails FS0034 — inside the group
-                      // the callers had pinned it
-                      let signatureBeside =
-                          let path = plainBlock.FileName
+                        // a record-building member leaves with its types
+                        // written out, or not at all. So does any member of a
+                        // file with a SIGNATURE: alone, a parameter the body
+                        // never constrains (`accFreeInTupInfo _opts unt acc`,
+                        // the F# compiler) generalises to 'a, and the .fsi's
+                        // concrete type then fails FS0034 — inside the group
+                        // the callers had pinned it
+                        let signatureBeside =
+                            let path = plainBlock.FileName
 
-                          not (String.IsNullOrEmpty path)
-                          && (try
-                                  System.IO.File.Exists(System.IO.Path.ChangeExtension(path, ".fsi"))
-                              with
-                              | :? ArgumentException
-                              | :? System.IO.IOException -> false)
+                            not (String.IsNullOrEmpty path)
+                            && (try
+                                    System.IO.File.Exists(System.IO.Path.ChangeExtension(path, ".fsi"))
+                                with
+                                | :? ArgumentException
+                                | :? System.IO.IOException -> false)
 
-                      let movableText =
-                          if
-                              buildsRecord index.Value binding.RangeOfBindingWithRhs
-                              || leansOnParameters check source index.Value binding
-                              || signatureBeside
-                          then
-                              match check with
-                              | Some check ->
-                                  annotatedHeaderLine check source binding (List.item i keywordStarts)
-                                  |> Option.map (fun header ->
-                                      let firstBreak = rawText.IndexOf '\n'
+                        let movableText =
+                            if
+                                buildsRecord index.Value binding.RangeOfBindingWithRhs
+                                || leansOnParameters check source index.Value binding
+                                || signatureBeside
+                            then
+                                match check with
+                                | Some check ->
+                                    annotatedHeaderLine check source binding (List.item i keywordStarts)
+                                    |> Option.map (fun header ->
+                                        let firstBreak = rawText.IndexOf '\n'
 
-                                      if firstBreak < 0 then
-                                          header
-                                      else
-                                          header + rawText.Substring firstBreak)
-                              | None -> None
-                          else
-                              Some rawText
+                                        if firstBreak < 0 then
+                                            header
+                                        else
+                                            header + rawText.Substring firstBreak)
+                                | None -> None
+                            else
+                                Some rawText
 
-                      let bindingText = defaultArg movableText rawText
+                        let bindingText = defaultArg movableText rawText
 
-                      let companionComments =
-                          [ for l in commentStartLine .. keywordLine - 1 -> source.GetLineString(l - 1) ]
+                        let companionComments =
+                            [ for l in commentStartLine .. keywordLine - 1 -> source.GetLineString(l - 1) ]
 
-                      // an INDENTED group's plain block runs keyword-to-
-                      // keyword: removing it is column-symmetric and the
-                      // next binding keeps its indentation. The comment-
-                      // extended block starts at column 0, so it must END
-                      // at column 0 too — ending at the next keyword's
-                      // column ate the following `and`'s indent inside
-                      // nested modules (VQC.fs, FSharp.Azure.Quantum) and
-                      // left it orphaned at the margin
-                      let block =
-                          if commentStartLine < keywordLine then
-                              let endPos =
-                                  if i < bindings.Length - 1 && plainBlock.End.Column > 0 then
-                                      Position.mkPos plainBlock.EndLine 0
-                                  else
-                                      plainBlock.End
+                        // an INDENTED group's plain block runs keyword-to-
+                        // keyword: removing it is column-symmetric and the
+                        // next binding keeps its indentation. The comment-
+                        // extended block starts at column 0, so it must END
+                        // at column 0 too — ending at the next keyword's
+                        // column ate the following `and`'s indent inside
+                        // nested modules (VQC.fs, FSharp.Azure.Quantum) and
+                        // left it orphaned at the margin
+                        let block =
+                            if commentStartLine < keywordLine then
+                                let endPos =
+                                    if i < bindings.Length - 1 && plainBlock.End.Column > 0 then
+                                        Position.mkPos plainBlock.EndLine 0
+                                    else
+                                        plainBlock.End
 
-                              Range.mkRange plainBlock.FileName (Position.mkPos commentStartLine 0) endPos
-                          else
-                              plainBlock
+                                Range.mkRange plainBlock.FileName (Position.mkPos commentStartLine 0) endPos
+                            else
+                                plainBlock
 
-                      let (SynBinding(attributes = attrs)) = List.item i bindings
+                        let (SynBinding(attributes = attrs)) = List.item i bindings
 
-                      // membership judged on the BINDING text: a companion
-                      // comment naming a sibling should not keep it in
-                      let referencesGroup =
-                          remaining
-                          |> List.exists (fun other -> other <> name && mentions bindingText other)
+                        // membership judged on the BINDING text: a companion
+                        // comment naming a sibling should not keep it in
+                        let referencesGroup =
+                            remaining
+                            |> List.exists (fun other -> other <> name && mentions bindingText other)
 
-                      // its own name beyond the header means self-recursion:
-                      // the member still leaves, but as its own `let rec` —
-                      // a plain `let` would not compile
-                      let isSelfRecursive =
-                          let code = codeOnly bindingText
+                        // its own name beyond the header means self-recursion:
+                        // the member still leaves, but as its own `let rec` —
+                        // a plain `let` would not compile
+                        let isSelfRecursive =
+                            let code = codeOnly bindingText
 
-                          referenceNames name
-                          |> List.exists (fun part -> Regex.Matches(code, identifierPattern part).Count >= 2)
+                            referenceNames name
+                            |> List.exists (fun part -> Regex.Matches(code, identifierPattern part).Count >= 2)
 
-                      if
-                          attrs.IsEmpty
-                          && movableText.IsSome
-                          && not referencesGroup
-                          && not (spansDirective source block)
-                          // the binding must start with its `and`, on its own
-                          // line — mid-line groups are not worth the surgery
-                          && bindingText.StartsWith "and"
-                          && (source.GetLineString(plainBlock.StartLine - 1))
-                              .Substring(0, plainBlock.StartColumn)
-                              .Trim() = ""
-                      then
-                          let indent = String.replicate decl.Range.StartColumn " "
+                        if
+                            attrs.IsEmpty
+                            && movableText.IsSome
+                            && not referencesGroup
+                            && not (spansDirective source block)
+                            // the binding must start with its `and`, on its own
+                            // line — mid-line groups are not worth the surgery
+                            && bindingText.StartsWith "and"
+                            && (source.GetLineString(plainBlock.StartLine - 1))
+                                .Substring(0, plainBlock.StartColumn)
+                                .Trim()
+                                =
+                                ""
+                        then
+                            let indent = String.replicate decl.Range.StartColumn " "
 
-                          // `and f2 y = ...` becomes `let f2 y = ...`, its
-                          // companion comments riding along above it
-                          let commentPrefix =
-                              match companionComments with
-                              | [] -> ""
-                              | lines -> (lines |> String.concat "\n") + $"\n{indent}"
+                            // `and f2 y = ...` becomes `let f2 y = ...`, its
+                            // companion comments riding along above it
+                            let commentPrefix =
+                                match companionComments with
+                                | [] -> ""
+                                | lines -> (lines |> String.concat "\n") + $"\n{indent}"
 
-                          let keyword = if isSelfRecursive then "let rec" else "let"
-                          let extracted = commentPrefix + keyword + bindingText.Substring(3)
+                            let keyword = if isSelfRecursive then "let rec" else "let"
+                            let extracted = commentPrefix + keyword + bindingText.Substring(3)
 
-                          Some
-                              { Block = block
-                                Extracted = extracted
-                                HasComments = commentPrefix <> ""
-                                Condition = conditionToKeep source keywordLine decl.Range.StartLine
-                                Name = name
-                                SelfRecursive = isSelfRecursive }
-                      else
-                          None
+                            Some
+                                {
+                                    Block = block
+                                    Extracted = extracted
+                                    HasComments = commentPrefix <> ""
+                                    Condition = conditionToKeep source keywordLine decl.Range.StartLine
+                                    Name = name
+                                    SelfRecursive = isSelfRecursive
+                                }
+                        else
+                            None
 
-                  let indent = String.replicate decl.Range.StartColumn " "
+                    let indent = String.replicate decl.Range.StartColumn " "
 
-                  // a member under `#if` leaves under the same `#if`. A
-                  // directive has to open its own line, so that form is
-                  // inserted at column 0 of the group's line, ahead of its
-                  // indentation - which the generated `let` line then
-                  // carries itself (a raw comment line already does)
-                  let conditioned (p: Part) (condition: string) =
-                      let placed =
-                          if p.HasComments then
-                              p.Extracted.TrimEnd()
-                          else
-                              indent + p.Extracted.TrimEnd()
+                    // a member under `#if` leaves under the same `#if`. A
+                    // directive has to open its own line, so that form is
+                    // inserted at column 0 of the group's line, ahead of its
+                    // indentation - which the generated `let` line then
+                    // carries itself (a raw comment line already does)
+                    let conditioned (p: Part) (condition: string) =
+                        let placed =
+                            if p.HasComments then
+                                p.Extracted.TrimEnd()
+                            else
+                                indent + p.Extracted.TrimEnd()
 
-                      Range.mkRange
-                          decl.Range.FileName
-                          (Position.mkPos decl.Range.StartLine 0)
-                          (Position.mkPos decl.Range.StartLine 0),
-                      $"#if {condition}\n{placed}\n#endif\n\n"
+                        Range.mkRange
+                            decl.Range.FileName
+                            (Position.mkPos decl.Range.StartLine 0)
+                            (Position.mkPos decl.Range.StartLine 0),
+                        $"#if {condition}\n{placed}\n#endif\n\n"
 
-                  // the LAST block of the group ends where the group ends,
-                  // so a removal starting at its keyword leaves the line's
-                  // indentation behind as a whitespace-only line
-                  // (ProvidedTypes.fs:10841). Such a block starts at the end
-                  // of the previous non-blank line instead - or, under a
-                  // directive, at its own line's start
-                  let trimmedTail (r: range) =
-                      let startsOwnLine =
-                          (source.GetLineString(r.StartLine - 1)).Substring(0, r.StartColumn).Trim() = ""
+                    // the LAST block of the group ends where the group ends,
+                    // so a removal starting at its keyword leaves the line's
+                    // indentation behind as a whitespace-only line
+                    // (ProvidedTypes.fs:10841). Such a block starts at the end
+                    // of the previous non-blank line instead - or, under a
+                    // directive, at its own line's start
+                    let trimmedTail (r: range) =
+                        let startsOwnLine =
+                            (source.GetLineString(r.StartLine - 1)).Substring(0, r.StartColumn).Trim() = ""
 
-                      if startsOwnLine && Position.posEq r.End decl.Range.End then
-                          let mutable l = r.StartLine - 1
+                        if startsOwnLine && Position.posEq r.End decl.Range.End then
+                            let mutable l = r.StartLine - 1
 
-                          while l > 1 && String.IsNullOrWhiteSpace(source.GetLineString(l - 1)) do
-                              l <- l - 1
+                            while l > 1 && String.IsNullOrWhiteSpace(source.GetLineString(l - 1)) do
+                                l <- l - 1
 
-                          let previous = source.GetLineString(l - 1)
+                            let previous = source.GetLineString(l - 1)
 
-                          if previous.TrimStart().StartsWith '#' then
-                              Range.mkRange r.FileName (Position.mkPos r.StartLine 0) r.End
-                          else
-                              Range.mkRange r.FileName (Position.mkPos l previous.Length) r.End
-                      else
-                          r
+                            if previous.TrimStart().StartsWith '#' then
+                                Range.mkRange r.FileName (Position.mkPos r.StartLine 0) r.End
+                            else
+                                Range.mkRange r.FileName (Position.mkPos l previous.Length) r.End
+                        else
+                            r
 
-                  // members leave in WAVES: first those referencing no
-                  // sibling, then those referencing only members already
-                  // out - inserted after them, so the order still compiles.
-                  // A member under its own `#if` leaves alone on a pass of
-                  // its own, so it never counts as out for the members
-                  // after it: the one that references it stays until then
-                  let rec waves (remaining: string list) =
-                      let wave =
-                          [ for i in 1 .. bindings.Length - 1 do
-                                if List.contains (List.item i names) remaining then
-                                    match partFor remaining i with
-                                    | Some p -> p
-                                    | None -> () ]
+                    // members leave in WAVES: first those referencing no
+                    // sibling, then those referencing only members already
+                    // out - inserted after them, so the order still compiles.
+                    // A member under its own `#if` leaves alone on a pass of
+                    // its own, so it never counts as out for the members
+                    // after it: the one that references it stays until then
+                    let rec waves (remaining: string list) =
+                        let wave =
+                            [
+                                for i in 1 .. bindings.Length - 1 do
+                                    if List.contains (List.item i names) remaining then
+                                        match partFor remaining i with
+                                        | Some p -> p
+                                        | None -> ()
+                            ]
 
-                      if wave.IsEmpty then
-                          []
-                      else
-                          let gone =
-                              wave |> List.filter (fun p -> p.Condition.IsNone) |> List.map (fun p -> p.Name)
+                        if wave.IsEmpty then
+                            []
+                        else
+                            let gone =
+                                wave |> List.filter (fun p -> p.Condition.IsNone) |> List.map (fun p -> p.Name)
 
-                          if gone.IsEmpty then
-                              [ wave ]
-                          else
-                              wave :: waves (remaining |> List.filter (fun n -> not (List.contains n gone)))
+                            if gone.IsEmpty then
+                                [ wave ]
+                            else
+                                wave :: waves (remaining |> List.filter (fun n -> not (List.contains n gone)))
 
-                  // ONE suggestion per group per pass, carrying EVERY member
-                  // that can leave: they all insert at the group's start, so
-                  // as separate messages only the first would apply and the
-                  // rest be held back as un-appliable - and ProvidedTypes.fs's
-                  // groups of twenty took a pass per member, which the
-                  // divergence guard read as a fix feeding on its own
-                  // output. A member under its own `#if` still leaves alone
-                  match List.concat (waves names) with
-                  | [] -> ()
-                  | first :: _ when first.Condition.IsSome ->
-                      let insertRange, insertText = conditioned first first.Condition.Value
-                      let block = trimmedTail first.Block
+                    // ONE suggestion per group per pass, carrying EVERY member
+                    // that can leave: they all insert at the group's start, so
+                    // as separate messages only the first would apply and the
+                    // rest be held back as un-appliable - and ProvidedTypes.fs's
+                    // groups of twenty took a pass per member, which the
+                    // divergence guard read as a fix feeding on its own
+                    // output. A member under its own `#if` still leaves alone
+                    match List.concat (waves names) with
+                    | [] -> ()
+                    | first :: _ when first.Condition.IsSome ->
+                        let insertRange, insertText = conditioned first first.Condition.Value
+                        let block = trimmedTail first.Block
 
-                      { RemoveRange = block
-                        Removes = [ block ]
-                        InsertRange = insertRange
-                        InsertText = insertText
-                        MemberName = first.Name
-                        IsSelfRecursive = first.SelfRecursive
-                        Members = [ first.Name, first.SelfRecursive ] }
-                  | parts ->
-                      let plain = parts |> List.filter (fun p -> p.Condition.IsNone)
+                        {
+                            RemoveRange = block
+                            Removes = [ block ]
+                            InsertRange = insertRange
+                            InsertText = insertText
+                            MemberName = first.Name
+                            IsSelfRecursive = first.SelfRecursive
+                            Members = [ first.Name, first.SelfRecursive ]
+                        }
+                    | parts ->
+                        let plain = parts |> List.filter (fun p -> p.Condition.IsNone)
 
-                      // adjacent blocks merge into one removal: an end at
-                      // the next block's start, or at column 0 of the line
-                      // the next block's keyword indents into (a comment-
-                      // extended block ends there) - left as two, the
-                      // second's tail trim would reach back into the first
-                      let adjacent (prev: range) (r: range) =
-                          Position.posEq prev.End r.Start
-                          || (prev.EndLine = r.StartLine
-                              && prev.EndColumn <= r.StartColumn
-                              && (source.GetLineString(r.StartLine - 1))
-                                  .Substring(prev.EndColumn, r.StartColumn - prev.EndColumn)
-                                  .Trim() = "")
+                        // adjacent blocks merge into one removal: an end at
+                        // the next block's start, or at column 0 of the line
+                        // the next block's keyword indents into (a comment-
+                        // extended block ends there) - left as two, the
+                        // second's tail trim would reach back into the first
+                        let adjacent (prev: range) (r: range) =
+                            Position.posEq prev.End r.Start
+                            || (prev.EndLine = r.StartLine
+                                && prev.EndColumn <= r.StartColumn
+                                && (source.GetLineString(r.StartLine - 1))
+                                    .Substring(prev.EndColumn, r.StartColumn - prev.EndColumn)
+                                    .Trim()
+                                    =
+                                    "")
 
-                      let removes =
-                          plain
-                          |> List.map (fun p -> p.Block)
-                          |> List.sortBy (fun r -> r.StartLine, r.StartColumn)
-                          |> List.fold
-                              (fun (acc: range list) r ->
-                                  match acc with
-                                  | prev :: rest when adjacent prev r ->
-                                      Range.mkRange r.FileName prev.Start r.End :: rest
-                                  | _ -> r :: acc)
-                              []
-                          |> List.rev
-                          // a merged block that starts at column 0 (a
-                          // comment-extended head) must end at column 0
-                          // too, as the head alone did: ending at the next
-                          // keyword's column ate that `and`'s indentation
-                          // and left it at the margin (ProvidedTypes.fs,
-                          // "Unexpected keyword 'and'")
-                          |> List.map (fun r ->
-                              if
-                                  r.StartColumn = 0
-                                  && r.End.Column > 0
-                                  && not (Position.posEq r.End decl.Range.End)
-                                  && (source.GetLineString(r.EndLine - 1)).Substring(0, r.End.Column).Trim() = ""
-                              then
-                                  Range.mkRange r.FileName r.Start (Position.mkPos r.EndLine 0)
-                              else
-                                  r)
-                          |> List.map trimmedTail
+                        let removes =
+                            plain
+                            |> List.map (fun p -> p.Block)
+                            |> List.sortBy (fun r -> r.StartLine, r.StartColumn)
+                            |> List.fold
+                                (fun (acc: range list) r ->
+                                    match acc with
+                                    | prev :: rest when adjacent prev r ->
+                                        Range.mkRange r.FileName prev.Start r.End :: rest
+                                    | _ -> r :: acc)
+                                []
+                            |> List.rev
+                            // a merged block that starts at column 0 (a
+                            // comment-extended head) must end at column 0
+                            // too, as the head alone did: ending at the next
+                            // keyword's column ate that `and`'s indentation
+                            // and left it at the margin (ProvidedTypes.fs,
+                            // "Unexpected keyword 'and'")
+                            |> List.map (fun r ->
+                                if
+                                    r.StartColumn = 0
+                                    && r.End.Column > 0
+                                    && not (Position.posEq r.End decl.Range.End)
+                                    && (source.GetLineString(r.EndLine - 1)).Substring(0, r.End.Column).Trim() = ""
+                                then
+                                    Range.mkRange r.FileName r.Start (Position.mkPos r.EndLine 0)
+                                else
+                                    r)
+                            |> List.map trimmedTail
 
-                      let first = List.head plain
+                        let first = List.head plain
 
-                      // the insert point sits AFTER the group's existing
-                      // indentation: the first inserted line must not bring
-                      // its own (raw comment lines carry it; inside a nested
-                      // module that doubled up)
-                      let insertText =
-                          (plain
-                           |> List.map (fun p -> p.Extracted.TrimStart().TrimEnd())
-                           |> String.concat $"\n\n{indent}")
-                          + $"\n\n{indent}"
+                        // the insert point sits AFTER the group's existing
+                        // indentation: the first inserted line must not bring
+                        // its own (raw comment lines carry it; inside a nested
+                        // module that doubled up)
+                        let insertText =
+                            (plain
+                             |> List.map (fun p -> p.Extracted.TrimStart().TrimEnd())
+                             |> String.concat $"\n\n{indent}")
+                            + $"\n\n{indent}"
 
-                      { RemoveRange = List.head removes
-                        Removes = removes
-                        InsertRange = Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start
-                        InsertText = insertText
-                        MemberName = first.Name
-                        IsSelfRecursive = first.SelfRecursive
-                        Members = plain |> List.map (fun p -> p.Name, p.SelfRecursive) }
-          | _ -> () ]
+                        {
+                            RemoveRange = List.head removes
+                            Removes = removes
+                            InsertRange = Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start
+                            InsertText = insertText
+                            MemberName = first.Name
+                            IsSelfRecursive = first.SelfRecursive
+                            Members = plain |> List.map (fun p -> p.Name, p.SelfRecursive)
+                        }
+            | _ -> ()
+    ]
 
 let private letRecKeywordRegex = Regex @"^let\s+rec$"
 
@@ -883,55 +899,59 @@ let findHeadRecrowns
             modules |> List.collect (fun (SynModuleOrNamespace(decls = ds)) -> declsOf ds)
         | _ -> []
 
-    [ for decl in decls do
-          match decl with
-          | SynModuleDecl.Let(isRecursive = true; bindings = bindings) when bindings.Length >= 2 ->
-              let names = bindings |> List.choose bindingName
+    [
+        for decl in decls do
+            match decl with
+            | SynModuleDecl.Let(isRecursive = true; bindings = bindings) when bindings.Length >= 2 ->
+                let names = bindings |> List.choose bindingName
 
-              let groupHasExtraction =
-                  takenGroups
-                  |> List.exists (fun line -> line >= decl.Range.StartLine && line <= decl.Range.EndLine)
+                let groupHasExtraction =
+                    takenGroups
+                    |> List.exists (fun line -> line >= decl.Range.StartLine && line <= decl.Range.EndLine)
 
-              if names.Length = bindings.Length && not groupHasExtraction then
-                  let keywordRanges =
-                      bindings
-                      |> List.map (fun (SynBinding(trivia = trivia)) -> trivia.LeadingKeyword.Range)
+                if names.Length = bindings.Length && not groupHasExtraction then
+                    let keywordRanges =
+                        bindings
+                        |> List.map (fun (SynBinding(trivia = trivia)) -> trivia.LeadingKeyword.Range)
 
-                  let headKeyword = List.head keywordRanges
-                  let andKeyword = List.item 1 keywordRanges
-                  let headName = List.head names
+                    let headKeyword = List.head keywordRanges
+                    let andKeyword = List.item 1 keywordRanges
+                    let headName = List.head names
 
-                  // the head's text block: its keyword to the next keyword
-                  let headText =
-                      textOfRange source (Range.mkRange decl.Range.FileName headKeyword.Start andKeyword.Start)
+                    // the head's text block: its keyword to the next keyword
+                    let headText =
+                        textOfRange source (Range.mkRange decl.Range.FileName headKeyword.Start andKeyword.Start)
 
-                  let referencesAnyMember =
-                      // itself included: a self-recursive head must keep its
-                      // `rec`, and that variant is not worth the surgery.
-                      // Names are checked by their USE identifiers — an
-                      // active pattern is used by its case names, not its
-                      // decorated `|A|_|` definition name
-                      names
-                      |> List.exists (fun other ->
-                          let occurrencesBeyondHeader = if other = headName then 1 else 0
+                    let referencesAnyMember =
+                        // itself included: a self-recursive head must keep its
+                        // `rec`, and that variant is not worth the surgery.
+                        // Names are checked by their USE identifiers — an
+                        // active pattern is used by its case names, not its
+                        // decorated `|A|_|` definition name
+                        names
+                        |> List.exists (fun other ->
+                            let occurrencesBeyondHeader = if other = headName then 1 else 0
 
-                          referenceNames other
-                          |> List.exists (fun part ->
-                              Regex.Matches(headText, identifierPattern part).Count > occurrencesBeyondHeader))
+                            referenceNames other
+                            |> List.exists (fun part ->
+                                Regex.Matches(headText, identifierPattern part).Count > occurrencesBeyondHeader))
 
-                  let startsOwnLine (r: range) =
-                      (source.GetLineString(r.StartLine - 1)).Substring(0, r.StartColumn).Trim() = ""
+                    let startsOwnLine (r: range) =
+                        (source.GetLineString(r.StartLine - 1)).Substring(0, r.StartColumn).Trim() = ""
 
-                  if
-                      not referencesAnyMember
-                      && isSingleLine headKeyword
-                      && letRecKeywordRegex.IsMatch(textOfRange source headKeyword)
-                      && textOfRange source andKeyword = "and"
-                      && startsOwnLine headKeyword
-                      && startsOwnLine andKeyword
-                      && not (spansDirective source decl.Range)
-                  then
-                      { LetRecRange = headKeyword
-                        AndRange = andKeyword
-                        MemberName = headName }
-          | _ -> () ]
+                    if
+                        not referencesAnyMember
+                        && isSingleLine headKeyword
+                        && letRecKeywordRegex.IsMatch(textOfRange source headKeyword)
+                        && textOfRange source andKeyword = "and"
+                        && startsOwnLine headKeyword
+                        && startsOwnLine andKeyword
+                        && not (spansDirective source decl.Range)
+                    then
+                        {
+                            LetRecRange = headKeyword
+                            AndRange = andKeyword
+                            MemberName = headName
+                        }
+            | _ -> ()
+    ]

@@ -73,37 +73,41 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 |> String.concat ""
 
             Some
-                { Range = e.Range
-                  EmptyText = $"{prefix}Guid.Empty"
-                  NewGuidText = $"{prefix}Guid.NewGuid()" }
+                {
+                    Range = e.Range
+                    EmptyText = $"{prefix}Guid.Empty"
+                    NewGuidText = $"{prefix}Guid.NewGuid()"
+                }
         else
             None
 
-    [ for _, e in index.Exprs do
-          match e with
-          // new Guid() / new System.Guid()
-          | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = arg) when
-              not ids.IsEmpty
-              && (List.last ids).idText = "Guid"
-              && (match stripParens arg with
-                  | SynExpr.Const(SynConst.Unit, _) -> true
-                  | _ -> false)
-              ->
-              match suggest e ids with
-              | Some s -> s
-              | None -> ()
-          // Guid() / System.Guid() without new
-          | SynExpr.App(
-              isInfix = false
-              funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-              argExpr = SynExpr.Const(SynConst.Unit, _)) when not ids.IsEmpty && (List.last ids).idText = "Guid" ->
-              match suggest e ids with
-              | Some s -> s
-              | None -> ()
-          | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ctor; argExpr = SynExpr.Const(SynConst.Unit, _)) when
-              ctor.idText = "Guid"
-              ->
-              match suggest e [ ctor ] with
-              | Some s -> s
-              | None -> ()
-          | _ -> () ]
+    [
+        for _, e in index.Exprs do
+            match e with
+            // new Guid() / new System.Guid()
+            | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = arg) when
+                not ids.IsEmpty
+                && (List.last ids).idText = "Guid"
+                && (match stripParens arg with
+                    | SynExpr.Const(SynConst.Unit, _) -> true
+                    | _ -> false)
+                ->
+                match suggest e ids with
+                | Some s -> s
+                | None -> ()
+            // Guid() / System.Guid() without new
+            | SynExpr.App(
+                isInfix = false
+                funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                argExpr = SynExpr.Const(SynConst.Unit, _)) when not ids.IsEmpty && (List.last ids).idText = "Guid" ->
+                match suggest e ids with
+                | Some s -> s
+                | None -> ()
+            | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ctor; argExpr = SynExpr.Const(SynConst.Unit, _)) when
+                ctor.idText = "Guid"
+                ->
+                match suggest e [ ctor ] with
+                | Some s -> s
+                | None -> ()
+            | _ -> ()
+    ]

@@ -29,9 +29,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type FoldSuggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// What is being accumulated quadratically — the advice differs.
 [<RequireQualifiedAccess>]
@@ -346,9 +348,11 @@ let find
                                 && expr.Range.StartColumn + replacement.Length <= 100
                             then
                                 folds.Add
-                                    { Range = editRange
-                                      OriginalText = textOfRange source editRange
-                                      ReplacementText = replacement }
+                                    {
+                                        Range = editRange
+                                        OriginalText = textOfRange source editRange
+                                        ReplacementText = replacement
+                                    }
                         | _ -> ()
                     | _ -> ()
                 | _ -> ()
@@ -390,9 +394,11 @@ let find
 
                 if quadratic then
                     quadratics.Add
-                        { Range = expr.Range
-                          Name = acc.idText
-                          Kind = QuadraticKind.Collection }
+                        {
+                            Range = expr.Range
+                            Name = acc.idText
+                            Kind = QuadraticKind.Collection
+                        }
                 else
                     // `acc <- acc + s` on a STRING: quadratic copying, the
                     // worst string builder measured. `+` on numbers is the
@@ -440,9 +446,11 @@ let find
 
                     if stringQuadratic then
                         quadratics.Add
-                            { Range = expr.Range
-                              Name = acc.idText
-                              Kind = QuadraticKind.Str }
+                            {
+                                Range = expr.Range
+                                Name = acc.idText
+                                Kind = QuadraticKind.Str
+                            }
             | _ -> ()
 
         // FR0050's fold fix already rewrites its exact shape into a single
@@ -507,100 +515,108 @@ let findFlagLoops (parseTree: ParsedInput) (source: ISourceText) (check: FSharpC
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
-                  match lou.Bindings, lou.Body with
-                  | [ SynBinding(isMutable = true; headPat = SynPat.Named(ident = SynIdent(ident = flag)); expr = init) ],
-                    SynExpr.Sequential(
-                        expr1 = SynExpr.ForEach(pat = pat; enumExpr = src; bodyExpr = loopBody) as forEach; expr2 = rest) ->
-                      let loopBody =
-                          match loopBody with
-                          | SynExpr.Do(expr = inner) -> inner
-                          | other -> other
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
+                    match lou.Bindings, lou.Body with
+                    | [ SynBinding(isMutable = true; headPat = SynPat.Named(ident = SynIdent(ident = flag)); expr = init) ],
+                      SynExpr.Sequential(
+                          expr1 = SynExpr.ForEach(pat = pat; enumExpr = src; bodyExpr = loopBody) as forEach
+                          expr2 = rest) ->
+                        let loopBody =
+                            match loopBody with
+                            | SynExpr.Do(expr = inner) -> inner
+                            | other -> other
 
-                      // a prefix of PURE let-bindings folds into the lambda:
-                      //     for l in xs do
-                      //         let t = f l
-                      //         if t = "x" then found <- true
-                      // is still an exists question — the lets ride along as
-                      // `fun l -> let t = f l in t = "x"`. Each binding must
-                      // be immutable, single-line, effect-free, and silent
-                      // about the flag
-                      let rec unwrapLets acc body =
-                          match body with
-                          | LetOrUseE innerLet when
-                              not (innerLet.IsBang || innerLet.IsUse)
-                              && (match innerLet.Bindings with
-                                  | [ SynBinding(isMutable = false; headPat = letPat; expr = rhs) ] ->
-                                      isSingleLine rhs.Range
-                                      && isSingleLine letPat.Range
-                                      && effectFreeIn index rhs.Range
-                                      && not (mentionsIn index flag.idText rhs.Range)
-                                  | _ -> false)
-                              ->
-                              match innerLet.Bindings with
-                              | [ SynBinding(headPat = letPat; expr = rhs) ] ->
-                                  unwrapLets
-                                      ((textOfRange source letPat.Range, textOfRange source rhs.Range) :: acc)
-                                      innerLet.Body
-                              | _ -> List.rev acc, body
-                          | other -> List.rev acc, other
+                        // a prefix of PURE let-bindings folds into the lambda:
+                        //     for l in xs do
+                        //         let t = f l
+                        //         if t = "x" then found <- true
+                        // is still an exists question — the lets ride along as
+                        // `fun l -> let t = f l in t = "x"`. Each binding must
+                        // be immutable, single-line, effect-free, and silent
+                        // about the flag
+                        let rec unwrapLets acc body =
+                            match body with
+                            | LetOrUseE innerLet when
+                                not (innerLet.IsBang || innerLet.IsUse)
+                                && (match innerLet.Bindings with
+                                    | [ SynBinding(isMutable = false; headPat = letPat; expr = rhs) ] ->
+                                        isSingleLine rhs.Range
+                                        && isSingleLine letPat.Range
+                                        && effectFreeIn index rhs.Range
+                                        && not (mentionsIn index flag.idText rhs.Range)
+                                    | _ -> false)
+                                ->
+                                match innerLet.Bindings with
+                                | [ SynBinding(headPat = letPat; expr = rhs) ] ->
+                                    unwrapLets
+                                        ((textOfRange source letPat.Range, textOfRange source rhs.Range) :: acc)
+                                        innerLet.Body
+                                | _ -> List.rev acc, body
+                            | other -> List.rev acc, other
 
-                      let letPrefix, loopBody = unwrapLets [] loopBody
+                        let letPrefix, loopBody = unwrapLets [] loopBody
 
-                      match stripParens init, loopBody with
-                      | SynExpr.Const(SynConst.Bool initVal, _),
-                        SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenBranch; elseExpr = None) ->
-                          match stripParens thenBranch with
-                          | SynExpr.LongIdentSet(SynLongIdent(id = [ target ]), assigned, _) when
-                              target.idText = flag.idText
-                              && (match stripParens assigned with
-                                  | SynExpr.Const(SynConst.Bool b, _) -> b = not initVal
-                                  | _ -> false)
-                              && isSingleLine cond.Range
-                              && isSingleLine src.Range
-                              && not (mentionsIn index flag.idText cond.Range)
-                              && effectFreeIn index cond.Range
-                              // the flag must not be re-assigned in the continuation
-                              && not (
-                                  Regex.IsMatch(textOfRange source rest.Range, identifierPattern flag.idText + @"\s*<-")
-                              )
-                              ->
-                              match lambdaPatText source pat, collectionModule check source src with
-                              | ValueSome patText, ValueSome m ->
-                                  let srcText = atomicText source src
-                                  let condText = textOfRange source cond.Range
+                        match stripParens init, loopBody with
+                        | SynExpr.Const(SynConst.Bool initVal, _),
+                          SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenBranch; elseExpr = None) ->
+                            match stripParens thenBranch with
+                            | SynExpr.LongIdentSet(SynLongIdent(id = [ target ]), assigned, _) when
+                                target.idText = flag.idText
+                                && (match stripParens assigned with
+                                    | SynExpr.Const(SynConst.Bool b, _) -> b = not initVal
+                                    | _ -> false)
+                                && isSingleLine cond.Range
+                                && isSingleLine src.Range
+                                && not (mentionsIn index flag.idText cond.Range)
+                                && effectFreeIn index cond.Range
+                                // the flag must not be re-assigned in the continuation
+                                && not (
+                                    Regex.IsMatch(
+                                        textOfRange source rest.Range,
+                                        identifierPattern flag.idText + @"\s*<-"
+                                    )
+                                )
+                                ->
+                                match lambdaPatText source pat, collectionModule check source src with
+                                | ValueSome patText, ValueSome m ->
+                                    let srcText = atomicText source src
+                                    let condText = textOfRange source cond.Range
 
-                                  let lets =
-                                      letPrefix
-                                      |> List.map (fun (name, rhs) -> $"let {name} = {rhs} in ")
-                                      |> String.concat ""
+                                    let lets =
+                                        letPrefix
+                                        |> List.map (fun (name, rhs) -> $"let {name} = {rhs} in ")
+                                        |> String.concat ""
 
-                                  let call =
-                                      if initVal then
-                                          // starts true, falsified by cond:
-                                          // the loop computes forall (not cond)
-                                          let negated =
-                                              match stripParens cond with
-                                              | SynExpr.App(funcExpr = SingleIdent notId; argExpr = inner) when
-                                                  notId.idText = "not"
-                                                  ->
-                                                  textOfRange source inner.Range
-                                              | _ -> $"not ({condText})"
+                                    let call =
+                                        if initVal then
+                                            // starts true, falsified by cond:
+                                            // the loop computes forall (not cond)
+                                            let negated =
+                                                match stripParens cond with
+                                                | SynExpr.App(funcExpr = SingleIdent notId; argExpr = inner) when
+                                                    notId.idText = "not"
+                                                    ->
+                                                    textOfRange source inner.Range
+                                                | _ -> $"not ({condText})"
 
-                                          $"{srcText} |> {m}.forall (fun {patText} -> {lets}{negated})"
-                                      else
-                                          $"{srcText} |> {m}.exists (fun {patText} -> {lets}{condText})"
+                                            $"{srcText} |> {m}.forall (fun {patText} -> {lets}{negated})"
+                                        else
+                                            $"{srcText} |> {m}.exists (fun {patText} -> {lets}{condText})"
 
-                                  let editRange = Range.mkRange expr.Range.FileName expr.Range.Start forEach.Range.End
+                                    let editRange = Range.mkRange expr.Range.FileName expr.Range.Start forEach.Range.End
 
-                                  if not (spansDirective source editRange) then
-                                      { Range = editRange
-                                        OriginalText = textOfRange source editRange
-                                        ReplacementText = $"let {flag.idText} = {call}" }
-                              | _ -> ()
-                          | _ -> ()
-                      | _ -> ()
-                  | _ -> ()
-              | _ -> () ]
+                                    if not (spansDirective source editRange) then
+                                        {
+                                            Range = editRange
+                                            OriginalText = textOfRange source editRange
+                                            ReplacementText = $"let {flag.idText} = {call}"
+                                        }
+                                | _ -> ()
+                            | _ -> ()
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]

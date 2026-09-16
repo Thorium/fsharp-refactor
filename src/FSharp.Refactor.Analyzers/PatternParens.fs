@@ -160,9 +160,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 let trail = if separates charAfter then " " else ""
 
                 suggestions.Add
-                    { Range = pat.Range
-                      OriginalText = textOfRange source pat.Range
-                      ReplacementText = lead + textOfRange source inner.Range + trail }
+                    {
+                        Range = pat.Range
+                        OriginalText = textOfRange source pat.Range
+                        ReplacementText = lead + textOfRange source inner.Range + trail
+                    }
         | _ -> ()
 
     List.ofSeq suggestions

@@ -42,18 +42,20 @@ type Suggestion =
     }
 
 let private patterns =
-    [ "Anthropic", Regex(@"\bsk-ant-[A-Za-z0-9_-]{12,}", RegexOptions.Compiled)
-      "OpenAI", Regex(@"\bsk-(proj-)?[A-Za-z0-9_-]{32,}", RegexOptions.Compiled)
-      "Google", Regex(@"\bAIza[0-9A-Za-z_-]{35}", RegexOptions.Compiled)
-      "GitHub", Regex(@"\bgh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}", RegexOptions.Compiled)
-      "AWS", Regex(@"\bAKIA[0-9A-Z]{16}\b", RegexOptions.Compiled)
-      "Slack", Regex(@"\bxox[baprs]-[A-Za-z0-9-]{10,}", RegexOptions.Compiled)
-      "Stripe", Regex(@"\b(sk|rk)_(live|test)_[A-Za-z0-9]{24,}", RegexOptions.Compiled)
-      "Svix webhook secret", Regex(@"\bwhsec_[A-Za-z0-9+/]{24,}", RegexOptions.Compiled)
-      "JWT", Regex(@"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", RegexOptions.Compiled)
-      "bearer token", Regex(@"\bBearer\s+[A-Za-z0-9._~+/-]{20,}", RegexOptions.Compiled)
-      "Azure storage key", Regex(@"AccountKey=[A-Za-z0-9+/]{80,}={0,2}", RegexOptions.Compiled)
-      "PEM private key", Regex(@"-----BEGIN [A-Z ]*PRIVATE KEY-----", RegexOptions.Compiled) ]
+    [
+        "Anthropic", Regex(@"\bsk-ant-[A-Za-z0-9_-]{12,}", RegexOptions.Compiled)
+        "OpenAI", Regex(@"\bsk-(proj-)?[A-Za-z0-9_-]{32,}", RegexOptions.Compiled)
+        "Google", Regex(@"\bAIza[0-9A-Za-z_-]{35}", RegexOptions.Compiled)
+        "GitHub", Regex(@"\bgh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}", RegexOptions.Compiled)
+        "AWS", Regex(@"\bAKIA[0-9A-Z]{16}\b", RegexOptions.Compiled)
+        "Slack", Regex(@"\bxox[baprs]-[A-Za-z0-9-]{10,}", RegexOptions.Compiled)
+        "Stripe", Regex(@"\b(sk|rk)_(live|test)_[A-Za-z0-9]{24,}", RegexOptions.Compiled)
+        "Svix webhook secret", Regex(@"\bwhsec_[A-Za-z0-9+/]{24,}", RegexOptions.Compiled)
+        "JWT", Regex(@"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", RegexOptions.Compiled)
+        "bearer token", Regex(@"\bBearer\s+[A-Za-z0-9._~+/-]{20,}", RegexOptions.Compiled)
+        "Azure storage key", Regex(@"AccountKey=[A-Za-z0-9+/]{80,}={0,2}", RegexOptions.Compiled)
+        "PEM private key", Regex(@"-----BEGIN [A-Z ]*PRIVATE KEY-----", RegexOptions.Compiled)
+    ]
 
 /// A connection string is one when another connection key sits beside the
 /// password; the password itself must not read as a placeholder.
@@ -129,41 +131,49 @@ let find (parseTree: ParsedInput) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
     let literalRanges =
-        [ for _, decl in index.Decls do
-              match decl with
-              | SynModuleDecl.Let(bindings = bindings) ->
-                  for SynBinding(attributes = attrs; expr = rhs) in bindings do
-                      if isLiteralBinding attrs then
-                          yield rhs.Range
-              | _ -> () ]
+        [
+            for _, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Let(bindings = bindings) ->
+                    for SynBinding(attributes = attrs; expr = rhs) in bindings do
+                        if isLiteralBinding attrs then
+                            yield rhs.Range
+                | _ -> ()
+        ]
 
     let designTime (r: range) =
         literalRanges |> List.exists (fun lr -> Range.rangeContainsRange lr r)
 
     let fromExprs =
-        [ for _, e in index.Exprs do
-              match e with
-              | SynExpr.Const(SynConst.String(text, _, _), r) ->
-                  match providerOf text with
-                  | ValueSome provider ->
-                      { Range = r
-                        Provider = provider
-                        DesignTimeLiteral = designTime r }
-                  | ValueNone -> ()
-              // the literal parts of an interpolated string: a key with a
-              // hole in its middle is still a key
-              | SynExpr.InterpolatedString(contents = parts) ->
-                  for part in parts do
-                      match part with
-                      | SynInterpolatedStringPart.String(text, r) ->
-                          match providerOf text with
-                          | ValueSome provider ->
-                              { Range = r
-                                Provider = provider
-                                DesignTimeLiteral = designTime r }
-                          | ValueNone -> ()
-                      | SynInterpolatedStringPart.FillExpr _ -> ()
-              | _ -> () ]
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.Const(SynConst.String(text, _, _), r) ->
+                    match providerOf text with
+                    | ValueSome provider ->
+                        {
+                            Range = r
+                            Provider = provider
+                            DesignTimeLiteral = designTime r
+                        }
+                    | ValueNone -> ()
+                // the literal parts of an interpolated string: a key with a
+                // hole in its middle is still a key
+                | SynExpr.InterpolatedString(contents = parts) ->
+                    for part in parts do
+                        match part with
+                        | SynInterpolatedStringPart.String(text, r) ->
+                            match providerOf text with
+                            | ValueSome provider ->
+                                {
+                                    Range = r
+                                    Provider = provider
+                                    DesignTimeLiteral = designTime r
+                                }
+                            | ValueNone -> ()
+                        | SynInterpolatedStringPart.FillExpr _ -> ()
+                | _ -> ()
+        ]
 
     // type-provider static arguments: `SqlDataProvider<ConnectionString = "...">`
     let rec staticStrings (t: SynType) =
@@ -176,13 +186,17 @@ let find (parseTree: ParsedInput) : Suggestion list =
     // a static argument is design-time by construction: it is spelled into
     // the type itself, so it is resolved before the program runs
     let fromTypes =
-        [ for _, t in index.Types do
-              for text, r in staticStrings t do
-                  match providerOf text with
-                  | ValueSome provider ->
-                      { Range = r
-                        Provider = provider
-                        DesignTimeLiteral = true }
-                  | ValueNone -> () ]
+        [
+            for _, t in index.Types do
+                for text, r in staticStrings t do
+                    match providerOf text with
+                    | ValueSome provider ->
+                        {
+                            Range = r
+                            Provider = provider
+                            DesignTimeLiteral = true
+                        }
+                    | ValueNone -> ()
+        ]
 
     fromExprs @ fromTypes |> List.distinctBy (fun s -> s.Range)

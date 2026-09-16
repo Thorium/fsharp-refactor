@@ -22,9 +22,94 @@
 /// itself is never flagged.
 module FSharp.Refactor.LoopPerf
 
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
+
+/// Does a value of this type satisfy the `comparison` constraint - what a
+/// `Set` demands of its elements, where `List.contains` asked only for
+/// `equality`? Read the way the compiler decides it: a record or union
+/// compares structurally unless `[<NoComparison>]` says otherwise (or a
+/// field cannot compare: a function, a class without IComparable), a
+/// `[<CustomComparison>]` type by its own code, a tuple, list, array,
+/// option, Set or Map by its parts, anything else by IComparable. A
+/// generic parameter is unknown, and unknown is no. Fail-safe: any lookup
+/// FCS refuses reads as not comparable.
+let rec private supportsComparison (depth: int) (t: FSharpType) : bool =
+    depth <= 4
+    && (try
+            let t = OptionModule.stripAbbreviations t
+
+            if t.IsGenericParameter || t.IsFunctionType then
+                false
+            elif t.IsTupleType || t.IsStructTupleType then
+                t.GenericArguments |> Seq.forall (supportsComparison (depth + 1))
+            elif not t.HasTypeDefinition then
+                false
+            else
+                let d = t.TypeDefinition
+
+                let has (attribute: string) =
+                    d.Attributes |> Seq.exists (fun a -> a.AttributeType.DisplayName = attribute)
+
+                let partsComparable () =
+                    t.GenericArguments |> Seq.forall (supportsComparison (depth + 1))
+
+                if has "NoComparisonAttribute" then
+                    false
+                elif has "CustomComparisonAttribute" then
+                    true
+                elif d.IsEnum || d.IsArrayType then
+                    d.IsEnum || partsComparable ()
+                elif d.IsFSharpRecord then
+                    d.FSharpFields
+                    |> Seq.forall (fun f -> supportsComparison (depth + 1) f.FieldType)
+                elif d.IsFSharpUnion then
+                    d.UnionCases
+                    |> Seq.forall (fun c ->
+                        c.Fields |> Seq.forall (fun f -> supportsComparison (depth + 1) f.FieldType))
+                elif d.IsFSharpExceptionDeclaration then
+                    false
+                else
+                    match d.TryFullName with
+                    | Some n when
+                        n.StartsWith "Microsoft.FSharp.Collections.FSharpList`"
+                        || n.StartsWith "Microsoft.FSharp.Core.FSharpOption`"
+                        || n.StartsWith "Microsoft.FSharp.Core.FSharpValueOption`"
+                        || n.StartsWith "Microsoft.FSharp.Collections.FSharpSet`"
+                        || n.StartsWith "Microsoft.FSharp.Collections.FSharpMap`"
+                        ->
+                        partsComparable ()
+                    | _ ->
+                        d.AllInterfaces
+                        |> Seq.exists (fun i ->
+                            i.HasTypeDefinition && i.TypeDefinition.TryFullName = Some "System.IComparable")
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false)
+
+/// The element type of the list, array or seq a module binding holds, and
+/// whether it compares: None where the typed tree cannot say.
+let private elementComparable (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) : bool option =
+    let r = id.idRange
+    let lineText = source.GetLineString(r.EndLine - 1)
+
+    try
+        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+        | Some symbolUse ->
+            match symbolUse.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as v ->
+                let t = OptionModule.stripAbbreviations v.FullType
+
+                if t.HasTypeDefinition && t.GenericArguments.Count = 1 then
+                    Some(supportsComparison 0 t.GenericArguments.[0])
+                else
+                    None
+            | _ -> None
+        | None -> None
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        None
 
 type ContainsSuggestion =
     {
@@ -205,6 +290,7 @@ let loopBinders (path: SyntaxNode list) =
 let findWith
     (seenByLaterFile: string -> bool)
     (allowApiChanges: bool)
+    (check: FSharpCheckFileResults option)
     (parseTree: ParsedInput)
     (source: ISourceText)
     : ContainsSuggestion list * ConstructionSuggestion list =
@@ -216,26 +302,28 @@ let findWith
     // whether the binding's type may change (its own modifier, an
     // enclosing private/internal module, or the --api-changes opt-in)
     let moduleBindings =
-        [ for path, decl in index.Decls do
-              match decl with
-              | SynModuleDecl.Let(
-                  isRecursive = false
-                  bindings = [ SynBinding(isMutable = false; accessibility = bindingAcc; headPat = pat; expr = rhs) ]) ->
-                  match pat with
-                  | SynPat.Named(ident = SynIdent(ident = id); accessibility = patAcc)
-                  | SynPat.LongIdent(
-                      longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []; accessibility = patAcc) ->
-                      let confined =
-                          Visibility.isInScopeNamed allowApiChanges path [ bindingAcc; patAcc ] id.idText
-                          // the opt-in covers this file's own uses (the
-                          // `strayUse` scan below) - a later file's, only a
-                          // private binding is sure to have none
-                          && (Visibility.isPrivate path [ bindingAcc; patAcc ]
-                              || not (seenByLaterFile id.idText))
+        [
+            for path, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Let(
+                    isRecursive = false
+                    bindings = [ SynBinding(isMutable = false; accessibility = bindingAcc; headPat = pat; expr = rhs) ]) ->
+                    match pat with
+                    | SynPat.Named(ident = SynIdent(ident = id); accessibility = patAcc)
+                    | SynPat.LongIdent(
+                        longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []; accessibility = patAcc) ->
+                        let confined =
+                            Visibility.isInScopeNamed allowApiChanges path [ bindingAcc; patAcc ] id.idText
+                            // the opt-in covers this file's own uses (the
+                            // `strayUse` scan below) - a later file's, only a
+                            // private binding is sure to have none
+                            && (Visibility.isPrivate path [ bindingAcc; patAcc ]
+                                || not (seenByLaterFile id.idText))
 
-                      yield id.idText, (id, decl.Range, rhs, confined)
-                  | _ -> ()
-              | _ -> () ]
+                        yield id.idText, (id, decl.Range, rhs, confined)
+                    | _ -> ()
+                | _ -> ()
+        ]
         |> List.distinctBy fst
         |> dict
 
@@ -284,174 +372,195 @@ let findWith
             match loopBinders path with
             | ValueSome _ ->
                 constructions.Add
-                    { Range = expr.Range
-                      TypeName = typeName }
+                    {
+                        Range = expr.Range
+                        TypeName = typeName
+                    }
             | ValueNone -> ()
         | _ -> ()
 
     // second walk for the messages (module name is per probe)
     let contains =
-        [ for path, expr in index.Exprs do
-              match expr with
-              | ContainsCall(moduleName, root, collText, item) ->
-                  match loopBinders path with
-                  | ValueSome binders when not (binders.Contains root.idText) ->
-                      // the fix: only for a BARE module-level immutable name
-                      // (a dotted path's storage is not this file's to
-                      // shadow), unshadowed and never reassigned — then all
-                      // probes of it convert together with one companion
-                      let fix =
-                          match moduleBindings.TryGetValue collText with
-                          | true, (moduleIdent, declRange, declRhs, confined) when
-                              collText = root.idText
-                              && not (shadowed collText moduleIdent)
-                              && not (reassigned collText)
-                              ->
-                              let siblings =
-                                  rawProbes |> Seq.filter (fun (c, _, _, _) -> c = collText) |> Seq.toList
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                | ContainsCall(moduleName, root, collText, item) ->
+                    match loopBinders path with
+                    | ValueSome binders when not (binders.Contains root.idText) ->
+                        // the fix: only for a BARE module-level immutable name
+                        // (a dotted path's storage is not this file's to
+                        // shadow), unshadowed and never reassigned — then all
+                        // probes of it convert together with one companion
+                        let fix =
+                            match moduleBindings.TryGetValue collText with
+                            | true, (moduleIdent, declRange, declRhs, confined) when
+                                collText = root.idText
+                                && not (shadowed collText moduleIdent)
+                                && not (reassigned collText)
+                                ->
+                                let siblings =
+                                    rawProbes |> Seq.filter (fun (c, _, _, _) -> c = collText) |> Seq.toList
 
-                              // one companion binding for the whole group;
-                              // emitted identically from every probe of the
-                              // group, and identical fixes coalesce at the
-                              // apply layer via the overlap guard — but only
-                              // the FIRST probe carries the edit set, so the
-                              // group applies once
-                              let isFirst =
-                                  match siblings with
-                                  | (_, _, firstRange, _) :: _ -> Range.equals firstRange expr.Range
-                                  | [] -> false
+                                // one companion binding for the whole group;
+                                // emitted identically from every probe of the
+                                // group, and identical fixes coalesce at the
+                                // apply layer via the overlap guard — but only
+                                // the FIRST probe carries the edit set, so the
+                                // group applies once
+                                let isFirst =
+                                    match siblings with
+                                    | (_, _, firstRange, _) :: _ -> Range.equals firstRange expr.Range
+                                    | [] -> false
 
-                              let probeArg (itemExpr: SynExpr) =
-                                  let itemText = textOfRange source itemExpr.Range
+                                let probeArg (itemExpr: SynExpr) =
+                                    let itemText = textOfRange source itemExpr.Range
 
-                                  let atomic = atomicIdent.IsMatch itemText
+                                    let atomic = atomicIdent.IsMatch itemText
 
-                                  if atomic then itemText else $"({itemText})"
+                                    if atomic then itemText else $"({itemText})"
 
-                              // in-place conversion: when EVERY use of the
-                              // name is one of these probes, the binding
-                              // itself becomes the set — no companion, the
-                              // module value stays immutable, and Set's own
-                              // Contains member takes the probes (measured
-                              // 2.5x over the list scan even at five
-                              // elements; the companion HashSet remains the
-                              // spelling when other uses need the original)
-                              let setOfFunction =
-                                  match declRhs with
-                                  | SynExpr.ArrayOrListComputed(isArray = isArray)
-                                  | SynExpr.ArrayOrList(isArray = isArray) ->
-                                      Some(if isArray then "Set.ofArray" else "Set.ofList")
-                                  | SynExpr.App(funcExpr = SynExpr.Ident seqId; argExpr = SynExpr.ComputationExpr _) when
-                                      seqId.idText = "seq"
-                                      ->
-                                      Some "Set.ofSeq"
-                                  | _ -> None
+                                // in-place conversion: when EVERY use of the
+                                // name is one of these probes, the binding
+                                // itself becomes the set — no companion, the
+                                // module value stays immutable, and Set's own
+                                // Contains member takes the probes (measured
+                                // 2.5x over the list scan even at five
+                                // elements; the companion HashSet remains the
+                                // spelling when other uses need the original)
+                                let setOfFunction =
+                                    match declRhs with
+                                    | SynExpr.ArrayOrListComputed(isArray = isArray)
+                                    | SynExpr.ArrayOrList(isArray = isArray) ->
+                                        Some(if isArray then "Set.ofArray" else "Set.ofList")
+                                    | SynExpr.App(funcExpr = SynExpr.Ident seqId; argExpr = SynExpr.ComputationExpr _) when
+                                        seqId.idText = "seq"
+                                        ->
+                                        Some "Set.ofSeq"
+                                    | _ -> None
 
-                              let probeRanges = siblings |> List.map (fun (_, _, r, _) -> r)
+                                let probeRanges = siblings |> List.map (fun (_, _, r, _) -> r)
 
-                              let strayUse =
-                                  index.Exprs
-                                  |> Array.exists (fun (_, e) ->
-                                      match e with
-                                      | SynExpr.Ident id when id.idText = collText ->
-                                          not (
-                                              probeRanges
-                                              |> List.exists (fun pr -> Range.rangeContainsRange pr id.idRange)
-                                          )
-                                      | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _ :: _)) when
-                                          first.idText = collText
-                                          ->
-                                          not (
-                                              probeRanges
-                                              |> List.exists (fun pr -> Range.rangeContainsRange pr e.Range)
-                                          )
-                                      | _ -> false)
+                                let strayUse =
+                                    index.Exprs
+                                    |> Array.exists (fun (_, e) ->
+                                        match e with
+                                        | SynExpr.Ident id when id.idText = collText ->
+                                            not (
+                                                probeRanges
+                                                |> List.exists (fun pr -> Range.rangeContainsRange pr id.idRange)
+                                            )
+                                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _ :: _)) when
+                                            first.idText = collText
+                                            ->
+                                            not (
+                                                probeRanges
+                                                |> List.exists (fun pr -> Range.rangeContainsRange pr e.Range)
+                                            )
+                                        | _ -> false)
 
-                              if not isFirst then
-                                  []
-                              // the in-place conversion changes the
-                              // binding's type: only where nothing outside
-                              // the assembly can see it (or --api-changes)
-                              elif setOfFunction.IsSome && not strayUse && confined then
-                                  let convert =
-                                      Range.mkRange declRange.FileName declRhs.Range.End declRhs.Range.End,
-                                      "",
-                                      $" |> {setOfFunction.Value}"
+                                if not isFirst then
+                                    []
+                                // the in-place conversion changes the
+                                // binding's type: only where nothing outside
+                                // the assembly can see it (or --api-changes)
+                                // ...and `Set` asks `comparison` of the
+                                // element where `List.contains` asked only
+                                // `equality`: a [<NoComparison>] record, or
+                                // one with a function field, takes the
+                                // HashSet companion below instead. Without
+                                // the typed tree (an editor's parse-only
+                                // pass) the answer is unknown, and unknown
+                                // is the companion too
+                                elif
+                                    setOfFunction.IsSome
+                                    && not strayUse
+                                    && confined
+                                    && (check
+                                        |> Option.bind (fun c -> elementComparable c source moduleIdent)
+                                        |> Option.defaultValue false)
+                                then
+                                    let convert =
+                                        Range.mkRange declRange.FileName declRhs.Range.End declRhs.Range.End,
+                                        "",
+                                        $" |> {setOfFunction.Value}"
 
-                                  let rewrites =
-                                      siblings
-                                      |> List.map (fun (_, _, r, itemExpr) ->
-                                          r, textOfRange source r, $"{collText}.Contains {probeArg itemExpr}")
+                                    let rewrites =
+                                        siblings
+                                        |> List.map (fun (_, _, r, itemExpr) ->
+                                            r, textOfRange source r, $"{collText}.Contains {probeArg itemExpr}")
 
-                                  convert :: rewrites
-                              elif not (source.GetLineString(declRange.StartLine - 1).Contains "ProbeSet") then
-                                  let setName = collText + "ProbeSet"
+                                    convert :: rewrites
+                                elif not (source.GetLineString(declRange.StartLine - 1).Contains "ProbeSet") then
+                                    let setName = collText + "ProbeSet"
 
-                                  let taken =
-                                      seq { 0 .. source.GetLineCount() - 1 }
-                                      |> Seq.exists (fun l -> source.GetLineString(l).Contains setName)
+                                    let taken =
+                                        seq { 0 .. source.GetLineCount() - 1 }
+                                        |> Seq.exists (fun l -> source.GetLineString(l).Contains setName)
 
-                                  if taken then
-                                      []
-                                  else
-                                      let indent = String.replicate declRange.StartColumn " "
+                                    if taken then
+                                        []
+                                    else
+                                        let indent = String.replicate declRange.StartColumn " "
 
-                                      let insertAt =
-                                          Range.mkRange
-                                              declRange.FileName
-                                              (Position.mkPos (declRange.EndLine + 1) 0)
-                                              (Position.mkPos (declRange.EndLine + 1) 0)
+                                        let insertAt =
+                                            Range.mkRange
+                                                declRange.FileName
+                                                (Position.mkPos (declRange.EndLine + 1) 0)
+                                                (Position.mkPos (declRange.EndLine + 1) 0)
 
-                                      let binding = $"{indent}let private {setName} = {hashSetSpelling}({collText})\n"
+                                        let binding = $"{indent}let private {setName} = {hashSetSpelling}({collText})\n"
 
-                                      // the companion serves the probes: probes
-                                      // all under one `#if` get a companion
-                                      // under that same `#if`, probes under
-                                      // different conditions get none (a
-                                      // binding under one condition cannot
-                                      // serve the other)
-                                      let probeConditions =
-                                          siblings
-                                          |> List.map (fun (_, _, r: range, _) -> conditionAt source r.StartLine)
-                                          |> List.distinct
+                                        // the companion serves the probes: probes
+                                        // all under one `#if` get a companion
+                                        // under that same `#if`, probes under
+                                        // different conditions get none (a
+                                        // binding under one condition cannot
+                                        // serve the other)
+                                        let probeConditions =
+                                            siblings
+                                            |> List.map (fun (_, _, r: range, _) -> conditionAt source r.StartLine)
+                                            |> List.distinct
 
-                                      let insertText =
-                                          match probeConditions with
-                                          | [ Some c ] when conditionAt source insertAt.StartLine <> Some c ->
-                                              Some $"#if {c}\n{binding}#endif\n"
-                                          | [ _ ] -> Some binding
-                                          | _ -> None
+                                        let insertText =
+                                            match probeConditions with
+                                            | [ Some c ] when conditionAt source insertAt.StartLine <> Some c ->
+                                                Some $"#if {c}\n{binding}#endif\n"
+                                            | [ _ ] -> Some binding
+                                            | _ -> None
 
-                                      match insertText with
-                                      | None -> []
-                                      | Some insertText ->
-                                          let insert = insertAt, "", insertText
+                                        match insertText with
+                                        | None -> []
+                                        | Some insertText ->
+                                            let insert = insertAt, "", insertText
 
-                                          let rewrites =
-                                              siblings
-                                              |> List.map (fun (_, _, r, itemExpr) ->
-                                                  let itemText = textOfRange source itemExpr.Range
+                                            let rewrites =
+                                                siblings
+                                                |> List.map (fun (_, _, r, itemExpr) ->
+                                                    let itemText = textOfRange source itemExpr.Range
 
-                                                  let atomic = atomicIdent.IsMatch itemText
+                                                    let atomic = atomicIdent.IsMatch itemText
 
-                                                  let arg = if atomic then itemText else $"({itemText})"
-                                                  r, textOfRange source r, $"{setName}.Contains {arg}")
+                                                    let arg = if atomic then itemText else $"({itemText})"
+                                                    r, textOfRange source r, $"{setName}.Contains {arg}")
 
-                                          insert :: rewrites
-                              else
-                                  []
-                          | _ -> []
+                                            insert :: rewrites
+                                else
+                                    []
+                            | _ -> []
 
-                      { Range = expr.Range
-                        CollectionName = collText
-                        ModuleName = moduleName
-                        Fix = fix }
-                  | _ -> ()
-              | _ -> () ]
+                        {
+                            Range = expr.Range
+                            CollectionName = collText
+                            ModuleName = moduleName
+                            Fix = fix
+                        }
+                    | _ -> ()
+                | _ -> ()
+        ]
 
     contains, List.ofSeq constructions
 
 /// `findWith` for a caller whose opt-in is its own: `--api-changes`, or no
 /// opt-in at all. No later file is consulted.
-let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) =
-    findWith (fun _ -> false) allowApiChanges parseTree source
+let find (allowApiChanges: bool) (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source: ISourceText) =
+    findWith (fun _ -> false) allowApiChanges check parseTree source

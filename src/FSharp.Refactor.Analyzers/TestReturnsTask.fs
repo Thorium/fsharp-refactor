@@ -67,55 +67,73 @@ type Suggestion =
     }
 
 /// State that OUTLIVES a single test: a module-level `let mutable`, or a
-/// `static let mutable` on a type that holds tests.
-///
-/// A synchronous test owns its thread from start to finish. A
-/// `Task`-returning one releases it at every `let!`, and that changes how
-/// much really runs at once: xUnit runs test collections in parallel
-/// against a bounded pool, so blocking tests are partly serialised by
-/// thread starvation alone. Freeing the threads lets collections that
-/// always COULD have raced actually do so. The race was latent before this
-/// rewrite; the rewrite is what makes it show up, on someone else's
-/// machine, intermittently, in a test suite whose whole job is to be
-/// trustworthy.
-///
-/// So a test that touches such a binding is left alone. Nothing here is a
-/// correctness fix — it is a test that finishes sooner — and a missed one
-/// costs nothing worth having.
-let private sharedMutableNames (index: AstIndex.Index) =
-    set
-        [ for _, decl in index.Decls do
-              match decl with
-              | SynModuleDecl.Let(bindings = bindings) ->
-                  for SynBinding(isMutable = isMutable; headPat = p) in bindings do
-                      if isMutable then
-                          yield! patBoundNames p
-              | SynModuleDecl.Types(typeDefns = defns) ->
-                  for SynTypeDefn(typeRepr = repr) in defns do
-                      match repr with
-                      | SynTypeDefnRepr.ObjectModel(members = objMembers) ->
-                          for m in objMembers do
-                              match m with
-                              | SynMemberDefn.LetBindings(bindings = bs; isStatic = true) ->
-                                  for SynBinding(isMutable = isMutable; headPat = p) in bs do
-                                      if isMutable then
-                                          yield! patBoundNames p
-                              | _ -> ()
-                      | _ -> ()
-              | _ -> () ]
+/// `static let mutable` on a type that holds tests - the latter with the
+/// type's range, since its own tests are the only readers that matter to
+/// it.
+let private sharedMutableNames (index: AstIndex.Index) : (string * range option) list =
+    [
+        for _, decl in index.Decls do
+            match decl with
+            | SynModuleDecl.Let(bindings = bindings) ->
+                for SynBinding(isMutable = isMutable; headPat = p) in bindings do
+                    if isMutable then
+                        for name in patBoundNames p do
+                            yield name, None
+            | SynModuleDecl.Types(typeDefns = defns) ->
+                for SynTypeDefn(typeRepr = repr; range = typeRange) in defns do
+                    match repr with
+                    | SynTypeDefnRepr.ObjectModel(members = objMembers) ->
+                        for m in objMembers do
+                            match m with
+                            | SynMemberDefn.LetBindings(bindings = bs; isStatic = true) ->
+                                for SynBinding(isMutable = isMutable; headPat = p) in bs do
+                                    if isMutable then
+                                        for name in patBoundNames p do
+                                            yield name, Some typeRange
+                            | _ -> ()
+                    | _ -> ()
+            | _ -> ()
+    ]
+
+/// The shared names a TEST at `testRange` can race on. A `static let
+/// mutable` of the test's own class is not among them: xUnit, NUnit and
+/// MSTest all run one class's tests one after another whatever those
+/// tests return, so the ordering the class relies on (CarmelNet writes a
+/// payment id in one test and reads it in the next) survives the rewrite.
+/// Module-level state, and another class's, is reachable from tests that
+/// may well run beside this one.
+let private sharedFor (shared: (string * range option) list) (classesRunInParallel: bool) (testRange: range) =
+    shared
+    |> List.filter (fun (_, owner) ->
+        match owner with
+        | Some typeRange -> classesRunInParallel || not (Range.rangeContainsRange typeRange testRange)
+        | None -> true)
+    |> List.map fst
+    |> Set.ofList
+
+/// Does this file opt its tests into running beside each other WITHIN a
+/// class? NUnit's `[<Parallelizable(ParallelScope.All)>]` (or Children /
+/// Fixtures) and MSTest's `[<Parallelize(Scope = ExecutionScope.MethodLevel)>]`
+/// do; then a class's own static state is shared after all. Read off the
+/// text: the attribute may sit on the assembly, the class or the test
+let private classesRunInParallel (source: ISourceText) =
+    let text = source.GetSubTextString(0, source.Length)
+    text.Contains "Parallelizable" || text.Contains "ExecutionScope.MethodLevel"
 
 /// Setters whose effect is the PROCESS, not the caller — the same hazard
 /// without a name of its own to look for. A test that changes the current
 /// directory or an environment variable and reads it back is racing every
 /// other test that does, the moment they genuinely overlap.
 let private processGlobalSetters =
-    [ "Environment.SetEnvironmentVariable"
-      "Directory.SetCurrentDirectory"
-      "Console.SetOut"
-      "Console.SetError"
-      "Console.SetIn"
-      "CurrentCulture"
-      "CurrentUICulture" ]
+    [
+        "Environment.SetEnvironmentVariable"
+        "Directory.SetCurrentDirectory"
+        "Console.SetOut"
+        "Console.SetError"
+        "Console.SetIn"
+        "CurrentCulture"
+        "CurrentUICulture"
+    ]
 
 /// Does this FILE install global state by reflection?
 ///
@@ -156,6 +174,7 @@ let private assignsBeyondItself
     (index: AstIndex.Index)
     (source: ISourceText)
     (check: FSharpCheckFileResults)
+    (ownType: range option)
     (body: SynExpr)
     =
     index.Exprs
@@ -177,7 +196,18 @@ let private assignsBeyondItself
             with
             | Some symbolUse ->
                 match symbolUse.Symbol with
-                | :? FSharpMemberOrFunctionOrValue as v -> v.IsModuleValueOrMember
+                | :? FSharpMemberOrFunctionOrValue as v ->
+                    v.IsModuleValueOrMember
+                    // a static of the test's own class: its tests run one
+                    // after another, so the write is ordered (see sharedFor)
+                    && not (
+                        ownType
+                        |> Option.exists (fun t ->
+                            try
+                                Range.rangeContainsRange t v.DeclarationLocation
+                            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                false)
+                    )
                 | _ -> true
             | None -> true
         | _ -> false)
@@ -195,6 +225,7 @@ let private touchesSharedState
     (source: ISourceText)
     (check: FSharpCheckFileResults)
     (shared: Set<string>)
+    (ownType: range option)
     (body: SynExpr)
     =
     let text = textOfRange source body.Range
@@ -202,7 +233,7 @@ let private touchesSharedState
     (not shared.IsEmpty
      && shared |> Set.exists (fun name -> Regex.IsMatch(text, identifierPattern name)))
     || processGlobalSetters |> List.exists text.Contains
-    || assignsBeyondItself index source check body
+    || assignsBeyondItself index source check ownType body
 
 let private testAttributes =
     set [ "Test"; "Fact"; "Theory"; "TestCase"; "TestMethod" ]
@@ -212,9 +243,11 @@ let private testAttributes =
 /// reflection runner, say — would get a Task nobody awaits, and every
 /// failure inside it would vanish.
 let private awaitingFrameworks =
-    [ "Xunit."
-      "NUnit.Framework."
-      "Microsoft.VisualStudio.TestTools.UnitTesting." ]
+    [
+        "Xunit."
+        "NUnit.Framework."
+        "Microsoft.VisualStudio.TestTools.UnitTesting."
+    ]
 
 let private hasTestAttribute (check: FSharpCheckFileResults) (source: ISourceText) (attributes: SynAttributes) =
     attributes
@@ -278,7 +311,10 @@ let private statementEdit
         // a block cannot end on a bind: a final discarded site gets the
         // `()` the `ignore` used to supply, at the statement's own column
         | Some b when isLast ->
-            Some [ (e.Range, prefixed "let! _ = " b.Awaitable + $"\n{String(' ', e.Range.StartColumn)}()") ]
+            Some
+                [
+                    (e.Range, prefixed "let! _ = " b.Awaitable + $"\n{String(' ', e.Range.StartColumn)}()")
+                ]
         | Some b -> Some [ (e.Range, prefixed "let! _ = " b.Awaitable) ]
         | None -> Some []
     | _ ->
@@ -438,28 +474,31 @@ let private wrapBody (source: ISourceText) (bodyRange: range) (edits: Edit list)
          @ List.ofArray lines
          @ [ indent + "} :> System.Threading.Tasks.Task" ])
 
-/// Every test binding in the file: module-level lets and type members.
+/// Every test binding in the file, with the range of the type that holds
+/// it (None for a module-level let).
 let private testBindings (index: AstIndex.Index) =
-    [ for _, decl in index.Decls do
-          match decl with
-          | SynModuleDecl.Let(bindings = bindings) ->
-              for b in bindings do
-                  yield b
-          | SynModuleDecl.Types(typeDefns = defns) ->
-              for SynTypeDefn(members = members; typeRepr = repr) in defns do
-                  for m in members do
-                      match m with
-                      | SynMemberDefn.Member(memberDefn = b) -> yield b
-                      | _ -> ()
+    [
+        for _, decl in index.Decls do
+            match decl with
+            | SynModuleDecl.Let(bindings = bindings) ->
+                for b in bindings do
+                    yield b, None
+            | SynModuleDecl.Types(typeDefns = defns) ->
+                for SynTypeDefn(members = members; typeRepr = repr; range = typeRange) in defns do
+                    for m in members do
+                        match m with
+                        | SynMemberDefn.Member(memberDefn = b) -> yield b, Some typeRange
+                        | _ -> ()
 
-                  match repr with
-                  | SynTypeDefnRepr.ObjectModel(members = objMembers) ->
-                      for m in objMembers do
-                          match m with
-                          | SynMemberDefn.Member(memberDefn = b) -> yield b
-                          | _ -> ()
-                  | _ -> ()
-          | _ -> () ]
+                    match repr with
+                    | SynTypeDefnRepr.ObjectModel(members = objMembers) ->
+                        for m in objMembers do
+                            match m with
+                            | SynMemberDefn.Member(memberDefn = b) -> yield b, Some typeRange
+                            | _ -> ()
+                    | _ -> ()
+            | _ -> ()
+    ]
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
@@ -467,97 +506,115 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
         let shared = sharedMutableNames index
+        let parallelClasses = classesRunInParallel source
         let reflectionHarness = installsGlobalStateByReflection source
 
-        [ for binding in testBindings index do
-              match binding with
-              | SynBinding(attributes = attributes; headPat = headPat; returnInfo = None; expr = body) when
-                  hasTestAttribute check source attributes
-                  && not (alreadyComputation body)
-                  && not (threadBound source body)
-                  && not reflectionHarness
-                  && not (touchesSharedState index source check shared body)
-                  ->
-                  let nameIdent =
-                      match headPat with
-                      | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
-                      | _ -> None
+        [
+            for binding, ownType in testBindings index do
+                match binding with
+                | SynBinding(attributes = attributes; headPat = headPat; returnInfo = None; expr = body) when
+                    hasTestAttribute check source attributes
+                    && not (alreadyComputation body)
+                    && not (threadBound source body)
+                    && not reflectionHarness
+                    && not (
+                        touchesSharedState
+                            index
+                            source
+                            check
+                            (sharedFor shared parallelClasses binding.RangeOfBindingWithRhs)
+                            (if parallelClasses then None else ownType)
+                            body
+                    )
+                    // a Span or other byref-like local cannot live in the
+                    // task's state machine, wherever the body declared it
+                    && not (OptionModule.readsByRefLike check index source body.Range)
+                    ->
+                    let nameIdent =
+                        match headPat with
+                        | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                            Some(List.last ids)
+                        | _ -> None
 
-                  // the body must open on its own line, under the header,
-                  // so its lines re-indent as written
-                  let ownLine =
-                      body.Range.StartLine > headPat.Range.EndLine
-                      && (source.GetLineString(body.Range.StartLine - 1)).Substring(0, body.Range.StartColumn).Trim() = ""
+                    // the body must open on its own line, under the header,
+                    // so its lines re-indent as written
+                    let ownLine =
+                        body.Range.StartLine > headPat.Range.EndLine
+                        && (source.GetLineString(body.Range.StartLine - 1)).Substring(0, body.Range.StartColumn).Trim() =
+                            ""
 
-                  match nameIdent with
-                  | Some id ->
-                      let bodyIsUnit = returnsUnit check source id
+                    match nameIdent with
+                    | Some id ->
+                        let bodyIsUnit = returnsUnit check source id
 
-                      // a comment trailing the last expression belongs to
-                      // that line; left outside the replaced range it
-                      // resurfaced after `} :> Task` (Mibo's Tests.fs)
-                      let bodyRange =
-                          let lastLine = source.GetLineString(body.Range.EndLine - 1)
-                          let rest = lastLine.Substring(min body.Range.EndColumn lastLine.Length)
+                        // a comment trailing the last expression belongs to
+                        // that line; left outside the replaced range it
+                        // resurfaced after `} :> Task` (Mibo's Tests.fs)
+                        let bodyRange =
+                            let lastLine = source.GetLineString(body.Range.EndLine - 1)
+                            let rest = lastLine.Substring(min body.Range.EndColumn lastLine.Length)
 
-                          if rest.TrimStart().StartsWith "//" then
-                              Range.mkRange
-                                  body.Range.FileName
-                                  body.Range.Start
-                                  (Position.mkPos body.Range.EndLine lastLine.Length)
-                          else
-                              body.Range
+                            if rest.TrimStart().StartsWith "//" then
+                                Range.mkRange
+                                    body.Range.FileName
+                                    body.Range.Start
+                                    (Position.mkPos body.Range.EndLine lastLine.Length)
+                            else
+                                body.Range
 
-                      let suggestion replacement sites =
-                          { Name = id.idText
-                            Range = bodyRange
-                            OriginalText = textOfRange source bodyRange
-                            ReplacementText = replacement
-                            Sites = sites }
+                        let suggestion replacement sites =
+                            {
+                                Name = id.idText
+                                Range = bodyRange
+                                OriginalText = textOfRange source bodyRange
+                                ReplacementText = replacement
+                                Sites = sites
+                            }
 
-                      match blockingOf check source body with
-                      // the whole body blocks on one thing — `async { ... }
-                      // |> Async.RunSynchronously` — so the awaitable IS the
-                      // test: no block, just the upcast
-                      | Some b when not b.NoBind && (b.UnitResult || bodyIsUnit) ->
-                          let trailing =
-                              (textOfRange source bodyRange).Substring((textOfRange source body.Range).Length)
+                        match blockingOf check source body with
+                        // the whole body blocks on one thing — `async { ... }
+                        // |> Async.RunSynchronously` — so the awaitable IS the
+                        // test: no block, just the upcast
+                        | Some b when not b.NoBind && (b.UnitResult || bodyIsUnit) ->
+                            let trailing =
+                                (textOfRange source bodyRange).Substring((textOfRange source body.Range).Length)
 
-                          yield suggestion $"{b.Awaitable} :> System.Threading.Tasks.Task{trailing}" 1
-                      | Some _ -> ()
-                      | None ->
-                          // re-indenting the body would also re-indent the
-                          // inside of a string literal that spans lines —
-                          // a triple-quoted expected value, say — and that
-                          // compiles with different content
-                          let spansLinesInBody (r: range) =
-                              r.StartLine <> r.EndLine && Range.rangeContainsRange body.Range r
+                            yield suggestion $"{b.Awaitable} :> System.Threading.Tasks.Task{trailing}" 1
+                        | Some _ -> ()
+                        | None ->
+                            // re-indenting the body would also re-indent the
+                            // inside of a string literal that spans lines —
+                            // a triple-quoted expected value, say — and that
+                            // compiles with different content
+                            let spansLinesInBody (r: range) =
+                                r.StartLine <> r.EndLine && Range.rangeContainsRange body.Range r
 
-                          let multiLineString =
-                              (index.Exprs
-                               |> Seq.exists (fun (_, e) ->
-                                   match e with
-                                   | SynExpr.Const(SynConst.String _, r)
-                                   | SynExpr.Const(SynConst.Bytes _, r)
-                                   | SynExpr.InterpolatedString(range = r) -> spansLinesInBody r
-                                   | _ -> false))
-                              || (index.Pats
-                                  |> Seq.exists (fun (_, p) ->
-                                      match p with
-                                      | SynPat.Const(SynConst.String _, r)
-                                      | SynPat.Const(SynConst.Bytes _, r) -> spansLinesInBody r
-                                      | _ -> false))
+                            let multiLineString =
+                                (index.Exprs
+                                 |> Seq.exists (fun (_, e) ->
+                                     match e with
+                                     | SynExpr.Const(SynConst.String _, r)
+                                     | SynExpr.Const(SynConst.Bytes _, r)
+                                     | SynExpr.InterpolatedString(range = r) -> spansLinesInBody r
+                                     | _ -> false))
+                                || (index.Pats
+                                    |> Seq.exists (fun (_, p) ->
+                                        match p with
+                                        | SynPat.Const(SynConst.String _, r)
+                                        | SynPat.Const(SynConst.Bytes _, r) -> spansLinesInBody r
+                                        | _ -> false))
 
-                          if ownLine && not multiLineString then
-                              match spineEdits check source bodyIsUnit body true with
-                              | Some edits when not edits.IsEmpty ->
-                                  let sites =
-                                      edits |> List.filter (fun (_, t) -> t <> "let!" && t <> "match!") |> List.length
+                            if ownLine && not multiLineString then
+                                match spineEdits check source bodyIsUnit body true with
+                                | Some edits when not edits.IsEmpty ->
+                                    let sites =
+                                        edits |> List.filter (fun (_, t) -> t <> "let!" && t <> "match!") |> List.length
 
-                                  yield
-                                      suggestion
-                                          ((wrapBody source bodyRange edits).Substring body.Range.StartColumn)
-                                          sites
-                              | _ -> ()
-                  | None -> ()
-              | _ -> () ]
+                                    yield
+                                        suggestion
+                                            ((wrapBody source bodyRange edits).Substring body.Range.StartColumn)
+                                            sites
+                                | _ -> ()
+                    | None -> ()
+                | _ -> ()
+        ]

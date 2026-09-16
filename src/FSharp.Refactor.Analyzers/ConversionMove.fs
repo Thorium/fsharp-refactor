@@ -48,14 +48,16 @@ type Suggestion =
 ///                        module the conversion produces)
 let private conversions =
     dict
-        [ "Seq.toList", ("Seq", "List")
-          "List.ofSeq", ("Seq", "List")
-          "Seq.toArray", ("Seq", "Array")
-          "Array.ofSeq", ("Seq", "Array")
-          "List.toArray", ("List", "Array")
-          "Array.ofList", ("List", "Array")
-          "Array.toList", ("Array", "List")
-          "List.ofArray", ("Array", "List") ]
+        [
+            "Seq.toList", ("Seq", "List")
+            "List.ofSeq", ("Seq", "List")
+            "Seq.toArray", ("Seq", "Array")
+            "Array.ofSeq", ("Seq", "Array")
+            "List.toArray", ("List", "Array")
+            "Array.ofList", ("List", "Array")
+            "Array.toList", ("Array", "List")
+            "List.ofArray", ("Array", "List")
+        ]
 
 /// Operations after which the conversion is still needed (it moves). All are
 /// order-preserving element transforms whose Seq/List/Array variants agree
@@ -63,21 +65,23 @@ let private conversions =
 /// absent: Seq.groupBy yields seq-valued groups, so the element type changes.
 let private movableOps =
     set
-        [ "map"
-          "mapi"
-          "filter"
-          "choose"
-          "collect"
-          "rev"
-          "sort"
-          "sortBy"
-          "sortDescending"
-          "sortByDescending"
-          "sortWith"
-          "distinct"
-          "distinctBy"
-          "indexed"
-          "countBy" ]
+        [
+            "map"
+            "mapi"
+            "filter"
+            "choose"
+            "collect"
+            "rev"
+            "sort"
+            "sortBy"
+            "sortDescending"
+            "sortByDescending"
+            "sortWith"
+            "distinct"
+            "distinctBy"
+            "indexed"
+            "countBy"
+        ]
 
 /// Operations that consume the collection (the conversion is dropped). The
 /// moved form may short-circuit source enumeration (exists/find/head/...),
@@ -86,37 +90,39 @@ let private movableOps =
 /// exception types on short inputs.
 let private consumingOps =
     set
-        [ "length"
-          "iter"
-          "iteri"
-          "sum"
-          "sumBy"
-          "average"
-          "averageBy"
-          "max"
-          "min"
-          "maxBy"
-          "minBy"
-          "exists"
-          "forall"
-          "isEmpty"
-          "fold"
-          "reduce"
-          "contains"
-          "find"
-          "tryFind"
-          "findIndex"
-          "tryFindIndex"
-          "pick"
-          "tryPick"
-          "head"
-          "tryHead"
-          "last"
-          "tryLast"
-          // `item` is absent: Array.item throws IndexOutOfRangeException while
-          // List.item/Seq.item throw ArgumentException
-          "exactlyOne"
-          "tryExactlyOne" ]
+        [
+            "length"
+            "iter"
+            "iteri"
+            "sum"
+            "sumBy"
+            "average"
+            "averageBy"
+            "max"
+            "min"
+            "maxBy"
+            "minBy"
+            "exists"
+            "forall"
+            "isEmpty"
+            "fold"
+            "reduce"
+            "contains"
+            "find"
+            "tryFind"
+            "findIndex"
+            "tryFindIndex"
+            "pick"
+            "tryPick"
+            "head"
+            "tryHead"
+            "last"
+            "tryLast"
+            // `item` is absent: Array.item throws IndexOutOfRangeException while
+            // List.item/Seq.item throw ArgumentException
+            "exactlyOne"
+            "tryExactlyOne"
+        ]
 
 /// The Array sorts are unstable while the Seq/List sorts are stable, so the
 /// sort family must not be moved across an Array boundary.
@@ -166,15 +172,17 @@ let private opAllowedForModules (opFunc: string) (sourceModule: string) (targetM
 /// this gate does not apply to it.
 let private lengthPreserving =
     set
-        [ "map"
-          "mapi"
-          "rev"
-          "indexed"
-          "sort"
-          "sortBy"
-          "sortDescending"
-          "sortByDescending"
-          "sortWith" ]
+        [
+            "map"
+            "mapi"
+            "rev"
+            "indexed"
+            "sort"
+            "sortBy"
+            "sortDescending"
+            "sortByDescending"
+            "sortWith"
+        ]
 
 let private worthMovingInto (sourceModule: string) (operation: string) =
     match sourceModule with
@@ -440,13 +448,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     Range.mkRange convStage.Range.FileName convStage.Range.Start opStage.Range.End
 
                                 suggestions.Add
-                                    { Range = fullRange
-                                      OriginalText = textOfRange source fullRange
-                                      ReplacementText = replacement
-                                      Eliminated = consuming }
+                                    {
+                                        Range = fullRange
+                                        OriginalText = textOfRange source fullRange
+                                        ReplacementText = replacement
+                                        Eliminated = consuming
+                                    }
                         | _ -> ()
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

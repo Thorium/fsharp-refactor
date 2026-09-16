@@ -104,6 +104,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\SecurityRules.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\MiscRules.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\StructHints.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\SealedClass.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\VOptionMigration.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\StructTupleMigration.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DateTimeOffsetMigration.fs" />

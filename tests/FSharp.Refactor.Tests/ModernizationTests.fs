@@ -836,15 +836,17 @@ let ``an invariant message explains itself without arguments`` () =
     // "not possible" (fantomas), "invalid case." (Suave): the branch was
     // never meant to run, and no argument says why it did
     for message in
-        [ "unreachable - linear let"
-          "varargs NYI"
-          "not possible"
-          "impossible"
-          "invalid case."
-          "Suave.Web.split: invalid case"
-          "not implemented"
-          "internal error; should not have successfully decrypted data"
-          "invalid state" ] do
+        [
+            "unreachable - linear let"
+            "varargs NYI"
+            "not possible"
+            "impossible"
+            "invalid case."
+            "Suave.Web.split: invalid case"
+            "not implemented"
+            "internal error; should not have successfully decrypted data"
+            "invalid state"
+        ] do
         Assert.Empty(failwithContextIn $"module Test\nlet run (n: int) =\n    failwith \"{message}\"")
 
 [<Fact>]
@@ -2546,8 +2548,10 @@ let ``FR0092: an assertion pinning a production throw's text loosens to a prefix
         |> List.sort
 
     Assert.Equal<(int * string * string) list>(
-        [ 4, "should equal \"model inference failed\"", "should startWith \"model inference failed\""
-          5, "Assert.Equal(\"model inference failed\",", "Assert.StartsWith(\"model inference failed\"," ],
+        [
+            4, "should equal \"model inference failed\"", "should startWith \"model inference failed\""
+            5, "Assert.Equal(\"model inference failed\",", "Assert.StartsWith(\"model inference failed\","
+        ],
         edits
     )
 

@@ -17,9 +17,11 @@ open FSharp.Analyzers.SDK.ASTCollecting
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 let private isExceptionPath (ids: Ident list) =
     match ids |> List.map (fun i -> i.idText) with
@@ -70,11 +72,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             ()
                         | message ->
                             suggestions.Add
-                                { Range = expr.Range
-                                  OriginalText = textOfRange source expr.Range
-                                  ReplacementText = "failwith " + messageText source message }
+                                {
+                                    Range = expr.Range
+                                    OriginalText = textOfRange source expr.Range
+                                    ReplacementText = "failwith " + messageText source message
+                                }
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

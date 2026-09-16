@@ -31,9 +31,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// `subj :? Ty` with a plain identifier subject → (subject, type text).
 [<return: Struct>]
@@ -177,9 +179,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             $"match {subject.idText} with " + String.concat " " arms + " " + finalArm
 
                         suggestions.Add
-                            { Range = expr.Range
-                              OriginalText = wholeText
-                              ReplacementText = replacement }
+                            {
+                                Range = expr.Range
+                                OriginalText = wholeText
+                                ReplacementText = replacement
+                            }
                     | None -> ()
             | _ -> ()
         | _ -> ()

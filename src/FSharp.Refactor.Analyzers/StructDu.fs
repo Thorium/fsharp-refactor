@@ -49,31 +49,33 @@ type Suggestion =
 
 let private smallValueTypes =
     set
-        [ "int"
-          "int8"
-          "int16"
-          "int32"
-          "int64"
-          "uint"
-          "uint8"
-          "uint16"
-          "uint32"
-          "uint64"
-          "byte"
-          "sbyte"
-          "float"
-          "float32"
-          "single"
-          "double"
-          "decimal"
-          "bool"
-          "char"
-          "nativeint"
-          "unativeint"
-          "Guid"
-          "DateTime"
-          "DateTimeOffset"
-          "TimeSpan" ]
+        [
+            "int"
+            "int8"
+            "int16"
+            "int32"
+            "int64"
+            "uint"
+            "uint8"
+            "uint16"
+            "uint32"
+            "uint64"
+            "byte"
+            "sbyte"
+            "float"
+            "float32"
+            "single"
+            "double"
+            "decimal"
+            "bool"
+            "char"
+            "nativeint"
+            "unativeint"
+            "Guid"
+            "DateTime"
+            "DateTimeOffset"
+            "TimeSpan"
+        ]
 
 let private isSmallValueType (t: SynType) =
     match t with
@@ -156,12 +158,15 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                             match SignatureFile.structEdits declaredPrivately signature typeName.idText with
                             | ValueSome signatureEdits ->
                                 suggestions.Add
-                                    { TypeName = typeName.idText
-                                      InsertRange = Range.mkRange decl.Range.FileName insertPos insertPos
-                                      InsertText = "[<Struct>]\n" + indent
-                                      SignatureEdits = signatureEdits }
+                                    {
+                                        TypeName = typeName.idText
+                                        InsertRange = Range.mkRange decl.Range.FileName insertPos insertPos
+                                        InsertText = "[<Struct>]\n" + indent
+                                        SignatureEdits = signatureEdits
+                                    }
                             | ValueNone -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

@@ -58,8 +58,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 |> Option.map (fun ev ->
                     let at = Position.mkPos r.StartLine (r.StartColumn + 2)
 
-                    { Range = r
-                      Evidence = ev
-                      Fix = Range.mkRange r.FileName at at, "*" })
+                    {
+                        Range = r
+                        Evidence = ev
+                        Fix = Range.mkRange r.FileName at at, "*"
+                    })
             else
                 None)

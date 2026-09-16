@@ -32,9 +32,11 @@ open System.Collections.Generic
 
 /// A single text edit: range, original text, replacement text.
 type Edit =
-    { Range: range
-      Original: string
-      Replacement: string }
+    {
+        Range: range
+        Original: string
+        Replacement: string
+    }
 
 type Suggestion =
     {
@@ -78,9 +80,11 @@ let private renderParam (source: ISourceText) (p: SynPat) =
 
 /// A module-level `let private f (a, b) = ...` definition.
 type private Candidate =
-    { Ident: Ident
-      ParenPatRange: range
-      Elements: SynPat list }
+    {
+        Ident: Ident
+        ParenPatRange: range
+        Elements: SynPat list
+    }
 
 let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) : Candidate list =
     let candidates = ResizeArray<Candidate>()
@@ -117,11 +121,14 @@ let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) 
                             && not (ident.idText.StartsWith '|')
                             ->
                             candidates.Add
-                                { Ident = ident
-                                  ParenPatRange = paren.Range
-                                  Elements = elements }
+                                {
+                                    Ident = ident
+                                    ParenPatRange = paren.Range
+                                    Elements = elements
+                                }
                         | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq candidates
@@ -152,7 +159,8 @@ let private collectApplications (parseTree: ParsedInput) =
 
                         apps.[(funcExpr.Range.EndLine, funcExpr.Range.EndColumn)] <- (funcExpr, argExpr, projected)
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     apps
@@ -183,9 +191,11 @@ let private callEdit
                     curried
 
             Some
-                { Range = argExpr.Range
-                  Original = textOfRange source argExpr.Range
-                  Replacement = replacement }
+                {
+                    Range = argExpr.Range
+                    Original = textOfRange source argExpr.Range
+                    Replacement = replacement
+                }
         | _ -> None
     | false, _ -> None
 
@@ -201,14 +211,15 @@ let private editsNest (edits: Edit list) = rangesNest (edits |> List.map _.Range
 /// compilation that can see them was. Shared by FR0090 and FR0091.
 let reshapableScopes (project: FSharpCheckProjectResults) (outside: Visibility.Outside) : Visibility.Scope list =
     [ // a friend named by InternalsVisibleTo sees the internal declarations
-      // exactly as a sibling sees the public ones; an unread friend is a
-      // caller the all-or-nothing rule cannot count, so nothing internal
-      // moves until every friend's compilation has been read
-      match ProjectSources.internalsVisibleTo project with
-      | Some friends when friends |> List.forall outside.AssemblyRead -> Visibility.Scope.Assembly
-      | _ -> ()
-      if outside.PublicRead() then
-          Visibility.Scope.Exported ]
+        // exactly as a sibling sees the public ones; an unread friend is a
+        // caller the all-or-nothing rule cannot count, so nothing internal
+        // moves until every friend's compilation has been read
+        match ProjectSources.internalsVisibleTo project with
+        | Some friends when friends |> List.forall outside.AssemblyRead -> Visibility.Scope.Assembly
+        | _ -> ()
+        if outside.PublicRead() then
+            Visibility.Scope.Exported
+    ]
 
 /// The PROJECT-WIDE (API-changing) variant: internal/public tupled
 /// functions defined in `defFile`, with call-site edits wherever the
@@ -302,13 +313,15 @@ let findApiChanges
                             let curriedParams = paramTexts |> List.map Option.get |> String.concat " "
 
                             let defEdit =
-                                { Range = candidate.ParenPatRange
-                                  Original = textOfRange defFile.Source candidate.ParenPatRange
-                                  Replacement =
-                                    if candidate.Ident.idRange.End = candidate.ParenPatRange.Start then
-                                        $" {curriedParams}"
-                                    else
-                                        curriedParams }
+                                {
+                                    Range = candidate.ParenPatRange
+                                    Original = textOfRange defFile.Source candidate.ParenPatRange
+                                    Replacement =
+                                        if candidate.Ident.idRange.End = candidate.ParenPatRange.Start then
+                                            $" {curriedParams}"
+                                        else
+                                            curriedParams
+                                }
 
                             let edits = defEdit :: (callEdits |> Array.map Option.get |> Array.toList)
 
@@ -316,9 +329,11 @@ let findApiChanges
                                 None
                             else
                                 Some
-                                    { FunctionName = candidate.Ident.idText
-                                      DefRange = candidate.ParenPatRange
-                                      Edits = edits })
+                                    {
+                                        FunctionName = candidate.Ident.idText
+                                        DefRange = candidate.ParenPatRange
+                                        Edits = edits
+                                    })
 
 /// Find private tupled functions whose every use is a direct call, and build
 /// the definition + call-site edits. Requires typed check results.
@@ -366,14 +381,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             let curriedParams = paramTexts |> List.map Option.get |> String.concat " "
 
                             let defEdit =
-                                { Range = candidate.ParenPatRange
-                                  Original = textOfRange source candidate.ParenPatRange
-                                  Replacement =
-                                    // `let private add(a, b)` has no space before the tuple
-                                    if candidate.Ident.idRange.End = candidate.ParenPatRange.Start then
-                                        $" {curriedParams}"
-                                    else
-                                        curriedParams }
+                                {
+                                    Range = candidate.ParenPatRange
+                                    Original = textOfRange source candidate.ParenPatRange
+                                    Replacement =
+                                        // `let private add(a, b)` has no space before the tuple
+                                        if candidate.Ident.idRange.End = candidate.ParenPatRange.Start then
+                                            $" {curriedParams}"
+                                        else
+                                            curriedParams
+                                }
 
                             let edits = defEdit :: (callEdits |> Array.map Option.get |> Array.toList)
 
@@ -381,6 +398,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 None
                             else
                                 Some
-                                    { FunctionName = candidate.Ident.idText
-                                      DefRange = candidate.ParenPatRange
-                                      Edits = edits })
+                                    {
+                                        FunctionName = candidate.Ident.idText
+                                        DefRange = candidate.ParenPatRange
+                                        Edits = edits
+                                    })

@@ -103,9 +103,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             for used, litRange, siteRange in paramNameSites do
                 if Range.rangeContainsRange body.Range siteRange && not (names.Contains used) then
                     suggestions.Add
-                        { Range = litRange
-                          UsedName = used
-                          ParameterNames = parameters }
+                        {
+                            Range = litRange
+                            UsedName = used
+                            ParameterNames = parameters
+                        }
 
     if not (Array.isEmpty paramNameSites) then
         for _, decl in index.Decls do

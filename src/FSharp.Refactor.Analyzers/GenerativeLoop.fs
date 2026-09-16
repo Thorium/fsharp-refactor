@@ -193,46 +193,50 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
     let inAsyncBuilder = computationBuilderRanges index
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.While(whileExpr = cond; doExpr = body) when
-              not (inAsyncBuilder |> Array.exists (fun r -> Range.rangeContainsRange r expr.Range))
-              ->
-              let flags = negatedIdents cond
-              let sets = assignments body
-              let bound = set (locallyBound body)
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.While(whileExpr = cond; doExpr = body) when
+                not (inAsyncBuilder |> Array.exists (fun r -> Range.rangeContainsRange r expr.Range))
+                ->
+                let flags = negatedIdents cond
+                let sets = assignments body
+                let bound = set (locallyBound body)
 
-              // a name only WRITTEN in the loop is a result being filled
-              // in, not state the next round depends on
-              let readInLoop =
-                  index.Exprs
-                  |> Array.choose (fun (_, e) ->
-                      match e with
-                      | SynExpr.Ident id when
-                          Range.rangeContainsRange cond.Range id.idRange
-                          || Range.rangeContainsRange body.Range id.idRange
-                          ->
-                          Some id.idText
-                      | _ -> None)
-                  |> Set.ofArray
+                // a name only WRITTEN in the loop is a result being filled
+                // in, not state the next round depends on
+                let readInLoop =
+                    index.Exprs
+                    |> Array.choose (fun (_, e) ->
+                        match e with
+                        | SynExpr.Ident id when
+                            Range.rangeContainsRange cond.Range id.idRange
+                            || Range.rangeContainsRange body.Range id.idRange
+                            ->
+                            Some id.idText
+                        | _ -> None)
+                    |> Set.ofArray
 
-              for flag in List.distinct flags do
-                  // the flag has to be RAISED in the body, or the loop is
-                  // waiting on something else entirely
-                  if sets |> List.exists (fun (n, _) -> n = flag) then
-                      let carried =
-                          sets
-                          |> List.filter (fun (n, rhs) ->
-                              n <> flag
-                              && not (bound.Contains n)
-                              && not (isCounterBump n rhs)
-                              && readInLoop.Contains n)
-                          |> List.map fst
-                          |> List.distinct
+                for flag in List.distinct flags do
+                    // the flag has to be RAISED in the body, or the loop is
+                    // waiting on something else entirely
+                    if sets |> List.exists (fun (n, _) -> n = flag) then
+                        let carried =
+                            sets
+                            |> List.filter (fun (n, rhs) ->
+                                n <> flag
+                                && not (bound.Contains n)
+                                && not (isCounterBump n rhs)
+                                && readInLoop.Contains n)
+                            |> List.map fst
+                            |> List.distinct
 
-                      if not carried.IsEmpty then
-                          { Range = cond.Range
-                            Flag = flag
-                            Carried = carried
-                            TailAfterFlag = tailAfterFlag flag body }
-          | _ -> () ]
+                        if not carried.IsEmpty then
+                            {
+                                Range = cond.Range
+                                Flag = flag
+                                Carried = carried
+                                TailAfterFlag = tailAfterFlag flag body
+                            }
+            | _ -> ()
+    ]

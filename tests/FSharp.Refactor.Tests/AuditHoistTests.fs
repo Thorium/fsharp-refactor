@@ -12,7 +12,7 @@ open FSharp.Refactor.Tests.Parsing
 
 let private adviceIn (source: string) =
     let tree, sourceText = parse source
-    TaskStateMachine.find tree sourceText 4 false Set.empty
+    TaskStateMachine.find tree sourceText None 4 false Set.empty
 
 let private hoistEditsIn (source: string) =
     adviceIn source

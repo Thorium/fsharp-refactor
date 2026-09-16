@@ -34,11 +34,13 @@ let ``walk finds files at every depth`` () =
 [<Fact>]
 let ``walk prunes build output and package caches`` () =
     withTree
-        [ "Real.fs", ""
-          "obj/Generated.fs", ""
-          "bin/Debug/Copied.fs", ""
-          "node_modules/pkg/Vendored.fs", ""
-          "packages/Restored.fs", "" ]
+        [
+            "Real.fs", ""
+            "obj/Generated.fs", ""
+            "bin/Debug/Copied.fs", ""
+            "node_modules/pkg/Vendored.fs", ""
+            "packages/Restored.fs", ""
+        ]
         (fun root ->
             let found = FileWalk.files "*.fs" root |> Seq.map Path.GetFileName |> List.ofSeq
             Assert.Equal<string list>([ "Real.fs" ], found))

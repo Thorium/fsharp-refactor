@@ -40,7 +40,7 @@ let ``FR0035: a per-iteration collection is not loop-invariant`` () : unit =
         parse
             "module Test\nlet f (xs: int list) =\n    for x in xs do\n        let ys = [ x; x + 1 ]\n        if List.contains x ys then printfn \"%d\" x"
 
-    let contains, _ = LoopPerf.find false tree sourceText
+    let contains, _ = LoopPerf.find false None tree sourceText
     Assert.Empty contains
 
 [<Fact>]

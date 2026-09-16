@@ -23,9 +23,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// A `%` specifier in a printf format: flags, width, precision, type.
 let private specifierRegex =
@@ -155,73 +157,87 @@ let private parenOnlyWraps (check: FSharpCheckFileResults) (source: ISourceText)
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for path, expr in index.Exprs do
-          match expr with
-          | SynExpr.App(isInfix = false) when isSingleLine expr.Range ->
-              match collectSpine [] expr with
-              | ValueSome(sprintfId, (SynExpr.Const(SynConst.String(_, SynStringKind.Regular, _), _) as fmtExpr :: args)) when
-                  not args.IsEmpty
-                  && args |> List.forall simpleArg
-                  && OptionModule.resolvesToCoreOperator check source sprintfId
-                  ->
-                  let fmtSource = textOfRange source fmtExpr.Range
-                  let fmt = fmtSource.Substring(1, fmtSource.Length - 2)
+    [
+        for path, expr in index.Exprs do
+            match expr with
+            | SynExpr.App(isInfix = false) when isSingleLine expr.Range ->
+                match collectSpine [] expr with
+                | ValueSome(sprintfId,
+                            (SynExpr.Const(SynConst.String(_, SynStringKind.Regular, _), _) as fmtExpr :: args)) when
+                    not args.IsEmpty
+                    && args |> List.forall simpleArg
+                    && OptionModule.resolvesToCoreOperator check source sprintfId
+                    ->
+                    let fmtSource = textOfRange source fmtExpr.Range
+                    let fmt = fmtSource.Substring(1, fmtSource.Length - 2)
 
-                  let specifiers =
-                      specifierRegex.Matches fmt
-                      |> Seq.filter (fun m ->
-                          // an even run of % before the match means the
-                          // leading % is itself escaped (%%)
-                          let mutable run = 0
-                          let mutable i = m.Index - 1
+                    let specifiers =
+                        specifierRegex.Matches fmt
+                        |> Seq.filter (fun m ->
+                            // an even run of % before the match means the
+                            // leading % is itself escaped (%%)
+                            let mutable run = 0
+                            let mutable i = m.Index - 1
 
-                          while i >= 0 && fmt.[i] = '%' do
-                              run <- run + 1
-                              i <- i - 1
+                            while i >= 0 && fmt.[i] = '%' do
+                                run <- run + 1
+                                i <- i - 1
 
-                          run % 2 = 0)
-                      |> List.ofSeq
+                            run % 2 = 0)
+                        |> List.ofSeq
 
-                  let spliceable =
-                      not (fmt.Contains '{')
-                      && not (fmt.Contains '}')
-                      && specifiers.Length = args.Length
-                      && specifiers
-                         |> List.forall (fun m -> isValueSpecifier fmt.[m.Index + m.Length - 1])
+                    let spliceable =
+                        not (fmt.Contains '{')
+                        && not (fmt.Contains '}')
+                        && specifiers.Length = args.Length
+                        && specifiers
+                           |> List.forall (fun m -> isValueSpecifier fmt.[m.Index + m.Length - 1])
 
-                  if spliceable then
-                      let builder = System.Text.StringBuilder()
-                      let mutable cursor = 0
+                    if spliceable then
+                        let builder = System.Text.StringBuilder()
+                        let mutable cursor = 0
 
-                      for m, arg in List.zip specifiers args do
-                          builder
-                              .Append(fmt.Substring(cursor, m.Index - cursor))
-                              .Append(m.Value)
-                              .Append('{')
-                              .Append(textOfRange source arg.Range)
-                              .Append
-                              '}'
-                          |> ignore
+                        for m, arg in List.zip specifiers args do
+                            builder
+                                .Append(fmt.Substring(cursor, m.Index - cursor))
+                                .Append(m.Value)
+                                .Append('{')
+                                .Append(textOfRange source arg.Range)
+                                .Append
+                                '}'
+                            |> ignore
 
-                          cursor <- m.Index + m.Length
+                            cursor <- m.Index + m.Length
 
-                      builder.Append(fmt.Substring cursor) |> ignore
+                        builder.Append(fmt.Substring cursor) |> ignore
 
-                      // parentheses that only wrapped the application go
-                      // with it (farmer's `(sprintf "Should have thrown for
-                      // %d" days)` was left as `($"…")`)
-                      let editRange =
-                          match path with
-                          | SyntaxNode.SynExpr(SynExpr.Paren(expr = inner; range = parenRange)) :: parent :: _ when
-                              Range.equals inner.Range expr.Range
-                              && isSingleLine parenRange
-                              && parenOnlyWraps check source parent parenRange
-                              ->
-                              parenRange
-                          | _ -> expr.Range
+                        // parentheses that only wrapped the application go
+                        // with it (farmer's `(sprintf "Should have thrown for
+                        // %d" days)` was left as `($"…")`)
+                        let editRange =
+                            match path with
+                            | SyntaxNode.SynExpr(SynExpr.Paren(expr = inner; range = parenRange)) :: parent :: _ when
+                                Range.equals inner.Range expr.Range
+                                && isSingleLine parenRange
+                                && parenOnlyWraps check source parent parenRange
+                                ->
+                                parenRange
+                            | _ -> expr.Range
 
-                      { Range = editRange
-                        OriginalText = textOfRange source editRange
-                        ReplacementText = "$\"" + builder.ToString() + "\"" }
-              | _ -> ()
-          | _ -> () ]
+                        // an operator touching the paren would swallow the
+                        // `$`: SQLProvider's `~~(sprintf "..." x)` became
+                        // `~~$"..."`, and `~~$` is an operator name, and an
+                        // invalid one. A space keeps the two apart
+                        let touchesOperator =
+                            editRange.StartColumn > 0
+                            && (let line = source.GetLineString(editRange.StartLine - 1)
+                                "!%&*+-./<=>?@^|~:$".Contains line.[editRange.StartColumn - 1])
+
+                        {
+                            Range = editRange
+                            OriginalText = textOfRange source editRange
+                            ReplacementText = (if touchesOperator then " $\"" else "$\"") + builder.ToString() + "\""
+                        }
+                | _ -> ()
+            | _ -> ()
+    ]

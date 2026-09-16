@@ -70,14 +70,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // handler clauses that bind an exception, with their body ranges
         let handlers =
-            [ for _, e in index.Exprs do
-                  match e with
-                  | SynExpr.TryWith(withCases = cases) ->
-                      for SynMatchClause(pat = p; resultExpr = result) in cases do
-                          match exceptionNameOf p with
-                          | ValueSome name -> yield name, result.Range
-                          | ValueNone -> ()
-                  | _ -> () ]
+            [
+                for _, e in index.Exprs do
+                    match e with
+                    | SynExpr.TryWith(withCases = cases) ->
+                        for SynMatchClause(pat = p; resultExpr = result) in cases do
+                            match exceptionNameOf p with
+                            | ValueSome name -> yield name, result.Range
+                            | ValueNone -> ()
+                    | _ -> ()
+            ]
 
         // the innermost handler an expression sits in
         let handlerOf (r: range) =
@@ -140,40 +142,45 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             )
 
         let logary =
-            [ for path, expr in index.Exprs do
-                  if isOuterPipe path expr then
-                      let chain = stages expr
+            [
+                for path, expr in index.Exprs do
+                    if isOuterPipe path expr then
+                        let chain = stages expr
 
-                      // the event stage: applied, or point-free after the template
-                      let eventStage =
-                          chain
-                          |> List.indexed
-                          |> List.tryPick (fun (i, stage) ->
-                              match stage with
-                              | SynExpr.App(
-                                  isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
-                                  ids.Length >= 2 && logaryEvents.Contains (List.last ids).idText
-                                  ->
-                                  Some(List.last ids, stage.Range)
-                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
-                                  i = 1 && ids.Length >= 2 && logaryEvents.Contains (List.last ids).idText
-                                  ->
-                                  Some(List.last ids, stage.Range)
-                              | _ -> None)
+                        // the event stage: applied, or point-free after the template
+                        let eventStage =
+                            chain
+                            |> List.indexed
+                            |> List.tryPick (fun (i, stage) ->
+                                match stage with
+                                | SynExpr.App(
+                                    isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
+                                    ids.Length >= 2 && logaryEvents.Contains (List.last ids).idText
+                                    ->
+                                    Some(List.last ids, stage.Range)
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                                    i = 1 && ids.Length >= 2 && logaryEvents.Contains (List.last ids).idText
+                                    ->
+                                    Some(List.last ids, stage.Range)
+                                | _ -> None)
 
-                      match eventStage, handlerOf expr.Range with
-                      | Some(eventId, stageRange), Some(exName, _) when
-                          not (Regex.IsMatch(textOfRange source expr.Range, identifierPattern exName))
-                          && familyOf eventId = Some "Logary"
-                          ->
-                          { Range = Range.mkRange expr.Range.FileName stageRange.End stageRange.End
-                            ExceptionName = exName
-                            LogMethod = eventId.idText
-                            Family = "Logary" }
-                      | _ -> () ]
+                        match eventStage, handlerOf expr.Range with
+                        | Some(eventId, stageRange), Some(exName, _) when
+                            not (Regex.IsMatch(textOfRange source expr.Range, identifierPattern exName))
+                            && familyOf eventId = Some "Logary"
+                            ->
+                            {
+                                Range = Range.mkRange expr.Range.FileName stageRange.End stageRange.End
+                                ExceptionName = exName
+                                LogMethod = eventId.idText
+                                Family = "Logary"
+                            }
+                        | _ -> ()
+            ]
 
         logary
-        @ [ for _, expr in index.Exprs do
+        @ [
+            for _, expr in index.Exprs do
                 match expr with
                 | SynExpr.App(isInfix = false; funcExpr = CallIdent logId; argExpr = SynExpr.Paren(expr = inner)) when
                     (logMethods.Contains logId.idText || serilogMethods.Contains logId.idText)
@@ -214,10 +221,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                         match family with
                         | Some family ->
-                            { Range = Range.mkRange expr.Range.FileName inner.Range.Start inner.Range.Start
-                              ExceptionName = exName
-                              LogMethod = logId.idText
-                              Family = family }
+                            {
+                                Range = Range.mkRange expr.Range.FileName inner.Range.Start inner.Range.Start
+                                ExceptionName = exName
+                                LogMethod = logId.idText
+                                Family = family
+                            }
                         | None -> ()
                     | _ -> ()
-                | _ -> () ]
+                | _ -> ()
+        ]

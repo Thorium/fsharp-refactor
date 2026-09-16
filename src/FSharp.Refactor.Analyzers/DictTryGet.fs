@@ -52,11 +52,13 @@ type Suggestion =
 
 let private dictionaryTypes =
     set
-        [ "System.Collections.Generic.Dictionary`2"
-          "System.Collections.Generic.IDictionary`2"
-          "System.Collections.Generic.IReadOnlyDictionary`2"
-          "System.Collections.Generic.SortedDictionary`2"
-          "System.Collections.Concurrent.ConcurrentDictionary`2" ]
+        [
+            "System.Collections.Generic.Dictionary`2"
+            "System.Collections.Generic.IDictionary`2"
+            "System.Collections.Generic.IReadOnlyDictionary`2"
+            "System.Collections.Generic.SortedDictionary`2"
+            "System.Collections.Concurrent.ConcurrentDictionary`2"
+        ]
 
 [<Literal>]
 let private FSharpMapType = "Microsoft.FSharp.Collections.FSharpMap`2"
@@ -219,23 +221,25 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let lines = raw.Replace("\r", "").Split '\n'
 
         let shifted =
-            [ for i, line in Seq.indexed lines ->
-                  if i = 0 then
-                      let line =
-                          if line.StartsWith "elif" then
-                              "if" + line.Substring 4
-                          else
-                              line
+            [
+                for i, line in Seq.indexed lines ->
+                    if i = 0 then
+                        let line =
+                            if line.StartsWith "elif" then
+                                "if" + line.Substring 4
+                            else
+                                line
 
-                      Some(String.replicate targetColumn " " + line)
-                  elif System.String.IsNullOrWhiteSpace line then
-                      Some ""
-                  elif delta >= 0 then
-                      Some(String.replicate delta " " + line)
-                  elif line.Length >= -delta && line.Substring(0, -delta).Trim() = "" then
-                      Some(line.Substring(-delta))
-                  else
-                      None ]
+                        Some(String.replicate targetColumn " " + line)
+                    elif System.String.IsNullOrWhiteSpace line then
+                        Some ""
+                    elif delta >= 0 then
+                        Some(String.replicate delta " " + line)
+                    elif line.Length >= -delta && line.Substring(0, -delta).Trim() = "" then
+                        Some(line.Substring(-delta))
+                    else
+                        None
+            ]
 
         if shifted |> List.contains None then
             None
@@ -324,10 +328,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match replacement with
                         | Some replacement ->
                             suggestions.Add
-                                { Range = whole.Range
-                                  OriginalText = textOfRange source whole.Range
-                                  ReplacementText = replacement
-                                  Concurrent = typeName = ConcurrentDictionaryType }
+                                {
+                                    Range = whole.Range
+                                    OriginalText = textOfRange source whole.Range
+                                    ReplacementText = replacement
+                                    Concurrent = typeName = ConcurrentDictionaryType
+                                }
                         | None -> ()
                     | None -> ()
                 | _ -> ()
@@ -366,7 +372,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | [ Some(FalsePat, elseExpr); Some(AnyPat, thenExpr) ] ->
                         handleCandidate expr containerIds keyExpr thenExpr elseExpr
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     if OptionModule.hasErrors check then
         []
@@ -411,12 +418,15 @@ let findTryAdd (parseTree: ParsedInput) (source: ISourceText) (check: FSharpChec
                                 (textOfRange source (stripParens setValue).Range)
 
                         suggestions.Add
-                            { Range = expr.Range
-                              OriginalText = textOfRange source expr.Range
-                              ReplacementText = replacement
-                              Concurrent = typeName = ConcurrentDictionaryType }
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                ReplacementText = replacement
+                                Concurrent = typeName = ConcurrentDictionaryType
+                            }
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     if OptionModule.hasErrors check then
         []
@@ -441,12 +451,14 @@ type GetOrAddSuggestion =
 /// ambiguous with GetOrAdd's plain-value overload.
 let private wrapperValueTypes =
     set
-        [ "System.Threading.Tasks.Task"
-          "System.Threading.Tasks.Task`1"
-          "System.Threading.Tasks.ValueTask"
-          "System.Threading.Tasks.ValueTask`1"
-          "System.Lazy`1"
-          "Microsoft.FSharp.Control.FSharpAsync`1" ]
+        [
+            "System.Threading.Tasks.Task"
+            "System.Threading.Tasks.Task`1"
+            "System.Threading.Tasks.ValueTask"
+            "System.Threading.Tasks.ValueTask`1"
+            "System.Lazy`1"
+            "Microsoft.FSharp.Control.FSharpAsync`1"
+        ]
 
 /// `<container>.TryGetValue <key>` / `<container>.TryGetValue(<key>)` —
 /// the container segments and the key expression (parens stripped). The
@@ -621,135 +633,102 @@ let findGetOrAdd
 
         let lineOf (l: int) = source.GetLineString(l - 1)
 
-        // a byref or byref-like value (a Span, a ReadOnlySpan) declared
-        // OUTSIDE the arm and read inside it cannot be captured by the
-        // lambda; one declared inside the arm moves with it and is fine.
-        // The mutable-local guard sees only syntactically typed byref
-        // parameters, so this asks the typed tree about every name read
-        let isByRefLike (t: FSharpType) =
-            let t = OptionModule.stripAbbreviations t
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.Match(expr = TryGetValueCall(containerIds, keyExpr); clauses = clauses) when
+                    isSimpleKey keyExpr && not (spansDirective source expr.Range)
+                    ->
+                    match arms clauses with
+                    | Some(hitPat, IdentName returned, missBody) when hitBinder hitPat = Some returned ->
+                        let container = pathText containerIds
+                        let key = textOfRange source keyExpr.Range
+                        let armText = textOfRange source missBody.Range
 
-            t.HasTypeDefinition
-            && (t.TypeDefinition.IsByRef
-                || t.TypeDefinition.Attributes
-                   |> Seq.exists (fun a -> a.AttributeType.DisplayName = "IsByRefLikeAttribute"))
+                        // the store is matched by TEXT: a let in the arm
+                        // rebinding the container's head or a key name would
+                        // make the same spelling a different target
+                        let shadowsTarget (lets: SynBinding list) =
+                            let keyNames =
+                                match keyExpr with
+                                | SynExpr.Ident id -> [ id.idText ]
+                                | SynExpr.Tuple(exprs = es) ->
+                                    es
+                                    |> List.choose (fun e ->
+                                        match e with
+                                        | SynExpr.Ident id -> Some id.idText
+                                        | _ -> None)
+                                | _ -> []
 
-        let capturesByRefLike (armRange: range) =
-            index.Exprs
-            |> Array.exists (fun (_, e) ->
-                let head =
-                    match e with
-                    | SynExpr.Ident id -> Some id
-                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> Some first
-                    | _ -> None
+                            (List.head containerIds).idText :: keyNames
+                            |> List.exists (fun name -> lets |> List.exists (bindsName name))
 
-                match head with
-                | Some id when Range.rangeContainsRange armRange id.idRange ->
-                    let r = id.idRange
+                        match missArmShape [] missBody with
+                        | ValueSome(lets, store, stored) when
+                            lets |> List.exists (bindsName stored)
+                            && not (shadowsTarget lets)
+                            && storedIdent source container key store = Some stored
+                            && isSingleLine store.Range
+                            && (lineOf store.Range.StartLine).Trim() = textOfRange source store.Range
+                            && (lineOf missBody.Range.StartLine).Substring(0, missBody.Range.StartColumn).Trim() = ""
+                            && not (reraiseRegex.IsMatch armText)
+                            && not (OptionModule.capturesMutableLocal index missBody.Range)
+                            && not (OptionModule.capturesByRefLike check index source missBody.Range)
+                            && concurrentPlainValued containerIds
+                            ->
+                            let keyArg = argumentText source keyExpr
+                            let head = $"{container}.GetOrAdd({keyArg}, fun _ ->"
 
-                    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineOf r.EndLine, [ id.idText ]) with
-                    | Some symbolUse ->
-                        match symbolUse.Symbol with
-                        | :? FSharpMemberOrFunctionOrValue as v ->
-                            try
-                                not (Range.rangeContainsRange armRange v.DeclarationLocation)
-                                && isByRefLike v.FullType
-                            with OptionModule.FcsSymbolFailure ->
-                                true
-                        | _ -> false
-                    | None -> false
-                | _ -> false)
+                            let replacement =
+                                match lets with
+                                | [ SynBinding(expr = rhs) ] when
+                                    isSingleLine rhs.Range
+                                    && isSafeInline rhs
+                                    && missBody.Range.EndLine - missBody.Range.StartLine = 2
+                                    && not (armText.Contains "//")
+                                    && not (armText.Contains "(*")
+                                    ->
+                                    // `let res = compute ()` / store / `res`:
+                                    // the factory is the computation itself
+                                    Some $"{head} {textOfRange source rhs.Range})"
+                                | _ ->
+                                    // the arm's lines, minus the store, move
+                                    // into the lambda body under the match
+                                    // the last line stops at the arm's end:
+                                    // what follows there - a paren closing an
+                                    // enclosing expression, a trailing comment -
+                                    // is outside the replaced range and stays
+                                    let body =
+                                        [
+                                            for l in missBody.Range.StartLine .. missBody.Range.EndLine do
+                                                if l <> store.Range.StartLine then
+                                                    let line = lineOf l
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.Match(expr = TryGetValueCall(containerIds, keyExpr); clauses = clauses) when
-                  isSimpleKey keyExpr && not (spansDirective source expr.Range)
-                  ->
-                  match arms clauses with
-                  | Some(hitPat, IdentName returned, missBody) when hitBinder hitPat = Some returned ->
-                      let container = pathText containerIds
-                      let key = textOfRange source keyExpr.Range
-                      let armText = textOfRange source missBody.Range
+                                                    let line =
+                                                        if l = missBody.Range.EndLine then
+                                                            line.Substring(0, missBody.Range.EndColumn)
+                                                        else
+                                                            line
 
-                      // the store is matched by TEXT: a let in the arm
-                      // rebinding the container's head or a key name would
-                      // make the same spelling a different target
-                      let shadowsTarget (lets: SynBinding list) =
-                          let keyNames =
-                              match keyExpr with
-                              | SynExpr.Ident id -> [ id.idText ]
-                              | SynExpr.Tuple(exprs = es) ->
-                                  es
-                                  |> List.choose (fun e ->
-                                      match e with
-                                      | SynExpr.Ident id -> Some id.idText
-                                      | _ -> None)
-                              | _ -> []
-
-                          (List.head containerIds).idText :: keyNames
-                          |> List.exists (fun name -> lets |> List.exists (bindsName name))
-
-                      match missArmShape [] missBody with
-                      | ValueSome(lets, store, stored) when
-                          lets |> List.exists (bindsName stored)
-                          && not (shadowsTarget lets)
-                          && storedIdent source container key store = Some stored
-                          && isSingleLine store.Range
-                          && (lineOf store.Range.StartLine).Trim() = textOfRange source store.Range
-                          && (lineOf missBody.Range.StartLine).Substring(0, missBody.Range.StartColumn).Trim() = ""
-                          && not (reraiseRegex.IsMatch armText)
-                          && not (OptionModule.capturesMutableLocal index missBody.Range)
-                          && not (capturesByRefLike missBody.Range)
-                          && concurrentPlainValued containerIds
-                          ->
-                          let keyArg = argumentText source keyExpr
-                          let head = $"{container}.GetOrAdd({keyArg}, fun _ ->"
-
-                          let replacement =
-                              match lets with
-                              | [ SynBinding(expr = rhs) ] when
-                                  isSingleLine rhs.Range
-                                  && isSafeInline rhs
-                                  && missBody.Range.EndLine - missBody.Range.StartLine = 2
-                                  && not (armText.Contains "//")
-                                  && not (armText.Contains "(*")
-                                  ->
-                                  // `let res = compute ()` / store / `res`:
-                                  // the factory is the computation itself
-                                  Some $"{head} {textOfRange source rhs.Range})"
-                              | _ ->
-                                  // the arm's lines, minus the store, move
-                                  // into the lambda body under the match
-                                  // the last line stops at the arm's end:
-                                  // what follows there - a paren closing an
-                                  // enclosing expression, a trailing comment -
-                                  // is outside the replaced range and stays
-                                  let body =
-                                      [ for l in missBody.Range.StartLine .. missBody.Range.EndLine do
-                                            if l <> store.Range.StartLine then
-                                                let line = lineOf l
-
-                                                let line =
-                                                    if l = missBody.Range.EndLine then
-                                                        line.Substring(0, missBody.Range.EndColumn)
+                                                    if l = missBody.Range.StartLine then
+                                                        line.Substring missBody.Range.StartColumn
                                                     else
                                                         line
+                                        ]
+                                        |> String.concat "\n"
 
-                                                if l = missBody.Range.StartLine then
-                                                    line.Substring missBody.Range.StartColumn
-                                                else
-                                                    line ]
-                                      |> String.concat "\n"
+                                    reindentBlock (expr.Range.StartColumn + 4) missBody.Range.StartColumn body
+                                    |> Option.map (fun block -> $"{head}\n{block})")
 
-                                  reindentBlock (expr.Range.StartColumn + 4) missBody.Range.StartColumn body
-                                  |> Option.map (fun block -> $"{head}\n{block})")
-
-                          match replacement with
-                          | Some replacement ->
-                              { Range = expr.Range
-                                OriginalText = textOfRange source expr.Range
-                                ReplacementText = replacement }
-                          | None -> ()
-                      | _ -> ()
-                  | _ -> ()
-              | _ -> () ]
+                            match replacement with
+                            | Some replacement ->
+                                {
+                                    Range = expr.Range
+                                    OriginalText = textOfRange source expr.Range
+                                    ReplacementText = replacement
+                                }
+                            | None -> ()
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]

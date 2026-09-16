@@ -114,26 +114,32 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 && Range.rangeContainsRange guardRange r)
         | None -> false
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Equality"; argExpr = lhs); argExpr = rhs) ->
-              match lhs, rhs with
-              | TypeNameAccess prop, StringLiteral
-              | StringLiteral, TypeNameAccess prop ->
-                  { Range = expr.Range
-                    Kind = TypeCheckKind.NameComparison prop }
-              | (GetTypeCall as getTypeSide), TypeofExpr typeRange
-              | TypeofExpr typeRange, (GetTypeCall as getTypeSide) ->
-                  let typeText = textOfRange source typeRange
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Equality"; argExpr = lhs); argExpr = rhs) ->
+                match lhs, rhs with
+                | TypeNameAccess prop, StringLiteral
+                | StringLiteral, TypeNameAccess prop ->
+                    {
+                        Range = expr.Range
+                        Kind = TypeCheckKind.NameComparison prop
+                    }
+                | (GetTypeCall as getTypeSide), TypeofExpr typeRange
+                | TypeofExpr typeRange, (GetTypeCall as getTypeSide) ->
+                    let typeText = textOfRange source typeRange
 
-                  if not (refinesTypeTest expr.Range (getTypeReceiver getTypeSide) typeText) then
-                      let receiverText =
-                          // strip the trailing `.GetType()` for the message
-                          let text = textOfRange source getTypeSide.Range
-                          let cut = text.LastIndexOf ".GetType"
-                          if cut > 0 then text.Substring(0, cut) else text
+                    if not (refinesTypeTest expr.Range (getTypeReceiver getTypeSide) typeText) then
+                        let receiverText =
+                            // strip the trailing `.GetType()` for the message
+                            let text = textOfRange source getTypeSide.Range
+                            let cut = text.LastIndexOf ".GetType"
+                            if cut > 0 then text.Substring(0, cut) else text
 
-                      { Range = expr.Range
-                        Kind = TypeCheckKind.TypeofEquality(receiverText, typeText) }
-              | _ -> ()
-          | _ -> () ]
+                        {
+                            Range = expr.Range
+                            Kind = TypeCheckKind.TypeofEquality(receiverText, typeText)
+                        }
+                | _ -> ()
+            | _ -> ()
+    ]

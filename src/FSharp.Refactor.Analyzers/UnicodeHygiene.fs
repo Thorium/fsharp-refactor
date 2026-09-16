@@ -68,41 +68,45 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let inRegularLiteral (r: range) =
         regularLiterals |> Array.exists (fun lit -> Range.rangeContainsRange lit r)
 
-    [ for lineIx in 0 .. source.GetLineCount() - 1 do
-          let line = source.GetLineString lineIx
-          let mutable col = 0
+    [
+        for lineIx in 0 .. source.GetLineCount() - 1 do
+            let line = source.GetLineString lineIx
+            let mutable col = 0
 
-          for rune in line.EnumerateRunes() do
-              let width = rune.Utf16SequenceLength
+            for rune in line.EnumerateRunes() do
+                let width = rune.Utf16SequenceLength
 
-              match familyOf rune.Value (lineIx + 1) col with
-              | ValueSome family ->
-                  let r =
-                      Range.mkRange
-                          parseTree.FileName
-                          (Position.mkPos (lineIx + 1) col)
-                          (Position.mkPos (lineIx + 1) (col + width))
+                match familyOf rune.Value (lineIx + 1) col with
+                | ValueSome family ->
+                    let r =
+                        Range.mkRange
+                            parseTree.FileName
+                            (Position.mkPos (lineIx + 1) col)
+                            (Position.mkPos (lineIx + 1) (col + width))
 
-                  let display =
-                      if rune.Value <= 0xFFFF then
-                          $"U+%04X{rune.Value}"
-                      else
-                          $"U+%06X{rune.Value}"
+                    let display =
+                        if rune.Value <= 0xFFFF then
+                            $"U+%04X{rune.Value}"
+                        else
+                            $"U+%06X{rune.Value}"
 
-                  let escape =
-                      if rune.Value <= 0xFFFF then
-                          $"\\u%04X{rune.Value}"
-                      else
-                          $"\\U%08X{rune.Value}"
+                    let escape =
+                        if rune.Value <= 0xFFFF then
+                            $"\\u%04X{rune.Value}"
+                        else
+                            $"\\U%08X{rune.Value}"
 
-                  { Range = r
-                    CodePoint = display
-                    FamilyName = family
-                    Fix =
-                      if inRegularLiteral r then
-                          Some(r, line.Substring(col, width), escape)
-                      else
-                          None }
-              | ValueNone -> ()
+                    {
+                        Range = r
+                        CodePoint = display
+                        FamilyName = family
+                        Fix =
+                            if inRegularLiteral r then
+                                Some(r, line.Substring(col, width), escape)
+                            else
+                                None
+                    }
+                | ValueNone -> ()
 
-              col <- col + width ]
+                col <- col + width
+    ]

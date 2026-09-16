@@ -8,7 +8,7 @@ open FSharp.Refactor.Tests.Parsing
 
 let private loopPerfIn (source: string) =
     let tree, sourceText = parse source
-    LoopPerf.find false tree sourceText
+    LoopPerf.find false None tree sourceText
 
 [<Fact>]
 let ``contains inside a for loop is noted`` () =

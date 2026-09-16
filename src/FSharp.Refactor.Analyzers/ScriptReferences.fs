@@ -227,169 +227,175 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
             ScriptLoads.directives tree
             |> List.exists (fun d -> d.Ident = "r" && d.Value.TrimStart().StartsWith "nuget:")
 
-        [ for d in ScriptLoads.directives tree do
-              let isDirectory =
-                  match d.Ident with
-                  | "I" -> true
-                  | "r" -> false
-                  | _ -> false
+        [
+            for d in ScriptLoads.directives tree do
+                let isDirectory =
+                    match d.Ident with
+                    | "I" -> true
+                    | "r" -> false
+                    | _ -> false
 
-              // `#r "nuget: ..."`, `#r "System.Net.Http"`: not paths
-              let isPath =
-                  (d.Ident = "r" || d.Ident = "I")
-                  && not (d.Value.Contains ':' && not (Path.IsPathRooted d.Value))
-                  && (d.Value.Contains '/' || d.Value.Contains '\\')
+                // `#r "nuget: ..."`, `#r "System.Net.Http"`: not paths
+                let isPath =
+                    (d.Ident = "r" || d.Ident = "I")
+                    && not (d.Value.Contains ':' && not (Path.IsPathRooted d.Value))
+                    && (d.Value.Contains '/' || d.Value.Contains '\\')
 
-              if isPath then
-                  // the root (`C:\`, `\\server\share\`) is walked from as
-                  // one piece; the rest is split into segments
-                  let root, relative =
-                      if Path.IsPathRooted d.Value then
-                          let r = Path.GetPathRoot d.Value
-                          r, d.Value.Substring r.Length
-                      else
-                          scriptDir, d.Value
+                if isPath then
+                    // the root (`C:\`, `\\server\share\`) is walked from as
+                    // one piece; the rest is split into segments
+                    let root, relative =
+                        if Path.IsPathRooted d.Value then
+                            let r = Path.GetPathRoot d.Value
+                            r, d.Value.Substring r.Length
+                        else
+                            scriptDir, d.Value
 
-                  let segments =
-                      relative.Split([| '/'; '\\' |], StringSplitOptions.RemoveEmptyEntries)
-                      |> List.ofArray
+                    let segments =
+                        relative.Split([| '/'; '\\' |], StringSplitOptions.RemoveEmptyEntries)
+                        |> List.ofArray
 
-                  match candidates isDirectory root segments sdkMajor with
-                  | ValueSome(index, best :: others) ->
-                      let original = textOfRange source d.ArgumentRange
-                      let missing = List.item index segments
+                    match candidates isDirectory root segments sdkMajor with
+                    | ValueSome(index, best :: others) ->
+                        let original = textOfRange source d.ArgumentRange
+                        let missing = List.item index segments
 
-                      // swap the one segment BY POSITION inside the text as
-                      // written — quoting and separators stay, and a folder
-                      // elsewhere in the path that merely contains the
-                      // segment's name (`Foo.net45/lib/net45`) is not the
-                      // one rewritten
-                      let replacement =
-                          let pieces = separatorRuns.Split original
+                        // swap the one segment BY POSITION inside the text as
+                        // written — quoting and separators stay, and a folder
+                        // elsewhere in the path that merely contains the
+                        // segment's name (`Foo.net45/lib/net45`) is not the
+                        // one rewritten
+                        let replacement =
+                            let pieces = separatorRuns.Split original
 
-                          // path segments are the non-separator pieces whose
-                          // text ends with the segment name (the first piece
-                          // carries the quote and any `@` or drive)
-                          let mutable seen = -1
-                          let mutable done' = false
+                            // path segments are the non-separator pieces whose
+                            // text ends with the segment name (the first piece
+                            // carries the quote and any `@` or drive)
+                            let mutable seen = -1
+                            let mutable done' = false
 
-                          let rebuilt =
-                              pieces
-                              |> Array.map (fun piece ->
-                                  if done' || piece = "" || piece.[0] = '\\' || piece.[0] = '/' then
-                                      piece
-                                  else
-                                      // The root is skipped so that piece
-                                      // indices line up with segment indices.
-                                      // A DRIVE-LETTER test only recognises
-                                      // one: on POSIX the leading piece is
-                                      // just `@"`, which was then counted as
-                                      // segment 0 and shifted everything by
-                                      // one, so `seen = index` never met the
-                                      // missing segment and the whole fix was
-                                      // silently dropped - FR0144 never
-                                      // re-pointed a rooted path on Linux or
-                                      // macOS. Compare against the root
-                                      // itself, which is "C:" there and ""
-                                      // here.
-                                      let isRoot =
-                                          seen = -1
-                                          && Path.IsPathRooted d.Value
-                                          && piece.TrimStart('@', '"') = (Path.GetPathRoot d.Value)
-                                              .TrimEnd('/', char 92)
+                            let rebuilt =
+                                pieces
+                                |> Array.map (fun piece ->
+                                    if done' || piece = "" || piece.[0] = '\\' || piece.[0] = '/' then
+                                        piece
+                                    else
+                                        // The root is skipped so that piece
+                                        // indices line up with segment indices.
+                                        // A DRIVE-LETTER test only recognises
+                                        // one: on POSIX the leading piece is
+                                        // just `@"`, which was then counted as
+                                        // segment 0 and shifted everything by
+                                        // one, so `seen = index` never met the
+                                        // missing segment and the whole fix was
+                                        // silently dropped - FR0144 never
+                                        // re-pointed a rooted path on Linux or
+                                        // macOS. Compare against the root
+                                        // itself, which is "C:" there and ""
+                                        // here.
+                                        let isRoot =
+                                            seen = -1
+                                            && Path.IsPathRooted d.Value
+                                            && piece.TrimStart('@', '"') =
+                                                (Path.GetPathRoot d.Value).TrimEnd('/', char 92)
 
-                                      if isRoot then
-                                          piece
-                                      else
-                                          seen <- seen + 1
+                                        if isRoot then
+                                            piece
+                                        else
+                                            seen <- seen + 1
 
-                                          // the last piece carries the closing quote
-                                          let core = piece.TrimEnd '"'
-                                          let quotes = piece.Substring core.Length
+                                            // the last piece carries the closing quote
+                                            let core = piece.TrimEnd '"'
+                                            let quotes = piece.Substring core.Length
 
-                                          if seen = index && core.EndsWith(missing, StringComparison.Ordinal) then
-                                              done' <- true
-                                              core.Substring(0, core.Length - missing.Length) + best + quotes
-                                          else
-                                              piece)
+                                            if seen = index && core.EndsWith(missing, StringComparison.Ordinal) then
+                                                done' <- true
+                                                core.Substring(0, core.Length - missing.Length) + best + quotes
+                                            else
+                                                piece)
 
-                          if done' then String.Join("", rebuilt) else original
+                            if done' then String.Join("", rebuilt) else original
 
-                      // and the rewritten path must exist: a swap that lands
-                      // nowhere would keep the error count level and be kept
-                      let rewrittenExists =
-                          let full =
-                              segments
-                              |> List.mapi (fun i s -> if i = index then best else s)
-                              |> List.fold (fun p s -> Path.Combine(p, s)) root
+                        // and the rewritten path must exist: a swap that lands
+                        // nowhere would keep the error count level and be kept
+                        let rewrittenExists =
+                            let full =
+                                segments
+                                |> List.mapi (fun i s -> if i = index then best else s)
+                                |> List.fold (fun p s -> Path.Combine(p, s)) root
 
-                          exists isDirectory full
+                            exists isDirectory full
 
-                      if replacement <> original && rewrittenExists then
-                          let alternatives =
-                              match others with
-                              | [] -> ""
-                              | more ->
-                                  let joined = String.Join(", ", more)
-                                  $"; also present: {joined}"
+                        if replacement <> original && rewrittenExists then
+                            let alternatives =
+                                match others with
+                                | [] -> ""
+                                | more ->
+                                    let joined = String.Join(", ", more)
+                                    $"; also present: {joined}"
 
-                          yield
-                              { Range = d.ArgumentRange
-                                OriginalText = original
-                                ReplacementText = replacement
-                                IsNugetReference = false
-                                Message =
-                                  $"#{d.Ident} path does not exist: '{missing}' is gone, and '{best}' is what the package has now{alternatives}. The fix re-points the directive." }
-                  | _ ->
-                      // no sibling works, so there is nothing on disk to
-                      // re-point to: the package was never restored here at
-                      // all. Paket's `storage: none` — the default now —
-                      // leaves it in the nuget cache and writes no
-                      // `packages/` copy, and the script's paths date from
-                      // when it did. A package reference resolves it without
-                      // one. `#r` only: `#I` names a search directory and a
-                      // package reference is not one
-                      // a net4x asset says the script runs on the .NET
-                      // Framework's fsi.exe, which has no package-reference
-                      // resolution at all — rewriting it there would swap a
-                      // path that is merely missing for a directive that
-                      // runtime cannot read
-                      let framework =
-                          segments
-                          |> List.exists (fun s ->
-                              match parseFramework s with
-                              | Some(NetFramework _) -> true
-                              | _ -> false)
+                            yield
+                                {
+                                    Range = d.ArgumentRange
+                                    OriginalText = original
+                                    ReplacementText = replacement
+                                    IsNugetReference = false
+                                    Message =
+                                        $"#{d.Ident} path does not exist: '{missing}' is gone, and '{best}' is what the package has now{alternatives}. The fix re-points the directive."
+                                }
+                    | _ ->
+                        // no sibling works, so there is nothing on disk to
+                        // re-point to: the package was never restored here at
+                        // all. Paket's `storage: none` — the default now —
+                        // leaves it in the nuget cache and writes no
+                        // `packages/` copy, and the script's paths date from
+                        // when it did. A package reference resolves it without
+                        // one. `#r` only: `#I` names a search directory and a
+                        // package reference is not one
+                        // a net4x asset says the script runs on the .NET
+                        // Framework's fsi.exe, which has no package-reference
+                        // resolution at all — rewriting it there would swap a
+                        // path that is merely missing for a directive that
+                        // runtime cannot read
+                        let framework =
+                            segments
+                            |> List.exists (fun s ->
+                                match parseFramework s with
+                                | Some(NetFramework _) -> true
+                                | _ -> false)
 
-                      if not isDirectory && (packageRefsWork || not framework) then
-                          let full = segments |> List.fold (fun p s -> Path.Combine(p, s)) root
+                        if not isDirectory && (packageRefsWork || not framework) then
+                            let full = segments |> List.fold (fun p s -> Path.Combine(p, s)) root
 
-                          if not (exists isDirectory full) then
-                              match packageOf segments with
-                              | Some(index, id, version) when
-                                  // the PACKAGE has to be the thing that is
-                                  // absent. A path that fails because the file
-                                  // name is misspelled, or the framework folder
-                                  // is, still has the package on disk - and a
-                                  // local path can be pointed at a debug build
-                                  // where a package reference cannot
-                                  (let packageDir =
-                                      segments
-                                      |> List.truncate (index + 1)
-                                      |> List.fold (fun p s -> Path.Combine(p, s)) root
+                            if not (exists isDirectory full) then
+                                match packageOf segments with
+                                | Some(index, id, version) when
+                                    // the PACKAGE has to be the thing that is
+                                    // absent. A path that fails because the file
+                                    // name is misspelled, or the framework folder
+                                    // is, still has the package on disk - and a
+                                    // local path can be pointed at a debug build
+                                    // where a package reference cannot
+                                    (let packageDir =
+                                        segments
+                                        |> List.truncate (index + 1)
+                                        |> List.fold (fun p s -> Path.Combine(p, s)) root
 
-                                   not (Directory.Exists packageDir))
-                                  ->
-                                  let spec =
-                                      match version with
-                                      | Some v -> $"nuget: {id}, {v}"
-                                      | None -> $"nuget: {id}"
+                                     not (Directory.Exists packageDir))
+                                    ->
+                                    let spec =
+                                        match version with
+                                        | Some v -> $"nuget: {id}, {v}"
+                                        | None -> $"nuget: {id}"
 
-                                  yield
-                                      { Range = d.ArgumentRange
-                                        OriginalText = textOfRange source d.ArgumentRange
-                                        ReplacementText = $"\"{spec}\""
-                                        IsNugetReference = true
-                                        Message =
-                                          $"#r path does not exist and no other folder under the package has it — nothing on disk to re-point to. `#r \"{spec}\"` resolves it from nuget instead; that needs `dotnet fsi` (F# 5+), as the .NET Framework fsi.exe does not resolve package references." }
-                              | _ -> () ]
+                                    yield
+                                        {
+                                            Range = d.ArgumentRange
+                                            OriginalText = textOfRange source d.ArgumentRange
+                                            ReplacementText = $"\"{spec}\""
+                                            IsNugetReference = true
+                                            Message =
+                                                $"#r path does not exist and no other folder under the package has it — nothing on disk to re-point to. `#r \"{spec}\"` resolves it from nuget instead; that needs `dotnet fsi` (F# 5+), as the .NET Framework fsi.exe does not resolve package references."
+                                        }
+                                | _ -> ()
+        ]

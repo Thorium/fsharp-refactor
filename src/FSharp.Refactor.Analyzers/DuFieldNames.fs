@@ -53,96 +53,98 @@ type Suggestion =
 /// is a type note, and a keyword would not compile as a field name.
 let private notFieldNames =
     set
-        [ "string"
-          "int"
-          "int8"
-          "int16"
-          "int32"
-          "int64"
-          "uint"
-          "uint8"
-          "uint16"
-          "uint32"
-          "uint64"
-          "byte"
-          "sbyte"
-          "float"
-          "float32"
-          "double"
-          "single"
-          "decimal"
-          "bool"
-          "char"
-          "unit"
-          "obj"
-          "option"
-          "voption"
-          "list"
-          "array"
-          "seq"
-          "nativeint"
-          "unativeint"
-          "let"
-          "type"
-          "of"
-          "if"
-          "then"
-          "else"
-          "match"
-          "with"
-          "fun"
-          "function"
-          "when"
-          "true"
-          "false"
-          "null"
-          "begin"
-          "end"
-          "module"
-          "member"
-          "use"
-          "do"
-          "done"
-          "rec"
-          "in"
-          "and"
-          "or"
-          "not"
-          "to"
-          "val"
-          "open"
-          "base"
-          "default"
-          "delegate"
-          "interface"
-          "inherit"
-          "lazy"
-          "return"
-          "yield"
-          "mutable"
-          "internal"
-          "private"
-          "public"
-          "static"
-          "override"
-          "abstract"
-          "new"
-          "try"
-          "finally"
-          "while"
-          "for"
-          "as"
-          "assert"
-          "class"
-          "struct"
-          "exception"
-          "extern"
-          "fixed"
-          "global"
-          "namespace"
-          "elif"
-          "downcast"
-          "upcast" ]
+        [
+            "string"
+            "int"
+            "int8"
+            "int16"
+            "int32"
+            "int64"
+            "uint"
+            "uint8"
+            "uint16"
+            "uint32"
+            "uint64"
+            "byte"
+            "sbyte"
+            "float"
+            "float32"
+            "double"
+            "single"
+            "decimal"
+            "bool"
+            "char"
+            "unit"
+            "obj"
+            "option"
+            "voption"
+            "list"
+            "array"
+            "seq"
+            "nativeint"
+            "unativeint"
+            "let"
+            "type"
+            "of"
+            "if"
+            "then"
+            "else"
+            "match"
+            "with"
+            "fun"
+            "function"
+            "when"
+            "true"
+            "false"
+            "null"
+            "begin"
+            "end"
+            "module"
+            "member"
+            "use"
+            "do"
+            "done"
+            "rec"
+            "in"
+            "and"
+            "or"
+            "not"
+            "to"
+            "val"
+            "open"
+            "base"
+            "default"
+            "delegate"
+            "interface"
+            "inherit"
+            "lazy"
+            "return"
+            "yield"
+            "mutable"
+            "internal"
+            "private"
+            "public"
+            "static"
+            "override"
+            "abstract"
+            "new"
+            "try"
+            "finally"
+            "while"
+            "for"
+            "as"
+            "assert"
+            "class"
+            "struct"
+            "exception"
+            "extern"
+            "fixed"
+            "global"
+            "namespace"
+            "elif"
+            "downcast"
+            "upcast"
+        ]
 
 /// Names from the case's own name: `InterestAndRate` -> [interest; rate],
 /// `StartDateAndEndDate` -> [startDate; endDate]. The `And` must sit at a
@@ -334,9 +336,11 @@ let private signatureEditsFor (signature: Signature) (caseName: string) (names: 
             && fields |> List.forall (fun (SynField(idOpt = idOpt)) -> idOpt.IsNone)
             ->
             ValueSome
-                [ for name, SynField(range = fieldRange) in List.zip names fields do
-                      let original = textOfRange sigSource fieldRange
-                      fieldRange, original, $"{name}{colon}{original}" ]
+                [
+                    for name, SynField(range = fieldRange) in List.zip names fields do
+                        let original = textOfRange sigSource fieldRange
+                        fieldRange, original, $"{name}{colon}{original}"
+                ]
         | Some _ -> ValueNone
 
 let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
@@ -420,98 +424,102 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                 (commentsWithText parseTree source
                  |> List.filter (fun (_, t) -> t.StartsWith "//" && not (t.StartsWith "///")))
 
-        [ for caseName, fields, caseRange in candidates do
-              let sites =
-                  match observations.TryGetValue caseName with
-                  | true, l -> List.ofSeq l
-                  | _ -> []
+        [
+            for caseName, fields, caseRange in candidates do
+                let sites =
+                    match observations.TryGetValue caseName with
+                    | true, l -> List.ofSeq l
+                    | _ -> []
 
-              let tupleSites =
-                  sites
-                  |> List.choose (function
-                      | Observation.Names names -> Some names
-                      | Observation.Opaque
-                      | Observation.Bad -> None)
+                let tupleSites =
+                    sites
+                    |> List.choose (function
+                        | Observation.Names names -> Some names
+                        | Observation.Opaque
+                        | Observation.Bad -> None)
 
-              let siteNames =
-                  if
-                      caseNameCounts.[caseName] = 1
-                      && not (sites |> List.exists ((=) Observation.Bad))
-                      && not tupleSites.IsEmpty
-                      && tupleSites |> List.forall ((=) tupleSites.Head)
-                      && tupleSites.Head.Length = fields.Length
-                      && (tupleSites.Head |> List.distinct |> List.length) = fields.Length
-                      && tupleSites.Head |> List.forall (fun n -> n.Length > 0 && Char.IsLower n.[0])
-                  then
-                      Some(tupleSites.Head, "its match sites")
-                  else
-                      None
+                let siteNames =
+                    if
+                        caseNameCounts.[caseName] = 1
+                        && not (sites |> List.exists ((=) Observation.Bad))
+                        && not tupleSites.IsEmpty
+                        && tupleSites |> List.forall ((=) tupleSites.Head)
+                        && tupleSites.Head.Length = fields.Length
+                        && (tupleSites.Head |> List.distinct |> List.length) = fields.Length
+                        && tupleSites.Head |> List.forall (fun n -> n.Length > 0 && Char.IsLower n.[0])
+                    then
+                        Some(tupleSites.Head, "its match sites")
+                    else
+                        None
 
-              // weaker sources only speak when the sites are silent — a
-              // definition-only edit is safe either way, so site quality
-              // never blocks them
-              let commentNames =
-                  comments.Value
-                  |> List.tryPick (fun (cr, ctext) ->
-                      let lineText = source.GetLineString(cr.StartLine - 1)
+                // weaker sources only speak when the sites are silent — a
+                // definition-only edit is safe either way, so site quality
+                // never blocks them
+                let commentNames =
+                    comments.Value
+                    |> List.tryPick (fun (cr, ctext) ->
+                        let lineText = source.GetLineString(cr.StartLine - 1)
 
-                      if
-                          cr.StartLine = caseRange.EndLine
-                          && cr.StartColumn >= caseRange.EndColumn
-                          && lineText.Substring(cr.EndColumn).Trim() = ""
-                          // one case per line: with `| A of .. | B of .. // names`
-                          // the comment cannot say WHICH case it describes
-                          && (lineText.Substring(0, cr.StartColumn) |> Seq.filter ((=) '|') |> Seq.length)
-                             <= 1
-                      then
-                          namesFromComment ctext fields.Length
-                      else
-                          None)
-                  |> Option.map (fun n -> n, "its trailing comment")
+                        if
+                            cr.StartLine = caseRange.EndLine
+                            && cr.StartColumn >= caseRange.EndColumn
+                            && lineText.Substring(cr.EndColumn).Trim() = ""
+                            // one case per line: with `| A of .. | B of .. // names`
+                            // the comment cannot say WHICH case it describes
+                            && (lineText.Substring(0, cr.StartColumn) |> Seq.filter ((=) '|') |> Seq.length)
+                               <= 1
+                        then
+                            namesFromComment ctext fields.Length
+                        else
+                            None)
+                    |> Option.map (fun n -> n, "its trailing comment")
 
-              let named =
-                  siteNames
-                  |> Option.orElse commentNames
-                  |> Option.orElse (
-                      namesFromCaseName caseName fields.Length
-                      |> Option.map (fun n -> n, "its own name")
-                  )
+                let named =
+                    siteNames
+                    |> Option.orElse commentNames
+                    |> Option.orElse (
+                        namesFromCaseName caseName fields.Length
+                        |> Option.map (fun n -> n, "its own name")
+                    )
 
-              match named with
-              | Some(names, sourceName) ->
-                  // the inserted names take the tuple's OWN spacing:
-                  // `int * int` gains `rx: int * ry: int`, the compact
-                  // `int*int` gains `rx:int*ry:int` — a space after the
-                  // colon in a spaceless tuple reads lopsided
-                  let fieldsText =
-                      match fields with
-                      | first :: _ ->
-                          let (SynField(range = fr)) = first
-                          let (SynField(range = lr)) = List.last fields
-                          textOfRange source (Range.mkRange fr.FileName fr.Start lr.End)
-                      | [] -> ""
+                match named with
+                | Some(names, sourceName) ->
+                    // the inserted names take the tuple's OWN spacing:
+                    // `int * int` gains `rx: int * ry: int`, the compact
+                    // `int*int` gains `rx:int*ry:int` — a space after the
+                    // colon in a spaceless tuple reads lopsided
+                    let fieldsText =
+                        match fields with
+                        | first :: _ ->
+                            let (SynField(range = fr)) = first
+                            let (SynField(range = lr)) = List.last fields
+                            textOfRange source (Range.mkRange fr.FileName fr.Start lr.End)
+                        | [] -> ""
 
-                  let colon =
-                      if fieldsText.Contains " * " || fields.Length = 1 then
-                          ": "
-                      else
-                          ":"
+                    let colon =
+                        if fieldsText.Contains " * " || fields.Length = 1 then
+                            ": "
+                        else
+                            ":"
 
-                  let edits =
-                      List.zip names fields
-                      |> List.map (fun (name, SynField(range = fieldRange)) ->
-                          let original = textOfRange source fieldRange
-                          fieldRange, original, $"{name}{colon}{original}")
+                    let edits =
+                        List.zip names fields
+                        |> List.map (fun (name, SynField(range = fieldRange)) ->
+                            let original = textOfRange source fieldRange
+                            fieldRange, original, $"{name}{colon}{original}")
 
-                  // the signature must say the same thing, or nothing is
-                  // said at all: its edits join this set so both files
-                  // change together or neither does
-                  match signatureEditsFor signature caseName names colon with
-                  | ValueSome signatureEdits ->
-                      { CaseName = caseName
-                        Names = names
-                        Source = sourceName
-                        Range = caseRange
-                        Edits = edits @ signatureEdits }
-                  | ValueNone -> ()
-              | None -> () ]
+                    // the signature must say the same thing, or nothing is
+                    // said at all: its edits join this set so both files
+                    // change together or neither does
+                    match signatureEditsFor signature caseName names colon with
+                    | ValueSome signatureEdits ->
+                        {
+                            CaseName = caseName
+                            Names = names
+                            Source = sourceName
+                            Range = caseRange
+                            Edits = edits @ signatureEdits
+                        }
+                    | ValueNone -> ()
+                | None -> ()
+        ]

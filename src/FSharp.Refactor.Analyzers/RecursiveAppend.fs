@@ -84,20 +84,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             else
                 []
 
-        [ yield!
-              index.Decls
-              |> Array.toList
-              |> List.collect (fun (_, decl) ->
-                  match decl with
-                  | SynModuleDecl.Let(isRecursive = isRec; bindings = bindings) -> ofBindings isRec bindings
-                  | _ -> [])
-          yield!
-              index.Exprs
-              |> Array.toList
-              |> List.collect (fun (_, e) ->
-                  match e with
-                  | LetOrUseE lou when lou.IsRecursive && not lou.IsBang -> ofBindings true lou.Bindings
-                  | _ -> []) ]
+        [
+            yield!
+                index.Decls
+                |> Array.toList
+                |> List.collect (fun (_, decl) ->
+                    match decl with
+                    | SynModuleDecl.Let(isRecursive = isRec; bindings = bindings) -> ofBindings isRec bindings
+                    | _ -> [])
+            yield!
+                index.Exprs
+                |> Array.toList
+                |> List.collect (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou when lou.IsRecursive && not lou.IsBang -> ofBindings true lou.Bindings
+                    | _ -> [])
+        ]
 
     for name, parameters, bodyRange in recBindings do
         if not parameters.IsEmpty then
@@ -121,9 +123,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         match headOf f with
                         | Some head when head.idText = name ->
                             suggestions.Add
-                                { Range = e.Range
-                                  FunctionName = name
-                                  AccumulatorName = accParam.idText }
+                                {
+                                    Range = e.Range
+                                    FunctionName = name
+                                    AccumulatorName = accParam.idText
+                                }
                         | _ -> ()
                     | _ -> ()
                 | _ -> ()

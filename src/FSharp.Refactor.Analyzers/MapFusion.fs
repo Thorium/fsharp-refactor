@@ -84,11 +84,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         Range.mkRange fStage.Range.FileName fStage.Range.Start gStage.Range.End
 
                     suggestions.Add
-                        { Range = fullRange
-                          OriginalText = textOfRange source fullRange
-                          ReplacementText = replacement
-                          Module = m1 }
-                | _ -> () }
+                        {
+                            Range = fullRange
+                            OriginalText = textOfRange source fullRange
+                            ReplacementText = replacement
+                            Module = m1
+                        }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
 

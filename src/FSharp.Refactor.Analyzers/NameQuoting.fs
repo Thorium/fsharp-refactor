@@ -40,13 +40,15 @@ type Suggestion =
 
 let private testAttributes =
     set
-        [ "Test"
-          "Fact"
-          "Theory"
-          "TestMethod"
-          "Property"
-          "TestCase"
-          "TestCaseSource" ]
+        [
+            "Test"
+            "Fact"
+            "Theory"
+            "TestMethod"
+            "Property"
+            "TestCase"
+            "TestCaseSource"
+        ]
 
 let private aZRegex = Regex "(?=[A-Z])"
 
@@ -118,113 +120,121 @@ let find
         // its uses stay in this file through the project results
         let candidates =
             [ // module-level bindings: file-private, or test-attributed
-              for path, decl in index.Decls do
-                  match decl with
-                  | SynModuleDecl.Let(bindings = [ SynBinding(attributes = attrs; accessibility = acc; headPat = pat) ]) ->
-                      match binderOf pat with
-                      | Some(id, patAcc) ->
-                          match quotedForm id.idText with
-                          | Some quoted ->
-                              let isTest =
-                                  attrs
-                                  |> List.collect (fun l -> l.Attributes)
-                                  |> List.exists (fun a ->
-                                      match a.TypeName with
-                                      | SynLongIdent(id = ids) when not ids.IsEmpty ->
-                                          let n = (List.last ids).idText
-                                          testAttributes.Contains n || testAttributes.Contains(n + "Attribute")
-                                      | _ -> false)
+                for path, decl in index.Decls do
+                    match decl with
+                    | SynModuleDecl.Let(
+                        bindings = [ SynBinding(attributes = attrs; accessibility = acc; headPat = pat) ]) ->
+                        match binderOf pat with
+                        | Some(id, patAcc) ->
+                            match quotedForm id.idText with
+                            | Some quoted ->
+                                let isTest =
+                                    attrs
+                                    |> List.collect (fun l -> l.Attributes)
+                                    |> List.exists (fun a ->
+                                        match a.TypeName with
+                                        | SynLongIdent(id = ids) when not ids.IsEmpty ->
+                                            let n = (List.last ids).idText
+                                            testAttributes.Contains n || testAttributes.Contains(n + "Attribute")
+                                        | _ -> false)
 
-                              let filePrivate =
-                                  (match acc with
-                                   | Some(SynAccess.Private _) -> true
-                                   | _ -> false)
-                                  || (match patAcc with
-                                      | Some(SynAccess.Private _) -> true
-                                      | _ -> false)
-                                  || path
-                                     |> List.exists (fun node ->
-                                         match node with
-                                         | SyntaxNode.SynModule(SynModuleDecl.NestedModule(
-                                             moduleInfo = SynComponentInfo(accessibility = Some(SynAccess.Private _)))) ->
-                                             true
-                                         | _ -> false)
+                                let filePrivate =
+                                    (match acc with
+                                     | Some(SynAccess.Private _) -> true
+                                     | _ -> false)
+                                    || (match patAcc with
+                                        | Some(SynAccess.Private _) -> true
+                                        | _ -> false)
+                                    || path
+                                       |> List.exists (fun node ->
+                                           match node with
+                                           | SyntaxNode.SynModule(SynModuleDecl.NestedModule(
+                                               moduleInfo = SynComponentInfo(accessibility = Some(SynAccess.Private _)))) ->
+                                               true
+                                           | _ -> false)
 
-                              if isTest then
-                                  yield id, quoted, not filePrivate, filePrivate
-                              elif filePrivate && includeLocals then
-                                  yield id, quoted, false, true
-                          | None -> ()
-                      | None -> ()
-                  | _ -> ()
+                                if isTest then
+                                    yield id, quoted, not filePrivate, filePrivate
+                                elif filePrivate && includeLocals then
+                                    yield id, quoted, false, true
+                            | None -> ()
+                        | None -> ()
+                    | _ -> ()
 
-              // local bindings: scope is the enclosing function
-              for _, e in index.Exprs do
-                  match e with
-                  | LetOrUseE lou when includeLocals && not (lou.IsBang || lou.IsUse) ->
-                      for SynBinding(headPat = pat) in lou.Bindings do
-                          match binderOf pat with
-                          | Some(id, _) ->
-                              match quotedForm id.idText with
-                              | Some quoted -> yield id, quoted, false, true
-                              | None -> ()
-                          | None -> ()
-                  | _ -> () ]
+                // local bindings: scope is the enclosing function
+                for _, e in index.Exprs do
+                    match e with
+                    | LetOrUseE lou when includeLocals && not (lou.IsBang || lou.IsUse) ->
+                        for SynBinding(headPat = pat) in lou.Bindings do
+                            match binderOf pat with
+                            | Some(id, _) ->
+                                match quotedForm id.idText with
+                                | Some quoted -> yield id, quoted, false, true
+                                | None -> ()
+                            | None -> ()
+                    | _ -> ()
+            ]
 
-        [ for id, quoted, mustProveInFile, declaredPrivately in candidates do
-              let lineText = source.GetLineString(id.idRange.EndLine - 1)
+        [
+            for id, quoted, mustProveInFile, declaredPrivately in candidates do
+                let lineText = source.GetLineString(id.idRange.EndLine - 1)
 
-              match check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ]) with
-              | Some symbolUse ->
-                  let thisFile = System.IO.Path.GetFullPath(id.idRange.FileName).ToLowerInvariant()
+                match
+                    check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
+                with
+                | Some symbolUse ->
+                    let thisFile = System.IO.Path.GetFullPath(id.idRange.FileName).ToLowerInvariant()
 
-                  let confinedToFile =
-                      not (mentionedInString id.idText)
-                      && (not mustProveInFile
-                          || (match projectCheck with
-                              | Some pc ->
-                                  // Not an --api-changes rule: it renames only
-                                  // where every use is in this file, and stands
-                                  // down otherwise. But the PROOF has the same
-                                  // blind spot the migrations do — a `#load`ing
-                                  // script's call is in no project symbol table
-                                  // and in no build check — so a use invisible
-                                  // here would read as "confined" and leave the
-                                  // script calling a name that no longer exists.
-                                  // The script is not rewritten; the rename
-                                  // simply stands down, which is this rule's own
-                                  // answer to a use it cannot reach.
-                                  Array.append
-                                      (pc.GetUsesOfSymbol symbolUse.Symbol)
-                                      (ProjectSources.outsideUsesOf symbolUse.Symbol)
-                                  |> Array.forall (fun u ->
-                                      System.String.Equals(
-                                          System.IO.Path.GetFullPath u.Range.FileName,
-                                          thisFile,
-                                          System.StringComparison.OrdinalIgnoreCase
-                                      ))
-                              | None -> false))
+                    let confinedToFile =
+                        not (mentionedInString id.idText)
+                        && (not mustProveInFile
+                            || (match projectCheck with
+                                | Some pc ->
+                                    // Not an --api-changes rule: it renames only
+                                    // where every use is in this file, and stands
+                                    // down otherwise. But the PROOF has the same
+                                    // blind spot the migrations do — a `#load`ing
+                                    // script's call is in no project symbol table
+                                    // and in no build check — so a use invisible
+                                    // here would read as "confined" and leave the
+                                    // script calling a name that no longer exists.
+                                    // The script is not rewritten; the rename
+                                    // simply stands down, which is this rule's own
+                                    // answer to a use it cannot reach.
+                                    Array.append
+                                        (pc.GetUsesOfSymbol symbolUse.Symbol)
+                                        (ProjectSources.outsideUsesOf symbolUse.Symbol)
+                                    |> Array.forall (fun u ->
+                                        System.String.Equals(
+                                            System.IO.Path.GetFullPath u.Range.FileName,
+                                            thisFile,
+                                            System.StringComparison.OrdinalIgnoreCase
+                                        ))
+                                | None -> false))
 
-                  if confinedToFile then
-                      let uses = check.GetUsesOfSymbolInFile symbolUse.Symbol
+                    if confinedToFile then
+                        let uses = check.GetUsesOfSymbolInFile symbolUse.Symbol
 
-                      // every occurrence must be exactly the bare ident —
-                      // a use range wider or narrower than the name means
-                      // a spelling this rewrite does not understand
-                      let editable =
-                          uses
-                          |> Array.forall (fun u ->
-                              u.Range.StartLine = u.Range.EndLine && textOfRange source u.Range = id.idText)
+                        // every occurrence must be exactly the bare ident —
+                        // a use range wider or narrower than the name means
+                        // a spelling this rewrite does not understand
+                        let editable =
+                            uses
+                            |> Array.forall (fun u ->
+                                u.Range.StartLine = u.Range.EndLine && textOfRange source u.Range = id.idText)
 
-                      if editable && uses.Length > 0 then
-                          match SignatureFile.renameEdits declaredPrivately signature id.idText $"``{quoted}``" with
-                          | ValueSome signatureEdits ->
-                              { Range = id.idRange
-                                Name = id.idText
-                                Quoted = quoted
-                                Edits =
-                                  ([ for u in uses -> u.Range, id.idText, $"``{quoted}``" ]
-                                   |> List.distinctBy (fun (r, _, _) -> r.StartLine, r.StartColumn))
-                                  @ signatureEdits }
-                          | ValueNone -> ()
-              | None -> () ]
+                        if editable && uses.Length > 0 then
+                            match SignatureFile.renameEdits declaredPrivately signature id.idText $"``{quoted}``" with
+                            | ValueSome signatureEdits ->
+                                {
+                                    Range = id.idRange
+                                    Name = id.idText
+                                    Quoted = quoted
+                                    Edits =
+                                        ([ for u in uses -> u.Range, id.idText, $"``{quoted}``" ]
+                                         |> List.distinctBy (fun (r, _, _) -> r.StartLine, r.StartColumn))
+                                        @ signatureEdits
+                                }
+                            | ValueNone -> ()
+                | None -> ()
+        ]

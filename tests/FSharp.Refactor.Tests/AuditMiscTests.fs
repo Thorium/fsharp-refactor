@@ -45,7 +45,8 @@ let private exeOptions (projectFile: string) (files: string list) =
             Array.append
                 (probeOptions.OtherOptions
                  |> Array.filter (fun o -> not (o.StartsWith "--target:")))
-                [| "--target:exe" |] }
+                [| "--target:exe" |]
+    }
 
 let private analyzerOptions (options: FSharpProjectOptions) =
     AnalyzerProjectOptions.BackgroundCompilerOptions options
@@ -89,14 +90,16 @@ let private cliContext (options: FSharpProjectOptions) (fileName: string) : CliC
         | FSharpCheckFileAnswer.Succeeded r -> r
         | FSharpCheckFileAnswer.Aborted -> failwith $"typechecking aborted for {fileName}"
 
-    { FileName = fileName
-      SourceText = sourceText
-      ParseFileResults = parseResults
-      CheckFileResults = checkResults
-      TypedTree = checkResults.ImplementationFile
-      CheckProjectResults = projectResults
-      ProjectOptions = analyzerOptions options
-      AnalyzerIgnoreRanges = Map.empty }
+    {
+        FileName = fileName
+        SourceText = sourceText
+        ParseFileResults = parseResults
+        CheckFileResults = checkResults
+        TypedTree = checkResults.ImplementationFile
+        CheckProjectResults = projectResults
+        ProjectOptions = analyzerOptions options
+        AnalyzerIgnoreRanges = Map.empty
+    }
 
 /// Every diagnostic of a fresh check of the project as it is on disk now.
 /// A new stamp alone is not enough: two rewrites of the same file within
@@ -108,7 +111,8 @@ let private projectDiagnostics (options: FSharpProjectOptions) =
 
     (checker.ParseAndCheckProject
         { options with
-            Stamp = Some DateTime.UtcNow.Ticks }
+            Stamp = Some DateTime.UtcNow.Ticks
+        }
      |> Async.RunSynchronously)
         .Diagnostics
 

@@ -63,12 +63,14 @@ let private valueBinder (p: SynPat) =
 /// patterns too and would turn into partial matches (FS3190, an error,
 /// for a lowercase literal). Either parse shape a lone identifier takes.
 let private patternIdents (index: AstIndex.Index) =
-    [ for _, p in index.Pats do
-          match p with
-          | SynPat.Named(ident = SynIdent(ident = id))
-          | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-              id.idText, id.idRange
-          | _ -> () ]
+    [
+        for _, p in index.Pats do
+            match p with
+            | SynPat.Named(ident = SynIdent(ident = id))
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
+                id.idText, id.idRange
+            | _ -> ()
+    ]
 
 /// The names ANOTHER file of the compilation binds as bare patterns — the
 /// host's half of the cross-file veto (Analyzers.patternBoundInSibling):
@@ -107,62 +109,66 @@ let findWith
             patternIdents
             |> List.exists (fun (text, r) -> text = id.idText && not (Range.equals r id.idRange))
 
-        [ for path, decl in index.Decls do
-              match decl with
-              | SynModuleDecl.Let(isRecursive = false; bindings = [ binding ]) ->
-                  match binding with
-                  | SynBinding(
-                      accessibility = access
-                      attributes = []
-                      isMutable = false
-                      isInline = false
-                      headPat = pat
-                      expr = rhs
-                      trivia = trivia) when isConstant rhs ->
-                      match valueBinder pat with
-                      | ValueSome(id, patAccess) when
-                          Visibility.isInScopeWithSignatureEdits allowApiChanges path [ access; patAccess ]
-                          && not (vetoed id)
-                          ->
-                          let kw = trivia.LeadingKeyword.Range
+        [
+            for path, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Let(isRecursive = false; bindings = [ binding ]) ->
+                    match binding with
+                    | SynBinding(
+                        accessibility = access
+                        attributes = []
+                        isMutable = false
+                        isInline = false
+                        headPat = pat
+                        expr = rhs
+                        trivia = trivia) when isConstant rhs ->
+                        match valueBinder pat with
+                        | ValueSome(id, patAccess) when
+                            Visibility.isInScopeWithSignatureEdits allowApiChanges path [ access; patAccess ]
+                            && not (vetoed id)
+                            ->
+                            let kw = trivia.LeadingKeyword.Range
 
-                          let ownLine =
-                              kw.StartColumn = 0
-                              || (source.GetLineString(kw.StartLine - 1)).Substring(0, kw.StartColumn).Trim() = ""
+                            let ownLine =
+                                kw.StartColumn = 0
+                                || (source.GetLineString(kw.StartLine - 1)).Substring(0, kw.StartColumn).Trim() = ""
 
-                          let declaredPrivately = Visibility.isPrivate path [ access; patAccess ]
+                            let declaredPrivately = Visibility.isPrivate path [ access; patAccess ]
 
-                          // a binding another file can see is asked about
-                          // there too: the same veto, project-wide
-                          let clashesElsewhere = not declaredPrivately && boundAsPatternElsewhere id.idText
+                            // a binding another file can see is asked about
+                            // there too: the same veto, project-wide
+                            let clashesElsewhere = not declaredPrivately && boundAsPatternElsewhere id.idText
 
-                          // a body split by `#if` is a constant only in the
-                          // branch the parse tree shows: Paket's
-                          // `runningOnMono` is `false` here and a `try` under
-                          // ENABLE_MONO_SUPPORT, where the attribute would
-                          // not compile
-                          let splitBody = spansDirective source decl.Range
+                            // a body split by `#if` is a constant only in the
+                            // branch the parse tree shows: Paket's
+                            // `runningOnMono` is `false` here and a `try` under
+                            // ENABLE_MONO_SUPPORT, where the attribute would
+                            // not compile
+                            let splitBody = spansDirective source decl.Range
 
-                          if ownLine && not clashesElsewhere && not splitBody then
-                              let indent = String.replicate kw.StartColumn " "
-                              let at = Position.mkPos kw.StartLine 0
+                            if ownLine && not clashesElsewhere && not splitBody then
+                                let indent = String.replicate kw.StartColumn " "
+                                let at = Position.mkPos kw.StartLine 0
 
-                              match
-                                  SignatureFile.literalEdits
-                                      declaredPrivately
-                                      signature
-                                      id.idText
-                                      (textOfRange source rhs.Range)
-                              with
-                              | ValueSome signatureEdits ->
-                                  { Range = id.idRange
-                                    Name = id.idText
-                                    Fix = Range.mkRange decl.Range.FileName at at, $"{indent}[<Literal>]\n"
-                                    SignatureEdits = signatureEdits }
-                              | ValueNone -> ()
-                      | _ -> ()
-                  | _ -> ()
-              | _ -> () ]
+                                match
+                                    SignatureFile.literalEdits
+                                        declaredPrivately
+                                        signature
+                                        id.idText
+                                        (textOfRange source rhs.Range)
+                                with
+                                | ValueSome signatureEdits ->
+                                    {
+                                        Range = id.idRange
+                                        Name = id.idText
+                                        Fix = Range.mkRange decl.Range.FileName at at, $"{indent}[<Literal>]\n"
+                                        SignatureEdits = signatureEdits
+                                    }
+                                | ValueNone -> ()
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]
 
 /// `findWith` for a caller with no other files to ask — a lone script, or
 /// a test over one source string. Only this file's patterns veto.

@@ -176,11 +176,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     let add (range: range) (replacement: string) (guarded: bool) (whiteSpace: bool) =
         suggestions.Add
-            { Range = range
-              OriginalText = textOfRange source range
-              ReplacementText = replacement
-              Guarded = guarded
-              WhiteSpace = whiteSpace }
+            {
+                Range = range
+                OriginalText = textOfRange source range
+                ReplacementText = replacement
+                Guarded = guarded
+                WhiteSpace = whiteSpace
+            }
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -215,7 +217,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     // bare x.Trim() = "" / x.Trim().Length = 0
                     | EmptyCheck(s, true) -> add expr.Range $"{prefix}String.IsNullOrWhiteSpace {s}" false true
                     | NonEmptyCheck(s, true) -> add expr.Range $"not ({prefix}String.IsNullOrWhiteSpace {s})" false true
-                    | _ -> () }
+                    | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
 

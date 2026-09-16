@@ -39,21 +39,25 @@ type TemplateProblem =
     | MissingFields of names: string list
 
 type Suggestion =
-    { Range: range
-      Problem: TemplateProblem
-      LogMethod: string }
+    {
+        Range: range
+        Problem: TemplateProblem
+        LogMethod: string
+    }
 
 /// Microsoft.Extensions.Logging's extension methods, plus the raw
 /// `Log(LogLevel, ...)` they wrap.
 let private logMethods =
     set
-        [ "LogTrace"
-          "LogDebug"
-          "LogInformation"
-          "LogWarning"
-          "LogError"
-          "LogCritical"
-          "Log" ]
+        [
+            "LogTrace"
+            "LogDebug"
+            "LogInformation"
+            "LogWarning"
+            "LogError"
+            "LogCritical"
+            "Log"
+        ]
 
 /// Serilog's static `Log.X` and `ILogger.X` — the same template syntax.
 let private serilogMethods =
@@ -245,73 +249,80 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | None -> false
 
         let logary =
-            [ for path, expr in index.Exprs do
-                  // the outermost pipe of its chain only
-                  let outermost =
-                      isPipe expr
-                      && not (
-                          path
-                          |> List.exists (fun node ->
-                              match node with
-                              | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = SingleIdent op)) ->
-                                  op.idText = "op_PipeRight"
-                              | SyntaxNode.SynExpr(SynExpr.Paren _) -> false
-                              | SyntaxNode.SynExpr(SynExpr.App(
-                                  isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op))) ->
-                                  op.idText = "op_PipeRight"
-                              | _ -> false)
-                      )
+            [
+                for path, expr in index.Exprs do
+                    // the outermost pipe of its chain only
+                    let outermost =
+                        isPipe expr
+                        && not (
+                            path
+                            |> List.exists (fun node ->
+                                match node with
+                                | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = SingleIdent op)) ->
+                                    op.idText = "op_PipeRight"
+                                | SyntaxNode.SynExpr(SynExpr.Paren _) -> false
+                                | SyntaxNode.SynExpr(SynExpr.App(
+                                    isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op))) ->
+                                    op.idText = "op_PipeRight"
+                                | _ -> false)
+                        )
 
-                  if outermost then
-                      let chain = stages expr
+                    if outermost then
+                        let chain = stages expr
 
-                      // the event stage: `Message.eventX "..."` applied, or
-                      // `"..." |> Message.eventX` point-free
-                      let event =
-                          chain
-                          |> List.tryPick logaryEvent
-                          |> Option.orElse (
-                              match chain with
-                              | template :: SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) :: _ when
-                                  ids.Length >= 2
-                                  && ids.[ids.Length - 2].idText = "Message"
-                                  && (List.last ids).idText.StartsWith "event"
-                                  ->
-                                  Some(List.last ids, stripParens template)
-                              | _ -> None
-                          )
+                        // the event stage: `Message.eventX "..."` applied, or
+                        // `"..." |> Message.eventX` point-free
+                        let event =
+                            chain
+                            |> List.tryPick logaryEvent
+                            |> Option.orElse (
+                                match chain with
+                                | template :: SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) :: _ when
+                                    ids.Length >= 2
+                                    && ids.[ids.Length - 2].idText = "Message"
+                                    && (List.last ids).idText.StartsWith "event"
+                                    ->
+                                    Some(List.last ids, stripParens template)
+                                | _ -> None
+                            )
 
-                      match event with
-                      | Some(eventId, template) when isLogary eventId ->
-                          let filled = chain |> List.choose setFieldName |> Set.ofList
-                          let unreadable = chain |> List.exists fillsUnreadably
+                        match event with
+                        | Some(eventId, template) when isLogary eventId ->
+                            let filled = chain |> List.choose setFieldName |> Set.ofList
+                            let unreadable = chain |> List.exists fillsUnreadably
 
-                          match template with
-                          | SynExpr.InterpolatedString(contents = parts; range = r) when
-                              parts
-                              |> List.exists (fun p ->
-                                  match p with
-                                  | SynInterpolatedStringPart.FillExpr _ -> true
-                                  | SynInterpolatedStringPart.String _ -> false)
-                              ->
-                              { Range = r
-                                Problem = TemplateProblem.Interpolated
-                                LogMethod = eventId.idText }
-                          | SynExpr.Const(SynConst.String(text, _, _), r) when not (filled.IsEmpty || unreadable) ->
-                              let names = placeholdersOf text
+                            match template with
+                            | SynExpr.InterpolatedString(contents = parts; range = r) when
+                                parts
+                                |> List.exists (fun p ->
+                                    match p with
+                                    | SynInterpolatedStringPart.FillExpr _ -> true
+                                    | SynInterpolatedStringPart.String _ -> false)
+                                ->
+                                {
+                                    Range = r
+                                    Problem = TemplateProblem.Interpolated
+                                    LogMethod = eventId.idText
+                                }
+                            | SynExpr.Const(SynConst.String(text, _, _), r) when not (filled.IsEmpty || unreadable) ->
+                                let names = placeholdersOf text
 
-                              let missing =
-                                  names |> List.distinct |> List.filter (fun n -> not (filled.Contains n))
+                                let missing =
+                                    names |> List.distinct |> List.filter (fun n -> not (filled.Contains n))
 
-                              if not missing.IsEmpty then
-                                  { Range = r
-                                    Problem = TemplateProblem.MissingFields missing
-                                    LogMethod = eventId.idText }
-                          | _ -> ()
-                      | _ -> () ]
+                                if not missing.IsEmpty then
+                                    {
+                                        Range = r
+                                        Problem = TemplateProblem.MissingFields missing
+                                        LogMethod = eventId.idText
+                                    }
+                            | _ -> ()
+                        | _ -> ()
+            ]
 
         logary
-        @ [ for _, expr in index.Exprs do
+        @ [
+            for _, expr in index.Exprs do
                 match expr with
                 | SynExpr.App(isInfix = false; funcExpr = CallIdent logId; argExpr = SynExpr.Paren(expr = inner)) when
                     logMethods.Contains logId.idText || serilogMethods.Contains logId.idText
@@ -389,9 +400,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             ->
                             // hole-free $"..." compiles to a constant — only
                             // actual interpolation destroys the template
-                            { Range = r
-                              Problem = TemplateProblem.Interpolated
-                              LogMethod = logId.idText }
+                            {
+                                Range = r
+                                Problem = TemplateProblem.Interpolated
+                                LogMethod = logId.idText
+                            }
                         | templateExpr ->
                             let template =
                                 match templateExpr with
@@ -411,15 +424,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                                 match duplicate, trailingCount trailing with
                                 | Some name, _ ->
-                                    { Range = r
-                                      Problem = TemplateProblem.DuplicateName name
-                                      LogMethod = logId.idText }
+                                    {
+                                        Range = r
+                                        Problem = TemplateProblem.DuplicateName name
+                                        LogMethod = logId.idText
+                                    }
                                 | None, Some argCount ->
                                     if names.Length <> argCount && not (isParamsArrayPassThrough trailing) then
-                                        { Range = r
-                                          Problem = TemplateProblem.CountMismatch(names.Length, argCount)
-                                          LogMethod = logId.idText }
+                                        {
+                                            Range = r
+                                            Problem = TemplateProblem.CountMismatch(names.Length, argCount)
+                                            LogMethod = logId.idText
+                                        }
                                 | None, None -> ()
                             | None -> ()
                     | _ -> ()
-                | _ -> () ]
+                | _ -> ()
+        ]

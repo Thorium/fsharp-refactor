@@ -110,7 +110,8 @@ let private collectOpens (parseTree: ParsedInput) : Set<string> =
                 match decl with
                 | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
                     opens.Add(ids |> List.map (fun i -> i.idText) |> String.concat ".")
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     Set.ofSeq opens
@@ -213,7 +214,8 @@ let private multiLineLiteralLines (parseTree: ParsedInput) : Set<int> =
                 | SynExpr.Const(SynConst.String _, r)
                 | SynExpr.InterpolatedString(range = r) when r.EndLine > r.StartLine ->
                     lines.AddRange(seq { r.StartLine + 1 .. r.EndLine })
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     Set.ofSeq lines
@@ -226,10 +228,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     let add (range: range) (replacementText: string) (kind: StripKind) =
         suggestions.Add
-            { Range = range
-              OriginalText = textOfRange source range
-              ReplacementText = replacementText
-              Kind = kind }
+            {
+                Range = range
+                OriginalText = textOfRange source range
+                ReplacementText = replacementText
+                Kind = kind
+            }
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -279,26 +283,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         if inner.Range.StartLine = inner.Range.EndLine then
                             textOfRange source inner.Range
                         else
-                            [ for l in inner.Range.StartLine .. inner.Range.EndLine ->
-                                  let line = source.GetLineString(l - 1)
+                            [
+                                for l in inner.Range.StartLine .. inner.Range.EndLine ->
+                                    let line = source.GetLineString(l - 1)
 
-                                  let line =
-                                      if l = inner.Range.EndLine then
-                                          line.Substring(0, min line.Length inner.Range.EndColumn)
-                                      else
-                                          line
+                                    let line =
+                                        if l = inner.Range.EndLine then
+                                            line.Substring(0, min line.Length inner.Range.EndColumn)
+                                        else
+                                            line
 
-                                  if l = inner.Range.StartLine then
-                                      line.Substring inner.Range.StartColumn
-                                  elif
-                                      shift > 0
-                                      && line.Length >= shift
-                                      && line.Substring(0, shift).Trim() = ""
-                                      && not (literalLines.Contains l)
-                                  then
-                                      line.Substring shift
-                                  else
-                                      line ]
+                                    if l = inner.Range.StartLine then
+                                        line.Substring inner.Range.StartColumn
+                                    elif
+                                        shift > 0
+                                        && line.Length >= shift
+                                        && line.Substring(0, shift).Trim() = ""
+                                        && not (literalLines.Contains l)
+                                    then
+                                        line.Substring shift
+                                    else
+                                        line
+                            ]
                             |> String.concat "\n"
 
                     add expr.Range text StripKind.ReturnBangIdentity
@@ -387,38 +393,41 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             let shift = inner.StartColumn - expr.Range.StartColumn
 
                             let text =
-                                [ for l in inner.StartLine .. inner.EndLine ->
-                                      let line = source.GetLineString(l - 1)
+                                [
+                                    for l in inner.StartLine .. inner.EndLine ->
+                                        let line = source.GetLineString(l - 1)
 
-                                      let line =
-                                          if l = inner.EndLine then
-                                              line.Substring(0, min line.Length inner.EndColumn)
-                                          else
-                                              line
+                                        let line =
+                                            if l = inner.EndLine then
+                                                line.Substring(0, min line.Length inner.EndColumn)
+                                            else
+                                                line
 
-                                      let line =
-                                          match terminal with
-                                          | Some tr when l = tr.StartLine && tr.StartColumn <= line.Length ->
-                                              line.Insert(tr.StartColumn, "return ")
-                                          | _ -> line
+                                        let line =
+                                            match terminal with
+                                            | Some tr when l = tr.StartLine && tr.StartColumn <= line.Length ->
+                                                line.Insert(tr.StartColumn, "return ")
+                                            | _ -> line
 
-                                      if l = inner.StartLine then
-                                          line.Substring(min line.Length inner.StartColumn)
-                                      elif
-                                          shift > 0
-                                          && line.Length >= shift
-                                          && line.Substring(0, shift).Trim() = ""
-                                          && not (literalLines.Contains l)
-                                      then
-                                          line.Substring shift
-                                      else
-                                          line ]
+                                        if l = inner.StartLine then
+                                            line.Substring(min line.Length inner.StartColumn)
+                                        elif
+                                            shift > 0
+                                            && line.Length >= shift
+                                            && line.Substring(0, shift).Trim() = ""
+                                            && not (literalLines.Contains l)
+                                        then
+                                            line.Substring shift
+                                        else
+                                            line
+                                ]
                                 |> String.concat "\n"
 
                             add expr.Range text StripKind.ThunkIdentity
                         | _ -> ()
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
 

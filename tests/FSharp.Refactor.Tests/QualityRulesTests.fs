@@ -2287,8 +2287,8 @@ let ``compact tuple spelling keeps its compact field names`` () =
 // ---- FR0035 startup-set quick-fix ----
 
 let private containsIn (source: string) =
-    let tree, sourceText = parse source
-    let contains, _ = LoopPerf.find false tree sourceText
+    let tree, sourceText, check = parseAndCheck source
+    let contains, _ = LoopPerf.find false (Some check) tree sourceText
     contains
 
 [<Fact>]
@@ -2440,7 +2440,7 @@ let ``a single return-bang arm is never wrapped`` () =
 
     let taskAdviceIn (src: string) =
         let tree, sourceText = parse src
-        TaskStateMachine.find tree sourceText 4 false Set.empty
+        TaskStateMachine.find tree sourceText None 4 false Set.empty
 
     let splits =
         taskAdviceIn source
@@ -2613,12 +2613,14 @@ let ``FR0153: a credential in a Literal on a remote server still fires, as a des
 [<Fact>]
 let ``FR0153: a public IP is not the loopback, however dotted`` () =
     for host in
-        [ "157.24.1.223"
-          "157.24.6.126"
-          "127.0.0.100"
-          "10.0.0.5"
-          "localhost.evil.com"
-          "notlocalhost" ] do
+        [
+            "157.24.1.223"
+            "157.24.6.126"
+            "127.0.0.100"
+            "10.0.0.5"
+            "localhost.evil.com"
+            "notlocalhost"
+        ] do
         let source =
             $"module Test\nlet cs = \"Data Source=%s{host};Initial Catalog=x;User Id=sa;Password=W3lf0rd9Prod\""
 
@@ -2629,15 +2631,17 @@ let ``FR0153: a public IP is not the loopback, however dotted`` () =
 [<Fact>]
 let ``FR0153: a loopback server is a developer's own machine, whatever the password looks like`` () =
     for host in
-        [ "localhost"
-          "127.0.0.1"
-          "127.0.0.1,1433"
-          "localhost\\SQLEXPRESS"
-          "(local)"
-          "(localdb)\\MSSQLLocalDB"
-          "."
-          ".\\SQLEXPRESS"
-          "::1" ] do
+        [
+            "localhost"
+            "127.0.0.1"
+            "127.0.0.1,1433"
+            "localhost\\SQLEXPRESS"
+            "(local)"
+            "(localdb)\\MSSQLLocalDB"
+            "."
+            ".\\SQLEXPRESS"
+            "::1"
+        ] do
         let source =
             $"module Test\nlet cs = \"Data Source=%s{host};Initial Catalog=x;User Id=sa;Password=Hunter2Real9x\""
 
@@ -2869,13 +2873,41 @@ let ``FR0035: a PUBLIC startup list keeps its type and gets the HashSet companio
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
+let ``FR0035: a list of a NoComparison record takes the HashSet companion, never a Set`` () =
+    // `Set` demands `comparison` of its element where `List.contains` asked
+    // only `equality`: the in-place conversion would not compile
+    let source =
+        "module M\n[<NoComparison; CustomEquality>]\ntype Key =\n    { Name: string }\n    override this.Equals(o) = match o with :? Key as k -> k.Name = this.Name | _ -> false\n    override this.GetHashCode() = this.Name.GetHashCode()\nlet private allowed = [ { Name = \"a\" }; { Name = \"b\" } ]\nlet f (xs: Key list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x.Name"
+
+    match containsIn source with
+    | [ s ] ->
+        Assert.NotEmpty s.Fix
+        let patched = applyMigration source s.Fix
+        Assert.DoesNotContain("Set.ofList", patched)
+        Assert.Contains("allowedProbeSet", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0035: a list of records holding a function takes the HashSet companion too`` () =
+    let source =
+        "module M\ntype Handler =\n    { Name: string; Run: int -> int }\nlet private allowed = [ { Name = \"a\"; Run = id } ]\nlet f (xs: Handler list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x.Name"
+
+    match containsIn source with
+    | [] -> () // no equality either: nothing to offer
+    | [ s ] ->
+        let patched = applyMigration source s.Fix
+        Assert.DoesNotContain("Set.ofList", patched)
+    | other -> failwithf "Expected at most one suggestion, got %A" other
+
+[<Fact>]
 let ``FR0035: a public list converts in place under --api-changes`` () =
     let source =
         "module M\nlet testMethodAttributes = [ \"Test\"; \"TestMethod\" ]\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x testMethodAttributes then\n            printfn \"%s\" x"
 
-    let tree, sourceText = parse source
+    let tree, sourceText, check = parseAndCheck source
 
-    match fst (LoopPerf.find true tree sourceText) with
+    match fst (LoopPerf.find true (Some check) tree sourceText) with
     | [ s ] ->
         let patched = applyMigration source s.Fix
         Assert.Contains("|> Set.ofList", patched)

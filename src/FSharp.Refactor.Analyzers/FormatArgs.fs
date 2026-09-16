@@ -35,29 +35,34 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     ignore source
     let index = AstIndex.ofTree parseTree
 
-    [ for _, expr in index.Exprs do
-          match expr with
-          | SynExpr.App(
-              isInfix = false
-              funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-              argExpr = SynExpr.Paren(expr = SynExpr.Tuple(exprs = SynExpr.Const(SynConst.String(fmt, _, _), _) :: args))) when
-              pathEndsWith "String" "Format" ids && not args.IsEmpty
-              ->
-              // `{{` is an escaped brace in composite formats
-              let cleaned = fmt.Replace("{{", "").Replace("}}", "")
+    [
+        for _, expr in index.Exprs do
+            match expr with
+            | SynExpr.App(
+                isInfix = false
+                funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                argExpr = SynExpr.Paren(
+                    expr = SynExpr.Tuple(exprs = SynExpr.Const(SynConst.String(fmt, _, _), _) :: args))) when
+                pathEndsWith "String" "Format" ids && not args.IsEmpty
+                ->
+                // `{{` is an escaped brace in composite formats
+                let cleaned = fmt.Replace("{{", "").Replace("}}", "")
 
-              let indexes =
-                  placeholderRegex.Matches cleaned
-                  |> Seq.map (fun m -> int m.Groups.[1].Value)
-                  |> List.ofSeq
+                let indexes =
+                    placeholderRegex.Matches cleaned
+                    |> Seq.map (fun m -> int m.Groups.[1].Value)
+                    |> List.ofSeq
 
-              match indexes with
-              | [] -> ()
-              | _ ->
-                  let maxIndex = List.max indexes
+                match indexes with
+                | [] -> ()
+                | _ ->
+                    let maxIndex = List.max indexes
 
-                  if maxIndex >= args.Length then
-                      { Range = expr.Range
-                        MissingIndex = maxIndex
-                        ArgCount = args.Length }
-          | _ -> () ]
+                    if maxIndex >= args.Length then
+                        {
+                            Range = expr.Range
+                            MissingIndex = maxIndex
+                            ArgCount = args.Length
+                        }
+            | _ -> ()
+    ]

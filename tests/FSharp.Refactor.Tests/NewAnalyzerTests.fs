@@ -209,7 +209,7 @@ let ``a declined regex construction stays silent here and remains FR0037's note`
         let tree, sourceText = parse source
         Assert.Empty(RegexUsage.find tree sourceText)
         Assert.Empty(RegexUsage.hoistedConstructions tree sourceText)
-        let _, constructions = LoopPerf.find false tree sourceText
+        let _, constructions = LoopPerf.find false None tree sourceText
         Assert.Equal(1, constructions.Length)
 
     declined
@@ -227,7 +227,7 @@ let ``a declined regex construction stays silent here and remains FR0037's note`
         parse
             "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
 
-    let _, constructions = LoopPerf.find false tree sourceText
+    let _, constructions = LoopPerf.find false None tree sourceText
 
     match RegexUsage.hoistedConstructions tree sourceText, constructions with
     | [ hoisted ], [ noted ] -> Assert.Equal(noted.Range, hoisted)

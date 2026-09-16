@@ -100,10 +100,12 @@ let rec private passesAddress (arg: SynExpr) =
 /// spans from, the function's own name, the arity a self-call must reach,
 /// and the accumulator counting the qualifying self-calls found so far.
 type private Ctx =
-    { Source: ISourceText
-      Fid: Ident
-      Arity: int
-      SelfCalls: int ref }
+    {
+        Source: ISourceText
+        Fid: Ident
+        Arity: int
+        SelfCalls: int ref
+    }
 
 /// No mention of the function's own name anywhere in `r`. This runs on nearly
 /// every subexpression of the body, which is why it goes through
@@ -181,52 +183,61 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, decl in index.Decls do
-              match decl with
-              | SynModuleDecl.Let(isRecursive = true; bindings = [ binding ]) ->
-                  match binding with
-                  | SynBinding(
-                      attributes = []
-                      isInline = false
-                      headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ fid ]); argPats = SynArgPats.Pats pats)
-                      expr = body
-                      trivia = trivia) when not (pats.IsEmpty || hasByrefParameter source pats) ->
-                      // `let rec f acc = function ...` compiles as one more
-                      // curried parameter; its clause bodies ARE the tail
-                      let arity, tailBodies, guardsAndScrutinees =
-                          match body with
-                          | SynExpr.MatchLambda(matchClauses = cs) ->
-                              pats.Length + 1,
-                              [ for SynMatchClause(resultExpr = r) in cs -> r ],
-                              [ for SynMatchClause(whenExpr = w) in cs do
-                                    match w with
-                                    | Some g -> g.Range
-                                    | None -> () ]
-                          | _ -> pats.Length, [ body ], []
+        [
+            for _, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Let(isRecursive = true; bindings = [ binding ]) ->
+                    match binding with
+                    | SynBinding(
+                        attributes = []
+                        isInline = false
+                        headPat = SynPat.LongIdent(
+                            longDotId = SynLongIdent(id = [ fid ]); argPats = SynArgPats.Pats pats)
+                        expr = body
+                        trivia = trivia) when not (pats.IsEmpty || hasByrefParameter source pats) ->
+                        // `let rec f acc = function ...` compiles as one more
+                        // curried parameter; its clause bodies ARE the tail
+                        let arity, tailBodies, guardsAndScrutinees =
+                            match body with
+                            | SynExpr.MatchLambda(matchClauses = cs) ->
+                                pats.Length + 1,
+                                [ for SynMatchClause(resultExpr = r) in cs -> r ],
+                                [
+                                    for SynMatchClause(whenExpr = w) in cs do
+                                        match w with
+                                        | Some g -> g.Range
+                                        | None -> ()
+                                ]
+                            | _ -> pats.Length, [ body ], []
 
-                      let c =
-                          { Source = source
-                            Fid = fid
-                            Arity = arity
-                            SelfCalls = ref 0 }
+                        let c =
+                            {
+                                Source = source
+                                Fid = fid
+                                Arity = arity
+                                SelfCalls = ref 0
+                            }
 
-                      let allTail =
-                          guardsAndScrutinees |> List.forall (mentionFree c)
-                          && tailBodies |> List.forall (ok c true)
+                        let allTail =
+                            guardsAndScrutinees |> List.forall (mentionFree c)
+                            && tailBodies |> List.forall (ok c true)
 
-                      if allTail && c.SelfCalls.Value > 0 then
-                          let kw = trivia.LeadingKeyword.Range
+                        if allTail && c.SelfCalls.Value > 0 then
+                            let kw = trivia.LeadingKeyword.Range
 
-                          let ownLine =
-                              kw.StartColumn = 0
-                              || (source.GetLineString(kw.StartLine - 1)).Substring(0, kw.StartColumn).Trim() = ""
+                            let ownLine =
+                                kw.StartColumn = 0
+                                || (source.GetLineString(kw.StartLine - 1)).Substring(0, kw.StartColumn).Trim() = ""
 
-                          if ownLine then
-                              let indent = String.replicate kw.StartColumn " "
-                              let at = Position.mkPos kw.StartLine 0
+                            if ownLine then
+                                let indent = String.replicate kw.StartColumn " "
+                                let at = Position.mkPos kw.StartLine 0
 
-                              { Range = fid.idRange
-                                Name = fid.idText
-                                Fix = Range.mkRange decl.Range.FileName at at, $"{indent}[<TailCall>]\n" }
-                  | _ -> ()
-              | _ -> () ]
+                                {
+                                    Range = fid.idRange
+                                    Name = fid.idText
+                                    Fix = Range.mkRange decl.Range.FileName at at, $"{indent}[<TailCall>]\n"
+                                }
+                    | _ -> ()
+                | _ -> ()
+        ]

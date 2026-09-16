@@ -28,30 +28,32 @@ open FSharp.Refactor.Text
 /// signatures and semantics.
 let private parityFunctions =
     set
-        [ "map"
-          "map2"
-          "map3"
-          "bind"
-          "iter"
-          "filter"
-          "exists"
-          "forall"
-          "contains"
-          "count"
-          "defaultValue"
-          "defaultWith"
-          "fold"
-          "foldBack"
-          "get"
-          "isSome"
-          "isNone"
-          "toArray"
-          "toList"
-          "toNullable"
-          "toObj"
-          "orElse"
-          "orElseWith"
-          "flatten" ]
+        [
+            "map"
+            "map2"
+            "map3"
+            "bind"
+            "iter"
+            "filter"
+            "exists"
+            "forall"
+            "contains"
+            "count"
+            "defaultValue"
+            "defaultWith"
+            "fold"
+            "foldBack"
+            "get"
+            "isSome"
+            "isNone"
+            "toArray"
+            "toList"
+            "toNullable"
+            "toObj"
+            "orElse"
+            "orElseWith"
+            "flatten"
+        ]
 
 /// Members voption shares with option — access sites need no edit.
 let private sharedMembers = set [ "IsSome"; "IsNone"; "Value" ]
@@ -135,26 +137,30 @@ let classifierFor
 
     // record construction sites, field-name range -> assigned expr
     let constructionRhs =
-        [ for _, e in index.Exprs do
-              match e with
-              | SynExpr.Record(recordFields = fields) ->
-                  for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
-                      if not ids.IsEmpty then
-                          yield (List.last ids).idRange, rhs
-              | _ -> () ]
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.Record(recordFields = fields) ->
+                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
+                        if not ids.IsEmpty then
+                            yield (List.last ids).idRange, rhs
+                | _ -> ()
+        ]
         |> List.map (fun (r, rhs) -> (r.StartLine, r.StartColumn), rhs)
         |> dict
 
     // record patterns, field-name range -> inner pattern
     let patternInner =
-        [ for _, p in index.Pats do
-              match p with
-              | SynPat.Record(fieldPats = fieldPats) ->
-                  for NamePatPairField(fieldName = SynLongIdent(id = fids); pat = inner) in fieldPats do
-                      if not fids.IsEmpty then
-                          let fr = (List.last fids).idRange
-                          yield (fr.StartLine, fr.StartColumn), inner
-              | _ -> () ]
+        [
+            for _, p in index.Pats do
+                match p with
+                | SynPat.Record(fieldPats = fieldPats) ->
+                    for NamePatPairField(fieldName = SynLongIdent(id = fids); pat = inner) in fieldPats do
+                        if not fids.IsEmpty then
+                            let fr = (List.last fids).idRange
+                            yield (fr.StartLine, fr.StartColumn), inner
+                | _ -> ()
+        ]
         |> dict
 
     // smallest expression containing a range, with its ancestors

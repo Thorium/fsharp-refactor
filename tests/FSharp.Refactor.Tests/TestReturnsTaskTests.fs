@@ -81,6 +81,16 @@ let ``a blocking site nested in a lambda does not move`` () =
     )
 
 [<Fact>]
+let ``a test holding a Span is left synchronous`` () =
+    // a byref-like local cannot be a field of the task's state machine
+    Assert.Empty(
+        findIn (
+            scaffold
+            + "[<Fact>]\nlet ``spanned`` () =\n    let buf = Span<byte>(Array.zeroCreate 4)\n    let res = load () |> Async.RunSynchronously\n    if res.X <> buf.Length then failwith \"wrong\""
+        )
+    )
+
+[<Fact>]
 let ``a test that already returns a task is left alone`` () =
     Assert.Empty(
         findIn (
@@ -465,6 +475,37 @@ let ``a test merely reading a module-level mutable is left alone`` () =
             + "let mutable testContext = 0\n\n[<Fact>]\nlet ``t`` () =\n    let r = load () |> Async.RunSynchronously\n    ignore (r, testContext)\n"
         )
     )
+
+[<Fact>]
+let ``a class's own static mutable does not hold its tests back`` () =
+    // CarmelNet: one test writes a payment id into `static let mutable`,
+    // the next reads it. Tests of one class run one after another in xUnit,
+    // NUnit and MSTest whatever they return, so both convert
+    let source =
+        scaffold
+        + "type Fixture() =\n    static let mutable created = 0\n    [<Fact>]\n    member _.``creates`` () =\n        let r = load () |> Async.RunSynchronously\n        created <- r.X\n    [<Fact>]\n    member _.``reads back`` () =\n        let r = load () |> Async.RunSynchronously\n        if r.X <> created then failwith \"wrong\"\n"
+
+    Assert.Equal(2, (findIn source).Length)
+
+[<Fact>]
+let ``a class opted into parallel tests keeps its static state shared`` () =
+    // NUnit's Parallelizable(ParallelScope.All) runs one class's tests
+    // beside each other: the class-local exemption no longer holds
+    let source =
+        scaffold
+        + "type ParallelizableAttribute(scope: int) =\n    inherit Attribute()\n[<Parallelizable(2)>]\ntype Fixture() =\n    static let mutable created = 0\n    [<Fact>]\n    member _.``creates`` () =\n        let r = load () |> Async.RunSynchronously\n        created <- r.X\n"
+
+    Assert.Empty(findIn source)
+
+[<Fact>]
+let ``another class's state still holds a test back`` () =
+    // a write into a holder class is an assignment beyond the test's own
+    // class, whichever class runs beside it
+    let source =
+        scaffold
+        + "type Holder() =\n    static let mutable created = 0\n    static member Created\n        with get () = created\n        and set v = created <- v\ntype Fixture() =\n    [<Fact>]\n    member _.``writes`` () =\n        let r = load () |> Async.RunSynchronously\n        Holder.Created <- r.X\n"
+
+    Assert.Empty(findIn source)
 
 [<Fact>]
 let ``a test assigning its OWN mutable still converts`` () =

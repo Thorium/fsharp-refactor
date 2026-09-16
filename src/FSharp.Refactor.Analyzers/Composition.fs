@@ -297,11 +297,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                                 if producedLineLength <= MaxLineLength then
                                     suggestions.Add
-                                        { Range = expr.Range
-                                          OriginalText = textOfRange source expr.Range
-                                          ReplacementText = replacement }
+                                        {
+                                            Range = expr.Range
+                                            OriginalText = textOfRange source expr.Range
+                                            ReplacementText = replacement
+                                        }
                             | _ -> ()
-                    | _ -> () }
+                    | _ -> ()
+            }
 
         AstIndex.replay collector parseTree
         List.ofSeq suggestions

@@ -82,31 +82,33 @@ type StructTupleFieldSuggestion =
 /// common BCL value types the article calls out.
 let private structNames =
     set
-        [ "int"
-          "int8"
-          "int16"
-          "int32"
-          "int64"
-          "uint"
-          "uint8"
-          "uint16"
-          "uint32"
-          "uint64"
-          "byte"
-          "sbyte"
-          "float"
-          "float32"
-          "double"
-          "single"
-          "decimal"
-          "bool"
-          "char"
-          "nativeint"
-          "unativeint"
-          "DateTime"
-          "DateTimeOffset"
-          "TimeSpan"
-          "Guid" ]
+        [
+            "int"
+            "int8"
+            "int16"
+            "int32"
+            "int64"
+            "uint"
+            "uint8"
+            "uint16"
+            "uint32"
+            "uint64"
+            "byte"
+            "sbyte"
+            "float"
+            "float32"
+            "double"
+            "single"
+            "decimal"
+            "bool"
+            "char"
+            "nativeint"
+            "unativeint"
+            "DateTime"
+            "DateTimeOffset"
+            "TimeSpan"
+            "Guid"
+        ]
 
 let private lastIdentText (t: SynType) =
     match t with
@@ -239,23 +241,27 @@ let find
                         match fieldType, idOpt with
                         | StructOption(elem, optionNameRange), Some fieldId ->
                             voptions.Add
-                                { Range = fieldType.Range
-                                  FieldName = fieldId.idText
-                                  ElementText = textOfRange source elem.Range
-                                  TypeName = typeName
-                                  FieldIdRange = fieldId.idRange
-                                  OptionNameRange = optionNameRange
-                                  IsFilePrivate = isFilePrivate
-                                  IsConfined = Visibility.isConfined path [ access ] }
+                                {
+                                    Range = fieldType.Range
+                                    FieldName = fieldId.idText
+                                    ElementText = textOfRange source elem.Range
+                                    TypeName = typeName
+                                    FieldIdRange = fieldId.idRange
+                                    OptionNameRange = optionNameRange
+                                    IsFilePrivate = isFilePrivate
+                                    IsConfined = Visibility.isConfined path [ access ]
+                                }
                         | SmallStructTuple _, Some fieldId ->
                             structTuples.Add
-                                { Range = fieldType.Range
-                                  FieldName = fieldId.idText
-                                  TupleText = textOfRange source fieldType.Range
-                                  TypeName = typeName
-                                  FieldIdRange = fieldId.idRange
-                                  IsFilePrivate = isFilePrivate
-                                  IsConfined = Visibility.isConfined path [ access ] }
+                                {
+                                    Range = fieldType.Range
+                                    FieldName = fieldId.idText
+                                    TupleText = textOfRange source fieldType.Range
+                                    TypeName = typeName
+                                    FieldIdRange = fieldId.idRange
+                                    IsFilePrivate = isFilePrivate
+                                    IsConfined = Visibility.isConfined path [ access ]
+                                }
                         | _ -> ()
 
                     // FR0070: a small all-struct record can be a struct itself
@@ -290,7 +296,9 @@ let find
                                 && not (fieldsReadInQuotation fieldNames)
                                 && (source.GetLineString(kwRange.StartLine - 1))
                                     .Substring(0, kwRange.StartColumn)
-                                    .Trim() = ""
+                                    .Trim()
+                                    =
+                                    ""
                                 ->
                                 let at = Position.mkPos kwRange.StartLine 0
                                 let indent = String.replicate kwRange.StartColumn " "
@@ -299,10 +307,12 @@ let find
                             | _ -> None
 
                         structs.Add
-                            { Range = (List.last typeIds).idRange
-                              TypeName = typeName
-                              FieldCount = fields.Length
-                              Fix = attributeFix }
+                            {
+                                Range = (List.last typeIds).idRange
+                                TypeName = typeName
+                                FieldCount = fields.Length
+                                Fix = attributeFix
+                            }
                 | _ -> ()
         | _ -> ()
 

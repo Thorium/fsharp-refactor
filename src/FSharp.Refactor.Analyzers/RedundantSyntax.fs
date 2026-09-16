@@ -27,10 +27,12 @@ type Kind =
     | HoleFreeInterpolation
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string
-      Kind: Kind }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+        Kind: Kind
+    }
 
 let private plainIdent = Regex(@"^[A-Za-z_][A-Za-z0-9_']*$", RegexOptions.Compiled)
 
@@ -82,20 +84,24 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                 && textOfRange source last.idRange = text
             then
                 suggestions.Add
-                    { Range = last.idRange
-                      OriginalText = text
-                      ReplacementText = text.Substring(0, text.Length - "Attribute".Length)
-                      Kind = Kind.AttributeSuffix }
+                    {
+                        Range = last.idRange
+                        OriginalText = text
+                        ReplacementText = text.Substring(0, text.Length - "Attribute".Length)
+                        Kind = Kind.AttributeSuffix
+                    }
         | _ -> ()
 
         // FR0083: the empty argument list
         match attr.ArgExpr with
         | SynExpr.Const(SynConst.Unit, unitRange) when textOfRange source unitRange = "()" ->
             suggestions.Add
-                { Range = unitRange
-                  OriginalText = "()"
-                  ReplacementText = ""
-                  Kind = Kind.AttributeParens }
+                {
+                    Range = unitRange
+                    OriginalText = "()"
+                    ReplacementText = ""
+                    Kind = Kind.AttributeParens
+                }
         | _ -> ()
 
     // Is a FormattableString (or IFormattable) EXPECTED here? An interpolated
@@ -174,10 +180,12 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
         match e with
         | SynExpr.Ident ident when redundantBackticks source ident ->
             suggestions.Add
-                { Range = ident.idRange
-                  OriginalText = textOfRange source ident.idRange
-                  ReplacementText = ident.idText
-                  Kind = Kind.Backticks }
+                {
+                    Range = ident.idRange
+                    OriginalText = textOfRange source ident.idRange
+                    ReplacementText = ident.idText
+                    Kind = Kind.Backticks
+                }
         | SynExpr.InterpolatedString(contents = parts) when
             parts
             |> List.forall (fun p ->
@@ -204,20 +212,24 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                     last <- last + 1
 
                 suggestions.Add
-                    { Range = e.Range
-                      OriginalText = text
-                      ReplacementText = text.Remove(first, last - first + 1)
-                      Kind = Kind.HoleFreeInterpolation }
+                    {
+                        Range = e.Range
+                        OriginalText = text
+                        ReplacementText = text.Remove(first, last - first + 1)
+                        Kind = Kind.HoleFreeInterpolation
+                    }
         | _ -> ()
 
     for _, p in index.Pats do
         match p with
         | SynPat.Named(ident = SynIdent(ident = ident)) when redundantBackticks source ident ->
             suggestions.Add
-                { Range = ident.idRange
-                  OriginalText = textOfRange source ident.idRange
-                  ReplacementText = ident.idText
-                  Kind = Kind.Backticks }
+                {
+                    Range = ident.idRange
+                    OriginalText = textOfRange source ident.idRange
+                    ReplacementText = ident.idText
+                    Kind = Kind.Backticks
+                }
         | _ -> ()
 
     List.ofSeq suggestions

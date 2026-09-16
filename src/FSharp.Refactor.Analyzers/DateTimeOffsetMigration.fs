@@ -47,78 +47,87 @@ type Suggestion =
 /// field whose writes never mix Now and UtcNow).
 let private parityMembers =
     set
-        [ "Year"
-          "Month"
-          "Day"
-          "Hour"
-          "Minute"
-          "Second"
-          "Millisecond"
-          "DayOfWeek"
-          "DayOfYear"
-          "Ticks"
-          "TimeOfDay"
-          "AddDays"
-          "AddHours"
-          "AddMinutes"
-          "AddSeconds"
-          "AddMilliseconds"
-          "AddTicks"
-          "AddMonths"
-          "AddYears"
-          "Add"
-          "Subtract"
-          "CompareTo"
-          "Equals" ]
+        [
+            "Year"
+            "Month"
+            "Day"
+            "Hour"
+            "Minute"
+            "Second"
+            "Millisecond"
+            "DayOfWeek"
+            "DayOfYear"
+            "Ticks"
+            "TimeOfDay"
+            "AddDays"
+            "AddHours"
+            "AddMinutes"
+            "AddSeconds"
+            "AddMilliseconds"
+            "AddTicks"
+            "AddMonths"
+            "AddYears"
+            "Add"
+            "Subtract"
+            "CompareTo"
+            "Equals"
+        ]
 
 let private comparisonOps =
     set
-        [ "op_LessThan"
-          "op_GreaterThan"
-          "op_LessThanOrEqual"
-          "op_GreaterThanOrEqual"
-          "op_Equality"
-          "op_Inequality"
-          "op_Subtraction" ]
+        [
+            "op_LessThan"
+            "op_GreaterThan"
+            "op_LessThanOrEqual"
+            "op_GreaterThanOrEqual"
+            "op_Equality"
+            "op_Inequality"
+            "op_Subtraction"
+        ]
 
 /// The record fields typed `DateTime` in contained record types.
 let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for path, decl in index.Decls do
-          match decl with
-          | SynModuleDecl.Types(typeDefns = defns) ->
-              for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds; accessibility = access); typeRepr = repr) in
-                  defns do
-                  match repr with
-                  | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) when
-                      Visibility.isInScopeNamedPath allowApiChanges path [ access ] typeIds
-                      ->
-                      let isFilePrivate =
-                          (match access with
-                           | Some(SynAccess.Private _) -> true
-                           | _ -> false)
-                          || path
-                             |> List.exists (fun node ->
-                                 match node with
-                                 | SyntaxNode.SynModule(SynModuleDecl.NestedModule(
-                                     moduleInfo = SynComponentInfo(accessibility = Some(SynAccess.Private _)))) -> true
-                                 | _ -> false)
+    [
+        for path, decl in index.Decls do
+            match decl with
+            | SynModuleDecl.Types(typeDefns = defns) ->
+                for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds; accessibility = access); typeRepr = repr) in
+                    defns do
+                    match repr with
+                    | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) when
+                        Visibility.isInScopeNamedPath allowApiChanges path [ access ] typeIds
+                        ->
+                        let isFilePrivate =
+                            (match access with
+                             | Some(SynAccess.Private _) -> true
+                             | _ -> false)
+                            || path
+                               |> List.exists (fun node ->
+                                   match node with
+                                   | SyntaxNode.SynModule(SynModuleDecl.NestedModule(
+                                       moduleInfo = SynComponentInfo(accessibility = Some(SynAccess.Private _)))) ->
+                                       true
+                                   | _ -> false)
 
-                      for SynField(idOpt = idOpt; fieldType = fieldType) in fields do
-                          match fieldType, idOpt with
-                          | SynType.LongIdent(SynLongIdent(id = tids)), Some fieldId when
-                              not tids.IsEmpty && (List.last tids).idText = "DateTime"
-                              ->
-                              { Range = fieldType.Range
-                                FieldName = fieldId.idText
-                                TypeName = typeIds |> List.map (fun i -> i.idText) |> String.concat "."
-                                IsFilePrivate = isFilePrivate
-                                FieldIdRange = fieldId.idRange
-                                TypeNameRange = (List.last tids).idRange }
-                          | _ -> ()
-                  | _ -> ()
-          | _ -> () ]
+                        for SynField(idOpt = idOpt; fieldType = fieldType) in fields do
+                            match fieldType, idOpt with
+                            | SynType.LongIdent(SynLongIdent(id = tids)), Some fieldId when
+                                not tids.IsEmpty && (List.last tids).idText = "DateTime"
+                                ->
+                                {
+                                    Range = fieldType.Range
+                                    FieldName = fieldId.idText
+                                    TypeName = typeIds |> List.map (fun i -> i.idText) |> String.concat "."
+                                    IsFilePrivate = isFilePrivate
+                                    FieldIdRange = fieldId.idRange
+                                    TypeNameRange = (List.last tids).idRange
+                                }
+                            | _ -> ()
+                    | _ -> ()
+            | _ -> ()
+    ]
 
 /// A per-file classifier plus the write sources it saw — Now and UtcNow
 /// must not mix across the WHOLE migration, so the caller collects them.
@@ -137,13 +146,15 @@ let classifierFor
     let index = AstIndex.ofTree parseTree
 
     let constructionRhs =
-        [ for _, e in index.Exprs do
-              match e with
-              | SynExpr.Record(recordFields = fields) ->
-                  for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
-                      if not ids.IsEmpty then
-                          yield (List.last ids).idRange, rhs
-              | _ -> () ]
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.Record(recordFields = fields) ->
+                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
+                        if not ids.IsEmpty then
+                            yield (List.last ids).idRange, rhs
+                | _ -> ()
+        ]
         |> List.map (fun (r, rhs) -> (r.StartLine, r.StartColumn), rhs)
         |> dict
 

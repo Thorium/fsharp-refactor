@@ -50,15 +50,19 @@ let private names (paths: string list) =
 [<Fact>]
 let ``a classic solution lists its F#, C# and VB projects, solution folders left out`` () =
     withTree
-        [ "All.sln",
-          sln
-              [ "Lib", "src\\Lib\\Lib.fsproj"
-                "Consumer", "src\\Consumer\\Consumer.csproj"
-                "Legacy", "src\\Legacy\\Legacy.vbproj"
-                "Folder", "Folder" ]
-          "src/Lib/Lib.fsproj", fsproj []
-          "src/Consumer/Consumer.csproj", "<Project />"
-          "src/Legacy/Legacy.vbproj", "<Project />" ]
+        [
+            "All.sln",
+            sln
+                [
+                    "Lib", "src\\Lib\\Lib.fsproj"
+                    "Consumer", "src\\Consumer\\Consumer.csproj"
+                    "Legacy", "src\\Legacy\\Legacy.vbproj"
+                    "Folder", "Folder"
+                ]
+            "src/Lib/Lib.fsproj", fsproj []
+            "src/Consumer/Consumer.csproj", "<Project />"
+            "src/Legacy/Legacy.vbproj", "<Project />"
+        ]
         (fun root ->
             Assert.Equal<string list>(
                 [ "Consumer.csproj"; "Legacy.vbproj"; "Lib.fsproj" ],
@@ -68,10 +72,12 @@ let ``a classic solution lists its F#, C# and VB projects, solution folders left
 [<Fact>]
 let ``an slnx solution lists its projects by Path`` () =
     withTree
-        [ "All.slnx",
-          "<Solution>\n  <Project Path=\"src/Lib/Lib.fsproj\" />\n  <Project Path=\"tests/Tests/Tests.fsproj\" />\n  <Project Path=\"missing/Gone.fsproj\" />\n</Solution>\n"
-          "src/Lib/Lib.fsproj", fsproj []
-          "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ] ]
+        [
+            "All.slnx",
+            "<Solution>\n  <Project Path=\"src/Lib/Lib.fsproj\" />\n  <Project Path=\"tests/Tests/Tests.fsproj\" />\n  <Project Path=\"missing/Gone.fsproj\" />\n</Solution>\n"
+            "src/Lib/Lib.fsproj", fsproj []
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
+        ]
         (fun root ->
             // a listed project that is not on disk is not a project
             Assert.Equal<string list>(
@@ -82,12 +88,16 @@ let ``an slnx solution lists its projects by Path`` () =
 [<Fact>]
 let ``project references resolve against the project directory`` () =
     withTree
-        [ "src/Lib/Lib.fsproj", fsproj []
-          "src/Other/Other.fsproj", fsproj []
-          "tests/Tests/Tests.fsproj",
-          fsproj
-              [ "..\\..\\src\\Lib\\Lib.fsproj"
-                "$(MSBuildThisFileDirectory)../../src/Other/Other.fsproj;$(SomeProperty)/Unknown.fsproj" ] ]
+        [
+            "src/Lib/Lib.fsproj", fsproj []
+            "src/Other/Other.fsproj", fsproj []
+            "tests/Tests/Tests.fsproj",
+            fsproj
+                [
+                    "..\\..\\src\\Lib\\Lib.fsproj"
+                    "$(MSBuildThisFileDirectory)../../src/Other/Other.fsproj;$(SomeProperty)/Unknown.fsproj"
+                ]
+        ]
         (fun root ->
             // semicolons separate; a path built from an unknown property
             // cannot be resolved without MSBuild and is passed over
@@ -99,9 +109,11 @@ let ``project references resolve against the project directory`` () =
 [<Fact>]
 let ``the assembly name is the AssemblyName property or the project file's name`` () =
     withTree
-        [ "src/Lib/Lib.fsproj", fsproj []
-          "src/Named/Named.fsproj",
-          "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <AssemblyName>Company.Named</AssemblyName>\n  </PropertyGroup>\n</Project>\n" ]
+        [
+            "src/Lib/Lib.fsproj", fsproj []
+            "src/Named/Named.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <AssemblyName>Company.Named</AssemblyName>\n  </PropertyGroup>\n</Project>\n"
+        ]
         (fun root ->
             Assert.Equal("Lib", Workspace.assemblyNameOf (Path.Combine(root, "src", "Lib", "Lib.fsproj")))
 
@@ -117,21 +129,25 @@ let ``referencers include the projects two hops away and every language`` () =
     // references Lib and must be seen even though it cannot be read;
     // Unrelated references nothing
     withTree
-        [ "src/Lib/Lib.fsproj", fsproj []
-          "src/Core/Core.fsproj", fsproj [ "../Lib/Lib.fsproj" ]
-          "src/App/App.fsproj", fsproj [ "../Core/Core.fsproj" ]
-          "src/Consumer/Consumer.csproj",
-          "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
-          "src/Unrelated/Unrelated.fsproj", fsproj []
-          "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ] ]
+        [
+            "src/Lib/Lib.fsproj", fsproj []
+            "src/Core/Core.fsproj", fsproj [ "../Lib/Lib.fsproj" ]
+            "src/App/App.fsproj", fsproj [ "../Core/Core.fsproj" ]
+            "src/Consumer/Consumer.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
+            "src/Unrelated/Unrelated.fsproj", fsproj []
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
+        ]
         (fun root ->
             let workspace =
-                [ "src/Lib/Lib.fsproj"
-                  "src/Core/Core.fsproj"
-                  "src/App/App.fsproj"
-                  "src/Consumer/Consumer.csproj"
-                  "src/Unrelated/Unrelated.fsproj"
-                  "tests/Tests/Tests.fsproj" ]
+                [
+                    "src/Lib/Lib.fsproj"
+                    "src/Core/Core.fsproj"
+                    "src/App/App.fsproj"
+                    "src/Consumer/Consumer.csproj"
+                    "src/Unrelated/Unrelated.fsproj"
+                    "tests/Tests/Tests.fsproj"
+                ]
                 |> List.map (fun p -> Path.Combine(root, p.Replace('/', Path.DirectorySeparatorChar)))
 
             let lib = Path.Combine(root, "src", "Lib", "Lib.fsproj")
@@ -150,9 +166,11 @@ let ``referencers include the projects two hops away and every language`` () =
 [<Fact>]
 let ``the workspace is the solution the run was pointed at`` () =
     withTree
-        [ "All.sln", sln [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
-          "src/Lib/Lib.fsproj", fsproj []
-          "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ] ]
+        [
+            "All.sln", sln [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
+            "src/Lib/Lib.fsproj", fsproj []
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
+        ]
         (fun root ->
             let lib = Path.Combine(root, "src", "Lib", "Lib.fsproj")
 
@@ -166,10 +184,12 @@ let ``a bare project finds the nearest ancestor solution that lists it`` () =
     // directories up lists it, so its other projects are the siblings —
     // and a solution that does NOT list the project is not its workspace
     withTree
-        [ "All.sln", sln [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
-          "Other.sln", sln [ "Tests", "tests\\Tests\\Tests.fsproj" ]
-          "src/Lib/Lib.fsproj", fsproj []
-          "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ] ]
+        [
+            "All.sln", sln [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
+            "Other.sln", sln [ "Tests", "tests\\Tests\\Tests.fsproj" ]
+            "src/Lib/Lib.fsproj", fsproj []
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
+        ]
         (fun root ->
             let lib = Path.Combine(root, "src", "Lib", "Lib.fsproj")
 
@@ -180,9 +200,11 @@ let ``a bare project finds the nearest ancestor solution that lists it`` () =
 [<Fact>]
 let ``a directory run without a solution takes every project beneath it`` () =
     withTree
-        [ "src/Lib/Lib.fsproj", fsproj []
-          "src/Consumer/Consumer.csproj", "<Project />"
-          "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ] ]
+        [
+            "src/Lib/Lib.fsproj", fsproj []
+            "src/Consumer/Consumer.csproj", "<Project />"
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
+        ]
         (fun root ->
             let lib = Path.Combine(root, "src", "Lib", "Lib.fsproj")
 
@@ -196,9 +218,11 @@ let ``a bare project with no solution above it has no workspace`` () =
     // .git marks the repository root: the search stops there, and a
     // solution above the repository is someone else's
     withTree
-        [ "Above.sln", sln [ "Lib", "repo\\src\\Lib\\Lib.fsproj" ]
-          "repo/.git/HEAD", "ref: refs/heads/main\n"
-          "repo/src/Lib/Lib.fsproj", fsproj [] ]
+        [
+            "Above.sln", sln [ "Lib", "repo\\src\\Lib\\Lib.fsproj" ]
+            "repo/.git/HEAD", "ref: refs/heads/main\n"
+            "repo/src/Lib/Lib.fsproj", fsproj []
+        ]
         (fun root ->
             let lib = Path.Combine(root, "repo", "src", "Lib", "Lib.fsproj")
             Assert.True((Workspace.workspaceOf lib lib).IsNone))
@@ -209,19 +233,23 @@ let ``a reference through an MSBuild property still names its project by file na
     // twenty-eight times. Unresolvable as a path, but the file name says
     // which project it is, and a referencer passed over is a call site missed
     withTree
-        [ "src/Lib/Lib.fsproj", fsproj []
-          "src/Other/Other.fsproj", fsproj []
-          "tests/Tests/Tests.fsproj", fsproj [ "$(SourcesRoot)\src\Lib\Lib.fsproj" ]
-          "tests/Any/Any.fsproj", fsproj [ "$(Ref)" ] ]
+        [
+            "src/Lib/Lib.fsproj", fsproj []
+            "src/Other/Other.fsproj", fsproj []
+            "tests/Tests/Tests.fsproj", fsproj [ "$(SourcesRoot)\src\Lib\Lib.fsproj" ]
+            "tests/Any/Any.fsproj", fsproj [ "$(Ref)" ]
+        ]
         (fun root ->
             let p (relative: string) =
                 Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))
 
             let workspace =
-                [ p "src/Lib/Lib.fsproj"
-                  p "src/Other/Other.fsproj"
-                  p "tests/Tests/Tests.fsproj"
-                  p "tests/Any/Any.fsproj" ]
+                [
+                    p "src/Lib/Lib.fsproj"
+                    p "src/Other/Other.fsproj"
+                    p "tests/Tests/Tests.fsproj"
+                    p "tests/Any/Any.fsproj"
+                ]
 
             Assert.Equal<Workspace.ProjectReference list>(
                 [ Workspace.ByName "Lib.fsproj" ],
@@ -251,14 +279,16 @@ let ``a project compiling another's source directly is reported with the shared 
     // through `<Compile Include="..\Common\X.fs">`; they reference nothing
     // and hold their own call sites
     withTree
-        [ "src/Common/Common.fsproj",
-          "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Shared.fs\" />\n    <Compile Include=\"Own.fs\" />\n  </ItemGroup>\n</Project>\n"
-          "src/Common/Shared.fs", "module Shared"
-          "src/Common/Own.fs", "module Own"
-          "src/Provider/Provider.fsproj",
-          "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"..\Common\Shared.fs\" />\n    <Compile Include=\"Provider.fs\" />\n    <Compile Include=\"$(Generated)\Gen.fs\" />\n    <Compile Include=\"**/*.fs\" />\n  </ItemGroup>\n</Project>\n"
-          "src/Provider/Provider.fs", "module Provider"
-          "tests/Tests/Tests.fsproj", fsproj [ "../../src/Common/Common.fsproj" ] ]
+        [
+            "src/Common/Common.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Shared.fs\" />\n    <Compile Include=\"Own.fs\" />\n  </ItemGroup>\n</Project>\n"
+            "src/Common/Shared.fs", "module Shared"
+            "src/Common/Own.fs", "module Own"
+            "src/Provider/Provider.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"..\Common\Shared.fs\" />\n    <Compile Include=\"Provider.fs\" />\n    <Compile Include=\"$(Generated)\Gen.fs\" />\n    <Compile Include=\"**/*.fs\" />\n  </ItemGroup>\n</Project>\n"
+            "src/Provider/Provider.fs", "module Provider"
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Common/Common.fsproj" ]
+        ]
         (fun root ->
             let p (relative: string) =
                 Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))

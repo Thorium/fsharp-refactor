@@ -318,6 +318,8 @@ type Outside =
 /// every editor host and a script target: internal declarations reshape
 /// as before, public ones never.
 let unknownOutside =
-    { Uses = (fun _ -> [||])
-      PublicRead = (fun () -> false)
-      AssemblyRead = (fun _ -> false) }
+    {
+        Uses = (fun _ -> [||])
+        PublicRead = (fun () -> false)
+        AssemblyRead = (fun _ -> false)
+    }

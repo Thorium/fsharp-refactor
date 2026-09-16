@@ -109,35 +109,37 @@ let ``corpus fixes still parse`` () : unit =
                     unparseable <- unparseable + 1
 
                 let suggestions =
-                    [ for s in RedundantParens.find tree sourceText -> s.Range, s.ReplacementText, "FR0013"
-                      for s in MethodCallParens.find tree sourceText -> s.Range, s.ReplacementText, "FR0094"
-                      for s in LambdaBuiltin.find tree sourceText -> s.Range, s.ReplacementText, "FR0095"
-                      for s in PatternParens.find tree sourceText -> s.Range, s.ReplacementText, "FR0096"
-                      for s in TypeSyntax.findRedundantParens tree sourceText -> s.Range, s.ReplacementText, "FR0097"
-                      for s in TypeSyntax.findAbbreviations tree sourceText -> s.Range, s.ReplacementText, "FR0098"
-                      for s in TrailingSemicolon.find tree sourceText -> s.Range, s.ReplacementText, "FR0099"
-                      for s in MatchToIf.find tree sourceText -> s.Range, s.ReplacementText, "FR0001"
-                      for s in RaiseFailwith.find tree sourceText -> s.Range, s.ReplacementText, "FR0024"
-                      for s in
-                          AttributeMerge.find
-                              AttributeMerge.DefaultMaxAttributes
-                              AttributeMerge.DefaultWrapColumn
-                              tree
-                              sourceText -> s.Range, s.ReplacementText, "FR0060"
-                      for s in HintEngine.find [] tree sourceText None -> s.Range, s.ReplacementText, "FR0011/12"
-                      for s in Simplification.find tree sourceText None -> s.Range, s.ReplacementText, "FR0010"
-                      for s in ConversionMove.find tree sourceText -> s.Range, s.ReplacementText, "FR0004"
-                      for s in StructDu.find (Visibility.apiChangesAllowed ()) tree sourceText ->
-                          s.InsertRange, s.InsertText, "FR0016"
-                      for s in RedundantSyntax.find None tree sourceText ->
-                          s.Range, s.ReplacementText, $"FR008x/{s.Kind}"
-                      for s in MatchBangRule.find tree sourceText do
-                          for range, _, replacement in s.Edits -> range, replacement, "FR0073"
-                      for s in MatchBangRule.findWhileBang tree sourceText do
-                          for range, _, replacement in s.Edits -> range, replacement, "FR0078"
-                      for s in IndexedLoop.find tree sourceText do
-                          for range, _, replacement in s.Edits -> range, replacement, "FR0101"
-                      for s in TypeTestChain.find tree sourceText -> s.Range, s.ReplacementText, "FR0103" ]
+                    [
+                        for s in RedundantParens.find tree sourceText -> s.Range, s.ReplacementText, "FR0013"
+                        for s in MethodCallParens.find tree sourceText -> s.Range, s.ReplacementText, "FR0094"
+                        for s in LambdaBuiltin.find tree sourceText -> s.Range, s.ReplacementText, "FR0095"
+                        for s in PatternParens.find tree sourceText -> s.Range, s.ReplacementText, "FR0096"
+                        for s in TypeSyntax.findRedundantParens tree sourceText -> s.Range, s.ReplacementText, "FR0097"
+                        for s in TypeSyntax.findAbbreviations tree sourceText -> s.Range, s.ReplacementText, "FR0098"
+                        for s in TrailingSemicolon.find tree sourceText -> s.Range, s.ReplacementText, "FR0099"
+                        for s in MatchToIf.find tree sourceText -> s.Range, s.ReplacementText, "FR0001"
+                        for s in RaiseFailwith.find tree sourceText -> s.Range, s.ReplacementText, "FR0024"
+                        for s in
+                            AttributeMerge.find
+                                AttributeMerge.DefaultMaxAttributes
+                                AttributeMerge.DefaultWrapColumn
+                                tree
+                                sourceText -> s.Range, s.ReplacementText, "FR0060"
+                        for s in HintEngine.find [] tree sourceText None -> s.Range, s.ReplacementText, "FR0011/12"
+                        for s in Simplification.find tree sourceText None -> s.Range, s.ReplacementText, "FR0010"
+                        for s in ConversionMove.find tree sourceText -> s.Range, s.ReplacementText, "FR0004"
+                        for s in StructDu.find (Visibility.apiChangesAllowed ()) tree sourceText ->
+                            s.InsertRange, s.InsertText, "FR0016"
+                        for s in RedundantSyntax.find None tree sourceText ->
+                            s.Range, s.ReplacementText, $"FR008x/{s.Kind}"
+                        for s in MatchBangRule.find tree sourceText do
+                            for range, _, replacement in s.Edits -> range, replacement, "FR0073"
+                        for s in MatchBangRule.findWhileBang tree sourceText do
+                            for range, _, replacement in s.Edits -> range, replacement, "FR0078"
+                        for s in IndexedLoop.find tree sourceText do
+                            for range, _, replacement in s.Edits -> range, replacement, "FR0101"
+                        for s in TypeTestChain.find tree sourceText -> s.Range, s.ReplacementText, "FR0103"
+                    ]
 
                 // note-only rules: nothing to patch, but count them so a rule
                 // that fires wildly on real code shows up here
@@ -171,8 +173,10 @@ let ``corpus fixes still parse`` () : unit =
                             failures.Add $"{code} {file}({range.StartLine},{range.StartColumn}): -> {replacement}"
 
                 let multiEditSets =
-                    [ for s in MatchBangRule.find tree sourceText -> s.Edits
-                      for s in MatchBangRule.findWhileBang tree sourceText -> s.Edits ]
+                    [
+                        for s in MatchBangRule.find tree sourceText -> s.Edits
+                        for s in MatchBangRule.findWhileBang tree sourceText -> s.Edits
+                    ]
 
                 for edits in multiEditSets do
                     applied <- applied + 1

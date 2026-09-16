@@ -56,9 +56,11 @@ let ``A3 FR0142: an Assert.Throws over AggregateException around a Wait is not c
     // awaited delegate of ThrowsAsync throws the inner exception and the
     // assertion would fail at runtime — every spelling of the type stays
     for head in
-        [ "Assert.Throws<AggregateException>"
-          "Assert.Throws<System.AggregateException>"
-          "Assert.Throws(typeof<AggregateException>, " ] do
+        [
+            "Assert.Throws<AggregateException>"
+            "Assert.Throws<System.AggregateException>"
+            "Assert.Throws(typeof<AggregateException>, "
+        ] do
         let call =
             if head.EndsWith ", " then
                 head + "fun () -> t.Wait())"
@@ -202,12 +204,14 @@ let ``B5 FR0049: the other blocking shapes off the spine stay advice too`` () =
     // WaitAll, GetResult, RunSynchronously, Thread.Sleep, Assert.Throws —
     // each nested in a local function or another binding's RHS
     let shapes =
-        [ "open System.Threading.Tasks\nlet f (a: Task) (b: Task) = task {\n    let helper () =\n        Task.WaitAll(a, b)\n        1\n    return helper ()\n}"
-          "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let v =\n        let x = t.GetAwaiter().GetResult()\n        x + 1\n    return v\n}"
-          "let comp = async { return 1 }\nlet f () = task {\n    let v =\n        let r = comp |> Async.RunSynchronously\n        r + 1\n    return v\n}"
-          "let f () = task {\n    let helper () =\n        System.Threading.Thread.Sleep 10\n        1\n    return helper ()\n}"
-          xunitScaffold
-          + "let f (t: Task<int>) = task {\n    let helper () =\n        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n        ex.Message\n    return helper ()\n}" ]
+        [
+            "open System.Threading.Tasks\nlet f (a: Task) (b: Task) = task {\n    let helper () =\n        Task.WaitAll(a, b)\n        1\n    return helper ()\n}"
+            "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let v =\n        let x = t.GetAwaiter().GetResult()\n        x + 1\n    return v\n}"
+            "let comp = async { return 1 }\nlet f () = task {\n    let v =\n        let r = comp |> Async.RunSynchronously\n        r + 1\n    return v\n}"
+            "let f () = task {\n    let helper () =\n        System.Threading.Thread.Sleep 10\n        1\n    return helper ()\n}"
+            xunitScaffold
+            + "let f (t: Task<int>) = task {\n    let helper () =\n        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n        ex.Message\n    return helper ()\n}"
+        ]
 
     for source in shapes do
         let s = singleSite source

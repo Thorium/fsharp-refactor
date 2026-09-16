@@ -310,108 +310,114 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
-                  match lou.Bindings with
-                  | [ SynBinding(
-                          headPat = SynPat.Named(ident = SynIdent(ident = name)); expr = ctor; trivia = bindingTrivia) ] when
-                      isSingleLine ctor.Range
-                      && hasParenthesisedArguments ctor
-                      && not (hasAnnotatedArgument ctor)
-                      ->
-                      // `rest` must exist: these are the statements of an
-                      // expression body, so folding away every one of them
-                      // would leave `let h = H(Id = 1L)` with nothing after
-                      // it, which does not compile
-                      let sets, rest = leadingSets name.idText lou.Body []
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
+                    match lou.Bindings with
+                    | [ SynBinding(
+                            headPat = SynPat.Named(ident = SynIdent(ident = name)); expr = ctor; trivia = bindingTrivia) ] when
+                        isSingleLine ctor.Range
+                        && hasParenthesisedArguments ctor
+                        && not (hasAnnotatedArgument ctor)
+                        ->
+                        // `rest` must exist: these are the statements of an
+                        // expression body, so folding away every one of them
+                        // would leave `let h = H(Id = 1L)` with nothing after
+                        // it, which does not compile
+                        let sets, rest = leadingSets name.idText lou.Body []
 
-                      let distinct =
-                          sets |> List.map (fun (p, _) -> p.idText) |> List.distinct |> List.length
+                        let distinct =
+                            sets |> List.map (fun (p, _) -> p.idText) |> List.distinct |> List.length
 
-                      if
-                          rest.IsSome
-                          && not sets.IsEmpty
-                          && distinct = sets.Length
-                          // the object cannot be mentioned in its own
-                          // construction arguments
-                          && sets
-                             |> List.forall (fun (_, rhs) ->
-                                 isSingleLine rhs.Range && not (mentions index name.idText rhs.Range))
-                          // the typed lookups go LAST: each costs an FCS symbol
-                          // resolution, and only a binding actually followed by
-                          // property sets can reach them. From the `when` clause
-                          // `isConstruction` charged that price for every
-                          // single-line `let x = f a` in the file.
-                          && isConstruction check source ctor
-                          && sets |> List.forall (fun (p, _) -> isSettableProperty check source p)
-                      then
-                          let last = sets |> List.last |> snd
+                        if
+                            rest.IsSome
+                            && not sets.IsEmpty
+                            && distinct = sets.Length
+                            // the object cannot be mentioned in its own
+                            // construction arguments
+                            && sets
+                               |> List.forall (fun (_, rhs) ->
+                                   isSingleLine rhs.Range && not (mentions index name.idText rhs.Range))
+                            // the typed lookups go LAST: each costs an FCS symbol
+                            // resolution, and only a binding actually followed by
+                            // property sets can reach them. From the `when` clause
+                            // `isConstruction` charged that price for every
+                            // single-line `let x = f a` in the file.
+                            && isConstruction check source ctor
+                            && sets |> List.forall (fun (p, _) -> isSettableProperty check source p)
+                        then
+                            let last = sets |> List.last |> snd
 
-                          let args = sets |> List.map (fun (p, rhs) -> $"{p.idText} = {valueText source rhs}")
+                            let args = sets |> List.map (fun (p, rhs) -> $"{p.idText} = {valueText source rhs}")
 
-                          // a greedy last argument — `T(fun _ -> false)` — would
-                          // swallow the named properties appended after it
-                          // (`fun _ -> false, Hosted = true` is a lambda returning
-                          // a tuple: the TypeProviders SDK's
-                          // TypeProviderConfig); it gets its own parentheses
-                          let ctorText =
-                              let lastArgument =
-                                  match ctor with
-                                  | SynExpr.New(expr = SynExpr.Paren(expr = inner))
-                                  | SynExpr.App(argExpr = SynExpr.Paren(expr = inner)) ->
-                                      match inner with
-                                      | SynExpr.Tuple(exprs = es) -> Some(List.last es)
-                                      | e -> Some e
-                                  | _ -> None
+                            // a greedy last argument — `T(fun _ -> false)` — would
+                            // swallow the named properties appended after it
+                            // (`fun _ -> false, Hosted = true` is a lambda returning
+                            // a tuple: the TypeProviders SDK's
+                            // TypeProviderConfig); it gets its own parentheses
+                            let ctorText =
+                                let lastArgument =
+                                    match ctor with
+                                    | SynExpr.New(expr = SynExpr.Paren(expr = inner))
+                                    | SynExpr.App(argExpr = SynExpr.Paren(expr = inner)) ->
+                                        match inner with
+                                        | SynExpr.Tuple(exprs = es) -> Some(List.last es)
+                                        | e -> Some e
+                                    | _ -> None
 
-                              let greedy (e: SynExpr) =
-                                  match e with
-                                  | SynExpr.Lambda _
-                                  | SynExpr.MatchLambda _
-                                  | SynExpr.Match _
-                                  | SynExpr.IfThenElse _
-                                  | SynExpr.TryWith _
-                                  | SynExpr.TryFinally _
-                                  | SynExpr.Sequential _
-                                  | SynExpr.LetOrUse _ -> true
-                                  | _ -> false
+                                let greedy (e: SynExpr) =
+                                    match e with
+                                    | SynExpr.Lambda _
+                                    | SynExpr.MatchLambda _
+                                    | SynExpr.Match _
+                                    | SynExpr.IfThenElse _
+                                    | SynExpr.TryWith _
+                                    | SynExpr.TryFinally _
+                                    | SynExpr.Sequential _
+                                    | SynExpr.LetOrUse _ -> true
+                                    | _ -> false
 
-                              match lastArgument with
-                              | Some e when greedy e ->
-                                  let before =
-                                      textOfRange
-                                          source
-                                          (Range.mkRange ctor.Range.FileName ctor.Range.Start e.Range.Start)
+                                match lastArgument with
+                                | Some e when greedy e ->
+                                    let before =
+                                        textOfRange
+                                            source
+                                            (Range.mkRange ctor.Range.FileName ctor.Range.Start e.Range.Start)
 
-                                  let after =
-                                      textOfRange source (Range.mkRange ctor.Range.FileName e.Range.End ctor.Range.End)
+                                    let after =
+                                        textOfRange
+                                            source
+                                            (Range.mkRange ctor.Range.FileName e.Range.End ctor.Range.End)
 
-                                  before + "(" + textOfRange source e.Range + ")" + after
-                              | _ -> textOfRange source ctor.Range
+                                    before + "(" + textOfRange source e.Range + ")" + after
+                                | _ -> textOfRange source ctor.Range
 
-                          // the wrapped layout starts on the binding's `=`
-                          // line and needs the `let` column; the region then
-                          // runs from just after the `=` (the space before
-                          // the call goes with it)
-                          let letColumn = expr.Range.StartColumn
+                            // the wrapped layout starts on the binding's `=`
+                            // line and needs the `let` column; the region then
+                            // runs from just after the `=` (the space before
+                            // the call goes with it)
+                            let letColumn = expr.Range.StartColumn
 
-                          let ctorRegion = Range.mkRange ctor.Range.FileName ctor.Range.Start last.Range.End
+                            let ctorRegion = Range.mkRange ctor.Range.FileName ctor.Range.Start last.Range.End
 
-                          let region, replacement =
-                              match
-                                  withNamedArgs ctorText ctor.Range.StartColumn letColumn args,
-                                  bindingTrivia.EqualsRange
-                              with
-                              | OneLine text, _ -> ctorRegion, text
-                              | Wrapped text, Some equals ->
-                                  Range.mkRange ctor.Range.FileName equals.End last.Range.End, text
-                              // no `=` to hang from (never for a let; kept total)
-                              | Wrapped text, None -> ctorRegion, text.TrimStart()
+                            let region, replacement =
+                                match
+                                    withNamedArgs ctorText ctor.Range.StartColumn letColumn args,
+                                    bindingTrivia.EqualsRange
+                                with
+                                | OneLine text, _ -> ctorRegion, text
+                                | Wrapped text, Some equals ->
+                                    Range.mkRange ctor.Range.FileName equals.End last.Range.End, text
+                                // no `=` to hang from (never for a let; kept total)
+                                | Wrapped text, None -> ctorRegion, text.TrimStart()
 
-                          { Range = region
-                            OriginalText = textOfRange source region
-                            ReplacementText = replacement
-                            Count = sets.Length }
-                  | _ -> ()
-              | _ -> () ]
+                            {
+                                Range = region
+                                OriginalText = textOfRange source region
+                                ReplacementText = replacement
+                                Count = sets.Length
+                            }
+                    | _ -> ()
+                | _ -> ()
+        ]

@@ -30,7 +30,8 @@ let private parseAndCheckWith (extraOptions: string list) (source: string) =
 
     let options =
         { options with
-            OtherOptions = Array.append options.OtherOptions (Array.ofList extraOptions) }
+            OtherOptions = Array.append options.OtherOptions (Array.ofList extraOptions)
+        }
 
     let parseResults, answer =
         checker.ParseAndCheckFileInProject("Test.fsx", source.GetHashCode(), sourceText, options)
@@ -200,14 +201,16 @@ let private scriptContext (source: string) : CliContext =
 
     Assert.Empty(errorsOf checkResults)
 
-    { FileName = fileName
-      SourceText = sourceText
-      ParseFileResults = parseResults
-      CheckFileResults = checkResults
-      TypedTree = checkResults.ImplementationFile
-      CheckProjectResults = projectResults
-      ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
-      AnalyzerIgnoreRanges = Map.empty }
+    {
+        FileName = fileName
+        SourceText = sourceText
+        ParseFileResults = parseResults
+        CheckFileResults = checkResults
+        TypedTree = checkResults.ImplementationFile
+        CheckProjectResults = projectResults
+        ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
+        AnalyzerIgnoreRanges = Map.empty
+    }
 
 let private fixTexts (messages: Message list) =
     messages |> List.collect (fun m -> m.Fixes |> List.map (fun f -> f.ToText))

@@ -30,12 +30,14 @@ let private raisingFunctions =
 
 let private reservedExceptions =
     set
-        [ "OutOfMemoryException"
-          "StackOverflowException"
-          "IndexOutOfRangeException"
-          "NullReferenceException"
-          "AccessViolationException"
-          "ExecutionEngineException" ]
+        [
+            "OutOfMemoryException"
+            "StackOverflowException"
+            "IndexOutOfRangeException"
+            "NullReferenceException"
+            "AccessViolationException"
+            "ExecutionEngineException"
+        ]
 
 /// The constructed exception type's name in `raise (<Type>(...))`.
 [<return: Struct>]

@@ -188,64 +188,68 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
             ((fromDecls @ fromExprs) |> List.map (fun (n, r) -> n, r, false)) @ fromMembers
 
-        [ for name, bodyRange, allowDotted in recBindings do
-              // seq bodies belonging to this binding — skip the probe entirely
-              // when there are none, which is nearly every binding
-              let ownSeqs =
-                  seqBodies
-                  |> Array.filter (fun (_, seqRange, _) -> Range.rangeContainsRange bodyRange seqRange)
+        [
+            for name, bodyRange, allowDotted in recBindings do
+                // seq bodies belonging to this binding — skip the probe entirely
+                // when there are none, which is nearly every binding
+                let ownSeqs =
+                    seqBodies
+                    |> Array.filter (fun (_, seqRange, _) -> Range.rangeContainsRange bodyRange seqRange)
 
-              // only a self-call whose RESULT is enumerated nests an
-              // enumerator: the target of a `yield!` (directly, or through
-              // Seq.collect and friends) or the source of a `for ... in`.
-              // `yield innerText' elem` calls itself for a plain value
-              let enumerated =
-                  index.Exprs
-                  |> Array.choose (fun (_, e) ->
-                      match e with
-                      | SynExpr.YieldOrReturnFrom(expr = target) when
-                          ownSeqs
-                          |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s target.Range)
-                          ->
-                          Some target.Range
-                      | SynExpr.ForEach(enumExpr = src) when
-                          ownSeqs |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s src.Range)
-                          ->
-                          Some src.Range
-                      | _ -> None)
+                // only a self-call whose RESULT is enumerated nests an
+                // enumerator: the target of a `yield!` (directly, or through
+                // Seq.collect and friends) or the source of a `for ... in`.
+                // `yield innerText' elem` calls itself for a plain value
+                let enumerated =
+                    index.Exprs
+                    |> Array.choose (fun (_, e) ->
+                        match e with
+                        | SynExpr.YieldOrReturnFrom(expr = target) when
+                            ownSeqs
+                            |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s target.Range)
+                            ->
+                            Some target.Range
+                        | SynExpr.ForEach(enumExpr = src) when
+                            ownSeqs |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s src.Range)
+                            ->
+                            Some src.Range
+                        | _ -> None)
 
-              if not (Array.isEmpty ownSeqs) then
-                  // a self-call inside a tail-position `yield!` is not a
-                  // nested enumerator: the compiler turns it into a jump
-                  // (`yield! readLines (n + 1)` as the body's last step is a
-                  // loop), so only re-entries elsewhere — under a `for`, a
-                  // `while`, a `try`, or before further yields — count
-                  let inOwnSeq (r: range) =
-                      ownSeqs
-                      |> Array.tryPick (fun (builder, seqRange, tails) ->
-                          if
-                              Range.rangeContainsRange seqRange r
-                              && enumerated |> Array.exists (fun en -> Range.rangeContainsRange en r)
-                              && not (tails |> List.exists (fun t -> Range.equals t r))
-                          then
-                              Some(r, builder)
-                          else
-                              None)
+                if not (Array.isEmpty ownSeqs) then
+                    // a self-call inside a tail-position `yield!` is not a
+                    // nested enumerator: the compiler turns it into a jump
+                    // (`yield! readLines (n + 1)` as the body's last step is a
+                    // loop), so only re-entries elsewhere — under a `for`, a
+                    // `while`, a `try`, or before further yields — count
+                    let inOwnSeq (r: range) =
+                        ownSeqs
+                        |> Array.tryPick (fun (builder, seqRange, tails) ->
+                            if
+                                Range.rangeContainsRange seqRange r
+                                && enumerated |> Array.exists (fun en -> Range.rangeContainsRange en r)
+                                && not (tails |> List.exists (fun t -> Range.equals t r))
+                            then
+                                Some(r, builder)
+                            else
+                                None)
 
-                  // the first self-reference inside any of them, via the
-                  // occurrence table. A member's re-entry is dotted
-                  // (`c.Descendants`); matching the last ident by name accepts
-                  // some imprecision, fair for an advice-only rule
-                  let selfCall =
-                      match identOccurrences.TryGetValue name with
-                      | true, occurrences ->
-                          occurrences
-                          |> Seq.tryPick (fun (r, dotted) -> if not dotted || allowDotted then inOwnSeq r else None)
-                      | false, _ -> None
+                    // the first self-reference inside any of them, via the
+                    // occurrence table. A member's re-entry is dotted
+                    // (`c.Descendants`); matching the last ident by name accepts
+                    // some imprecision, fair for an advice-only rule
+                    let selfCall =
+                        match identOccurrences.TryGetValue name with
+                        | true, occurrences ->
+                            occurrences
+                            |> Seq.tryPick (fun (r, dotted) -> if not dotted || allowDotted then inOwnSeq r else None)
+                        | false, _ -> None
 
-                  match selfCall with
-                  | Some(callRange, builder) ->
-                      { Range = callRange
-                        FunctionName = name
-                        Builder = builder }
-                  | None -> () ]
+                    match selfCall with
+                    | Some(callRange, builder) ->
+                        {
+                            Range = callRange
+                            FunctionName = name
+                            Builder = builder
+                        }
+                    | None -> ()
+        ]

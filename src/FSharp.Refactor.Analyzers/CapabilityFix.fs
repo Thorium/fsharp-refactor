@@ -84,22 +84,25 @@ let private assetsMinFSharpCoreMajor (projectFile: string) : int voption =
                     match doc.RootElement.TryGetProperty "targets" with
                     | true, targets when targets.ValueKind = System.Text.Json.JsonValueKind.Object ->
                         let versions =
-                            [ for target in targets.EnumerateObject() do
-                                  if target.Value.ValueKind = System.Text.Json.JsonValueKind.Object then
-                                      for package in target.Value.EnumerateObject() do
-                                          if
-                                              package.Name.StartsWith(
-                                                  "FSharp.Core/",
-                                                  StringComparison.OrdinalIgnoreCase
-                                              )
-                                          then
-                                              // `9.0.300-beta.1`: the prerelease tag is no part of the version
-                                              let text =
-                                                  package.Name.Substring("FSharp.Core/".Length).Split '-' |> Array.head
+                            [
+                                for target in targets.EnumerateObject() do
+                                    if target.Value.ValueKind = System.Text.Json.JsonValueKind.Object then
+                                        for package in target.Value.EnumerateObject() do
+                                            if
+                                                package.Name.StartsWith(
+                                                    "FSharp.Core/",
+                                                    StringComparison.OrdinalIgnoreCase
+                                                )
+                                            then
+                                                // `9.0.300-beta.1`: the prerelease tag is no part of the version
+                                                let text =
+                                                    package.Name.Substring("FSharp.Core/".Length).Split '-'
+                                                    |> Array.head
 
-                                              match Version.TryParse text with
-                                              | true, version -> version
-                                              | _ -> () ]
+                                                match Version.TryParse text with
+                                                | true, version -> version
+                                                | _ -> ()
+                            ]
 
                         match versions with
                         | [] -> ValueNone
@@ -221,9 +224,11 @@ let private alreadyModernGuarded (guardConstant: string) (source: ISourceText) (
 /// conditionals. `r` is the sub-range the plain fix would replace.
 let make (source: ISourceText) (r: range) (fromText: string) (toText: string) : Fix =
     let plain =
-        { FromRange = r
-          FromText = fromText
-          ToText = toText }
+        {
+            FromRange = r
+            FromText = fromText
+            ToText = toText
+        }
 
     match dualGuardConstant () with
     | ValueNone -> plain
@@ -251,6 +256,8 @@ let make (source: ISourceText) (r: range) (fromText: string) (toText: string) : 
             let lineRange =
                 Range.mkRange r.FileName (Position.mkPos r.StartLine 0) (Position.mkPos r.StartLine line.Length)
 
-            { FromRange = lineRange
-              FromText = line
-              ToText = $"#if {guard}\n{fixedLine}\n#else\n{line}\n#endif" }
+            {
+                FromRange = lineRange
+                FromText = line
+                ToText = $"#if {guard}\n{fixedLine}\n#else\n{line}\n#endif"
+            }

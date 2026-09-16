@@ -53,17 +53,21 @@ type WrapperConfig =
     }
 
 let optionConfig =
-    { SomeName = "Some"
-      NoneName = "None"
-      ModuleName = "Option"
-      // anchored with '<' so a hypothetical Option2 type cannot prefix-match
-      CoreFullNamePrefix = "Microsoft.FSharp.Core.Option<" }
+    {
+        SomeName = "Some"
+        NoneName = "None"
+        ModuleName = "Option"
+        // anchored with '<' so a hypothetical Option2 type cannot prefix-match
+        CoreFullNamePrefix = "Microsoft.FSharp.Core.Option<"
+    }
 
 let valueOptionConfig =
-    { SomeName = "ValueSome"
-      NoneName = "ValueNone"
-      ModuleName = "ValueOption"
-      CoreFullNamePrefix = "Microsoft.FSharp.Core.ValueOption<" }
+    {
+        SomeName = "ValueSome"
+        NoneName = "ValueNone"
+        ModuleName = "ValueOption"
+        CoreFullNamePrefix = "Microsoft.FSharp.Core.ValueOption<"
+    }
 
 type Suggestion =
     {
@@ -307,15 +311,18 @@ let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source
                                     replacement
 
                             candidates.Add
-                                { MatchRange = m
-                                  SomeIdent = someIdent
-                                  NoneIdent = noneIdent
-                                  Replacement = replacement
-                                  Target = target
-                                  Scrutinee = scrutinee }
+                                {
+                                    MatchRange = m
+                                    SomeIdent = someIdent
+                                    NoneIdent = noneIdent
+                                    Replacement = replacement
+                                    Target = target
+                                    Scrutinee = scrutinee
+                                }
                         | None -> ()
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq candidates
@@ -560,11 +567,13 @@ let declarationEvidence (parseTree: ParsedInput) : DeclarationEvidence =
             ofMembers ms
         | _ -> ()
 
-    { Annotated = Set.ofSeq annotated
-      ValueBindings = values |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
-      SelfIdents = Set.ofSeq selfIdents
-      TopLevel = List.ofSeq topLevel
-      RecursiveModules = List.ofSeq recursiveModules }
+    {
+        Annotated = Set.ofSeq annotated
+        ValueBindings = values |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
+        SelfIdents = Set.ofSeq selfIdents
+        TopLevel = List.ofSeq topLevel
+        RecursiveModules = List.ofSeq recursiveModules
+    }
 
 /// The symbol an identifier resolves to, given the dotted path leading up
 /// to and including it.
@@ -705,10 +714,92 @@ let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText)
                 else
                     c.Replacement
 
-            { Range = c.MatchRange
-              OriginalText = textOfRange source c.MatchRange
-              ReplacementText = replacement
-              Target = c.Target })
+            {
+                Range = c.MatchRange
+                OriginalText = textOfRange source c.MatchRange
+                ReplacementText = replacement
+                Target = c.Target
+            })
+
+/// A byref, or a byref-like struct (`Span<'T>`, `ReadOnlySpan<'T>`, a
+/// `[<IsByRefLike>]` of the project's own): a value no closure may capture
+/// and no computation expression may hold across its binds.
+let isByRefLike (t: FSharpType) =
+    try
+        let t = stripAbbreviations t
+
+        t.HasTypeDefinition
+        && (t.TypeDefinition.IsByRef
+            || t.TypeDefinition.Attributes
+               |> Seq.exists (fun a -> a.AttributeType.DisplayName = "IsByRefLikeAttribute"))
+    with FcsSymbolFailure ->
+        true
+
+/// Does the stretch `bodyRange` read a byref or byref-like value declared
+/// OUTSIDE it? A rewrite that moves that stretch into a lambda, a local
+/// function or a task { } block would capture the value, which the
+/// compiler refuses (FS0406 / FS0412); one declared inside moves with the
+/// stretch and is fine. `capturesMutableLocal` reads the syntax and sees
+/// only a `byref`-annotated parameter; this asks the typed tree about every
+/// name the stretch reads, since a `let s = span.Slice(...)` carries no
+/// annotation at all. A name FCS cannot type reads as captured: the
+/// rewrite stands down rather than guess.
+/// Every use in the file of a byref or byref-like value, with where that
+/// value was declared — collected ONCE per typed file, because the rules
+/// that ask (FR0142 for every test body, FR0049, FR0029, FR0018, FR0010,
+/// FR0034) asked per identifier of every candidate stretch, and on
+/// FunStripe's 1800-line test file that was thousands of symbol lookups:
+/// testReturnsTask went from 3 s to 13 s on the file. A name FCS cannot
+/// type is recorded at the use with no declaration, which every caller
+/// reads as byref-like: the rewrite stands down rather than guess.
+let private byRefLikeUsesCache =
+    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, (range * range option)[]>()
+
+let private byRefLikeUses (check: FSharpCheckFileResults) =
+    byRefLikeUsesCache.GetValue(
+        check,
+        fun c ->
+            try
+                c.GetAllUsesOfAllSymbolsInFile()
+                |> Seq.choose (fun u ->
+                    match u.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as v ->
+                        try
+                            if isByRefLike v.FullType then
+                                Some(u.Range, Some v.DeclarationLocation)
+                            else
+                                None
+                        with FcsSymbolFailure ->
+                            Some(u.Range, None)
+                    | _ -> None)
+                |> Array.ofSeq
+            with _ -> // a file whose symbols cannot be enumerated: nothing is known to be byref-like, and every rule keeps its syntactic guards; fsharpanalyzer: ignore-line FR0055
+                [||]
+    )
+
+let private readsByRefLikeWhere
+    (declaredOutsideOnly: bool)
+    (check: FSharpCheckFileResults)
+    (_index: AstIndex.Index)
+    (_source: ISourceText)
+    (bodyRange: range)
+    : bool =
+    byRefLikeUses check
+    |> Array.exists (fun (useRange, declaration) ->
+        Range.rangeContainsRange bodyRange useRange
+        && (match declaration with
+            | None -> true
+            | Some declared -> not (declaredOutsideOnly && Range.rangeContainsRange bodyRange declared)))
+
+let capturesByRefLike (check: FSharpCheckFileResults) (index: AstIndex.Index) (source: ISourceText) (bodyRange: range) =
+    readsByRefLikeWhere true check index source bodyRange
+
+/// Does the stretch read ANY byref or byref-like value, its own included?
+/// A stretch that becomes a `task { }` or `async { }` body keeps its
+/// locals as state-machine fields, and a Span cannot be one of those
+/// wherever it was declared.
+let readsByRefLike (check: FSharpCheckFileResults) (index: AstIndex.Index) (source: ISourceText) (bodyRange: range) =
+    readsByRefLikeWhere false check index source bodyRange
 
 /// Find Option and ValueOption matches that can be rewritten.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =

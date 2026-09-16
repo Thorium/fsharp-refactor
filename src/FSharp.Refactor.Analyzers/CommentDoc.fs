@@ -122,11 +122,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             (Position.mkPos anchor.StartLine 0)
 
                     Some
-                        { Range = cr
-                          What = what
-                          Edits =
-                            [ deleteRange, textOfRange source deleteRange, ""
-                              insertAt, "", $"{indent}/{ctext}\n" ] }
+                        {
+                            Range = cr
+                            What = what
+                            Edits =
+                                [
+                                    deleteRange, textOfRange source deleteRange, ""
+                                    insertAt, "", $"{indent}/{ctext}\n"
+                                ]
+                        }
                 else
                     None)
         else
@@ -138,44 +142,46 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         | SynPat.LongIdent(accessibility = acc) -> acc
         | _ -> None
 
-    [ if not comments.IsEmpty then
-          for path, decl in index.Decls do
-              match decl with
-              // attributes = []: the insert lands at the keyword line, and a
-              // /// between an attribute line and its declaration draws the
-              // FS3520 misplaced-doc warning
-              | SynModuleDecl.Let(
-                  bindings = [ SynBinding(
-                                   xmlDoc = xd; attributes = []; accessibility = acc; headPat = pat; trivia = btrivia) ]) when
-                  xd.IsEmpty && not (Visibility.isConfined path [ acc; valueAccess pat ])
-                  ->
-                  // the comment sits at the end of the HEADER line — the
-                  // line the `let` keyword starts
-                  match promote "binding" btrivia.LeadingKeyword.Range btrivia.LeadingKeyword.Range.StartLine with
-                  | Some s -> s
-                  | None -> ()
-              | SynModuleDecl.Types(typeDefns = defns) ->
-                  for SynTypeDefn(typeInfo = info; typeRepr = repr; trivia = ttrivia) in defns do
-                      let (SynComponentInfo(xmlDoc = xd; attributes = tattrs; accessibility = acc)) = info
+    [
+        if not comments.IsEmpty then
+            for path, decl in index.Decls do
+                match decl with
+                // attributes = []: the insert lands at the keyword line, and a
+                // /// between an attribute line and its declaration draws the
+                // FS3520 misplaced-doc warning
+                | SynModuleDecl.Let(
+                    bindings = [ SynBinding(
+                                     xmlDoc = xd; attributes = []; accessibility = acc; headPat = pat; trivia = btrivia) ]) when
+                    xd.IsEmpty && not (Visibility.isConfined path [ acc; valueAccess pat ])
+                    ->
+                    // the comment sits at the end of the HEADER line — the
+                    // line the `let` keyword starts
+                    match promote "binding" btrivia.LeadingKeyword.Range btrivia.LeadingKeyword.Range.StartLine with
+                    | Some s -> s
+                    | None -> ()
+                | SynModuleDecl.Types(typeDefns = defns) ->
+                    for SynTypeDefn(typeInfo = info; typeRepr = repr; trivia = ttrivia) in defns do
+                        let (SynComponentInfo(xmlDoc = xd; attributes = tattrs; accessibility = acc)) = info
 
-                      match ttrivia.LeadingKeyword with
-                      | SynTypeDefnLeadingKeyword.Type kwRange when
-                          xd.IsEmpty && tattrs.IsEmpty && not (Visibility.isConfined path [ acc ])
-                          ->
-                          match promote "type" kwRange kwRange.StartLine with
-                          | Some s -> s
-                          | None -> ()
-                      | _ -> ()
+                        match ttrivia.LeadingKeyword with
+                        | SynTypeDefnLeadingKeyword.Type kwRange when
+                            xd.IsEmpty && tattrs.IsEmpty && not (Visibility.isConfined path [ acc ])
+                            ->
+                            match promote "type" kwRange kwRange.StartLine with
+                            | Some s -> s
+                            | None -> ()
+                        | _ -> ()
 
-                      // union cases carry their own doc position
-                      match repr with
-                      | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Union(unionCases = cases)) when
-                          not (Visibility.isConfined path [ acc ])
-                          ->
-                          for SynUnionCase(xmlDoc = cxd; attributes = cattrs) as case in cases do
-                              if cxd.IsEmpty && cattrs.IsEmpty then
-                                  match promote "union case" case.Range case.Range.EndLine with
-                                  | Some s -> s
-                                  | None -> ()
-                      | _ -> ()
-              | _ -> () ]
+                        // union cases carry their own doc position
+                        match repr with
+                        | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Union(unionCases = cases)) when
+                            not (Visibility.isConfined path [ acc ])
+                            ->
+                            for SynUnionCase(xmlDoc = cxd; attributes = cattrs) as case in cases do
+                                if cxd.IsEmpty && cattrs.IsEmpty then
+                                    match promote "union case" case.Range case.Range.EndLine with
+                                    | Some s -> s
+                                    | None -> ()
+                        | _ -> ()
+                | _ -> ()
+    ]

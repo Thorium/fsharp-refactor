@@ -20,9 +20,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// A NaN constant: (module "Double"/"Single", core-gate ident when the bare
 /// `nan` operator was used).
@@ -47,35 +49,39 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
-                  (op.idText = "op_Equality" || op.idText = "op_Inequality")
-                  && isSingleLine expr.Range
-                  ->
-                  let sides =
-                      match stripParens lhs, stripParens rhs with
-                      | NaNValue(m, gate), other -> Some(m, gate, other)
-                      | other, NaNValue(m, gate) -> Some(m, gate, other)
-                      | _ -> None
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
+                    (op.idText = "op_Equality" || op.idText = "op_Inequality")
+                    && isSingleLine expr.Range
+                    ->
+                    let sides =
+                        match stripParens lhs, stripParens rhs with
+                        | NaNValue(m, gate), other -> Some(m, gate, other)
+                        | other, NaNValue(m, gate) -> Some(m, gate, other)
+                        | _ -> None
 
-                  match sides with
-                  | Some(moduleName, gateIdent, other) ->
-                      let otherIsNaN =
-                          match stripParens other with
-                          | NaNValue _ -> true
-                          | _ -> false
+                    match sides with
+                    | Some(moduleName, gateIdent, other) ->
+                        let otherIsNaN =
+                            match stripParens other with
+                            | NaNValue _ -> true
+                            | _ -> false
 
-                      let gated =
-                          gateIdent |> Option.forall (OptionModule.resolvesToCoreOperator check source)
+                        let gated =
+                            gateIdent |> Option.forall (OptionModule.resolvesToCoreOperator check source)
 
-                      if not otherIsNaN && gated && OptionModule.resolvesToCoreOperator check source op then
-                          let test = $"System.{moduleName}.IsNaN {atomicText source (stripParens other)}"
+                        if not otherIsNaN && gated && OptionModule.resolvesToCoreOperator check source op then
+                            let test = $"System.{moduleName}.IsNaN {atomicText source (stripParens other)}"
 
-                          let replacement = if op.idText = "op_Equality" then test else $"not ({test})"
+                            let replacement = if op.idText = "op_Equality" then test else $"not ({test})"
 
-                          { Range = expr.Range
-                            OriginalText = textOfRange source expr.Range
-                            ReplacementText = replacement }
-                  | None -> ()
-              | _ -> () ]
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                ReplacementText = replacement
+                            }
+                    | None -> ()
+                | _ -> ()
+        ]

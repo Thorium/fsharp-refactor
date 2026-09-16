@@ -31,10 +31,12 @@ type Kind =
     | Duplicate
 
 type Suggestion =
-    { Range: range
-      Kind: Kind
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        Kind: Kind
+        OriginalText: string
+        ReplacementText: string
+    }
 
 let private isBoolOp (op: Ident) =
     op.idText = "op_BooleanAnd" || op.idText = "op_BooleanOr"
@@ -124,35 +126,39 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             | _ -> false)
         && not (pinsBool path)
 
-    [ for path, expr in index.Exprs do
-          match expr with
-          | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
-              isBoolOp op && isSingleLine expr.Range && not (spansDirective source expr.Range)
-              ->
-              let isAnd = op.idText = "op_BooleanAnd"
+    [
+        for path, expr in index.Exprs do
+            match expr with
+            | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
+                isBoolOp op && isSingleLine expr.Range && not (spansDirective source expr.Range)
+                ->
+                let isAnd = op.idText = "op_BooleanAnd"
 
-              let keep (kept: SynExpr) kind =
-                  { Range = expr.Range
-                    Kind = kind
-                    OriginalText = textOfRange source expr.Range
-                    ReplacementText = textOfRange source kept.Range }
+                let keep (kept: SynExpr) kind =
+                    {
+                        Range = expr.Range
+                        Kind = kind
+                        OriginalText = textOfRange source expr.Range
+                        ReplacementText = textOfRange source kept.Range
+                    }
 
-              match lhs, rhs with
-              // the literal operand contributes nothing - unless the other
-              // operand is a call that owes it its type
-              | BoolConst true, kept when isAnd && anchoredByLiteral path kept -> ()
-              | kept, BoolConst true when isAnd && anchoredByLiteral path kept -> ()
-              | BoolConst false, kept when not isAnd && anchoredByLiteral path kept -> ()
-              | kept, BoolConst false when not isAnd && anchoredByLiteral path kept -> ()
-              | BoolConst true, _ when isAnd -> keep rhs Identity
-              | _, BoolConst true when isAnd -> keep lhs Identity
-              | BoolConst false, _ when not isAnd -> keep rhs Identity
-              | _, BoolConst false when not isAnd -> keep lhs Identity
-              // `a || a` / `a && a` — identical, effect-free operands only
-              | _ ->
-                  if
-                      textOfRange source lhs.Range = textOfRange source rhs.Range
-                      && duplicateSafe index lhs.Range
-                  then
-                      keep lhs Duplicate
-          | _ -> () ]
+                match lhs, rhs with
+                // the literal operand contributes nothing - unless the other
+                // operand is a call that owes it its type
+                | BoolConst true, kept when isAnd && anchoredByLiteral path kept -> ()
+                | kept, BoolConst true when isAnd && anchoredByLiteral path kept -> ()
+                | BoolConst false, kept when not isAnd && anchoredByLiteral path kept -> ()
+                | kept, BoolConst false when not isAnd && anchoredByLiteral path kept -> ()
+                | BoolConst true, _ when isAnd -> keep rhs Identity
+                | _, BoolConst true when isAnd -> keep lhs Identity
+                | BoolConst false, _ when not isAnd -> keep rhs Identity
+                | _, BoolConst false when not isAnd -> keep lhs Identity
+                // `a || a` / `a && a` — identical, effect-free operands only
+                | _ ->
+                    if
+                        textOfRange source lhs.Range = textOfRange source rhs.Range
+                        && duplicateSafe index lhs.Range
+                    then
+                        keep lhs Duplicate
+            | _ -> ()
+    ]

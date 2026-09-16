@@ -50,9 +50,11 @@ type Suggestion =
 
 /// A module-level `let private f p1 p2 = ...` definition.
 type private Candidate =
-    { Ident: Ident
-      Param1: SynPat
-      Param2: SynPat }
+    {
+        Ident: Ident
+        Param1: SynPat
+        Param2: SynPat
+    }
 
 /// Parameter shapes we can swap verbatim: `a`, `_`, `(a: int)`.
 let private isSimpleParam (p: SynPat) =
@@ -84,11 +86,14 @@ let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) 
                             && scopeMatches path accessibility
                             ->
                             candidates.Add
-                                { Ident = ident
-                                  Param1 = p1
-                                  Param2 = p2 }
+                                {
+                                    Ident = ident
+                                    Param1 = p1
+                                    Param2 = p2
+                                }
                         | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq candidates
@@ -169,7 +174,8 @@ let private collectApplications (parseTree: ParsedInput) =
                         ->
                         lambdas.[key funcRange] <- (expr.Range, funcRange, captured)
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     apps, lambdas
@@ -227,9 +233,11 @@ let private buildSuggestion
                     // qualification the call site wrote (`LibA.f k`)
                     Some(
                         true,
-                        [ lambdaRange,
-                          textOfRange useSource lambdaRange,
-                          textOfRange useSource funcRange + " " + argumentText useSource captured ]
+                        [
+                            lambdaRange,
+                            textOfRange useSource lambdaRange,
+                            textOfRange useSource funcRange + " " + argumentText useSource captured
+                        ]
                     )
                 | _ ->
                     match apps.TryGetValue useKey with
@@ -268,8 +276,10 @@ let private buildSuggestion
         let touching = candidate.Ident.idRange.End = candidate.Param1.Range.Start
 
         let defEdits =
-            [ candidate.Param1.Range, p1Text, (if touching then " " else "") + p2Text
-              candidate.Param2.Range, p2Text, p1Text ]
+            [
+                candidate.Param1.Range, p1Text, (if touching then " " else "") + p2Text
+                candidate.Param2.Range, p2Text, p1Text
+            ]
 
         let edits =
             defEdits @ (siteResults |> Array.toList |> List.collect (Option.get >> snd))
@@ -280,9 +290,11 @@ let private buildSuggestion
             None
         else
             Some
-                { FunctionName = candidate.Ident.idText
-                  DefRange = Range.unionRanges candidate.Param1.Range candidate.Param2.Range
-                  Edits = edits }
+                {
+                    FunctionName = candidate.Ident.idText
+                    DefRange = Range.unionRanges candidate.Param1.Range candidate.Param2.Range
+                    Edits = edits
+                }
 
 /// Are the two parameters of DIFFERENT concrete types?
 ///

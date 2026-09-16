@@ -32,9 +32,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// `recv.Add arg` — the Add identifier, the receiver's text range end, and
 /// the argument.
@@ -81,77 +83,81 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.ForEach(pat = pat; enumExpr = enumExpr; bodyExpr = body) when isSingleLine enumExpr.Range ->
-                  let body =
-                      match body with
-                      | SynExpr.Do(expr = inner) -> inner
-                      | other -> other
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.ForEach(pat = pat; enumExpr = enumExpr; bodyExpr = body) when isSingleLine enumExpr.Range ->
+                    let body =
+                        match body with
+                        | SynExpr.Do(expr = inner) -> inner
+                        | other -> other
 
-                  match body with
-                  | AddCall(addIdent, receiverRange, arg) when
-                      isSingleLine arg.Range
-                      && resolvesToListAdd check source addIdent
-                      // the RECEIVER must be the same list on every
-                      // iteration: `columns[tile.Position.X].Add tile` picks
-                      // a list PER element, and `columns[tile.Position.X]
-                      // .AddRange tiles` leaves `tile` undefined (Nu's
-                      // Twenty 48 Gameplay)
-                      && (let receiver = textOfRange source receiverRange
+                    match body with
+                    | AddCall(addIdent, receiverRange, arg) when
+                        isSingleLine arg.Range
+                        && resolvesToListAdd check source addIdent
+                        // the RECEIVER must be the same list on every
+                        // iteration: `columns[tile.Position.X].Add tile` picks
+                        // a list PER element, and `columns[tile.Position.X]
+                        // .AddRange tiles` leaves `tile` undefined (Nu's
+                        // Twenty 48 Gameplay)
+                        && (let receiver = textOfRange source receiverRange
 
-                          patNames pat
-                          |> List.forall (fun name ->
-                              not (
-                                  System.Text.RegularExpressions.Regex.IsMatch(
-                                      receiver,
-                                      $@"\b{System.Text.RegularExpressions.Regex.Escape name}\b"
-                                  )
-                              )))
-                      ->
-                      let receiverText = textOfRange source receiverRange
-                      let element = stripParens arg
+                            patNames pat
+                            |> List.forall (fun name ->
+                                not (
+                                    System.Text.RegularExpressions.Regex.IsMatch(
+                                        receiver,
+                                        $@"\b{System.Text.RegularExpressions.Regex.Escape name}\b"
+                                    )
+                                )))
+                        ->
+                        let receiverText = textOfRange source receiverRange
+                        let element = stripParens arg
 
-                      // A RANGE source needs its own spelling, and the choice
-                      // is measured, not cosmetic:
-                      //   `xs.AddRange (a .. b)` does not even parse — F#
-                      //   reads a parenthesised range after a member as
-                      //   INDEXER syntax (FS0751);
-                      //   `seq { a .. b }` parses but is 4-6x SLOWER than the
-                      //   loop it replaces (a seq CE is not ICollection, so
-                      //   AddRange enumerates item by item);
-                      //   `[| a .. b |]` IS ICollection, so AddRange sizes
-                      //   once and copies — 1.7x faster than the loop, and
-                      //   allocating less than its growth-doubling reallocs.
-                      let rangeSource =
-                          match stripParens enumExpr with
-                          | SynExpr.IndexRange _ as range -> Some(textOfRange source range.Range)
-                          | _ -> None
+                        // A RANGE source needs its own spelling, and the choice
+                        // is measured, not cosmetic:
+                        //   `xs.AddRange (a .. b)` does not even parse — F#
+                        //   reads a parenthesised range after a member as
+                        //   INDEXER syntax (FS0751);
+                        //   `seq { a .. b }` parses but is 4-6x SLOWER than the
+                        //   loop it replaces (a seq CE is not ICollection, so
+                        //   AddRange enumerates item by item);
+                        //   `[| a .. b |]` IS ICollection, so AddRange sizes
+                        //   once and copies — 1.7x faster than the loop, and
+                        //   allocating less than its growth-doubling reallocs.
+                        let rangeSource =
+                            match stripParens enumExpr with
+                            | SynExpr.IndexRange _ as range -> Some(textOfRange source range.Range)
+                            | _ -> None
 
-                      let replacement =
-                          match element, pat with
-                          | SynExpr.Ident v, SynPat.Named(ident = SynIdent(ident = loopVar)) when
-                              v.idText = loopVar.idText
-                              ->
-                              match rangeSource with
-                              | Some range -> Some $"{receiverText}.AddRange [| {range} |]"
-                              // argumentText parenthesises a non-atomic
-                              // source exactly once (`acc.AddRange (List.rev
-                              // xs)`) and never wraps one that is already
-                              // parenthesised
-                              | None -> Some(receiverText + ".AddRange " + argumentText source enumExpr)
-                          // a projected body stays a loop: the Seq.map
-                          // spelling measured no faster than the loop over
-                          // a range (3-8x slower) and no faster elsewhere
-                          // (suave's `acc.Add(f())` shape)
-                          | _ -> None
+                        let replacement =
+                            match element, pat with
+                            | SynExpr.Ident v, SynPat.Named(ident = SynIdent(ident = loopVar)) when
+                                v.idText = loopVar.idText
+                                ->
+                                match rangeSource with
+                                | Some range -> Some $"{receiverText}.AddRange [| {range} |]"
+                                // argumentText parenthesises a non-atomic
+                                // source exactly once (`acc.AddRange (List.rev
+                                // xs)`) and never wraps one that is already
+                                // parenthesised
+                                | None -> Some(receiverText + ".AddRange " + argumentText source enumExpr)
+                            // a projected body stays a loop: the Seq.map
+                            // spelling measured no faster than the loop over
+                            // a range (3-8x slower) and no faster elsewhere
+                            // (suave's `acc.Add(f())` shape)
+                            | _ -> None
 
-                      match replacement with
-                      | Some replacementText ->
-                          { Range = expr.Range
-                            OriginalText = textOfRange source expr.Range
-                            ReplacementText = replacementText }
-                      | None -> ()
-                  | _ -> ()
-              | _ -> () ]
+                        match replacement with
+                        | Some replacementText ->
+                            {
+                                Range = expr.Range
+                                OriginalText = textOfRange source expr.Range
+                                ReplacementText = replacementText
+                            }
+                        | None -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]
     |> List.filter (fun s -> not (spansDirective source s.Range))

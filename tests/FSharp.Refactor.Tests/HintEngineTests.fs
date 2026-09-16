@@ -134,6 +134,17 @@ let ``double rev disappears`` () =
     assertSingleSuggestion "module Test\nlet f (xs: int list) = List.rev (List.rev xs)" "xs"
 
 [<Fact>]
+let ``a custom operation spelled like a core function is not that function`` () =
+    // FsCDK's `lifecycleRule { id "rule" }`: `id` is the builder's custom
+    // operation, and `id x ===> x` erased it (12 sites rolled back)
+    assertNoSuggestion
+        "module Test\ntype RuleBuilder() =\n    member _.Yield(_: unit) = \"\"\n    [<CustomOperation(\"id\")>]\n    member _.Id(_: string, value: string) = value\nlet rule = RuleBuilder()\nlet r = rule { id \"test-rule\" }"
+
+[<Fact>]
+let ``the core function of the same name still simplifies`` () =
+    assertSingleSuggestion "module Test\nlet f (x: int) = id x" "x"
+
+[<Fact>]
 let ``id composition simplifies`` () =
     assertSingleSuggestion "module Test\nlet f (g: int -> int) = id >> g" "g"
 
@@ -159,6 +170,19 @@ let ``extra rules from configuration are applied`` () =
 
     match suggestions with
     | [ s ] -> Assert.Equal("Option.isNone x", s.ReplacementText)
+    | other -> failwithf "Expected one extra-rule suggestion, got %A" other
+
+[<Fact>]
+let ``a repository's own rule may name the repository's own function`` () =
+    // the FSharp.Core check is for the built-in rules; a repository's rule
+    // names its own functions and is its author's to aim
+    let suggestions =
+        findWith
+            [ "Helpers.twice (Helpers.twice x) ===> x * 4" ]
+            "module Test\nmodule Helpers =\n    let twice (x: int) = x * 2\nlet f (x: int) = Helpers.twice (Helpers.twice x)"
+
+    match suggestions with
+    | [ s ] -> Assert.Equal("x * 4", s.ReplacementText)
     | other -> failwithf "Expected one extra-rule suggestion, got %A" other
 
 [<Fact>]

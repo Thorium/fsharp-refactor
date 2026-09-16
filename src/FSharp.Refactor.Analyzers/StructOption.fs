@@ -42,11 +42,13 @@ type Suggestion =
 
 /// A module-level `let private f args = body` candidate.
 type private Candidate =
-    { Ident: Ident
-      ParamCount: int
-      Body: SynExpr
-      DefRange: range
-      IsRecursive: bool }
+    {
+        Ident: Ident
+        ParamCount: int
+        Body: SynExpr
+        DefRange: range
+        IsRecursive: bool
+    }
 
 let private findCandidates (parseTree: ParsedInput) : Candidate list =
     let candidates = ResizeArray<Candidate>()
@@ -66,13 +68,16 @@ let private findCandidates (parseTree: ParsedInput) : Candidate list =
                             returnInfo = None
                             expr = body) when not args.IsEmpty ->
                             candidates.Add
-                                { Ident = ident
-                                  ParamCount = args.Length
-                                  Body = body
-                                  DefRange = binding.RangeOfBindingWithRhs
-                                  IsRecursive = isRec }
+                                {
+                                    Ident = ident
+                                    ParamCount = args.Length
+                                    Body = body
+                                    DefRange = binding.RangeOfBindingWithRhs
+                                    IsRecursive = isRec
+                                }
                         | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq candidates
@@ -240,6 +245,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 None
                             else
                                 Some
-                                    { FunctionName = candidate.Ident.idText
-                                      DefRange = candidate.Ident.idRange
-                                      Edits = edits })
+                                    {
+                                        FunctionName = candidate.Ident.idText
+                                        DefRange = candidate.Ident.idRange
+                                        Edits = edits
+                                    })

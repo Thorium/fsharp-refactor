@@ -111,104 +111,111 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.Match(clauses = clauses)
-              | SynExpr.MatchBang(clauses = clauses)
-              | SynExpr.MatchLambda(matchClauses = clauses) when not clauses.IsEmpty ->
-                  // any total (wildcard/variable) clause completes the match
-                  let anyCatchAll =
-                      clauses
-                      |> List.exists (fun (SynMatchClause(pat = p)) ->
-                          match p with
-                          | SynPat.Wild _
-                          | SynPat.Named _ -> true
-                          | _ -> false)
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.Match(clauses = clauses)
+                | SynExpr.MatchBang(clauses = clauses)
+                | SynExpr.MatchLambda(matchClauses = clauses) when not clauses.IsEmpty ->
+                    // any total (wildcard/variable) clause completes the match
+                    let anyCatchAll =
+                        clauses
+                        |> List.exists (fun (SynMatchClause(pat = p)) ->
+                            match p with
+                            | SynPat.Wild _
+                            | SynPat.Named _ -> true
+                            | _ -> false)
 
-                  let unguarded =
-                      clauses |> List.filter (fun (SynMatchClause(whenExpr = g)) -> g.IsNone)
+                    let unguarded =
+                        clauses |> List.filter (fun (SynMatchClause(whenExpr = g)) -> g.IsNone)
 
-                  let covered =
-                      unguarded |> List.map (fun (SynMatchClause(pat = p)) -> coveredLoop [] [ p ])
+                    let covered =
+                        unguarded |> List.map (fun (SynMatchClause(pat = p)) -> coveredLoop [] [ p ])
 
-                  // guarded clauses must still be PLAIN case patterns, or
-                  // coverage of the whole match is beyond this rule
-                  let guardedParseable =
-                      clauses
-                      |> List.forall (fun (SynMatchClause(pat = p; whenExpr = g)) ->
-                          g.IsNone || (coveredLoop [] [ p ]) |> Option.isSome)
+                    // guarded clauses must still be PLAIN case patterns, or
+                    // coverage of the whole match is beyond this rule
+                    let guardedParseable =
+                        clauses
+                        |> List.forall (fun (SynMatchClause(pat = p; whenExpr = g)) ->
+                            g.IsNone || (coveredLoop [] [ p ]) |> Option.isSome)
 
-                  if
-                      not anyCatchAll
-                      && guardedParseable
-                      && not covered.IsEmpty
-                      && covered |> List.forall Option.isSome
-                  then
-                      let coveredIdents = covered |> List.choose id |> List.concat
+                    if
+                        not anyCatchAll
+                        && guardedParseable
+                        && not covered.IsEmpty
+                        && covered |> List.forall Option.isSome
+                    then
+                        let coveredIdents = covered |> List.choose id |> List.concat
 
-                      match coveredIdents with
-                      | first :: _ ->
-                          match unionCasesOf check source (List.last first) with
-                          | Some allCases ->
-                              let coveredNames =
-                                  coveredIdents |> List.map (fun ids -> (List.last ids).idText) |> Set.ofList
+                        match coveredIdents with
+                        | first :: _ ->
+                            match unionCasesOf check source (List.last first) with
+                            | Some allCases ->
+                                let coveredNames =
+                                    coveredIdents |> List.map (fun ids -> (List.last ids).idText) |> Set.ofList
 
-                              let missing =
-                                  allCases |> List.filter (fun (name, _) -> not (coveredNames.Contains name))
+                                let missing =
+                                    allCases |> List.filter (fun (name, _) -> not (coveredNames.Contains name))
 
-                              let qualifier =
-                                  first
-                                  |> List.rev
-                                  |> List.tail
-                                  |> List.rev
-                                  |> List.map (fun i -> i.idText + ".")
-                                  |> String.concat ""
+                                let qualifier =
+                                    first
+                                    |> List.rev
+                                    |> List.tail
+                                    |> List.rev
+                                    |> List.map (fun i -> i.idText + ".")
+                                    |> String.concat ""
 
-                              let lastClause = List.last clauses
-                              let lastLine = source.GetLineString(lastClause.Range.EndLine - 1)
-                              let firstLine = source.GetLineString(lastClause.Range.StartLine - 1)
-                              let barColumn = firstLine.IndexOf '|'
+                                let lastClause = List.last clauses
+                                let lastLine = source.GetLineString(lastClause.Range.EndLine - 1)
+                                let firstLine = source.GetLineString(lastClause.Range.StartLine - 1)
+                                let barColumn = firstLine.IndexOf '|'
 
-                              // every covered name must belong to THIS union
-                              // (same-named cases of another DU would slip
-                              // through the name-set comparison otherwise)
-                              if
-                                  coveredNames
-                                  |> Set.forall (fun n -> allCases |> List.exists (fun (c, _) -> c = n))
-                                  && not missing.IsEmpty
-                                  && missing.Length <= 3
-                                  // multi-line matches only, clause starting
-                                  // its line at a findable bar
-                                  && barColumn >= 0
-                                  && firstLine.Substring(0, barColumn).Trim() = ""
-                                  // nothing trails the last clause on its
-                                  // final line
-                                  && lastLine.Length <= lastClause.Range.EndColumn
-                              then
-                                  let indent = String.replicate barColumn " "
+                                // every covered name must belong to THIS union
+                                // (same-named cases of another DU would slip
+                                // through the name-set comparison otherwise)
+                                if
+                                    coveredNames
+                                    |> Set.forall (fun n -> allCases |> List.exists (fun (c, _) -> c = n))
+                                    && not missing.IsEmpty
+                                    && missing.Length <= 3
+                                    // multi-line matches only, clause starting
+                                    // its line at a findable bar
+                                    && barColumn >= 0
+                                    && firstLine.Substring(0, barColumn).Trim() = ""
+                                    // nothing trails the last clause on its
+                                    // final line
+                                    && lastLine.Length <= lastClause.Range.EndColumn
+                                then
+                                    let indent = String.replicate barColumn " "
 
-                                  let insertText =
-                                      missing
-                                      |> List.map (fun (name, hasFields) ->
-                                          let pattern =
-                                              if hasFields then
-                                                  $"{qualifier}{name} _"
-                                              else
-                                                  $"{qualifier}{name}"
+                                    let insertText =
+                                        missing
+                                        |> List.map (fun (name, hasFields) ->
+                                            let pattern =
+                                                if hasFields then
+                                                    $"{qualifier}{name} _"
+                                                else
+                                                    $"{qualifier}{name}"
 
-                                          let prefix = if opensSystemNamespace source then "" else "System."
-                                          $"\n{indent}| {pattern} -> raise ({prefix}NotImplementedException())")
-                                      |> String.concat ""
+                                            let prefix = if opensSystemNamespace source then "" else "System."
+                                            $"\n{indent}| {pattern} -> raise ({prefix}NotImplementedException())")
+                                        |> String.concat ""
 
-                                  let insertAt =
-                                      Range.mkRange lastClause.Range.FileName lastClause.Range.End lastClause.Range.End
+                                    let insertAt =
+                                        Range.mkRange
+                                            lastClause.Range.FileName
+                                            lastClause.Range.End
+                                            lastClause.Range.End
 
-                                  { Range = insertAt
-                                    InsertText = insertText
-                                    MissingCases = missing |> List.map fst }
-                          | None -> ()
-                      | [] -> ()
-              | _ -> () ]
+                                    {
+                                        Range = insertAt
+                                        InsertText = insertText
+                                        MissingCases = missing |> List.map fst
+                                    }
+                            | None -> ()
+                        | [] -> ()
+                | _ -> ()
+        ]
 
 // ---- FR0117: adjacent same-result arms fold into one or-pattern ----
 
@@ -277,91 +284,97 @@ let findMergeableArms (parseTree: ParsedInput) (source: ISourceText) : ArmMerge 
             runs (run :: acc) (rest |> List.skip sameBody.Length)
         | _ :: rest -> runs acc rest
 
-    [ for _, expr in index.Exprs do
-          let clauses =
-              match expr with
-              | SynExpr.Match(clauses = cs)
-              | SynExpr.MatchBang(clauses = cs)
-              | SynExpr.MatchLambda(matchClauses = cs) -> cs
-              | _ -> []
+    [
+        for _, expr in index.Exprs do
+            let clauses =
+                match expr with
+                | SynExpr.Match(clauses = cs)
+                | SynExpr.MatchBang(clauses = cs)
+                | SynExpr.MatchLambda(matchClauses = cs) -> cs
+                | _ -> []
 
-          if clauses.Length >= 2 then
-              for run in runs [] (clauses |> List.map clauseView) do
-                  if run.Length >= 2 then
-                      let (SynMatchClause(trivia = firstTrivia), _, _, _, _) = List.head run
-                      let (lastClause, _, lastResult, _, _) = List.last run
+            if clauses.Length >= 2 then
+                for run in runs [] (clauses |> List.map clauseView) do
+                    if run.Length >= 2 then
+                        let (SynMatchClause(trivia = firstTrivia), _, _, _, _) = List.head run
+                        let (lastClause, _, lastResult, _, _) = List.last run
 
-                      match firstTrivia.BarRange with
-                      | Some bar ->
-                          let replaceRange = Range.mkRange bar.FileName bar.Start lastClause.Range.End
+                        match firstTrivia.BarRange with
+                        | Some bar ->
+                            let replaceRange = Range.mkRange bar.FileName bar.Start lastClause.Range.End
 
-                          if not (spansDirective source replaceRange) then
-                              let indent = String.replicate bar.StartColumn " "
-                              let bodyIndent = indent + "    "
-                              let body = (textOfRange source lastResult.Range).Trim()
+                            if not (spansDirective source replaceRange) then
+                                let indent = String.replicate bar.StartColumn " "
+                                let bodyIndent = indent + "    "
+                                let body = (textOfRange source lastResult.Range).Trim()
 
-                              // Each arm's own comment travels with its own
-                              // pattern. An arm that carries a comment is an
-                              // arm the author considered a distinct case,
-                              // whatever its body currently says, and folding
-                              // the arms while dropping the comments would
-                              // delete the only thing telling the merged
-                              // cases apart. F# accepts comments between the
-                              // alternatives of an or-pattern, and fantomas
-                              // keeps them there.
-                              //
-                              // A comment BETWEEN two arms belongs to neither
-                              // range and is not reproduced; the fix is then
-                              // held back by the comment guard, which is the
-                              // right answer rather than a silent loss.
-                              // ...but only the comments we are NOT already
-                              // reproducing. The pattern and the surviving body
-                              // are spliced verbatim, so a comment inside either
-                              // travels with that text; hoisting it as well
-                              // printed `1 (* why *) + 1` with the comment three
-                              // times over. It compiles, so no build check would
-                              // ever have caught it
-                              let commentsIn (r: range) (verbatim: range list) =
-                                  allComments
-                                  |> List.filter (fun (cr, _) ->
-                                      Range.rangeContainsRange r cr
-                                      && not (verbatim |> List.exists (fun v -> Range.rangeContainsRange v cr)))
-                                  |> List.sortBy (fun (cr, _) -> cr.StartLine, cr.StartColumn)
-                                  |> List.map snd
+                                // Each arm's own comment travels with its own
+                                // pattern. An arm that carries a comment is an
+                                // arm the author considered a distinct case,
+                                // whatever its body currently says, and folding
+                                // the arms while dropping the comments would
+                                // delete the only thing telling the merged
+                                // cases apart. F# accepts comments between the
+                                // alternatives of an or-pattern, and fantomas
+                                // keeps them there.
+                                //
+                                // A comment BETWEEN two arms belongs to neither
+                                // range and is not reproduced; the fix is then
+                                // held back by the comment guard, which is the
+                                // right answer rather than a silent loss.
+                                // ...but only the comments we are NOT already
+                                // reproducing. The pattern and the surviving body
+                                // are spliced verbatim, so a comment inside either
+                                // travels with that text; hoisting it as well
+                                // printed `1 (* why *) + 1` with the comment three
+                                // times over. It compiles, so no build check would
+                                // ever have caught it
+                                let commentsIn (r: range) (verbatim: range list) =
+                                    allComments
+                                    |> List.filter (fun (cr, _) ->
+                                        Range.rangeContainsRange r cr
+                                        && not (verbatim |> List.exists (fun v -> Range.rangeContainsRange v cr)))
+                                    |> List.sortBy (fun (cr, _) -> cr.StartLine, cr.StartColumn)
+                                    |> List.map snd
 
-                              let lines =
-                                  [ for i, (clause, pat, armResult, _, _) in List.indexed run do
-                                        let prefix = if i = 0 then "" else indent
-                                        let patText = textOfRange source pat.Range
+                                let lines =
+                                    [
+                                        for i, (clause, pat, armResult, _, _) in List.indexed run do
+                                            let prefix = if i = 0 then "" else indent
+                                            let patText = textOfRange source pat.Range
 
-                                        // the pattern is spliced verbatim, and so
-                                        // is the surviving body — and the rule only
-                                        // fires when the bodies are textually
-                                        // IDENTICAL, so a comment inside a discarded
-                                        // body is the same comment the survivor
-                                        // already carries. Hoisting either one just
-                                        // says it twice
-                                        let armComments = commentsIn clause.Range [ pat.Range; armResult.Range ]
+                                            // the pattern is spliced verbatim, and so
+                                            // is the surviving body — and the rule only
+                                            // fires when the bodies are textually
+                                            // IDENTICAL, so a comment inside a discarded
+                                            // body is the same comment the survivor
+                                            // already carries. Hoisting either one just
+                                            // says it twice
+                                            let armComments = commentsIn clause.Range [ pat.Range; armResult.Range ]
 
-                                        if i = run.Length - 1 then
-                                            // the last arm keeps the body, so its
-                                            // comment stays above it
-                                            if List.isEmpty armComments then
-                                                $"{prefix}| {patText} -> {body}"
+                                            if i = run.Length - 1 then
+                                                // the last arm keeps the body, so its
+                                                // comment stays above it
+                                                if List.isEmpty armComments then
+                                                    $"{prefix}| {patText} -> {body}"
+                                                else
+                                                    $"{prefix}| {patText} ->"
+
+                                                    for c in armComments do
+                                                        $"{bodyIndent}{c}"
+
+                                                    $"{bodyIndent}{body}"
                                             else
-                                                $"{prefix}| {patText} ->"
+                                                $"{prefix}| {patText}"
 
                                                 for c in armComments do
-                                                    $"{bodyIndent}{c}"
+                                                    $"{indent}{c}"
+                                    ]
 
-                                                $"{bodyIndent}{body}"
-                                        else
-                                            $"{prefix}| {patText}"
-
-                                            for c in armComments do
-                                                $"{indent}{c}" ]
-
-                              { ReplaceRange = replaceRange
-                                NewText = String.concat "\n" lines
-                                Count = run.Length }
-                      | None -> () ]
+                                {
+                                    ReplaceRange = replaceRange
+                                    NewText = String.concat "\n" lines
+                                    Count = run.Length
+                                }
+                        | None -> ()
+    ]

@@ -147,84 +147,92 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              // the `lock x` application itself — the same node whether the
-              // body follows directly or through `<|`
-              | SynExpr.App(isInfix = false; funcExpr = SingleIdent lockId; argExpr = lockObj) when
-                  lockId.idText = "lock"
-                  ->
-                  let target = stripParens lockObj
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                // the `lock x` application itself — the same node whether the
+                // body follows directly or through `<|`
+                | SynExpr.App(isInfix = false; funcExpr = SingleIdent lockId; argExpr = lockObj) when
+                    lockId.idText = "lock"
+                    ->
+                    let target = stripParens lockObj
 
-                  let weak =
-                      match target with
-                      | SynExpr.Const(SynConst.String _, _) -> Some WeakKind.StringValue
-                      | SynExpr.TypeApp(expr = IdentName "typeof") -> Some WeakKind.TypeObject
-                      | GetTypeCall -> Some WeakKind.TypeObject
-                      | SynExpr.Ident id when sharedSingletons.Contains id.idText ->
-                          Some(WeakKind.SharedSingleton id.idText)
-                      | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ c; m ])) when
-                          c.idText = "Console"
-                          && (m.idText = "Out" || m.idText = "Error" || m.idText = "In")
-                          ->
-                          Some(WeakKind.SharedSingleton $"Console.{m.idText}")
-                      | SynExpr.Ident id when resolvesToString check source id -> Some WeakKind.StringValue
-                      | SynExpr.Ident id when resolvesToSelf check source id -> Some WeakKind.SelfObject
-                      | _ -> None
+                    let weak =
+                        match target with
+                        | SynExpr.Const(SynConst.String _, _) -> Some WeakKind.StringValue
+                        | SynExpr.TypeApp(expr = IdentName "typeof") -> Some WeakKind.TypeObject
+                        | GetTypeCall -> Some WeakKind.TypeObject
+                        | SynExpr.Ident id when sharedSingletons.Contains id.idText ->
+                            Some(WeakKind.SharedSingleton id.idText)
+                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ c; m ])) when
+                            c.idText = "Console"
+                            && (m.idText = "Out" || m.idText = "Error" || m.idText = "In")
+                            ->
+                            Some(WeakKind.SharedSingleton $"Console.{m.idText}")
+                        | SynExpr.Ident id when resolvesToString check source id -> Some WeakKind.StringValue
+                        | SynExpr.Ident id when resolvesToSelf check source id -> Some WeakKind.SelfObject
+                        | _ -> None
 
-                  match weak with
-                  | Some kind when OptionModule.resolvesToCoreOperator check source lockId ->
-                      let targetText = textOfRange source target.Range
+                    match weak with
+                    | Some kind when OptionModule.resolvesToCoreOperator check source lockId ->
+                        let targetText = textOfRange source target.Range
 
-                      // the fix: a private lock object declared next to the
-                      // locked value when this file defines it, else before
-                      // the enclosing module-level binding; nothing for a
-                      // singleton another module owns
-                      let fix =
-                          match kind with
-                          | WeakKind.SharedSingleton _ -> []
-                          | _ ->
-                              let moduleRange = enclosingModuleRange path
+                        // the fix: a private lock object declared next to the
+                        // locked value when this file defines it, else before
+                        // the enclosing module-level binding; nothing for a
+                        // singleton another module owns
+                        let fix =
+                            match kind with
+                            | WeakKind.SharedSingleton _ -> []
+                            | _ ->
+                                let moduleRange = enclosingModuleRange path
 
-                              let lockName, insertAfter =
-                                  match target with
-                                  | SynExpr.Ident id when (moduleBindingOf index moduleRange id.idText).IsSome ->
-                                      $"{id.idText}Lock", moduleBindingOf index moduleRange id.idText
-                                  | _ -> "lockObj", None
+                                let lockName, insertAfter =
+                                    match target with
+                                    | SynExpr.Ident id when (moduleBindingOf index moduleRange id.idText).IsSome ->
+                                        $"{id.idText}Lock", moduleBindingOf index moduleRange id.idText
+                                    | _ -> "lockObj", None
 
-                              match insertAfter, enclosingModuleLet path with
-                              | Some declRange, _ ->
-                                  // after the value's own declaration, at its
-                                  // indentation
-                                  let indent = String.replicate declRange.StartColumn " "
+                                match insertAfter, enclosingModuleLet path with
+                                | Some declRange, _ ->
+                                    // after the value's own declaration, at its
+                                    // indentation
+                                    let indent = String.replicate declRange.StartColumn " "
 
-                                  let at =
-                                      Range.mkRange
-                                          declRange.FileName
-                                          (Position.mkPos (declRange.EndLine + 1) 0)
-                                          (Position.mkPos (declRange.EndLine + 1) 0)
+                                    let at =
+                                        Range.mkRange
+                                            declRange.FileName
+                                            (Position.mkPos (declRange.EndLine + 1) 0)
+                                            (Position.mkPos (declRange.EndLine + 1) 0)
 
-                                  [ at, "", $"{indent}let private {lockName} = obj ()\n"
-                                    target.Range, targetText, lockName ]
-                              | None, Some(declRange, Some name) when declRange <> Range.range0 ->
-                                  // before the enclosing binding, at its
-                                  // indentation
-                                  let lockName = $"{name}Lock"
-                                  let indent = String.replicate declRange.StartColumn " "
+                                    [
+                                        at, "", $"{indent}let private {lockName} = obj ()\n"
+                                        target.Range, targetText, lockName
+                                    ]
+                                | None, Some(declRange, Some name) when declRange <> Range.range0 ->
+                                    // before the enclosing binding, at its
+                                    // indentation
+                                    let lockName = $"{name}Lock"
+                                    let indent = String.replicate declRange.StartColumn " "
 
-                                  let at =
-                                      Range.mkRange
-                                          declRange.FileName
-                                          (Position.mkPos declRange.StartLine 0)
-                                          (Position.mkPos declRange.StartLine 0)
+                                    let at =
+                                        Range.mkRange
+                                            declRange.FileName
+                                            (Position.mkPos declRange.StartLine 0)
+                                            (Position.mkPos declRange.StartLine 0)
 
-                                  [ at, "", $"{indent}let private {lockName} = obj ()\n\n"
-                                    target.Range, targetText, lockName ]
-                              | _ -> []
+                                    [
+                                        at, "", $"{indent}let private {lockName} = obj ()\n\n"
+                                        target.Range, targetText, lockName
+                                    ]
+                                | _ -> []
 
-                      { Range = expr.Range
-                        Kind = kind
-                        TargetText = targetText
-                        Fix = fix }
-                  | _ -> ()
-              | _ -> () ]
+                        {
+                            Range = expr.Range
+                            Kind = kind
+                            TargetText = targetText
+                            Fix = fix
+                        }
+                    | _ -> ()
+                | _ -> ()
+        ]

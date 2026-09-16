@@ -296,108 +296,115 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SynExpr.Sequential(expr1 = a) -> Range.equals a.Range target
                 | _ -> false)
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) when
-                  not (methodId.idText.EndsWith "Async")
-                  // `Dispose` → `DisposeAsync` never pays: the twin returns
-                  // ValueTask (outside the Task/Task<T> gate the rule
-                  // documents) and there is nothing to await — fantomas's
-                  // EndToEndTests.fs had `File.Create(f).Dispose()` turned
-                  // into `do! File.Create(f).DisposeAsync()`
-                  && methodId.idText <> "Dispose"
-                  ->
-                  let tupled =
-                      match args with
-                      | SynExpr.Const(SynConst.Unit, _) -> Some 0
-                      | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) -> Some es.Length
-                      | SynExpr.Paren _ -> Some 1
-                      // juxtaposed atomic argument — `writer.Write s` — is
-                      // the common F# spelling; the rewrite only touches the
-                      // keyword and the name, so the arg shape can stay
-                      | SynExpr.Const _
-                      | SynExpr.Ident _
-                      | SynExpr.LongIdent _ -> Some 1
-                      | _ -> None
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) when
+                    not (methodId.idText.EndsWith "Async")
+                    // `Dispose` → `DisposeAsync` never pays: the twin returns
+                    // ValueTask (outside the Task/Task<T> gate the rule
+                    // documents) and there is nothing to await — fantomas's
+                    // EndToEndTests.fs had `File.Create(f).Dispose()` turned
+                    // into `do! File.Create(f).DisposeAsync()`
+                    && methodId.idText <> "Dispose"
+                    ->
+                    let tupled =
+                        match args with
+                        | SynExpr.Const(SynConst.Unit, _) -> Some 0
+                        | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) -> Some es.Length
+                        | SynExpr.Paren _ -> Some 1
+                        // juxtaposed atomic argument — `writer.Write s` — is
+                        // the common F# spelling; the rewrite only touches the
+                        // keyword and the name, so the arg shape can stay
+                        | SynExpr.Const _
+                        | SynExpr.Ident _
+                        | SynExpr.LongIdent _ -> Some 1
+                        | _ -> None
 
-                  match tupled, directBuilder expr.Range with
-                  | Some arity, Some builder ->
-                      let lineText = source.GetLineString(methodId.idRange.EndLine - 1)
+                    match tupled, directBuilder expr.Range with
+                    | Some arity, Some builder ->
+                        let lineText = source.GetLineString(methodId.idRange.EndLine - 1)
 
-                      let resolved =
-                          check.GetSymbolUseAtLocation(
-                              methodId.idRange.EndLine,
-                              methodId.idRange.EndColumn,
-                              lineText,
-                              [ methodId.idText ]
-                          )
+                        let resolved =
+                            check.GetSymbolUseAtLocation(
+                                methodId.idRange.EndLine,
+                                methodId.idRange.EndColumn,
+                                lineText,
+                                [ methodId.idText ]
+                            )
 
-                      match resolved with
-                      | Some symbolUse ->
-                          match symbolUse.Symbol with
-                          | :? FSharpMemberOrFunctionOrValue as mfv when mfv.IsMember && not mfv.IsProperty ->
-                              let ctx = symbolUse.DisplayContext
+                        match resolved with
+                        | Some symbolUse ->
+                            match symbolUse.Symbol with
+                            | :? FSharpMemberOrFunctionOrValue as mfv when mfv.IsMember && not mfv.IsProperty ->
+                                let ctx = symbolUse.DisplayContext
 
-                              let twin =
-                                  match parameterShapes ctx mfv with
-                                  | Some ps when ps.Length = arity ->
-                                      (try
-                                          match mfv.DeclaringEntity with
-                                          | Some entity ->
-                                              entity.MembersFunctionsAndValues
-                                              |> Seq.tryFind (fun m ->
-                                                  m.DisplayName = mfv.DisplayName + "Async"
-                                                  && returnsWrapped ctx mfv m
-                                                  && (match parameterShapes ctx m with
-                                                      | Some mps when mps.Length = arity -> mps = ps
-                                                      | Some mps when mps.Length = arity + 1 ->
-                                                          List.truncate arity mps = ps && isOptionalCancellationToken m
-                                                      | _ -> false))
-                                          | None -> None
-                                       with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                                           None)
-                                  | _ -> None
+                                let twin =
+                                    match parameterShapes ctx mfv with
+                                    | Some ps when ps.Length = arity ->
+                                        (try
+                                            match mfv.DeclaringEntity with
+                                            | Some entity ->
+                                                entity.MembersFunctionsAndValues
+                                                |> Seq.tryFind (fun m ->
+                                                    m.DisplayName = mfv.DisplayName + "Async"
+                                                    && returnsWrapped ctx mfv m
+                                                    && (match parameterShapes ctx m with
+                                                        | Some mps when mps.Length = arity -> mps = ps
+                                                        | Some mps when mps.Length = arity + 1 ->
+                                                            List.truncate arity mps = ps
+                                                            && isOptionalCancellationToken m
+                                                        | _ -> false))
+                                            | None -> None
+                                         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                             None)
+                                    | _ -> None
 
-                              // async { } bridges via Async.AwaitTask, which
-                              // has no ValueTask overload — real Task only
-                              let twin =
-                                  match builder, twin with
-                                  | "async", Some m when not (returnsRealTask m) -> None
-                                  | _ -> twin
+                                // async { } bridges via Async.AwaitTask, which
+                                // has no ValueTask overload — real Task only
+                                let twin =
+                                    match builder, twin with
+                                    | "async", Some m when not (returnsRealTask m) -> None
+                                    | _ -> twin
 
-                              match twin with
-                              | Some twinM ->
-                                  let renameFix = methodId.idRange, methodId.idText, methodId.idText + "Async"
+                                match twin with
+                                | Some twinM ->
+                                    let renameFix = methodId.idRange, methodId.idText, methodId.idText + "Async"
 
-                                  let bridgeFixes =
-                                      if builder = "async" then
-                                          let atEnd = Range.mkRange expr.Range.FileName expr.Range.End expr.Range.End
+                                    let bridgeFixes =
+                                        if builder = "async" then
+                                            let atEnd = Range.mkRange expr.Range.FileName expr.Range.End expr.Range.End
 
-                                          [ atEnd, "", " |> Async.AwaitTask" ]
-                                      else
-                                          []
+                                            [ atEnd, "", " |> Async.AwaitTask" ]
+                                        else
+                                            []
 
-                                  match bindingKeywordFor expr.Range with
-                                  | Some(kw, letRange) when textOfRange source kw = "let" && onSpine letRange ->
-                                      { Range = expr.Range
-                                        Fixes = [ kw, "let", "let!"; renameFix ] @ bridgeFixes
-                                        MethodName = methodId.idText }
-                                  | Some _ -> ()
-                                  | None ->
-                                      // statement position takes do! — but
-                                      // only a NON-generic Task binds there,
-                                      // and only ON the CE's own spine
-                                      if isStatement expr.Range && onSpine expr.Range && returnsPlainTask twinM then
-                                          let at = Range.mkRange expr.Range.FileName expr.Range.Start expr.Range.Start
+                                    match bindingKeywordFor expr.Range with
+                                    | Some(kw, letRange) when textOfRange source kw = "let" && onSpine letRange ->
+                                        {
+                                            Range = expr.Range
+                                            Fixes = [ kw, "let", "let!"; renameFix ] @ bridgeFixes
+                                            MethodName = methodId.idText
+                                        }
+                                    | Some _ -> ()
+                                    | None ->
+                                        // statement position takes do! — but
+                                        // only a NON-generic Task binds there,
+                                        // and only ON the CE's own spine
+                                        if isStatement expr.Range && onSpine expr.Range && returnsPlainTask twinM then
+                                            let at = Range.mkRange expr.Range.FileName expr.Range.Start expr.Range.Start
 
-                                          { Range = expr.Range
-                                            Fixes = [ at, "", "do! "; renameFix ] @ bridgeFixes
-                                            MethodName = methodId.idText }
-                              | None -> ()
-                          | _ -> ()
-                      | None -> ()
-                  | _ -> ()
-              | _ -> () ]
+                                            {
+                                                Range = expr.Range
+                                                Fixes = [ at, "", "do! "; renameFix ] @ bridgeFixes
+                                                MethodName = methodId.idText
+                                            }
+                                | None -> ()
+                            | _ -> ()
+                        | None -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]
         |> List.filter (fun s ->
             not (
                 threadBoundBodies

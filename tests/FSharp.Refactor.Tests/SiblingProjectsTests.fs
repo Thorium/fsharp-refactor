@@ -46,10 +46,12 @@ let private writeSolution (root: string) (withCSharpConsumer: bool) =
     write "tests/Tests/Tests.fs" "module Tests\n\nlet three () = Lib.add (1, 2)\n"
 
     let projects =
-        [ "Lib", "src\\Lib\\Lib.fsproj"
-          "Tests", "tests\\Tests\\Tests.fsproj"
-          if withCSharpConsumer then
-              "Consumer", "src\\Consumer\\Consumer.csproj" ]
+        [
+            "Lib", "src\\Lib\\Lib.fsproj"
+            "Tests", "tests\\Tests\\Tests.fsproj"
+            if withCSharpConsumer then
+                "Consumer", "src\\Consumer\\Consumer.csproj"
+        ]
 
     if withCSharpConsumer then
         write
@@ -131,6 +133,71 @@ let ``a public function is curried together with the call site in the sibling te
 
         let built, buildOutput = builds solution
         Assert.True(built, $"the rewritten solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
+
+[<Fact>]
+let ``a test project's own public functions reshape without --api-changes; the library's do not`` () : unit =
+    // a test project exports no API: nothing links to it, so its tupled
+    // helper is curried in a plain run, while the library's public `add`
+    // - which the flag exists to protect - keeps its shape
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let testProject = Path.Combine(root, "tests", "Tests", "Tests.fsproj")
+
+        File.WriteAllText(
+            testProject,
+            $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Tests.fs\" />\n  </ItemGroup>\n  <ItemGroup>\n    <PackageReference Include=\"xunit\" Version=\"2.9.3\" />\n    <ProjectReference Include=\"../../src/Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(root, "tests", "Tests", "Tests.fs"),
+            "module Tests\n\nlet helper (a: int, b: int) = a + b\n\nlet three () = Lib.add (1, 2) + helper (1, 2)\n"
+        )
+
+        let code, output = runTool [| solution; "--codes"; "FR0090"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+
+        let tests = File.ReadAllText(Path.Combine(root, "tests", "Tests", "Tests.fs"))
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("a test project", output)
+        Assert.Contains("let add (a: int, b: int) = a + b", library)
+        Assert.Contains("let helper (a: int) (b: int) = a + b", tests)
+        Assert.Contains("helper 1 2", tests)
+        Assert.Contains("Lib.add (1, 2)", tests)
+
+        let built, buildOutput = builds solution
+        Assert.True(built, $"the rewritten solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
+
+[<Fact>]
+let ``a script leaves the #loaded sources of a project to that project`` () : unit =
+    // Owin.Compression: Script.fsx `#load`s the net48 CompressionModule.fs,
+    // and the script's sweep - typechecked as .NET Core - wrote
+    // Convert.ToHexString into it. The sweep dedup did not help: the file
+    // carries an `#if`, so it is keyed on defines, and a script's differ
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let library = Path.Combine(root, "src", "Lib", "Library.fs")
+        let script = Path.Combine(root, "src", "Lib", "Probe.fsx")
+
+        File.WriteAllText(
+            library,
+            "module Lib\n\n#if INTERACTIVE\nlet interactive = true\n#endif\n\nlet hex (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\")\n"
+        )
+
+        File.WriteAllText(
+            script,
+            "#load \"Library.fs\"\n\nlet hex2 (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\")\n\nprintfn \"%s %s\" (Lib.hex [| 1uy |]) (hex2 [| 2uy |])\n"
+        )
+
+        let code, output = runTool [| script; "--codes"; "FR0053"; "--no-color" |]
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("left to the project that compiles them", output)
+        Assert.Contains("Library.fs (Lib.fsproj)", output)
+        // the script's own body is still the script's to fix
+        Assert.Contains("Convert.ToHexString", File.ReadAllText script)
+        Assert.DoesNotContain("ToHexString", File.ReadAllText library))
 
 [<Fact>]
 let ``a C# project referencing the library keeps its public functions as they are`` () : unit =

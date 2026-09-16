@@ -162,68 +162,74 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                     Some(String.concat "\n" (Array.append [| lines.[0] |] moved))
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              // inside a computation expression `reraise ()` is FS0413,
-              // and a handler that only rethrows guards nothing: the
-              // try/with goes, and the exception propagates with its
-              // trace intact (suave's Combinators.fs, twice)
-              | SynExpr.TryWith(
-                  tryExpr = body
-                  withCases = [ SynMatchClause(
-                                    pat = SynPat.Named(ident = SynIdent(ident = exId))
-                                    whenExpr = None
-                                    resultExpr = handler) ]) when
-                  inComputationExpr path
-                  // `raise ex` where the computation returns unit, `return
-                  // raise ex` / `return! raise ex` where it returns a value
-                  && (let rethrow (e: SynExpr) =
-                          match stripParens e with
-                          | SynExpr.App(isInfix = false; funcExpr = SingleIdent raiseId; argExpr = raised) ->
-                              raiseId.idText = "raise"
-                              && (match stripParens raised with
-                                  | SynExpr.Ident r -> r.idText = exId.idText
-                                  | _ -> false)
-                              && OptionModule.resolvesToCoreOperator check source raiseId
-                          | _ -> false
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                // inside a computation expression `reraise ()` is FS0413,
+                // and a handler that only rethrows guards nothing: the
+                // try/with goes, and the exception propagates with its
+                // trace intact (suave's Combinators.fs, twice)
+                | SynExpr.TryWith(
+                    tryExpr = body
+                    withCases = [ SynMatchClause(
+                                      pat = SynPat.Named(ident = SynIdent(ident = exId))
+                                      whenExpr = None
+                                      resultExpr = handler) ]) when
+                    inComputationExpr path
+                    // `raise ex` where the computation returns unit, `return
+                    // raise ex` / `return! raise ex` where it returns a value
+                    && (let rethrow (e: SynExpr) =
+                            match stripParens e with
+                            | SynExpr.App(isInfix = false; funcExpr = SingleIdent raiseId; argExpr = raised) ->
+                                raiseId.idText = "raise"
+                                && (match stripParens raised with
+                                    | SynExpr.Ident r -> r.idText = exId.idText
+                                    | _ -> false)
+                                && OptionModule.resolvesToCoreOperator check source raiseId
+                            | _ -> false
 
-                      match handler with
-                      | SynExpr.YieldOrReturn(expr = inner)
-                      | SynExpr.YieldOrReturnFrom(expr = inner) -> rethrow inner
-                      | e -> rethrow e)
-                  && not (spansDirective source expr.Range)
-                  ->
-                  match bodyInPlace expr body with
-                  | Some replacement ->
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
-                        ExceptionName = exId.idText
-                        Removal = Some(expr.Range, textOfRange source expr.Range, replacement) }
-                  | None -> ()
-              | SynExpr.TryWith(withCases = clauses) when not (inComputationExpr path) ->
-                  for SynMatchClause(pat = pat; resultExpr = handler) in clauses do
-                      let exNames = patBoundNames pat |> Set.ofList
+                        match handler with
+                        | SynExpr.YieldOrReturn(expr = inner)
+                        | SynExpr.YieldOrReturnFrom(expr = inner) -> rethrow inner
+                        | e -> rethrow e)
+                    && not (spansDirective source expr.Range)
+                    ->
+                    match bodyInPlace expr body with
+                    | Some replacement ->
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ExceptionName = exId.idText
+                            Removal = Some(expr.Range, textOfRange source expr.Range, replacement)
+                        }
+                    | None -> ()
+                | SynExpr.TryWith(withCases = clauses) when not (inComputationExpr path) ->
+                    for SynMatchClause(pat = pat; resultExpr = handler) in clauses do
+                        let exNames = patBoundNames pat |> Set.ofList
 
-                      if not exNames.IsEmpty then
-                          let opaque = opaqueRangesIn handler.Range
+                        if not exNames.IsEmpty then
+                            let opaque = opaqueRangesIn handler.Range
 
-                          for _, e in index.Exprs do
-                              match e with
-                              | SynExpr.App(isInfix = false; funcExpr = SingleIdent raiseId; argExpr = arg) when
-                                  raiseId.idText = "raise"
-                                  && Range.rangeContainsRange handler.Range e.Range
-                                  && not (opaque |> Array.exists (fun o -> Range.rangeContainsRange o e.Range))
-                                  ->
-                                  match stripParens arg with
-                                  | SynExpr.Ident exId when
-                                      exNames.Contains exId.idText
-                                      && not (reboundIn exId.idText handler.Range)
-                                      && OptionModule.resolvesToCoreOperator check source raiseId
-                                      ->
-                                      { Range = e.Range
-                                        OriginalText = textOfRange source e.Range
-                                        ExceptionName = exId.idText
-                                        Removal = None }
-                                  | _ -> ()
-                              | _ -> ()
-              | _ -> () ]
+                            for _, e in index.Exprs do
+                                match e with
+                                | SynExpr.App(isInfix = false; funcExpr = SingleIdent raiseId; argExpr = arg) when
+                                    raiseId.idText = "raise"
+                                    && Range.rangeContainsRange handler.Range e.Range
+                                    && not (opaque |> Array.exists (fun o -> Range.rangeContainsRange o e.Range))
+                                    ->
+                                    match stripParens arg with
+                                    | SynExpr.Ident exId when
+                                        exNames.Contains exId.idText
+                                        && not (reboundIn exId.idText handler.Range)
+                                        && OptionModule.resolvesToCoreOperator check source raiseId
+                                        ->
+                                        {
+                                            Range = e.Range
+                                            OriginalText = textOfRange source e.Range
+                                            ExceptionName = exId.idText
+                                            Removal = None
+                                        }
+                                    | _ -> ()
+                                | _ -> ()
+                | _ -> ()
+        ]

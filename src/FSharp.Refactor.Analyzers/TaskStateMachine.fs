@@ -41,6 +41,7 @@
 module FSharp.Refactor.TaskStateMachine
 
 open System.Text.RegularExpressions
+open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
@@ -235,11 +236,21 @@ let private freshName (source: ISourceText) (baseName: string) =
 let find
     (parseTree: ParsedInput)
     (source: ISourceText)
+    (check: FSharpCheckFileResults option)
     (tailLines: int)
     (hoistReturnOnAsync: bool)
     (dynamicFallbackLines: Set<int>)
     : Suggestion list =
     let index = AstIndex.ofTree parseTree
+
+    // a Span or other byref-like local declared above a block cannot be
+    // captured by the local function the block becomes (nor held by a
+    // nested task): the typed tree says which locals those are, where the
+    // mutable scan below reads only the syntax
+    let capturesByRefLike (blockRange: range) =
+        match check with
+        | Some c -> OptionModule.capturesByRefLike c index source blockRange
+        | None -> false
 
     let containsBang (r: range) =
         index.Exprs
@@ -362,698 +373,739 @@ let find
 
     let comments = commentsWithText parseTree source
 
-    [ for path, expr in index.Exprs do
-          match expr with
-          | SynExpr.App(
-              isInfix = false; funcExpr = fe & IdentName builder; argExpr = SynExpr.ComputationExpr(expr = body)) when
-              taskBuilders.Contains builder
-              || (hoistReturnOnAsync && asyncBuilders.Contains builder)
-              ->
-              // a hand-tuned hot path is not restructured behind the
-              // author's back: a comment inside the enclosing binding
-              // that speaks of allocation, a hot path, perf or a fast
-              // path (suave's HttpOutput.fs) keeps every move advice-only
-              let enclosingRange =
-                  path
-                  |> List.tryPick (fun node ->
-                      match node with
-                      | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
-                      | _ -> None)
-                  |> Option.defaultValue expr.Range
-
-              let handTuned =
-                  comments
-                  |> List.exists (fun (r, text) ->
-                      Range.rangeContainsRange enclosingRange r && handTunedPattern.IsMatch text)
-
-              let withhold (edits: (range * string) list) = if handTuned then [] else edits
-
-              // The tail extraction alone INVENTS something: a `runTail` that
-              // names no business idea, wrapping code whose only sin was
-              // sitting after the last await. What it buys is a smaller
-              // resumable body, and that is not a goal in itself - only
-              // FS3511 makes it one, the way a cyclomatic-complexity limit of
-              // 1 would make every codebase worse. So it advises by default
-              // and fixes only where a repository has decided it is worth it.
-              //
-              // Its two neighbours are not in the same position: hoisting
-              // plain lets and splitting branches move code that already
-              // existed, name nothing new, and leave the result open to
-              // extension - they stay fixes.
-              // sub-ranges whose contents are not this task's resumable code
-              let opaqueRanges =
-                  index.Exprs
-                  |> Array.choose (fun (_, e) ->
-                      match e with
-                      | SynExpr.Lambda _
-                      | SynExpr.ComputationExpr _ when Range.rangeContainsRange body.Range e.Range -> Some e.Range
-                      | _ -> None)
-
-              let inResumableBody (r: range) =
-                  Range.rangeContainsRange body.Range r
-                  && not (opaqueRanges |> Array.exists (fun o -> Range.rangeContainsRange o r))
-
-              let recursiveLets =
-                  index.Exprs
-                  |> Array.filter (fun (_, e) ->
-                      match e with
-                      | LetOrUseE lou -> lou.IsRecursive && not lou.IsBang && inResumableBody e.Range
-                      | _ -> false)
-
-              let bangCount =
-                  index.Exprs
-                  |> Array.filter (fun (_, e) -> isBangExpr e && inResumableBody e.Range)
-                  |> Array.length
-
-              let bodyLines = body.Range.EndLine - body.Range.StartLine + 1
-
-              // every OTHER advice here argues from FS3511, which only
-              // resumable code can hit; on `async` the return hoist is the
-              // whole of the rule
-              let isAsync = asyncBuilders.Contains builder
-
-              for _, letRec in (if isAsync then Array.empty else recursiveLets) do
-                  match letRec with
-                  | LetOrUseE lou ->
-                      match lou.Bindings with
-                      | binding :: _ ->
-                          { Range = binding.RangeOfBindingWithRhs
-                            Kind = AdviceKind.HoistRecursiveFunction
-                            Edits = [] }
-                      | [] -> ()
-                  | _ -> ()
-
-              // the return hoist is NOT about state-machine size: it
-              // trades N exits through the builder for one, which is worth
-              // the same in a twelve-line task as a hundred-line one. It
-              // therefore sits OUTSIDE the oversized-task gate below
-              let mutable hoistOffered = false
-
-              // terminalOf stops at a `let!` by design; the closing
-              // expression of a task body sits past every binding,
-              // bang or not
-              let rec closingOf (e: SynExpr) =
-                  match e with
-                  | LetOrUseE lou -> closingOf lou.Body
-                  | SynExpr.Sequential(expr2 = b) -> closingOf b
-                  | t -> t
-
-              // e) a branch whose every LEAF returns can take one `return`
-              // in front of it instead: the branch becomes an ordinary
-              // expression, handed to the builder once, and the machine
-              // sheds a resumption point per arm.
-              //
-              // Nothing moves — the branch stays where it is, one keyword
-              // travels and the block gains an indent level. That is what
-              // makes this safe where extracting a function was not: no
-              // binding changes the order it is inferred in, and nothing is
-              // captured.
-              //
-              // Found at any depth, and an awaiting arm blocks only ITSELF.
-              // `if a then (if wed then return x else return y) else (do!
-              // t; return z)` cannot hoist whole — the else awaits — but
-              // the inner branch is clean and hoists on its own.
-              // `match!` counts as a branch for DESCENT: it is a bang, so it
-              // can never be hoisted itself, but its arms are where the
-              // hoistable branch usually lives - `task { match! auth with
-              // ... }` is the shape most of this codebase is written in, and
-              // missing it hid every candidate beneath one
-              let branchResults (e: SynExpr) =
-                  match e with
-                  | SynExpr.Match(clauses = cs)
-                  | SynExpr.MatchBang(clauses = cs) -> Some(cs |> List.map (fun (SynMatchClause(resultExpr = r)) -> r))
-                  | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some e2) -> Some [ t; e2 ]
-                  | _ -> None
-
-              // every leaf of a branch tree, as the position of its `return`
-              // keyword and the payload's range — None as soon as one leaf is
-              // not a plain `return <expr>` whose payload starts on the
-              // keyword's own line.
-              // closingOf, not terminalOf: an arm opening with `let!` has its
-              // branch AFTER the binding, and terminalOf stops at a bang
-              let rec leafReturns (e: SynExpr) =
-                  match closingOf e with
-                  | SynExpr.YieldOrReturn(flags = (false, true); expr = payload; range = r) when
-                      payload.Range.StartLine = r.StartLine
-                      ->
-                      Some [ r.StartLine, r.StartColumn, payload.Range ]
-                  | inner ->
-                      match branchResults inner with
-                      | Some arms ->
-                          let parts = arms |> List.map leafReturns
-
-                          if parts |> List.forall Option.isSome then
-                              Some(parts |> List.choose id |> List.concat)
-                          else
-                              None
-                      | None -> None
-
-              // the OUTERMOST hoistable branches: stop descending once one
-              // qualifies, so a branch and its own child are never both
-              // rewritten
-              let rec hoistSites (e: SynExpr) =
-                  match branchResults e with
-                  | None -> []
-                  | Some arms ->
-                      match (if containsBang e.Range then None else leafReturns e) with
-                      | Some starts when
-                          not (spansDirective source e.Range)
-                          && not (directiveFollows source e.Range)
-                          // hoisting makes the branch the payload of one
-                          // `return`, so it stops being CE code: a `use`
-                          // inside it re-binds from the builder's Using to
-                          // the language's, DisposeAsync silently becoming
-                          // Dispose. Measured, not assumed - a type offering
-                          // both logged "async" before and "sync" after
-                          && not (containsUse e.Range)
-                          && startsOwnLine source e.Range
-                          // every line of the branch gains an indent, and a
-                          // string literal spanning lines would gain it INSIDE
-                          // its content - the same refusal the let hoist and
-                          // the tail wrap make
-                          && multiLineStringSafe (linesOf source e.Range.StartLine e.Range.EndLine)
-                          && not (spansMultiLineLiteral index e.Range.StartLine e.Range.EndLine)
-                          ->
-                          [ e, starts ]
-                      | _ -> arms |> List.collect (closingOf >> hoistSites)
-
-              for site, leaves in hoistSites (closingOf body) do
-                  let positions = leaves |> List.map (fun (l, c, _) -> l, c) |> Set.ofList
-                  let lines = linesOf source site.Range.StartLine site.Range.EndLine
-
-                  let lastLine = List.length lines - 1
-
-                  // a payload continuing below its keyword line moves as ONE
-                  // block: the strip pulls its first line left by the
-                  // keyword's width, so every continuation line follows by
-                  // the same amount - a record's fields, a list's elements
-                  // keep their alignment. (keyword line, payload end line,
-                  // columns to give back, the payload's own column)
-                  let continuations =
-                      leaves
-                      |> List.choose (fun (l, c, (payload: range)) ->
-                          if payload.EndLine > l then
-                              Some(l, payload.EndLine, payload.StartColumn - c, payload.StartColumn)
-                          else
-                              None)
-
-                  // one line, one shift: a keyword line holding a second
-                  // `return`, or a continuation line carrying one, would be
-                  // pulled twice - withhold rather than skew
-                  let cleanlyLayered =
-                      continuations
-                      |> List.forall (fun (l, endLine, _, _) ->
-                          positions |> Set.filter (fun (pl, _) -> pl >= l && pl <= endLine) |> Set.count = 1)
-
-                  let rewritten =
-                      lines
-                      |> List.mapi (fun i line ->
-                          let lineNo = site.Range.StartLine + i
-
-                          // whatever follows the branch on its closing line -
-                          // the enclosing `}`, most often - is outside the
-                          // replaced range and stays in the file; re-emitting
-                          // it here would give the file two of them
-                          let line =
-                              if i = lastLine && site.Range.EndColumn < line.Length then
-                                  line.Substring(0, site.Range.EndColumn)
-                              else
-                                  line
-
-                          // a one-line `if c then return a else return b`
-                          // carries TWO keywords on the same line, so every
-                          // one has to go - right to left, or removing the
-                          // first would shift the column of the second
-                          let stripped =
-                              positions
-                              |> Set.toList
-                              |> List.filter (fun (l, _) -> l = lineNo)
-                              |> List.map snd
-                              |> List.sortDescending
-                              |> List.fold
-                                  (fun (acc: string) col ->
-                                      if col + 6 <= acc.Length && acc.Substring(col, 6) = "return" then
-                                          acc.Substring(0, col) + (acc.Substring(col + 6)).TrimStart()
-                                      else
-                                          acc)
-                                  line
-                              |> fun s -> if isBlank s then "" else s.TrimEnd()
-
-                          let giveBack =
-                              continuations
-                              |> List.tryPick (fun (l, endLine, shift, payloadColumn) ->
-                                  if lineNo > l && lineNo <= endLine then
-                                      Some(shift, payloadColumn)
-                                  else
-                                      None)
-
-                          if isBlank stripped then
-                              Some ""
-                          else
-                              match giveBack with
-                              // a continuation left of the payload's own
-                              // column (a lambda body the parser lets
-                              // undent, say) would land left of the arm
-                              // once the payload moves: withhold
-                              | Some(_, payloadColumn) when leadingSpaces stripped < payloadColumn -> None
-                              | Some(shift, _) -> Some("    " + stripped.Substring shift)
-                              | None -> Some("    " + stripped))
-                      |> fun parts ->
-                          if cleanlyLayered && parts |> List.forall Option.isSome then
-                              Some(parts |> List.choose id)
-                          else
-                              None
-
-                  match rewritten with
-                  | None -> ()
-                  | Some rewritten ->
-                      // a branch that fitted on one line has to keep `return` on
-                      // that line: `return` alone with the payload below opens an
-                      // offside context the payload's own line never closes, so a
-                      // trailing `}` - or the next `else` - lands inside it
-                      let hoisted =
-                          match rewritten with
-                          | [ single ] -> "return " + single.TrimStart()
-                          | _ -> "return\n" + String.concat "\n" rewritten
-
-                      hoistOffered <- true
-
-                      { Range = site.Range
-                        Kind = AdviceKind.HoistReturn leaves.Length
-                        Edits = withhold [ site.Range, hoisted ] }
-
-              // the shrink advice only for genuinely oversized tasks
-              if not isAsync && (bangCount >= BangThreshold || bodyLines >= LineThreshold) then
-                  let fileName = body.Range.FileName
-                  let taskIndentText = String.replicate fe.Range.StartColumn " "
-
-                  // a) leading plain lets — the fix hoists their lines above
-                  // the builder, dedented to its column. A throw in hoisted
-                  // code surfaces at the call instead of faulting the Task;
-                  // that trade is the advice itself
-                  let letCount, firstLetRange, rest = peelPlainLets 0 None body
-
-                  match firstLetRange with
-                  | Some r when letCount > 0 ->
-                      let hoistEdits =
-                          // the binding's documenting comment block (blank
-                          // lines between comment runs included) moves too
-                          let startLine = extendUpOverComments source fe.Range.StartLine r.StartLine
-                          let endLineExcl = rest.Range.StartLine
-
-                          if
-                              startsOwnLine source fe.Range
-                              && startLine > fe.Range.StartLine
-                              && endLineExcl > startLine
-                              // the last moved binding must not spill onto
-                              // the rest's line: whole lines move or nothing
-                              && startsOwnLine source rest.Range
-                          then
-                              let movedLines = linesOf source startLine (endLineExcl - 1)
-
-                              // the region's first CODE line must be the let
-                              // itself and sets the dedent: FCS includes ///
-                              // doc comments in the binding's range, and the
-                              // extension above adds plain // blocks
-                              let letLine =
-                                  movedLines
-                                  |> List.tryFind (fun l -> not (isBlank l || l.TrimStart().StartsWith "//"))
-                                  |> Option.defaultValue ""
-
-                              let movedRange =
-                                  Range.mkRange fileName (Position.mkPos startLine 0) (Position.mkPos endLineExcl 0)
-
-                              match dedentBy (leadingSpaces letLine - fe.Range.StartColumn) movedLines with
-                              | Some dedented when
-                                  letLine.TrimStart().StartsWith "let "
-                                  && multiLineStringSafe movedLines
-                                  && not (spansMultiLineLiteral index startLine (endLineExcl - 1))
-                                  && not (spansDirective source movedRange)
-                                  ->
-                                  [ Range.mkRange fileName fe.Range.Start fe.Range.Start,
-                                    (String.concat "\n" dedented).TrimStart() + "\n" + taskIndentText
-                                    movedRange, "" ]
-                              | _ -> []
-                          else
-                              []
-
-                      { Range = r
-                        Kind = AdviceKind.HoistPlainLets letCount
-                        Edits = withhold hoistEdits }
-                  | _ -> ()
-
-                  // b) branching — when the body IS the if (letCount 0; pass
-                  // order lets (a) clear the lets first), the fix splits it
-                  // into a task per arm, arm text verbatim. One awaiting arm
-                  // is enough: a synchronous arm becomes a trivially static
-                  // `task { return .. }`, and the big arm gets its own
-                  // smaller machine
-                  match rest with
-                  | SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenExpr; elseExpr = Some elseExpr; trivia = trivia) when
-                      containsBang thenExpr.Range || containsBang elseExpr.Range
-                      ->
-                      let splitEdits =
-                          let lineTailBlank (r: range) =
-                              (source.GetLineString(r.EndLine - 1)).Substring(r.EndColumn).Trim() = ""
-
-                          // `task { .. } |> f` or `.ContinueWith ..` binds
-                          // tighter than a bare if/else would: leave those
-                          let noContinuationAfter =
-                              lineTailBlank expr.Range
-                              && (seq { expr.Range.EndLine + 1 .. source.GetLineCount() }
-                                  |> Seq.map (fun l -> (source.GetLineString(l - 1)).Trim())
-                                  |> Seq.tryFind (fun t -> t <> "")
-                                  |> Option.forall (fun t ->
-                                      not (t.StartsWith '|' || t.StartsWith '.' || t.StartsWith ":>")))
-
-                          // the arms are cut as LINE regions between four
-                          // anchors — the `if .. then` header, the `else`
-                          // keyword line, and the CE's closing brace line —
-                          // so every comment line in the replaced span lands
-                          // in one arm or the other by construction (a
-                          // comment above an arm would otherwise sit outside
-                          // the arm expression's range and be dropped, and
-                          // the comment guard would hold the whole fix back)
-                          let elseKwLine =
-                              match trivia.ElseKeyword with
-                              | Some ek when (source.GetLineString(ek.StartLine - 1)).Trim() = "else" ->
-                                  Some ek.StartLine
-                              | _ -> None
-
-                          let ifLine = rest.Range.StartLine
-                          let closeLine = expr.Range.EndLine
-
-                          match elseExpr, elseKwLine with
-                          | SynExpr.IfThenElse _, _ -> [] // elif chains stay advice
-                          | _, Some elseKwLine when
-                              letCount = 0
-                              && startsOwnLine source fe.Range
-                              // the if directly follows `task {`: no line of
-                              // the replaced span sits outside the arms
-                              && ifLine = fe.Range.StartLine + 1
-                              && isSingleLine cond.Range
-                              && (source.GetLineString(cond.Range.EndLine - 1)).TrimEnd().EndsWith "then"
-                              && thenExpr.Range.StartLine > cond.Range.EndLine
-                              && elseKwLine > thenExpr.Range.EndLine
-                              && elseExpr.Range.StartLine > elseKwLine
-                              && startsOwnLine source thenExpr.Range
-                              && startsOwnLine source elseExpr.Range
-                              && lineTailBlank thenExpr.Range
-                              && lineTailBlank elseExpr.Range
-                              && (source.GetLineString(closeLine - 1)).Trim() = "}"
-                              && elseExpr.Range.EndLine < closeLine
-                              && noContinuationAfter
-                              && not (spansDirective source expr.Range)
-                              ->
-                              // arms re-home one level under their new task;
-                              // verbatim when a dedent would not be safe
-                              let armText (startLine: int) (endLine: int) =
-                                  let lines = linesOf source startLine endLine
-
-                                  let indent =
-                                      lines
-                                      |> List.filter (isBlank >> not)
-                                      |> List.map leadingSpaces
-                                      |> List.fold min System.Int32.MaxValue
-
-                                  let shift = indent - (fe.Range.StartColumn + 4)
-
-                                  match (if shift > 0 then dedentBy shift lines else None) with
-                                  | Some d when multiLineStringSafe lines -> String.concat "\n" d
-                                  | _ -> String.concat "\n" lines
-
-                              // the arms keep the ORIGINAL builder — a
-                              // backgroundTask split into plain tasks would
-                              // silently lose its thread-pool start
-                              [ Range.mkRange fileName (Position.mkPos fe.Range.StartLine 0) expr.Range.End,
-                                taskIndentText
-                                + "if "
-                                + textOfRange source cond.Range
-                                + $" then {builder} {{\n"
-                                + armText (ifLine + 1) (elseKwLine - 1)
-                                + "\n"
-                                + taskIndentText
-                                + $"}} else {builder} {{\n"
-                                + armText (elseKwLine + 1) (closeLine - 1)
-                                + "\n"
-                                + taskIndentText
-                                + "}" ]
-                          | _ -> []
-
-                      { Range = rest.Range
-                        Kind = AdviceKind.SplitBranches
-                        Edits = withhold splitEdits }
-                  | SynExpr.Match(clauses = clauses)
-                  | SynExpr.MatchBang(clauses = clauses) when
-                      (clauses
-                       |> List.filter (fun (SynMatchClause(resultExpr = result)) -> containsBang result.Range)
-                       |> List.length)
-                      >= 2
-                      ->
-                      // a match stays ADVICE: the documented split is the
-                      // if/else body, arms cut as line regions into two
-                      // tasks. The per-arm `return! task { .. }` wrap this
-                      // once carried nested a machine inside every awaiting
-                      // arm of suave's HttpOutput.fs — a shape the doc
-                      // never promised, on a hand-tuned hot path
-                      { Range = rest.Range
-                        Kind = AdviceKind.SplitBranches
-                        Edits = [] }
-                  | _ -> ()
-
-                  // c) a long non-awaiting tail after the last await — the
-                  // fix wraps it in a LOCAL function inside the CE (a nested
-                  // function's body is not resumable code) and calls it as
-                  // the last statement; closures capture every CE local, so
-                  // no parameters and no type annotations
-                  let lastBangLine =
-                      index.Exprs
-                      |> Array.fold
-                          (fun acc (_, e) ->
-                              if isBangExpr e && inResumableBody e.Range then
-                                  max acc e.Range.StartLine
-                              else
-                                  acc)
-                          0
-
-                  // the tail is the statement suffix after the last await,
-                  // never a line count from that await to the closing
-                  // brace: a multi-line `return!` argument, the `with`
-                  // and `finally` of a try, and a `while` body that
-                  // re-awaits are not non-awaiting code (suave's Proxy,
-                  // Combinators and ConnectionHealthChecker)
-
-                  let tail =
-                      if lastBangLine > 0 then
-                          tailAfterLastBang lastBangLine false body
-                          |> Option.filter (fun (t, _) -> not (resumableBangIn inResumableBody t.Range))
-                      else
-                          None
-
-                  match tail with
-                  | Some(tail, descended) ->
-                      // local function definitions in the tail compile to
-                      // closures, not resumable code — they weigh nothing,
-                      // and NOT counting them is what makes the extraction
-                      // converge instead of re-wrapping its own output
-                      let functionDefLines (r: range) =
-                          index.Exprs
-                          |> Array.sumBy (fun (_, e) ->
-                              match e with
-                              | LetOrUseE lou when not lou.IsBang && Range.rangeContainsRange r e.Range ->
-                                  lou.Bindings
-                                  |> List.sumBy (fun b ->
-                                      match b with
-                                      | SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _))) ->
-                                          let br = b.RangeOfBindingWithRhs
-                                          br.EndLine - br.StartLine + 1
-                                      | _ -> 0)
-                              | _ -> 0)
-
-                      // the note sits on the first non-awaiting statement,
-                      // where the author can act on it — not on the blank
-                      // or `with` line after the await
-                      let noteRange = tail.Range
-
-                      let tailLineCount =
-                          tail.Range.EndLine - tail.Range.StartLine + 1 - functionDefLines tail.Range
-
-                      // a tail that IS one `return <expr>` is already a single
-                      // exit: the payload is ordinary code, not resumable, so
-                      // extracting it sheds source lines and no state-machine
-                      // states. It is also what the return hoist leaves behind,
-                      // and wrapping that would undo the point of hoisting
-                      let tailIsSingleReturn =
-                          match tail with
-                          | SynExpr.YieldOrReturn(flags = (false, true)) -> true
-                          | _ -> false
-
-                      // The compiler ITSELF says when the fallback is real:
-                      // FS3511 carries the builder's own position, and the
-                      // apply tool builds before it rewrites, so that warning
-                      // can be read off the transcript. Where it names this
-                      // task the extraction has a cause and a short tail
-                      // already earns it; where it does not, only a tail
-                      // unwieldy on its own does. Below that bar the rule says
-                      // NOTHING - `runTail` invents a name for code whose only
-                      // sin was sitting after the last await, and telling
-                      // someone without a problem about it helps no one.
-                      let earnsExtraction =
-                          if dynamicFallbackLines.Contains fe.Range.StartLine then
-                              min tailLines WarnedTailThreshold
-                          else
-                              tailLines
-
-                      if tailLineCount >= earnsExtraction && not tailIsSingleReturn then
-                          let tailEdits =
-                              // a tail reached through a branch stays
-                              // advice: the wrap is proven on the spine only
-                              // the return hoist is the better answer to the
-                              // same tail - one keyword instead of a new
-                              // function - so the wrap stands down where it applies
-                              match
-                                  (if descended || hoistOffered then None else Some tail), freshName source "runTail"
-                              with
-                              | Some tail, Some fnName when
-                                  not (containsBang tail.Range)
-                                  && startsOwnLine source tail.Range
-                                  && tail.Range.EndLine > tail.Range.StartLine
-                                  && not (spansDirective source tail.Range)
-                                  // size the WRAP by the tail's own extent, not
-                                  // tailLineCount: the last bang can sit inside
-                                  // a nested CE in an earlier binding, and that
-                                  // anchor once inflated a 2-line tail into a
-                                  // wrap that then re-wrapped itself every pass
-                                  && tail.Range.EndLine - tail.Range.StartLine + 1 - functionDefLines tail.Range >= 4
-                                  && not (alreadyWrappedTail tail)
-                                  ->
-                                  let returns =
-                                      index.Exprs
-                                      |> Array.filter (fun (_, e) ->
-                                          match e with
-                                          | SynExpr.YieldOrReturn _ ->
-                                              Range.rangeContainsRange tail.Range e.Range && inResumableBody e.Range
-                                          | _ -> false)
-
-                                  let terminal = terminalOf tail
-
-                                  let terminalReturn =
-                                      match terminal with
-                                      | SynExpr.YieldOrReturn _ -> Some terminal.Range
-                                      | _ -> None
-
-                                  let returnShapeOk =
-                                      match terminalReturn with
-                                      | Some tr ->
-                                          returns.Length = 1 && Range.equals (returns |> Array.head |> snd).Range tr
-                                      | None -> returns.Length = 0
-
-                                  let tailLines = linesOf source tail.Range.StartLine tail.Range.EndLine
-                                  let tailIndent = leadingSpaces (List.head tailLines)
-                                  let ind = String.replicate tailIndent " "
-
-                                  // strip the terminal `return` so the value
-                                  // expression becomes the function's result
-                                  let strippedLines =
-                                      match terminalReturn with
-                                      | Some tr ->
-                                          let i = tr.StartLine - tail.Range.StartLine
-                                          let line = List.item i tailLines
-                                          let afterKeyword = line.Substring tr.StartColumn
-
-                                          if afterKeyword.StartsWith "return " then
-                                              tailLines
-                                              |> List.mapi (fun j l ->
-                                                  if j = i then
-                                                      l.Substring(0, tr.StartColumn) + l.Substring(tr.StartColumn + 7)
-                                                  else
-                                                      l)
-                                              |> Some
-                                          // `return` ALONE on its line, the value beneath
-                                          // it. Deleting the keyword would leave that value
-                                          // indented past the `let` it now follows ("the
-                                          // body of the expression must be indented to the
-                                          // same column"), so it comes back to the keyword's
-                                          // column. Without this the tail fell through to
-                                          // the task-returning variant and bought a second
-                                          // state machine for nothing (management-portal's
-                                          // APIs.fs)
-                                          elif afterKeyword.TrimEnd() = "return" then
-                                              let before = tailLines |> List.take i
-                                              let payload = tailLines |> List.skip (i + 1)
-
-                                              match payload |> List.tryFind (isBlank >> not) with
-                                              | Some first ->
-                                                  let delta = leadingSpaces first - tr.StartColumn
-
-                                                  if delta < 0 then
-                                                      None
-                                                  else
-                                                      dedentBy delta payload
-                                                      |> Option.map (fun dedented -> before @ dedented)
-                                              | None -> None
-                                          else
-                                              None
-                                      | None -> Some tailLines
-
-                                  let closureEdits =
-                                      match strippedLines with
-                                      | Some lines when
-                                          returnShapeOk
-                                          && multiLineStringSafe lines
-                                          && not (spansMultiLineLiteral index tail.Range.StartLine tail.Range.EndLine)
-                                          && not (mentionsForeignMutable tail.Range (String.concat "\n" lines))
-                                          // a `use` may not become a plain
-                                          // closure `using`: fall through to
-                                          // the task-returning variant below,
-                                          // where it stays real CE syntax
-                                          && not (containsUse tail.Range)
-                                          ->
-                                          let indented =
-                                              lines
-                                              |> List.map (fun l -> if isBlank l then "" else "    " + l)
-                                              |> String.concat "\n"
-
-                                          let call =
-                                              match terminalReturn with
-                                              | Some _ -> $"return {fnName} ()"
-                                              | None -> $"{fnName} ()"
-
-                                          [ Range.mkRange
+    [
+        for path, expr in index.Exprs do
+            match expr with
+            | SynExpr.App(
+                isInfix = false; funcExpr = fe & IdentName builder; argExpr = SynExpr.ComputationExpr(expr = body)) when
+                taskBuilders.Contains builder
+                || (hoistReturnOnAsync && asyncBuilders.Contains builder)
+                ->
+                // a hand-tuned hot path is not restructured behind the
+                // author's back: a comment inside the enclosing binding
+                // that speaks of allocation, a hot path, perf or a fast
+                // path (suave's HttpOutput.fs) keeps every move advice-only
+                let enclosingRange =
+                    path
+                    |> List.tryPick (fun node ->
+                        match node with
+                        | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                        | _ -> None)
+                    |> Option.defaultValue expr.Range
+
+                let handTuned =
+                    comments
+                    |> List.exists (fun (r, text) ->
+                        Range.rangeContainsRange enclosingRange r && handTunedPattern.IsMatch text)
+
+                let withhold (edits: (range * string) list) = if handTuned then [] else edits
+
+                // The tail extraction alone INVENTS something: a `runTail` that
+                // names no business idea, wrapping code whose only sin was
+                // sitting after the last await. What it buys is a smaller
+                // resumable body, and that is not a goal in itself - only
+                // FS3511 makes it one, the way a cyclomatic-complexity limit of
+                // 1 would make every codebase worse. So it advises by default
+                // and fixes only where a repository has decided it is worth it.
+                //
+                // Its two neighbours are not in the same position: hoisting
+                // plain lets and splitting branches move code that already
+                // existed, name nothing new, and leave the result open to
+                // extension - they stay fixes.
+                // sub-ranges whose contents are not this task's resumable code
+                let opaqueRanges =
+                    index.Exprs
+                    |> Array.choose (fun (_, e) ->
+                        match e with
+                        | SynExpr.Lambda _
+                        | SynExpr.ComputationExpr _ when Range.rangeContainsRange body.Range e.Range -> Some e.Range
+                        | _ -> None)
+
+                let inResumableBody (r: range) =
+                    Range.rangeContainsRange body.Range r
+                    && not (opaqueRanges |> Array.exists (fun o -> Range.rangeContainsRange o r))
+
+                let recursiveLets =
+                    index.Exprs
+                    |> Array.filter (fun (_, e) ->
+                        match e with
+                        | LetOrUseE lou -> lou.IsRecursive && not lou.IsBang && inResumableBody e.Range
+                        | _ -> false)
+
+                let bangCount =
+                    index.Exprs
+                    |> Array.filter (fun (_, e) -> isBangExpr e && inResumableBody e.Range)
+                    |> Array.length
+
+                let bodyLines = body.Range.EndLine - body.Range.StartLine + 1
+
+                // every OTHER advice here argues from FS3511, which only
+                // resumable code can hit; on `async` the return hoist is the
+                // whole of the rule
+                let isAsync = asyncBuilders.Contains builder
+
+                for _, letRec in (if isAsync then Array.empty else recursiveLets) do
+                    match letRec with
+                    | LetOrUseE lou ->
+                        match lou.Bindings with
+                        | binding :: _ ->
+                            {
+                                Range = binding.RangeOfBindingWithRhs
+                                Kind = AdviceKind.HoistRecursiveFunction
+                                Edits = []
+                            }
+                        | [] -> ()
+                    | _ -> ()
+
+                // the return hoist is NOT about state-machine size: it
+                // trades N exits through the builder for one, which is worth
+                // the same in a twelve-line task as a hundred-line one. It
+                // therefore sits OUTSIDE the oversized-task gate below
+                let mutable hoistOffered = false
+
+                // terminalOf stops at a `let!` by design; the closing
+                // expression of a task body sits past every binding,
+                // bang or not
+                let rec closingOf (e: SynExpr) =
+                    match e with
+                    | LetOrUseE lou -> closingOf lou.Body
+                    | SynExpr.Sequential(expr2 = b) -> closingOf b
+                    | t -> t
+
+                // e) a branch whose every LEAF returns can take one `return`
+                // in front of it instead: the branch becomes an ordinary
+                // expression, handed to the builder once, and the machine
+                // sheds a resumption point per arm.
+                //
+                // Nothing moves — the branch stays where it is, one keyword
+                // travels and the block gains an indent level. That is what
+                // makes this safe where extracting a function was not: no
+                // binding changes the order it is inferred in, and nothing is
+                // captured.
+                //
+                // Found at any depth, and an awaiting arm blocks only ITSELF.
+                // `if a then (if wed then return x else return y) else (do!
+                // t; return z)` cannot hoist whole — the else awaits — but
+                // the inner branch is clean and hoists on its own.
+                // `match!` counts as a branch for DESCENT: it is a bang, so it
+                // can never be hoisted itself, but its arms are where the
+                // hoistable branch usually lives - `task { match! auth with
+                // ... }` is the shape most of this codebase is written in, and
+                // missing it hid every candidate beneath one
+                let branchResults (e: SynExpr) =
+                    match e with
+                    | SynExpr.Match(clauses = cs)
+                    | SynExpr.MatchBang(clauses = cs) ->
+                        Some(cs |> List.map (fun (SynMatchClause(resultExpr = r)) -> r))
+                    | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some e2) -> Some [ t; e2 ]
+                    | _ -> None
+
+                // every leaf of a branch tree, as the position of its `return`
+                // keyword and the payload's range — None as soon as one leaf is
+                // not a plain `return <expr>` whose payload starts on the
+                // keyword's own line.
+                // closingOf, not terminalOf: an arm opening with `let!` has its
+                // branch AFTER the binding, and terminalOf stops at a bang
+                let rec leafReturns (e: SynExpr) =
+                    match closingOf e with
+                    | SynExpr.YieldOrReturn(flags = (false, true); expr = payload; range = r) when
+                        payload.Range.StartLine = r.StartLine
+                        ->
+                        Some [ r.StartLine, r.StartColumn, payload.Range ]
+                    | inner ->
+                        match branchResults inner with
+                        | Some arms ->
+                            let parts = arms |> List.map leafReturns
+
+                            if parts |> List.forall Option.isSome then
+                                Some(parts |> List.choose id |> List.concat)
+                            else
+                                None
+                        | None -> None
+
+                // the OUTERMOST hoistable branches: stop descending once one
+                // qualifies, so a branch and its own child are never both
+                // rewritten
+                let rec hoistSites (e: SynExpr) =
+                    match branchResults e with
+                    | None -> []
+                    | Some arms ->
+                        match (if containsBang e.Range then None else leafReturns e) with
+                        | Some starts when
+                            not (spansDirective source e.Range)
+                            && not (directiveFollows source e.Range)
+                            // hoisting makes the branch the payload of one
+                            // `return`, so it stops being CE code: a `use`
+                            // inside it re-binds from the builder's Using to
+                            // the language's, DisposeAsync silently becoming
+                            // Dispose. Measured, not assumed - a type offering
+                            // both logged "async" before and "sync" after
+                            && not (containsUse e.Range)
+                            && startsOwnLine source e.Range
+                            // every line of the branch gains an indent, and a
+                            // string literal spanning lines would gain it INSIDE
+                            // its content - the same refusal the let hoist and
+                            // the tail wrap make
+                            && multiLineStringSafe (linesOf source e.Range.StartLine e.Range.EndLine)
+                            && not (spansMultiLineLiteral index e.Range.StartLine e.Range.EndLine)
+                            ->
+                            [ e, starts ]
+                        | _ -> arms |> List.collect (closingOf >> hoistSites)
+
+                for site, leaves in hoistSites (closingOf body) do
+                    let positions = leaves |> List.map (fun (l, c, _) -> l, c) |> Set.ofList
+                    let lines = linesOf source site.Range.StartLine site.Range.EndLine
+
+                    let lastLine = List.length lines - 1
+
+                    // a payload continuing below its keyword line moves as ONE
+                    // block: the strip pulls its first line left by the
+                    // keyword's width, so every continuation line follows by
+                    // the same amount - a record's fields, a list's elements
+                    // keep their alignment. (keyword line, payload end line,
+                    // columns to give back, the payload's own column)
+                    let continuations =
+                        leaves
+                        |> List.choose (fun (l, c, (payload: range)) ->
+                            if payload.EndLine > l then
+                                Some(l, payload.EndLine, payload.StartColumn - c, payload.StartColumn)
+                            else
+                                None)
+
+                    // one line, one shift: a keyword line holding a second
+                    // `return`, or a continuation line carrying one, would be
+                    // pulled twice - withhold rather than skew
+                    let cleanlyLayered =
+                        continuations
+                        |> List.forall (fun (l, endLine, _, _) ->
+                            positions |> Set.filter (fun (pl, _) -> pl >= l && pl <= endLine) |> Set.count = 1)
+
+                    let rewritten =
+                        lines
+                        |> List.mapi (fun i line ->
+                            let lineNo = site.Range.StartLine + i
+
+                            // whatever follows the branch on its closing line -
+                            // the enclosing `}`, most often - is outside the
+                            // replaced range and stays in the file; re-emitting
+                            // it here would give the file two of them
+                            let line =
+                                if i = lastLine && site.Range.EndColumn < line.Length then
+                                    line.Substring(0, site.Range.EndColumn)
+                                else
+                                    line
+
+                            // a one-line `if c then return a else return b`
+                            // carries TWO keywords on the same line, so every
+                            // one has to go - right to left, or removing the
+                            // first would shift the column of the second
+                            let stripped =
+                                positions
+                                |> Set.toList
+                                |> List.filter (fun (l, _) -> l = lineNo)
+                                |> List.map snd
+                                |> List.sortDescending
+                                |> List.fold
+                                    (fun (acc: string) col ->
+                                        if col + 6 <= acc.Length && acc.Substring(col, 6) = "return" then
+                                            acc.Substring(0, col) + (acc.Substring(col + 6)).TrimStart()
+                                        else
+                                            acc)
+                                    line
+                                |> fun s -> if isBlank s then "" else s.TrimEnd()
+
+                            let giveBack =
+                                continuations
+                                |> List.tryPick (fun (l, endLine, shift, payloadColumn) ->
+                                    if lineNo > l && lineNo <= endLine then
+                                        Some(shift, payloadColumn)
+                                    else
+                                        None)
+
+                            if isBlank stripped then
+                                Some ""
+                            else
+                                match giveBack with
+                                // a continuation left of the payload's own
+                                // column (a lambda body the parser lets
+                                // undent, say) would land left of the arm
+                                // once the payload moves: withhold
+                                | Some(_, payloadColumn) when leadingSpaces stripped < payloadColumn -> None
+                                | Some(shift, _) -> Some("    " + stripped.Substring shift)
+                                | None -> Some("    " + stripped))
+                        |> fun parts ->
+                            if cleanlyLayered && parts |> List.forall Option.isSome then
+                                Some(parts |> List.choose id)
+                            else
+                                None
+
+                    match rewritten with
+                    | None -> ()
+                    | Some rewritten ->
+                        // a branch that fitted on one line has to keep `return` on
+                        // that line: `return` alone with the payload below opens an
+                        // offside context the payload's own line never closes, so a
+                        // trailing `}` - or the next `else` - lands inside it
+                        let hoisted =
+                            match rewritten with
+                            | [ single ] -> "return " + single.TrimStart()
+                            | _ -> "return\n" + String.concat "\n" rewritten
+
+                        hoistOffered <- true
+
+                        {
+                            Range = site.Range
+                            Kind = AdviceKind.HoistReturn leaves.Length
+                            Edits = withhold [ site.Range, hoisted ]
+                        }
+
+                // the shrink advice only for genuinely oversized tasks
+                if not isAsync && (bangCount >= BangThreshold || bodyLines >= LineThreshold) then
+                    let fileName = body.Range.FileName
+                    let taskIndentText = String.replicate fe.Range.StartColumn " "
+
+                    // a) leading plain lets — the fix hoists their lines above
+                    // the builder, dedented to its column. A throw in hoisted
+                    // code surfaces at the call instead of faulting the Task;
+                    // that trade is the advice itself
+                    let letCount, firstLetRange, rest = peelPlainLets 0 None body
+
+                    match firstLetRange with
+                    | Some r when letCount > 0 ->
+                        let hoistEdits =
+                            // the binding's documenting comment block (blank
+                            // lines between comment runs included) moves too
+                            let startLine = extendUpOverComments source fe.Range.StartLine r.StartLine
+                            let endLineExcl = rest.Range.StartLine
+
+                            if
+                                startsOwnLine source fe.Range
+                                && startLine > fe.Range.StartLine
+                                && endLineExcl > startLine
+                                // the last moved binding must not spill onto
+                                // the rest's line: whole lines move or nothing
+                                && startsOwnLine source rest.Range
+                            then
+                                let movedLines = linesOf source startLine (endLineExcl - 1)
+
+                                // the region's first CODE line must be the let
+                                // itself and sets the dedent: FCS includes ///
+                                // doc comments in the binding's range, and the
+                                // extension above adds plain // blocks
+                                let letLine =
+                                    movedLines
+                                    |> List.tryFind (fun l -> not (isBlank l || l.TrimStart().StartsWith "//"))
+                                    |> Option.defaultValue ""
+
+                                let movedRange =
+                                    Range.mkRange fileName (Position.mkPos startLine 0) (Position.mkPos endLineExcl 0)
+
+                                match dedentBy (leadingSpaces letLine - fe.Range.StartColumn) movedLines with
+                                | Some dedented when
+                                    letLine.TrimStart().StartsWith "let "
+                                    && multiLineStringSafe movedLines
+                                    && not (spansMultiLineLiteral index startLine (endLineExcl - 1))
+                                    && not (spansDirective source movedRange)
+                                    ->
+                                    [
+                                        Range.mkRange fileName fe.Range.Start fe.Range.Start,
+                                        (String.concat "\n" dedented).TrimStart() + "\n" + taskIndentText
+                                        movedRange, ""
+                                    ]
+                                | _ -> []
+                            else
+                                []
+
+                        {
+                            Range = r
+                            Kind = AdviceKind.HoistPlainLets letCount
+                            Edits = withhold hoistEdits
+                        }
+                    | _ -> ()
+
+                    // b) branching — when the body IS the if (letCount 0; pass
+                    // order lets (a) clear the lets first), the fix splits it
+                    // into a task per arm, arm text verbatim. One awaiting arm
+                    // is enough: a synchronous arm becomes a trivially static
+                    // `task { return .. }`, and the big arm gets its own
+                    // smaller machine
+                    match rest with
+                    | SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenExpr; elseExpr = Some elseExpr; trivia = trivia) when
+                        containsBang thenExpr.Range || containsBang elseExpr.Range
+                        ->
+                        let splitEdits =
+                            let lineTailBlank (r: range) =
+                                (source.GetLineString(r.EndLine - 1)).Substring(r.EndColumn).Trim() = ""
+
+                            // `task { .. } |> f` or `.ContinueWith ..` binds
+                            // tighter than a bare if/else would: leave those
+                            let noContinuationAfter =
+                                lineTailBlank expr.Range
+                                && (seq { expr.Range.EndLine + 1 .. source.GetLineCount() }
+                                    |> Seq.map (fun l -> (source.GetLineString(l - 1)).Trim())
+                                    |> Seq.tryFind (fun t -> t <> "")
+                                    |> Option.forall (fun t ->
+                                        not (t.StartsWith '|' || t.StartsWith '.' || t.StartsWith ":>")))
+
+                            // the arms are cut as LINE regions between four
+                            // anchors — the `if .. then` header, the `else`
+                            // keyword line, and the CE's closing brace line —
+                            // so every comment line in the replaced span lands
+                            // in one arm or the other by construction (a
+                            // comment above an arm would otherwise sit outside
+                            // the arm expression's range and be dropped, and
+                            // the comment guard would hold the whole fix back)
+                            let elseKwLine =
+                                match trivia.ElseKeyword with
+                                | Some ek when (source.GetLineString(ek.StartLine - 1)).Trim() = "else" ->
+                                    Some ek.StartLine
+                                | _ -> None
+
+                            let ifLine = rest.Range.StartLine
+                            let closeLine = expr.Range.EndLine
+
+                            match elseExpr, elseKwLine with
+                            | SynExpr.IfThenElse _, _ -> [] // elif chains stay advice
+                            | _, Some elseKwLine when
+                                letCount = 0
+                                && startsOwnLine source fe.Range
+                                // the if directly follows `task {`: no line of
+                                // the replaced span sits outside the arms
+                                && ifLine = fe.Range.StartLine + 1
+                                && isSingleLine cond.Range
+                                && (source.GetLineString(cond.Range.EndLine - 1)).TrimEnd().EndsWith "then"
+                                && thenExpr.Range.StartLine > cond.Range.EndLine
+                                && elseKwLine > thenExpr.Range.EndLine
+                                && elseExpr.Range.StartLine > elseKwLine
+                                && startsOwnLine source thenExpr.Range
+                                && startsOwnLine source elseExpr.Range
+                                && lineTailBlank thenExpr.Range
+                                && lineTailBlank elseExpr.Range
+                                && (source.GetLineString(closeLine - 1)).Trim() = "}"
+                                && elseExpr.Range.EndLine < closeLine
+                                && noContinuationAfter
+                                && not (spansDirective source expr.Range)
+                                ->
+                                // arms re-home one level under their new task;
+                                // verbatim when a dedent would not be safe
+                                let armText (startLine: int) (endLine: int) =
+                                    let lines = linesOf source startLine endLine
+
+                                    let indent =
+                                        lines
+                                        |> List.filter (isBlank >> not)
+                                        |> List.map leadingSpaces
+                                        |> List.fold min System.Int32.MaxValue
+
+                                    let shift = indent - (fe.Range.StartColumn + 4)
+
+                                    match (if shift > 0 then dedentBy shift lines else None) with
+                                    | Some d when multiLineStringSafe lines -> String.concat "\n" d
+                                    | _ -> String.concat "\n" lines
+
+                                // the arms keep the ORIGINAL builder — a
+                                // backgroundTask split into plain tasks would
+                                // silently lose its thread-pool start
+                                [
+                                    Range.mkRange fileName (Position.mkPos fe.Range.StartLine 0) expr.Range.End,
+                                    taskIndentText
+                                    + "if "
+                                    + textOfRange source cond.Range
+                                    + $" then {builder} {{\n"
+                                    + armText (ifLine + 1) (elseKwLine - 1)
+                                    + "\n"
+                                    + taskIndentText
+                                    + $"}} else {builder} {{\n"
+                                    + armText (elseKwLine + 1) (closeLine - 1)
+                                    + "\n"
+                                    + taskIndentText
+                                    + "}"
+                                ]
+                            | _ -> []
+
+                        {
+                            Range = rest.Range
+                            Kind = AdviceKind.SplitBranches
+                            Edits = withhold splitEdits
+                        }
+                    | SynExpr.Match(clauses = clauses)
+                    | SynExpr.MatchBang(clauses = clauses) when
+                        (clauses
+                         |> List.filter (fun (SynMatchClause(resultExpr = result)) -> containsBang result.Range)
+                         |> List.length)
+                        >= 2
+                        ->
+                        // a match stays ADVICE: the documented split is the
+                        // if/else body, arms cut as line regions into two
+                        // tasks. The per-arm `return! task { .. }` wrap this
+                        // once carried nested a machine inside every awaiting
+                        // arm of suave's HttpOutput.fs — a shape the doc
+                        // never promised, on a hand-tuned hot path
+                        {
+                            Range = rest.Range
+                            Kind = AdviceKind.SplitBranches
+                            Edits = []
+                        }
+                    | _ -> ()
+
+                    // c) a long non-awaiting tail after the last await — the
+                    // fix wraps it in a LOCAL function inside the CE (a nested
+                    // function's body is not resumable code) and calls it as
+                    // the last statement; closures capture every CE local, so
+                    // no parameters and no type annotations
+                    let lastBangLine =
+                        index.Exprs
+                        |> Array.fold
+                            (fun acc (_, e) ->
+                                if isBangExpr e && inResumableBody e.Range then
+                                    max acc e.Range.StartLine
+                                else
+                                    acc)
+                            0
+
+                    // the tail is the statement suffix after the last await,
+                    // never a line count from that await to the closing
+                    // brace: a multi-line `return!` argument, the `with`
+                    // and `finally` of a try, and a `while` body that
+                    // re-awaits are not non-awaiting code (suave's Proxy,
+                    // Combinators and ConnectionHealthChecker)
+
+                    let tail =
+                        if lastBangLine > 0 then
+                            tailAfterLastBang lastBangLine false body
+                            |> Option.filter (fun (t, _) -> not (resumableBangIn inResumableBody t.Range))
+                        else
+                            None
+
+                    match tail with
+                    | Some(tail, descended) ->
+                        // local function definitions in the tail compile to
+                        // closures, not resumable code — they weigh nothing,
+                        // and NOT counting them is what makes the extraction
+                        // converge instead of re-wrapping its own output
+                        let functionDefLines (r: range) =
+                            index.Exprs
+                            |> Array.sumBy (fun (_, e) ->
+                                match e with
+                                | LetOrUseE lou when not lou.IsBang && Range.rangeContainsRange r e.Range ->
+                                    lou.Bindings
+                                    |> List.sumBy (fun b ->
+                                        match b with
+                                        | SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _))) ->
+                                            let br = b.RangeOfBindingWithRhs
+                                            br.EndLine - br.StartLine + 1
+                                        | _ -> 0)
+                                | _ -> 0)
+
+                        // the note sits on the first non-awaiting statement,
+                        // where the author can act on it — not on the blank
+                        // or `with` line after the await
+                        let noteRange = tail.Range
+
+                        let tailLineCount =
+                            tail.Range.EndLine - tail.Range.StartLine + 1 - functionDefLines tail.Range
+
+                        // a tail that IS one `return <expr>` is already a single
+                        // exit: the payload is ordinary code, not resumable, so
+                        // extracting it sheds source lines and no state-machine
+                        // states. It is also what the return hoist leaves behind,
+                        // and wrapping that would undo the point of hoisting
+                        let tailIsSingleReturn =
+                            match tail with
+                            | SynExpr.YieldOrReturn(flags = (false, true)) -> true
+                            | _ -> false
+
+                        // The compiler ITSELF says when the fallback is real:
+                        // FS3511 carries the builder's own position, and the
+                        // apply tool builds before it rewrites, so that warning
+                        // can be read off the transcript. Where it names this
+                        // task the extraction has a cause and a short tail
+                        // already earns it; where it does not, only a tail
+                        // unwieldy on its own does. Below that bar the rule says
+                        // NOTHING - `runTail` invents a name for code whose only
+                        // sin was sitting after the last await, and telling
+                        // someone without a problem about it helps no one.
+                        let earnsExtraction =
+                            if dynamicFallbackLines.Contains fe.Range.StartLine then
+                                min tailLines WarnedTailThreshold
+                            else
+                                tailLines
+
+                        if tailLineCount >= earnsExtraction && not tailIsSingleReturn then
+                            let tailEdits =
+                                // a tail reached through a branch stays
+                                // advice: the wrap is proven on the spine only
+                                // the return hoist is the better answer to the
+                                // same tail - one keyword instead of a new
+                                // function - so the wrap stands down where it applies
+                                match
+                                    (if descended || hoistOffered then None else Some tail), freshName source "runTail"
+                                with
+                                | Some tail, Some fnName when
+                                    not (containsBang tail.Range)
+                                    && startsOwnLine source tail.Range
+                                    && tail.Range.EndLine > tail.Range.StartLine
+                                    && not (spansDirective source tail.Range)
+                                    // size the WRAP by the tail's own extent, not
+                                    // tailLineCount: the last bang can sit inside
+                                    // a nested CE in an earlier binding, and that
+                                    // anchor once inflated a 2-line tail into a
+                                    // wrap that then re-wrapped itself every pass
+                                    && tail.Range.EndLine - tail.Range.StartLine + 1 - functionDefLines tail.Range >= 4
+                                    && not (alreadyWrappedTail tail)
+                                    ->
+                                    let returns =
+                                        index.Exprs
+                                        |> Array.filter (fun (_, e) ->
+                                            match e with
+                                            | SynExpr.YieldOrReturn _ ->
+                                                Range.rangeContainsRange tail.Range e.Range && inResumableBody e.Range
+                                            | _ -> false)
+
+                                    let terminal = terminalOf tail
+
+                                    let terminalReturn =
+                                        match terminal with
+                                        | SynExpr.YieldOrReturn _ -> Some terminal.Range
+                                        | _ -> None
+
+                                    let returnShapeOk =
+                                        match terminalReturn with
+                                        | Some tr ->
+                                            returns.Length = 1 && Range.equals (returns |> Array.head |> snd).Range tr
+                                        | None -> returns.Length = 0
+
+                                    let tailLines = linesOf source tail.Range.StartLine tail.Range.EndLine
+                                    let tailIndent = leadingSpaces (List.head tailLines)
+                                    let ind = String.replicate tailIndent " "
+
+                                    // strip the terminal `return` so the value
+                                    // expression becomes the function's result
+                                    let strippedLines =
+                                        match terminalReturn with
+                                        | Some tr ->
+                                            let i = tr.StartLine - tail.Range.StartLine
+                                            let line = List.item i tailLines
+                                            let afterKeyword = line.Substring tr.StartColumn
+
+                                            // `return (* note *) value`: with the keyword gone
+                                            // the line's first TOKEN is `value`, right of the
+                                            // comment and deeper than the `let` above it, and
+                                            // the parser reads it as that let's continuation
+                                            // (welendus's SignalRHubs.fs: "the block following
+                                            // this 'let' is unfinished"). The comment is the
+                                            // author's, so the tail stays
+                                            if
+                                                afterKeyword.StartsWith "return "
+                                                && afterKeyword.Substring(7).TrimStart().StartsWith "(*"
+                                            then
+                                                None
+                                            elif afterKeyword.StartsWith "return " then
+                                                tailLines
+                                                |> List.mapi (fun j l ->
+                                                    if j = i then
+                                                        l.Substring(0, tr.StartColumn)
+                                                        + l.Substring(tr.StartColumn + 7)
+                                                    else
+                                                        l)
+                                                |> Some
+                                            // `return` ALONE on its line, the value beneath
+                                            // it. Deleting the keyword would leave that value
+                                            // indented past the `let` it now follows ("the
+                                            // body of the expression must be indented to the
+                                            // same column"), so it comes back to the keyword's
+                                            // column. Without this the tail fell through to
+                                            // the task-returning variant and bought a second
+                                            // state machine for nothing (management-portal's
+                                            // APIs.fs)
+                                            elif afterKeyword.TrimEnd() = "return" then
+                                                let before = tailLines |> List.take i
+                                                let payload = tailLines |> List.skip (i + 1)
+
+                                                match payload |> List.tryFind (isBlank >> not) with
+                                                | Some first ->
+                                                    let delta = leadingSpaces first - tr.StartColumn
+
+                                                    if delta < 0 then
+                                                        None
+                                                    else
+                                                        dedentBy delta payload
+                                                        |> Option.map (fun dedented -> before @ dedented)
+                                                | None -> None
+                                            else
+                                                None
+                                        | None -> Some tailLines
+
+                                    let closureEdits =
+                                        match strippedLines with
+                                        | Some lines when
+                                            returnShapeOk
+                                            && multiLineStringSafe lines
+                                            && not (spansMultiLineLiteral index tail.Range.StartLine tail.Range.EndLine)
+                                            && not (mentionsForeignMutable tail.Range (String.concat "\n" lines))
+                                            && not (capturesByRefLike tail.Range)
+                                            // a `use` may not become a plain
+                                            // closure `using`: fall through to
+                                            // the task-returning variant below,
+                                            // where it stays real CE syntax
+                                            && not (containsUse tail.Range)
+                                            ->
+                                            let indented =
+                                                lines
+                                                |> List.map (fun l -> if isBlank l then "" else "    " + l)
+                                                |> String.concat "\n"
+
+                                            let call =
+                                                match terminalReturn with
+                                                | Some _ -> $"return {fnName} ()"
+                                                | None -> $"{fnName} ()"
+
+                                            [
+                                                Range.mkRange
+                                                    fileName
+                                                    (Position.mkPos tail.Range.StartLine 0)
+                                                    tail.Range.End,
+                                                $"{ind}let {fnName} () =\n{indented}\n{ind}{call}"
+                                            ]
+                                        | _ -> []
+
+                                    if not closureEdits.IsEmpty then
+                                        closureEdits
+                                    elif
+                                        // EARLY RETURNS in the tail: a plain
+                                        // closure cannot carry them, but a
+                                        // task-returning local function can —
+                                        // the tail stays a REAL task body
+                                        // (returns and use bindings legal),
+                                        // consumed with return!, and the outer
+                                        // machine sheds the lines all the same
+                                        multiLineStringSafe tailLines
+                                        && not (spansMultiLineLiteral index tail.Range.StartLine tail.Range.EndLine)
+                                        && not (mentionsForeignMutable tail.Range (String.concat "\n" tailLines))
+                                        && not (capturesByRefLike tail.Range)
+                                    then
+                                        let indented =
+                                            tailLines
+                                            |> List.map (fun l -> if isBlank l then "" else "    " + l)
+                                            |> String.concat "\n"
+
+                                        [
+                                            Range.mkRange
                                                 fileName
                                                 (Position.mkPos tail.Range.StartLine 0)
                                                 tail.Range.End,
-                                            $"{ind}let {fnName} () =\n{indented}\n{ind}{call}" ]
-                                      | _ -> []
-
-                                  if not closureEdits.IsEmpty then
-                                      closureEdits
-                                  elif
-                                      // EARLY RETURNS in the tail: a plain
-                                      // closure cannot carry them, but a
-                                      // task-returning local function can —
-                                      // the tail stays a REAL task body
-                                      // (returns and use bindings legal),
-                                      // consumed with return!, and the outer
-                                      // machine sheds the lines all the same
-                                      multiLineStringSafe tailLines
-                                      && not (spansMultiLineLiteral index tail.Range.StartLine tail.Range.EndLine)
-                                      && not (mentionsForeignMutable tail.Range (String.concat "\n" tailLines))
-                                  then
-                                      let indented =
-                                          tailLines
-                                          |> List.map (fun l -> if isBlank l then "" else "    " + l)
-                                          |> String.concat "\n"
-
-                                      [ Range.mkRange fileName (Position.mkPos tail.Range.StartLine 0) tail.Range.End,
-                                        $"{ind}let {fnName} () = {builder} {{\n{indented}\n{ind}}}\n{ind}return! {fnName} ()" ]
-                                  else
-                                      []
-                              | _ -> []
+                                            $"{ind}let {fnName} () = {builder} {{\n{indented}\n{ind}}}\n{ind}return! {fnName} ()"
+                                        ]
+                                    else
+                                        []
+                                | _ -> []
 
 
-                          { Range = noteRange
-                            Kind = AdviceKind.ExtractTail tailLineCount
-                            Edits = withhold tailEdits }
-                  | None -> ()
-          | _ -> () ]
+                            {
+                                Range = noteRange
+                                Kind = AdviceKind.ExtractTail tailLineCount
+                                Edits = withhold tailEdits
+                            }
+                    | None -> ()
+            | _ -> ()
+    ]

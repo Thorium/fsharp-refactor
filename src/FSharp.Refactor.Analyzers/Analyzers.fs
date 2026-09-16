@@ -16,9 +16,11 @@ open System
 let private HelpBase = "https://github.com/Thorium/fsharp-refactor"
 
 let private fix (range: range) (original: string) (replacement: string) : Fix =
-    { FromRange = range
-      FromText = original
-      ToText = replacement }
+    {
+        FromRange = range
+        FromText = original
+        ToText = replacement
+    }
 
 /// Every rule's message ends with its kind, so the one place a reader meets a
 /// suggestion — an editor hover, a SARIF entry, a CI log — says whether it is
@@ -26,16 +28,18 @@ let private fix (range: range) (original: string) (replacement: string) : Fix =
 /// suffix rather than a prefix because editors truncate from the right, and
 /// the sentence matters more than the label.
 let private hint (code: string) (message: string) (range: range) (fixes: Fix list) : Message =
-    { Type = "FSharp.Refactor"
-      Message = $"{message} [{RuleCatalog.name (RuleCatalog.categoryOf code)}]"
-      Code = code
-      Severity =
-        (if RuleCatalog.isPriority code then
-             Severity.Warning
-         else
-             Severity.Hint)
-      Range = range
-      Fixes = fixes }
+    {
+        Type = "FSharp.Refactor"
+        Message = $"{message} [{RuleCatalog.name (RuleCatalog.categoryOf code)}]"
+        Code = code
+        Severity =
+            (if RuleCatalog.isPriority code then
+                 Severity.Warning
+             else
+                 Severity.Hint)
+        Range = range
+        Fixes = fixes
+    }
 
 /// Run a typed rule only when check results are available.
 let private whenChecked (ctx: EditorContext) (produce: FSharpCheckFileResults -> Message list) : Message list =
@@ -297,11 +301,13 @@ let patternBoundInSibling (fileName: string) (options: AnalyzerProjectOptions) :
             // anywhere in a let's pattern (`let! lat`, `let (a, lat)`, a
             // parameter), a lambda's, a for's, a match clause's (`| Ok lat
             // ->`, a guard read counts too — the safe side) or an `as`
-            [ $@"\b(let|use)!?\s+[^=\n]*{n}[^=\n]*="
-              $@"\bfun\b[^\n>]*{n}"
-              $@"\bfor\b[^\n]*{n}[^\n]*\b(in|to|downto)\b"
-              $@"\|[^\n]*{n}[^\n]*->"
-              $@"\bas\s+{n}" ]
+            [
+                $@"\b(let|use)!?\s+[^=\n]*{n}[^=\n]*="
+                $@"\bfun\b[^\n>]*{n}"
+                $@"\bfor\b[^\n]*{n}[^\n]*\b(in|to|downto)\b"
+                $@"\|[^\n]*{n}[^\n]*->"
+                $@"\bas\s+{n}"
+            ]
             |> List.exists (fun pattern -> System.Text.RegularExpressions.Regex.IsMatch(text, pattern))
 
         fun name ->
@@ -386,7 +392,8 @@ let private widened (scopeOpen: bool) (build: bool -> Message list) =
                        // rules out, so the finding is reported and the fix
                        // withheld.
                        Message = m.Message + ShapeCaveat
-                       Fixes = [] }))
+                       Fixes = []
+                   }))
 
 /// The EDITOR-side twin of the apply tool's comment guard: a fix whose
 /// span contains a comment that no fix of the same message re-emits would
@@ -730,12 +737,14 @@ let private catchLogMessages
                 [ fix s.Range "" (insert s.ExceptionName) ]
 
         if offerAlternatives then
-            [ primary
-              hint
-                  "FR0120"
-                  $"Alternative: pass {s.ExceptionName}.GetBaseException() — the root cause of a wrapped or aggregate exception."
-                  s.Range
-                  [ fix s.Range "" (insert $"{s.ExceptionName}.GetBaseException()") ] ]
+            [
+                primary
+                hint
+                    "FR0120"
+                    $"Alternative: pass {s.ExceptionName}.GetBaseException() — the root cause of a wrapped or aggregate exception."
+                    s.Range
+                    [ fix s.Range "" (insert $"{s.ExceptionName}.GetBaseException()") ]
+            ]
         else
             [ primary ])
 
@@ -775,13 +784,15 @@ let private exceptionDetailMessages
             // better — and the LoaderExceptions join as the alternative
             match s.AlternativeFix with
             | Some(r, original, replacement) ->
-                [ hint "FR0151" s.Advice s.Range [ fix r original replacement ]
-                  if not detail.IsEmpty then
-                      hint
-                          "FR0151"
-                          "Alternative: report the failure with every LoaderExceptions message joined, in place of the .Message that names none of them."
-                          s.Range
-                          detail ]
+                [
+                    hint "FR0151" s.Advice s.Range [ fix r original replacement ]
+                    if not detail.IsEmpty then
+                        hint
+                            "FR0151"
+                            "Alternative: report the failure with every LoaderExceptions message joined, in place of the .Message that names none of them."
+                            s.Range
+                            detail
+                ]
             | None -> [ hint "FR0151" s.Advice s.Range detail ])
 
 let private cachedFailureMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
@@ -980,41 +991,43 @@ let private ifRestructureMessages
         // never re-qualify
         |> min (thenAtLeast - 1)
 
-    [ if flipEnabled then
-          for s in IfRestructure.findPyramidFlips thenAtLeast elseAtMost parseTree source do
-              hint
-                  "FR0114"
-                  "A large then-branch behind a small else reads bottom-heavy; flipping the condition puts the short exit first."
-                  s.Range
-                  [ fix s.Range s.OriginalText s.ReplacementText ]
-      if guardOrderEnabled then
-          for s in IfRestructure.findGuardOrderNotes parseTree source do
-              hint
-                  "FR0115"
-                  $"The base case sits FIRST behind a compound guard on '{s.Variable}'; every new error condition must be threaded into it. Inverted — error guards first, the base case as the final arm — the match reads top-down and extends by appending."
-                  s.Range
-                  []
-      if elseIfEnabled then
-          for s in IfRestructure.findElseIf parseTree source do
-              hint
-                  "FR0111"
-                  "This `else` holds a whole nested if; `elif` says the same thing one level flatter."
-                  s.Range
-                  [ fix s.Range s.OriginalText s.ReplacementText ]
-      if chainEnabled then
-          for s in IfRestructure.findEqualityChains parseTree source checkResults do
-              hint
-                  "FR0112"
-                  "This if/elif chain compares one identifier against distinct literals; a match states the same dispatch directly."
-                  s.Range
-                  [ fix s.Range s.OriginalText s.ReplacementText ]
-      if mergeEnabled then
-          for s in IfRestructure.findNestedIfMerges parseTree source do
-              hint
-                  "FR0113"
-                  "The nested if can merge into one `&&` condition — the branches are unchanged, one level of nesting is gone."
-                  s.Range
-                  [ fix s.Range s.OriginalText s.ReplacementText ] ]
+    [
+        if flipEnabled then
+            for s in IfRestructure.findPyramidFlips thenAtLeast elseAtMost parseTree source do
+                hint
+                    "FR0114"
+                    "A large then-branch behind a small else reads bottom-heavy; flipping the condition puts the short exit first."
+                    s.Range
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+        if guardOrderEnabled then
+            for s in IfRestructure.findGuardOrderNotes parseTree source do
+                hint
+                    "FR0115"
+                    $"The base case sits FIRST behind a compound guard on '{s.Variable}'; every new error condition must be threaded into it. Inverted — error guards first, the base case as the final arm — the match reads top-down and extends by appending."
+                    s.Range
+                    []
+        if elseIfEnabled then
+            for s in IfRestructure.findElseIf parseTree source do
+                hint
+                    "FR0111"
+                    "This `else` holds a whole nested if; `elif` says the same thing one level flatter."
+                    s.Range
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+        if chainEnabled then
+            for s in IfRestructure.findEqualityChains parseTree source checkResults do
+                hint
+                    "FR0112"
+                    "This if/elif chain compares one identifier against distinct literals; a match states the same dispatch directly."
+                    s.Range
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+        if mergeEnabled then
+            for s in IfRestructure.findNestedIfMerges parseTree source do
+                hint
+                    "FR0113"
+                    "The nested if can merge into one `&&` condition — the branches are unchanged, one level of nesting is gone."
+                    s.Range
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+    ]
 
 [<EditorAnalyzer("IfRestructure", "Flatten else-if, chain-to-match, nested-if merges", HelpBase)>]
 let ifRestructureEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -1068,8 +1081,10 @@ let private recGroupMessages check (parseTree: ParsedInput) (source: ISourceText
                 "FR0116"
                 $"'{s.MemberName}' heads its `let rec` group but references no member; a plain `let` with the group re-crowned below says it takes part in no recursion."
                 s.LetRecRange
-                [ fix s.LetRecRange (Text.textOfRange source s.LetRecRange) "let"
-                  fix s.AndRange (Text.textOfRange source s.AndRange) "let rec" ])
+                [
+                    fix s.LetRecRange (Text.textOfRange source s.LetRecRange) "let"
+                    fix s.AndRange (Text.textOfRange source s.AndRange) "let rec"
+                ])
 
     extractions @ recrowns
 
@@ -1197,8 +1212,10 @@ let private activePatternMessages
             "FR0006"
             ($"This guard can be extracted into an active pattern (|%s{s.PatternName}|_|).")
             s.ClauseRange
-            [ fix s.ClauseRange s.OriginalClauseText s.ClauseText
-              fix s.InsertRange "" s.InsertText ])
+            [
+                fix s.ClauseRange s.OriginalClauseText s.ClauseText
+                fix s.InsertRange "" s.InsertText
+            ])
 
 [<EditorAnalyzer("ActivePattern", "Extract a when-guard into an active pattern", HelpBase)>]
 let activePatternEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -1868,6 +1885,53 @@ let dictGetOrAddCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0154" "DictGetOrAdd" (fun () ->
         dictGetOrAddMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
+// ---- FR0155 SealedClass ----
+
+let private sealedClassMessages
+    (scopeOpen: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    (project: FSharpCheckProjectResults option)
+    : Message list =
+    widened scopeOpen (fun scope ->
+        SealedClass.find scope parseTree source check project
+        |> List.map (fun s ->
+            let fixes =
+                match s.Fix with
+                | Some(r, text) -> [ fix r "" text ]
+                | None -> []
+
+            hint
+                "FR0155"
+                $"Class '%s{s.TypeName}' is inherited by nothing in this project and the project keeps %s{s.Reason}; [<Sealed>] lets the JIT drop the covariance check on every array store and make the type test one compare (measured 2x on both)."
+                s.Range
+                fixes))
+
+[<EditorAnalyzer("SealedClass",
+                 "Seal an internal class nothing inherits, where arrays or type tests pay for it",
+                 HelpBase)>]
+let sealedClassEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0155" "SealedClass" (fun () ->
+        whenChecked ctx (fun check ->
+            sealedClassMessages
+                (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+                ctx.ParseFileResults.ParseTree
+                ctx.SourceText
+                check
+                ctx.CheckProjectResults)
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("SealedClass", "Seal an internal class nothing inherits, where arrays or type tests pay for it", HelpBase)>]
+let sealedClassCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0155" "SealedClass" (fun () ->
+        sealedClassMessages
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            ctx.CheckFileResults
+            (Some ctx.CheckProjectResults))
+
 // ---- FR0019 / FR0020 / FR0054 ObjectRules ----
 
 let private objectRulesMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
@@ -2061,7 +2125,12 @@ let queryInLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0029 TaskStateMachine ----
 
-let private taskStateMachineMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+let private taskStateMachineMessages
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults option)
+    : Message list =
     // How long a non-awaiting tail must be before `runTail` is offered on a
     // task the compiler did NOT warn about. It invents a name for code whose
     // only sin was sitting after the last await, so on a healthy task it is
@@ -2087,7 +2156,7 @@ let private taskStateMachineMessages (fileName: string) (parseTree: ParsedInput)
     // ran; empty in the IDE, where nothing compiled
     let dynamicFallbackLines = Configuration.dynamicFallbackLines fileName
 
-    TaskStateMachine.find parseTree source tailLines hoistReturnOnAsync dynamicFallbackLines
+    TaskStateMachine.find parseTree source check tailLines hoistReturnOnAsync dynamicFallbackLines
     |> List.map (fun s ->
         let message =
             match s.Kind with
@@ -2114,13 +2183,13 @@ let private taskStateMachineMessages (fileName: string) (parseTree: ParsedInput)
 [<EditorAnalyzer("TaskStateMachine", "Advice for shrinking oversized task expressions", HelpBase)>]
 let taskStateMachineEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0029" "TaskStateMachine" (fun () ->
-        taskStateMachineMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText
+        taskStateMachineMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("TaskStateMachine", "Advice for shrinking oversized task expressions", HelpBase)>]
 let taskStateMachineCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0029" "TaskStateMachine" (fun () ->
-        taskStateMachineMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        taskStateMachineMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText (Some ctx.CheckFileResults))
 
 // ---- FR0030 AddRange ----
 
@@ -2163,12 +2232,14 @@ let private stringConcatMessages
 
         match s.ConcatAlternative with
         | Some concat when offerAlternatives ->
-            [ primary
-              hint
-                  "FR0031"
-                  "…or as one explicit String.Concat call — the same thing the compiler emits for the interpolation, spelled out."
-                  s.Range
-                  [ fix s.Range s.OriginalText concat ] ]
+            [
+                primary
+                hint
+                    "FR0031"
+                    "…or as one explicit String.Concat call — the same thing the compiler emits for the interpolation, spelled out."
+                    s.Range
+                    [ fix s.Range s.OriginalText concat ]
+            ]
         | _ -> [ primary ])
 
 [<EditorAnalyzer("StringConcat", "Rewrite string + chains as interpolated strings", HelpBase)>]
@@ -2356,6 +2427,7 @@ let optionMatchCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private loopPerfMessages
     (scopeOpen: bool)
     (seenByLaterFile: string -> bool)
+    (check: FSharpCheckFileResults option)
     (fileName: string)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -2369,7 +2441,7 @@ let private loopPerfMessages
         []
     else
         let contains, constructions =
-            LoopPerf.findWith seenByLaterFile scopeOpen parseTree source
+            LoopPerf.findWith seenByLaterFile scopeOpen check parseTree source
 
         let containsMessages =
             if containsEnabled then
@@ -2445,6 +2517,7 @@ let loopPerfEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
                 loopPerfMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     (seenByLaterFile ctx.FileName ctx.ProjectOptions)
+                    ctx.CheckFileResults
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText)
@@ -2458,6 +2531,7 @@ let loopPerfCliAnalyzer (ctx: CliContext) : Async<Message list> =
                 loopPerfMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     (seenByLaterFile ctx.FileName ctx.ProjectOptions)
+                    (Some ctx.CheckFileResults)
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText)
@@ -2601,7 +2675,10 @@ let private caseInsensitiveMessages
         let fixes =
             match s.Replacement with
             | Some _ when CapabilityFix.guardUnavailable () -> []
-            | Some replacement -> [ CapabilityFix.make source s.Range (Text.textOfRange source s.Range) replacement ]
+            | Some replacement ->
+                [
+                    CapabilityFix.make source s.Range (Text.textOfRange source s.Range) replacement
+                ]
             | None -> []
 
         let primary = hint "FR0039" message s.Range fixes
@@ -2611,12 +2688,14 @@ let private caseInsensitiveMessages
         // auto-applies only the primary
         match s.CultureReplacement with
         | Some culture when offerAlternatives && s.Replacement.IsSome ->
-            [ primary
-              hint
-                  "FR0039"
-                  "…or culture-aware: InvariantCultureIgnoreCase compares by linguistic rules (ligatures, accents) where ordinal compares code points."
-                  s.Range
-                  [ fix s.Range (Text.textOfRange source s.Range) culture ] ]
+            [
+                primary
+                hint
+                    "FR0039"
+                    "…or culture-aware: InvariantCultureIgnoreCase compares by linguistic rules (ligatures, accents) where ordinal compares code points."
+                    s.Range
+                    [ fix s.Range (Text.textOfRange source s.Range) culture ]
+            ]
         | _ -> [ primary ])
 
 [<EditorAnalyzer("CaseInsensitive", "Allocation-free case-insensitive comparisons", HelpBase)>]
@@ -2946,17 +3025,19 @@ let private syncOverAsyncMessages
 
         // the swap is an ALTERNATIVE to the async-ward fix, so it is its
         // own message: an editor applies every fix of one message together
-        [ hint "FR0049" message s.Range (asFixes s.Fixes)
-          if swapAllowed && not s.AlternativeFixes.IsEmpty then
-              hint
-                  "FR0049"
-                  (match s.Kind with
-                   | SyncOverAsync.BlockKind.AntecedentResult ->
-                       "Read the antecedent with GetAwaiter().GetResult(): a fault then arrives as the exception itself, not wrapped in an AggregateException — an observable change for a caller that catches the wrapper."
-                   | _ ->
-                       "Alternative: call the synchronous sibling API instead — this walks the code away from async, a waypoint at best.")
-                  s.Range
-                  (asFixes s.AlternativeFixes) ])
+        [
+            hint "FR0049" message s.Range (asFixes s.Fixes)
+            if swapAllowed && not s.AlternativeFixes.IsEmpty then
+                hint
+                    "FR0049"
+                    (match s.Kind with
+                     | SyncOverAsync.BlockKind.AntecedentResult ->
+                         "Read the antecedent with GetAwaiter().GetResult(): a fault then arrives as the exception itself, not wrapped in an AggregateException — an observable change for a caller that catches the wrapper."
+                     | _ ->
+                         "Alternative: call the synchronous sibling API instead — this walks the code away from async, a waypoint at best.")
+                    s.Range
+                    (asFixes s.AlternativeFixes)
+        ])
 
 // the taskify fix: a file-private sync function draining a task at its
 // boundary becomes task-returning, its callers awaiting — same rule code,
@@ -3162,15 +3243,17 @@ let private swallowedExceptionMessages
 
         // each offer is its own message: an editor applies every fix of
         // one message together
-        [ hint "FR0055" message s.Range []
-          if offerFixes then
-              for offer in s.Offers do
-                  hint
-                      "FR0055"
-                      offer.Label
-                      s.Range
-                      (offer.Edits
-                       |> List.map (fun (r, original, replacement) -> fix r original replacement)) ])
+        [
+            hint "FR0055" message s.Range []
+            if offerFixes then
+                for offer in s.Offers do
+                    hint
+                        "FR0055"
+                        offer.Label
+                        s.Range
+                        (offer.Edits
+                         |> List.map (fun (r, original, replacement) -> fix r original replacement))
+        ])
 
 [<EditorAnalyzer("SwallowedException", "Empty catch-all handlers swallow every exception", HelpBase)>]
 let swallowedExceptionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -3449,22 +3532,24 @@ let private securityRulesMessages
             if processEnabled then
                 processSinks
                 |> List.collect (fun s ->
-                    [ hint
-                          "FR0126"
-                          $"A dynamically built string reaches {s.Sink} — the command/argument-injection sink, and doubly so when the string carries LLM or agent output; pass a fixed executable with an argument LIST (ProcessStartInfo.ArgumentList) instead."
-                          s.Range
-                          []
-                      // the list form needs .NET Core 3 or later, and a shell's
-                      // command line is not a list of arguments: an editor
-                      // action, with the person looking at the executable
-                      match s.Fix with
-                      | Some(r, original, replacement) when offerAlternatives ->
-                          hint
-                              "FR0126"
-                              "Alternative: pass the arguments as a list — each reaches the process whole, quoting and all (a hole that already carries several arguments becomes one; split it)."
-                              s.Range
-                              [ fix r original replacement ]
-                      | _ -> () ])
+                    [
+                        hint
+                            "FR0126"
+                            $"A dynamically built string reaches {s.Sink} — the command/argument-injection sink, and doubly so when the string carries LLM or agent output; pass a fixed executable with an argument LIST (ProcessStartInfo.ArgumentList) instead."
+                            s.Range
+                            []
+                        // the list form needs .NET Core 3 or later, and a shell's
+                        // command line is not a list of arguments: an editor
+                        // action, with the person looking at the executable
+                        match s.Fix with
+                        | Some(r, original, replacement) when offerAlternatives ->
+                            hint
+                                "FR0126"
+                                "Alternative: pass the arguments as a list — each reaches the process whole, quoting and all (a hole that already carries several arguments becomes one; split it)."
+                                s.Range
+                                [ fix r original replacement ]
+                        | _ -> ()
+                    ])
             else
                 []
 
@@ -3481,16 +3566,18 @@ let private securityRulesMessages
                     // just as well — the person picking the offer knows what
                     // the hash feeds
                     | SecurityRules.WeakKind.Hash(("SHA1" | "MD5") as weak), Some algo when offerAlternatives ->
-                        [ hint
-                              "FR0065"
-                              "Alternative: switch to SHA256 (mind persisted hashes and interop — the output size changes)."
-                              s.Range
-                              [ fix algo weak "SHA256" ]
-                          hint
-                              "FR0065"
-                              "Alternative: switch to SHA512 (mind persisted hashes and interop — the output size changes)."
-                              s.Range
-                              [ fix algo weak "SHA512" ] ]
+                        [
+                            hint
+                                "FR0065"
+                                "Alternative: switch to SHA256 (mind persisted hashes and interop — the output size changes)."
+                                s.Range
+                                [ fix algo weak "SHA256" ]
+                            hint
+                                "FR0065"
+                                "Alternative: switch to SHA512 (mind persisted hashes and interop — the output size changes)."
+                                s.Range
+                                [ fix algo weak "SHA512" ]
+                        ]
                     // Retiring a protocol changes what the process negotiates
                     // with a remote endpoint, so the edit is made VISIBLE:
                     // commenting the dead operand out leaves the diff saying
@@ -3537,9 +3624,11 @@ let private securityRulesMessages
                         // run applies; the whole-setting and swap variants
                         // stay a person's call
                         if offerAlternatives then
-                            [ yield! Option.toList commentOperand
-                              yield! Option.toList commentSetting
-                              yield swap ]
+                            [
+                                yield! Option.toList commentOperand
+                                yield! Option.toList commentSetting
+                                yield swap
+                            ]
                         else
                             [ defaultArg commentOperand swap ]
                     | _ -> [])
@@ -3935,19 +4024,21 @@ let private emptyGuidMessages
     |> List.collect (fun s ->
         let original = Text.textOfRange source s.Range
 
-        [ hint
-              "FR0136"
-              $"the zero-argument Guid constructor is 00000000-…: if the empty value is intended, {s.EmptyText} says so; if a FRESH guid was meant, this is the classic .NET slip."
-              s.Range
-              [ fix s.Range original s.EmptyText ]
-          // the behavior-CHANGING repair — the likely intent, but only a
-          // human knows; never CLI-applied
-          if offerAlternatives then
-              hint
-                  "FR0136"
-                  $"Alternative: {s.NewGuidText} — if a fresh guid was the intent, this is the actual bug fix."
-                  s.Range
-                  [ fix s.Range original s.NewGuidText ] ])
+        [
+            hint
+                "FR0136"
+                $"the zero-argument Guid constructor is 00000000-…: if the empty value is intended, {s.EmptyText} says so; if a FRESH guid was meant, this is the classic .NET slip."
+                s.Range
+                [ fix s.Range original s.EmptyText ]
+            // the behavior-CHANGING repair — the likely intent, but only a
+            // human knows; never CLI-applied
+            if offerAlternatives then
+                hint
+                    "FR0136"
+                    $"Alternative: {s.NewGuidText} — if a fresh guid was the intent, this is the actual bug fix."
+                    s.Range
+                    [ fix s.Range original s.NewGuidText ]
+        ])
 
 [<EditorAnalyzer("EmptyGuid", "Zero-argument Guid constructors state Empty or become NewGuid", HelpBase)>]
 let emptyGuidEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -4022,12 +4113,14 @@ let private seqOnArrayMessages
         // only the default above
         match s.LinqSpelling with
         | Some _ when offerAlternatives ->
-            [ primary
-              hint
-                  "FR0139"
-                  "…or keep the F# module: Array.contains is the idiomatic step and still beats Seq (measured 587ns to 464ns), without bringing System.Linq into the file."
-                  s.Range
-                  [ fix s.Range "Seq" "Array" ] ]
+            [
+                primary
+                hint
+                    "FR0139"
+                    "…or keep the F# module: Array.contains is the idiomatic step and still beats Seq (measured 587ns to 464ns), without bringing System.Linq into the file."
+                    s.Range
+                    [ fix s.Range "Seq" "Array" ]
+            ]
         | _ -> [ primary ])
 
 [<EditorAnalyzer("SeqOnArray", "Seq functions on a proven array use the Array module", HelpBase)>]
@@ -4118,22 +4211,26 @@ let private stringEmptinessMessages
                 "String.IsNullOrEmpty"
 
         if s.Guarded then
-            [ hint
-                  "FR0138"
-                  $"this hand-rolled emptiness test IS {predicate} — the null guard short-circuits exactly as the predicate answers, and the Trim spellings stop allocating a trimmed copy."
-                  s.Range
-                  [ fix s.Range s.OriginalText s.ReplacementText ] ]
+            [
+                hint
+                    "FR0138"
+                    $"this hand-rolled emptiness test IS {predicate} — the null guard short-circuits exactly as the predicate answers, and the Trim spellings stop allocating a trimmed copy."
+                    s.Range
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+            ]
         else
             // null behavior changes: the original throws, the predicate
             // answers true. Almost always the intent — but a human signs
-            [ hint
-                  "FR0138"
-                  $"trimming a copy just to test it: {predicate} tests the same whitespace set without allocating — but it answers true for null where this throws, so apply deliberately."
-                  s.Range
-                  (if offerAlternatives then
-                       [ fix s.Range s.OriginalText s.ReplacementText ]
-                   else
-                       []) ])
+            [
+                hint
+                    "FR0138"
+                    $"trimming a copy just to test it: {predicate} tests the same whitespace set without allocating — but it answers true for null where this throws, so apply deliberately."
+                    s.Range
+                    (if offerAlternatives then
+                         [ fix s.Range s.OriginalText s.ReplacementText ]
+                     else
+                         [])
+            ])
 
 [<EditorAnalyzer("StringEmptiness", "Hand-rolled emptiness tests become the BCL predicates", HelpBase)>]
 let stringEmptinessEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -4180,22 +4277,24 @@ let private miscRulesMessages
                     // cross-file pass, so it only notes
                     let insertAt = Range.mkRange s.Range.FileName s.Range.Start s.Range.Start
 
-                    [ hint
-                          "FR0062"
-                          (sprintf
-                              "'%s' is visible mutable module state — a global variable any consumer can write, with no thread safety; make it private (internal when another module of the same assembly writes it) or pass the state explicitly."
-                              s.Name)
-                          s.Range
-                          (if offerAlternatives then
-                               [ fix insertAt "" "private " ]
-                           else
-                               [])
-                      if offerAlternatives then
-                          hint
-                              "FR0062"
-                              $"Alternative: make '{s.Name}' internal — for when another module of the same assembly writes it."
-                              s.Range
-                              [ fix insertAt "" "internal " ] ])
+                    [
+                        hint
+                            "FR0062"
+                            (sprintf
+                                "'%s' is visible mutable module state — a global variable any consumer can write, with no thread safety; make it private (internal when another module of the same assembly writes it) or pass the state explicitly."
+                                s.Name)
+                            s.Range
+                            (if offerAlternatives then
+                                 [ fix insertAt "" "private " ]
+                             else
+                                 [])
+                        if offerAlternatives then
+                            hint
+                                "FR0062"
+                                $"Alternative: make '{s.Name}' internal — for when another module of the same assembly writes it."
+                                s.Range
+                                [ fix insertAt "" "internal " ]
+                    ])
             else
                 []
 
@@ -4230,17 +4329,19 @@ let private miscRulesMessages
                         let ri, oi, pi = mk "InvariantCulture"
                         let rc, oc, pc = mk "CurrentCulture"
 
-                        [ note
-                          hint
-                              "FR0067"
-                              "Fix: parse with InvariantCulture (wire and config data)."
-                              s.Range
-                              [ fix ri oi pi ]
-                          hint
-                              "FR0067"
-                              "Alternative: spell out CurrentCulture — today's implicit behavior, made deliberate."
-                              s.Range
-                              [ fix rc oc pc ] ]
+                        [
+                            note
+                            hint
+                                "FR0067"
+                                "Fix: parse with InvariantCulture (wire and config data)."
+                                s.Range
+                                [ fix ri oi pi ]
+                            hint
+                                "FR0067"
+                                "Alternative: spell out CurrentCulture — today's implicit behavior, made deliberate."
+                                s.Range
+                                [ fix rc oc pc ]
+                        ]
                     | _ -> [ note ])
             else
                 []
@@ -4498,7 +4599,9 @@ let private loopInvariantMessages (parseTree: ParsedInput) (source: ISourceText)
             "FR0071"
             $"'let %s{s.Name} = ...' does not depend on the loop, but every iteration re-evaluates it; the rewrite hoists it above the loop (the value is pure, so evaluating it once is the only observable change — a saving)."
             s.Range
-            [ for range, original, replacement in s.Edits -> fix range original replacement ])
+            [
+                for range, original, replacement in s.Edits -> fix range original replacement
+            ])
 
 [<EditorAnalyzer("LoopInvariant", "Hoist pure loop-invariant bindings out of loops", HelpBase)>]
 let loopInvariantEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -4542,7 +4645,9 @@ let private matchBangMessages (parseTree: ParsedInput) (source: ISourceText) : M
             "FR0073"
             $"'{s.Name}' exists only to be matched; 'match!' binds and matches in one step (F# 4.5+)."
             s.Range
-            [ for range, original, replacement in s.Edits -> fix range original replacement ])
+            [
+                for range, original, replacement in s.Edits -> fix range original replacement
+            ])
 
 [<EditorAnalyzer("MatchBang", "Collapse let!-then-match into match!", HelpBase)>]
 let matchBangEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -4564,7 +4669,9 @@ let private whileBangMessages (parseTree: ParsedInput) (source: ISourceText) : M
             "FR0078"
             $"This mutable-'%s{s.Name}' loop is the F# 8 'while!' idiom spelled out; 'while!' re-evaluates the computation each iteration, replacing all three bindings."
             s.Range
-            [ for range, original, replacement in s.Edits -> fix range original replacement ])
+            [
+                for range, original, replacement in s.Edits -> fix range original replacement
+            ])
 
 [<EditorAnalyzer("WhileBang", "Collapse the mutable-condition loop idiom into while! (F# 8)", HelpBase)>]
 let whileBangEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -4810,20 +4917,22 @@ let private failwithContextMessages
                     $"This failure message is a constant: every occurrence in the log reads the same. Interpolating %s{s.FunctionName}'s arguments says which call produced it — check the values are safe to log first, and that no test asserts on the text."
                     s.Range
                     (if applies then
-                         [ fix s.Range s.OriginalText s.ReplacementText
-                           // `let f = function ... | _ -> failwith`: the wildcard
-                           // arm is named in the same fix
-                           for r, original, replacement in Option.toList s.PatternEdit do
-                               fix r original replacement
-                           // the assertions pinning the text loosen in the
-                           // same atomic set
-                           for testFile, text in assertedIn do
-                               for r, original, replacement in
-                                   FailwithContext.findAssertions
-                                       (SourceText.ofString text)
-                                       testFile
-                                       [ s.OriginalText ] do
-                                   fix r original replacement ]
+                         [
+                             fix s.Range s.OriginalText s.ReplacementText
+                             // `let f = function ... | _ -> failwith`: the wildcard
+                             // arm is named in the same fix
+                             for r, original, replacement in Option.toList s.PatternEdit do
+                                 fix r original replacement
+                             // the assertions pinning the text loosen in the
+                             // same atomic set
+                             for testFile, text in assertedIn do
+                                 for r, original, replacement in
+                                     FailwithContext.findAssertions
+                                         (SourceText.ofString text)
+                                         testFile
+                                         [ s.OriginalText ] do
+                                     fix r original replacement
+                         ]
                      else
                          []))
 
@@ -4966,12 +5075,14 @@ let private recordFieldsMessages
             // the editor's two offers: placeholders that report
             // themselves, or zero values (literal zeros, and
             // Unchecked.defaultof for the rest)
-            [ hint "FR0145" text s.Range [ fix s.Range "" s.InsertText ]
-              hint
-                  "FR0145"
-                  $"Alternative: add the {s.Missing.Length} missing field(s) ({missing}) with zero values — false, 0, \"\", Guid.Empty, Unchecked.defaultof for the rest."
-                  s.Range
-                  [ fix s.Range "" s.ZeroInsertText ] ]
+            [
+                hint "FR0145" text s.Range [ fix s.Range "" s.InsertText ]
+                hint
+                    "FR0145"
+                    $"Alternative: add the {s.Missing.Length} missing field(s) ({missing}) with zero values — false, 0, \"\", Guid.Empty, Unchecked.defaultof for the rest."
+                    s.Range
+                    [ fix s.Range "" s.ZeroInsertText ]
+            ]
         else
             [ hint "FR0145" text s.Range [] ])
 
@@ -5040,17 +5151,19 @@ let private implementMissingMessages
 
         // two alternatives are two messages: an editor applies every fix
         // of one message together
-        [ hint
-              "FR0077"
-              $"This object expression is missing %d{s.MissingNames.Length} member(s) of %s{s.InterfaceName} (%s{missing}); the fix stubs them with NotImplementedException so the code compiles and the TODOs are explicit."
-              s.Range
-              [ fix s.Range "" s.InsertText ]
-          if offerEmpty then
-              hint
-                  "FR0077"
-                  $"Alternative: stub the %d{s.MissingNames.Length} missing member(s) (%s{missing}) returning each type's empty value — None, [], 0, \"\", Unchecked.defaultof for the rest."
-                  s.Range
-                  [ fix s.Range "" s.EmptyInsertText ] ])
+        [
+            hint
+                "FR0077"
+                $"This object expression is missing %d{s.MissingNames.Length} member(s) of %s{s.InterfaceName} (%s{missing}); the fix stubs them with NotImplementedException so the code compiles and the TODOs are explicit."
+                s.Range
+                [ fix s.Range "" s.InsertText ]
+            if offerEmpty then
+                hint
+                    "FR0077"
+                    $"Alternative: stub the %d{s.MissingNames.Length} missing member(s) (%s{missing}) returning each type's empty value — None, [], 0, \"\", Unchecked.defaultof for the rest."
+                    s.Range
+                    [ fix s.Range "" s.EmptyInsertText ]
+        ])
 
 [<EditorAnalyzer("ImplementMissing", "Stub missing interface members with NotImplementedException", HelpBase)>]
 let implementMissingEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -5073,7 +5186,9 @@ let private tabIndentationMessages (fileName: string) (source: ISourceText) : Me
             "FR0080"
             $"TABs are not allowed as F# indentation (FS1161) — pasted code often brings them along; the fix expands each leading TAB to four spaces on all %d{s.Edits.Length} affected line(s)."
             s.Range
-            [ for range, original, replacement in s.Edits -> fix range original replacement ])
+            [
+                for range, original, replacement in s.Edits -> fix range original replacement
+            ])
 
 [<EditorAnalyzer("TabIndentation", "Expand pasted TAB indentation to spaces", HelpBase)>]
 let tabIndentationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -5201,30 +5316,32 @@ let private patternCleanupMessages
     else
         let conses, wilds, tuples = PatternCleanups.find parseTree source checkResults
 
-        [ if consEnabled then
-              for s in conses do
-                  hint
-                      "FR0087"
-                      "The pattern `x :: []` is a one-element list; `[ x ]` says so directly."
-                      s.Range
-                      [ fix s.Range s.OriginalText s.ReplacementText ]
-          if wildEnabled then
-              for s in wilds do
-                  hint
-                      "FR0088"
-                      $"Every field of %s{s.CaseName} is a wildcard; '%s{s.CaseName} _' matches the same and survives field-count changes."
-                      s.Range
-                      [ fix s.Range s.OriginalText s.ReplacementText ]
-          if tupleEnabled then
-              for s in tuples do
-                  hint
-                      "FR0089"
-                      $"This literal holds ONE tuple of %d{s.Elements} elements — ',' builds a tuple, ';' separates elements; if a single-tuple collection is intended, ignore or disable this rule."
-                      s.Range
-                      (if offerFixes then
-                           (let (r, original, replacement) = s.Fix in [ fix r original replacement ])
-                       else
-                           []) ]
+        [
+            if consEnabled then
+                for s in conses do
+                    hint
+                        "FR0087"
+                        "The pattern `x :: []` is a one-element list; `[ x ]` says so directly."
+                        s.Range
+                        [ fix s.Range s.OriginalText s.ReplacementText ]
+            if wildEnabled then
+                for s in wilds do
+                    hint
+                        "FR0088"
+                        $"Every field of %s{s.CaseName} is a wildcard; '%s{s.CaseName} _' matches the same and survives field-count changes."
+                        s.Range
+                        [ fix s.Range s.OriginalText s.ReplacementText ]
+            if tupleEnabled then
+                for s in tuples do
+                    hint
+                        "FR0089"
+                        $"This literal holds ONE tuple of %d{s.Elements} elements — ',' builds a tuple, ';' separates elements; if a single-tuple collection is intended, ignore or disable this rule."
+                        s.Range
+                        (if offerFixes then
+                             (let (r, original, replacement) = s.Fix in [ fix r original replacement ])
+                         else
+                             [])
+        ]
 
 [<EditorAnalyzer("PatternCleanups", "Cons-of-empty, all-wildcard case fields, tuple-in-list", HelpBase)>]
 let patternCleanupsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -5414,21 +5531,23 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
 
         // the editor's two offers, as two messages: widening keeps the
         // result's meaning, Checked only makes the failure loud
-        [ hint "FR0105" message s.Range []
-          if offerFixes then
-              match s.WidenFix with
-              | Some(r, original, replacement) ->
-                  hint "FR0105" $"Fix: widen to int64 — {replacement}." s.Range [ fix r original replacement ]
-              | None -> ()
+        [
+            hint "FR0105" message s.Range []
+            if offerFixes then
+                match s.WidenFix with
+                | Some(r, original, replacement) ->
+                    hint "FR0105" $"Fix: widen to int64 — {replacement}." s.Range [ fix r original replacement ]
+                | None -> ()
 
-              match s.CheckedFix with
-              | Some(r, original, replacement) ->
-                  hint
-                      "FR0105"
-                      $"Alternative: {replacement} — still fails on overflow, but with an OverflowException instead of a wrong number."
-                      s.Range
-                      [ fix r original replacement ]
-              | None -> () ])
+                match s.CheckedFix with
+                | Some(r, original, replacement) ->
+                    hint
+                        "FR0105"
+                        $"Alternative: {replacement} — still fails on overflow, but with an OverflowException instead of a wrong number."
+                        s.Range
+                        [ fix r original replacement ]
+                | None -> ()
+        ])
 
 [<EditorAnalyzer("CheckedArithmetic", "Unchecked arithmetic on near-limit constants", HelpBase)>]
 let checkedArithmeticEditorAnalyzer (ctx: EditorContext) : Async<Message list> =

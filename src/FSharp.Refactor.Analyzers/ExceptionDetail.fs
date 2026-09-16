@@ -61,15 +61,17 @@ type Suggestion =
 /// once each has a real site to verify against.
 let private carriers =
     Map.ofList
-        [ "ReflectionTypeLoadException",
-          ("System.Reflection.ReflectionTypeLoadException",
-           [ "Types"; "LoaderExceptions" ],
-           "A ReflectionTypeLoadException's .Message is a fixed string naming no cause - reach for Types, which already holds the types that DID load. .NET loads every referenced assembly, so what failed is routinely a dependency this code never uses - a localization satellite, an optional plugin - and Types carries nulls where those would be. Filter them and carry on; LoaderExceptions is for when the failure genuinely has to be reported.")
+        [
+            "ReflectionTypeLoadException",
+            ("System.Reflection.ReflectionTypeLoadException",
+             [ "Types"; "LoaderExceptions" ],
+             "A ReflectionTypeLoadException's .Message is a fixed string naming no cause - reach for Types, which already holds the types that DID load. .NET loads every referenced assembly, so what failed is routinely a dependency this code never uses - a localization satellite, an optional plugin - and Types carries nulls where those would be. Filter them and carry on; LoaderExceptions is for when the failure genuinely has to be reported.")
 
-          "WebException",
-          ("System.Net.WebException",
-           [ "Response" ],
-           "A WebException's .Message never carries the server's error body - that is only in Response.GetResponseStream(). Read it with a StreamReader inside the handler, guarded by a Response null check, which is how the idiomatic handler spells it.") ]
+            "WebException",
+            ("System.Net.WebException",
+             [ "Response" ],
+             "A WebException's .Message never carries the server's error body - that is only in Response.GetResponseStream(). Read it with a StreamReader inside the handler, guarded by a Response null check, which is how the idiomatic handler spells it.")
+        ]
 
 /// `:? T as name` - the type tested for, and the name it binds.
 [<TailCall>]
@@ -207,144 +209,152 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 else
                     None)
 
-        [ for _, e in index.Exprs do
-              match e with
-              | SynExpr.TryWith(tryExpr = tried; withCases = cases) ->
-                  for SynMatchClause(pat = p; resultExpr = body; range = clauseRange) in cases do
-                      match typedHandler p with
-                      | ValueSome(typeId, bound) ->
-                          match Map.tryFind typeId.idText carriers with
-                          | Some(fullName, memberNames, advice) when entityFullName typeId = fullName ->
-                              // the whole clause, guard included - a handler
-                              // that tests `wex.Response` in its `when` has
-                              // already shown it knows where the body is
-                              let nested = nestedTryRanges clauseRange
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.TryWith(tryExpr = tried; withCases = cases) ->
+                    for SynMatchClause(pat = p; resultExpr = body; range = clauseRange) in cases do
+                        match typedHandler p with
+                        | ValueSome(typeId, bound) ->
+                            match Map.tryFind typeId.idText carriers with
+                            | Some(fullName, memberNames, advice) when entityFullName typeId = fullName ->
+                                // the whole clause, guard included - a handler
+                                // that tests `wex.Response` in its `when` has
+                                // already shown it knows where the body is
+                                let nested = nestedTryRanges clauseRange
 
-                              let reads =
-                                  readsIn bound.idText clauseRange
-                                  |> Array.filter (fun (_, r, _) ->
-                                      not (nested |> Array.exists (fun n -> Range.rangeContainsRange n r)))
+                                let reads =
+                                    readsIn bound.idText clauseRange
+                                    |> Array.filter (fun (_, r, _) ->
+                                        not (nested |> Array.exists (fun n -> Range.rangeContainsRange n r)))
 
-                              // ANY of them is awareness: a handler reading
-                              // LoaderExceptions to report the failure is as
-                              // informed as one reading Types to carry on
-                              let mentionsCarrier =
-                                  reads |> Array.exists (fun (n, _, _) -> List.contains n memberNames)
+                                // ANY of them is awareness: a handler reading
+                                // LoaderExceptions to report the failure is as
+                                // informed as one reading Types to carry on
+                                let mentionsCarrier =
+                                    reads |> Array.exists (fun (n, _, _) -> List.contains n memberNames)
 
-                              let carrier = List.head memberNames
+                                let carrier = List.head memberNames
 
-                              // `ToString()` parses as a DotGet of ToString
-                              // under the unit application, so both spellings
-                              // land here
-                              let thrownAway =
-                                  reads |> Array.tryFind (fun (n, _, _) -> n = "Message" || n = "ToString")
+                                // `ToString()` parses as a DotGet of ToString
+                                // under the unit application, so both spellings
+                                // land here
+                                let thrownAway =
+                                    reads |> Array.tryFind (fun (n, _, _) -> n = "Message" || n = "ToString")
 
-                              // only a read that ENDS at .Message, outside any
-                              // `$"..."` hole, can be rewritten in place; a
-                              // longer chain or an interpolated one is
-                              // reported and left alone
-                              let interpolated = interpolatedRanges clauseRange
+                                // only a read that ENDS at .Message, outside any
+                                // `$"..."` hole, can be rewritten in place; a
+                                // longer chain or an interpolated one is
+                                // reported and left alone
+                                let interpolated = interpolatedRanges clauseRange
 
-                              let fixable =
-                                  reads
-                                  |> Array.tryFind (fun (n, r, exact) ->
-                                      n = "Message"
-                                      && exact
-                                      && not (interpolated |> Array.exists (fun i -> Range.rangeContainsRange i r)))
+                                let fixable =
+                                    reads
+                                    |> Array.tryFind (fun (n, r, exact) ->
+                                        n = "Message"
+                                        && exact
+                                        && not (interpolated |> Array.exists (fun i -> Range.rangeContainsRange i r)))
 
-                              match mentionsCarrier, thrownAway with
-                              | false, Some(_, r, _) ->
-                                  yield
-                                      { Range = r
-                                        ExceptionType = typeId.idText
-                                        Carrier = carrier
-                                        Advice = advice
-                                        Fix =
-                                          // one type-preserving expression, and
-                                          // only for the shape that has one
-                                          match fixable with
-                                          | Some(_, fixRange, _) when typeId.idText = "ReflectionTypeLoadException" ->
-                                              Some(
-                                                  fixRange,
-                                                  textOfRange source fixRange,
-                                                  "("
-                                                  + bound.idText
-                                                  + ".LoaderExceptions |> Seq.filter (isNull >> not) |> Seq.map (fun x -> x.Message) |> String.concat \"; \")"
-                                              )
-                                          | _ -> None
-                                        AlternativeFix =
-                                          // the partial result is only worth
-                                          // keeping when the call that failed
-                                          // was GetTypes, which is what makes
-                                          // both branches Type[]
-                                          if
-                                              typeId.idText = "ReflectionTypeLoadException"
-                                              && (match getTypesIdent (stripParens tried) with
-                                                  | ValueSome id ->
-                                                      // Assembly.GetTypes, not a
-                                                      // user method of that name:
-                                                      // the fix only typechecks
-                                                      // because the result is
-                                                      // Type[]
-                                                      (entityMemberOwner id).StartsWith "System.Reflection.Assembly"
-                                                  | ValueNone -> false)
-                                          then
-                                              // only a rethrow the handler EVALUATES
-                                              // TO: the replacement is a Type[], so
-                                              // a statement-position `if strict then
-                                              // reraise ()` mid-body stays as it is
-                                              tailExprs body
-                                              |> List.tryPick (fun inner ->
-                                                  if
-                                                      isRethrow bound.idText inner
-                                                      // a nested handler's rethrow
-                                                      // belongs to ITS exception,
-                                                      // not ours
-                                                      && not (
-                                                          nested
-                                                          |> Array.exists (fun n ->
-                                                              Range.rangeContainsRange n inner.Range)
-                                                      )
-                                                  then
-                                                      // A TRAILING comment is only
-                                                      // safe when the rethrow ends
-                                                      // its line. In `if c then
-                                                      // reraise() else fallback`
-                                                      // it would comment the `else`
-                                                      // out, which compiles as
-                                                      // something else entirely or
-                                                      // not at all.
-                                                      let endsTheLine =
-                                                          try
-                                                              let line = source.GetLineString(inner.Range.EndLine - 1)
+                                match mentionsCarrier, thrownAway with
+                                | false, Some(_, r, _) ->
+                                    yield
+                                        {
+                                            Range = r
+                                            ExceptionType = typeId.idText
+                                            Carrier = carrier
+                                            Advice = advice
+                                            Fix =
+                                                // one type-preserving expression, and
+                                                // only for the shape that has one
+                                                match fixable with
+                                                | Some(_, fixRange, _) when
+                                                    typeId.idText = "ReflectionTypeLoadException"
+                                                    ->
+                                                    Some(
+                                                        fixRange,
+                                                        textOfRange source fixRange,
+                                                        "("
+                                                        + bound.idText
+                                                        + ".LoaderExceptions |> Seq.filter (isNull >> not) |> Seq.map (fun x -> x.Message) |> String.concat \"; \")"
+                                                    )
+                                                | _ -> None
+                                            AlternativeFix =
+                                                // the partial result is only worth
+                                                // keeping when the call that failed
+                                                // was GetTypes, which is what makes
+                                                // both branches Type[]
+                                                if
+                                                    typeId.idText = "ReflectionTypeLoadException"
+                                                    && (match getTypesIdent (stripParens tried) with
+                                                        | ValueSome id ->
+                                                            // Assembly.GetTypes, not a
+                                                            // user method of that name:
+                                                            // the fix only typechecks
+                                                            // because the result is
+                                                            // Type[]
+                                                            (entityMemberOwner id).StartsWith
+                                                                "System.Reflection.Assembly"
+                                                        | ValueNone -> false)
+                                                then
+                                                    // only a rethrow the handler EVALUATES
+                                                    // TO: the replacement is a Type[], so
+                                                    // a statement-position `if strict then
+                                                    // reraise ()` mid-body stays as it is
+                                                    tailExprs body
+                                                    |> List.tryPick (fun inner ->
+                                                        if
+                                                            isRethrow bound.idText inner
+                                                            // a nested handler's rethrow
+                                                            // belongs to ITS exception,
+                                                            // not ours
+                                                            && not (
+                                                                nested
+                                                                |> Array.exists (fun n ->
+                                                                    Range.rangeContainsRange n inner.Range)
+                                                            )
+                                                        then
+                                                            // A TRAILING comment is only
+                                                            // safe when the rethrow ends
+                                                            // its line. In `if c then
+                                                            // reraise() else fallback`
+                                                            // it would comment the `else`
+                                                            // out, which compiles as
+                                                            // something else entirely or
+                                                            // not at all.
+                                                            let endsTheLine =
+                                                                try
+                                                                    let line =
+                                                                        source.GetLineString(inner.Range.EndLine - 1)
 
-                                                              inner.Range.EndColumn >= line.Length
-                                                              || System.String.IsNullOrWhiteSpace(
-                                                                  line.Substring inner.Range.EndColumn
-                                                              )
-                                                          with _ -> // unknown reads as unsafe; fsharpanalyzer: ignore-line FR0055
-                                                              false
+                                                                    inner.Range.EndColumn >= line.Length
+                                                                    || System.String.IsNullOrWhiteSpace(
+                                                                        line.Substring inner.Range.EndColumn
+                                                                    )
+                                                                with _ -> // unknown reads as unsafe; fsharpanalyzer: ignore-line FR0055
+                                                                    false
 
-                                                      Some(
-                                                          inner.Range,
-                                                          textOfRange source inner.Range,
-                                                          "(let loaded = (if isNull "
-                                                          + bound.idText
-                                                          + ".Types then [||] else "
-                                                          + bound.idText
-                                                          + ".Types |> Array.filter (isNull >> not)) in if Array.isEmpty loaded then reraise () else loaded)"
-                                                          + (if endsTheLine then
-                                                                 " // TODO: log "
-                                                                 + bound.idText
-                                                                 + ".LoaderExceptions as a warning - these did not load"
-                                                             else
-                                                                 "")
-                                                      )
-                                                  else
-                                                      None)
-                                          else
-                                              None }
-                              | _ -> ()
-                          | _ -> ()
-                      | ValueNone -> ()
-              | _ -> () ]
+                                                            Some(
+                                                                inner.Range,
+                                                                textOfRange source inner.Range,
+                                                                "(let loaded = (if isNull "
+                                                                + bound.idText
+                                                                + ".Types then [||] else "
+                                                                + bound.idText
+                                                                + ".Types |> Array.filter (isNull >> not)) in if Array.isEmpty loaded then reraise () else loaded)"
+                                                                + (if endsTheLine then
+                                                                       " // TODO: log "
+                                                                       + bound.idText
+                                                                       + ".LoaderExceptions as a warning - these did not load"
+                                                                   else
+                                                                       "")
+                                                            )
+                                                        else
+                                                            None)
+                                                else
+                                                    None
+                                        }
+                                | _ -> ()
+                            | _ -> ()
+                        | ValueNone -> ()
+                | _ -> ()
+        ]

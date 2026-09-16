@@ -119,22 +119,24 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // every binding parameter annotated `: CancellationToken`, with the
         // binding it belongs to — the scope a call must sit inside
         let tokenParams =
-            [ for path, pat in index.Pats do
-                  match pat with
-                  | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id)); targetType = t) when
-                      isCancellationTokenType t
-                      ->
-                      let binding =
-                          path
-                          |> List.tryPick (fun node ->
-                              match node with
-                              | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
-                              | _ -> None)
+            [
+                for path, pat in index.Pats do
+                    match pat with
+                    | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id)); targetType = t) when
+                        isCancellationTokenType t
+                        ->
+                        let binding =
+                            path
+                            |> List.tryPick (fun node ->
+                                match node with
+                                | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                                | _ -> None)
 
-                      match binding with
-                      | Some bindingRange -> yield id.idText, bindingRange
-                      | None -> ()
-                  | _ -> () ]
+                        match binding with
+                        | Some bindingRange -> yield id.idText, bindingRange
+                        | None -> ()
+                    | _ -> ()
+            ]
 
         // the single in-scope token for a call site, if there is exactly one
         let tokenFor (callRange: range) =
@@ -146,198 +148,208 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | [ name ] -> Some name
             | _ -> None
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) ->
-                  // .NET tupled call shapes only — the edit appends inside
-                  // the parentheses
-                  let callArity =
-                      match args with
-                      | SynExpr.Const(SynConst.Unit, _) -> Some 0
-                      | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) when not (es |> List.exists isNamedArg) ->
-                          Some es.Length
-                      | SynExpr.Paren(expr = SynExpr.Tuple _) -> None
-                      | SynExpr.Paren(expr = inner) when not (isNamedArg inner) -> Some 1
-                      | _ -> None
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) ->
+                    // .NET tupled call shapes only — the edit appends inside
+                    // the parentheses
+                    let callArity =
+                        match args with
+                        | SynExpr.Const(SynConst.Unit, _) -> Some 0
+                        | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) when not (es |> List.exists isNamedArg) ->
+                            Some es.Length
+                        | SynExpr.Paren(expr = SynExpr.Tuple _) -> None
+                        | SynExpr.Paren(expr = inner) when not (isNamedArg inner) -> Some 1
+                        | _ -> None
 
-                  // the token may already BE one of the arguments —
-                  // `CreateLinkedTokenSource(ct)` takes the token as its
-                  // PAYLOAD, and a params/two-token sibling overload would
-                  // happily compile `(ct, ct)`
-                  let alreadyPassed token =
-                      let isToken (a: SynExpr) =
-                          match stripParens a with
-                          | SynExpr.Ident i -> i.idText = token
-                          | _ -> false
+                    // the token may already BE one of the arguments —
+                    // `CreateLinkedTokenSource(ct)` takes the token as its
+                    // PAYLOAD, and a params/two-token sibling overload would
+                    // happily compile `(ct, ct)`
+                    let alreadyPassed token =
+                        let isToken (a: SynExpr) =
+                            match stripParens a with
+                            | SynExpr.Ident i -> i.idText = token
+                            | _ -> false
 
-                      match args with
-                      | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) -> es |> List.exists isToken
-                      | SynExpr.Paren(expr = inner) -> isToken inner
-                      | _ -> false
+                        match args with
+                        | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) -> es |> List.exists isToken
+                        | SynExpr.Paren(expr = inner) -> isToken inner
+                        | _ -> false
 
-                  match callArity, tokenFor expr.Range with
-                  | Some arity, Some token when not (alreadyPassed token) ->
-                      match resolveMember methodId with
-                      | Some(symbolUse, mfv) ->
-                          match mfv with
-                          | mfv when mfv.IsMember && not mfv.IsProperty && not (schedulesDelegate mfv) ->
-                              let shapes = parameterShapes symbolUse.DisplayContext mfv
+                    match callArity, tokenFor expr.Range with
+                    | Some arity, Some token when not (alreadyPassed token) ->
+                        match resolveMember methodId with
+                        | Some(symbolUse, mfv) ->
+                            match mfv with
+                            | mfv when mfv.IsMember && not mfv.IsProperty && not (schedulesDelegate mfv) ->
+                                let shapes = parameterShapes symbolUse.DisplayContext mfv
 
-                              let tokenAccepted =
-                                  match shapes with
-                                  | Some ps when ps.Length = arity ->
-                                      // is there a sibling overload with the
-                                      // same prefix plus a trailing token?
-                                      (try
-                                          match mfv.DeclaringEntity with
-                                          | Some entity ->
-                                              entity.MembersFunctionsAndValues
-                                              |> Seq.exists (fun m ->
-                                                  m.DisplayName = mfv.DisplayName
-                                                  && (match parameterShapes symbolUse.DisplayContext m with
-                                                      | Some mps when mps.Length = arity + 1 ->
-                                                          List.truncate arity mps = ps
-                                                          && (m.CurriedParameterGroups
-                                                              |> Seq.collect id
-                                                              |> Seq.tryLast
-                                                              |> Option.map (fun p -> isCancellationToken p.Type)
-                                                              |> Option.defaultValue false)
-                                                      | _ -> false))
-                                          | None -> false
-                                       with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                                           false)
-                                  | Some ps when ps.Length = arity + 1 ->
-                                      // the method itself has a trailing
-                                      // OPTIONAL token the call omits
-                                      (try
-                                          let last = mfv.CurriedParameterGroups |> Seq.collect id |> Seq.last
-                                          last.IsOptionalArg && isCancellationToken last.Type
-                                       with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                                           false)
-                                  | _ -> false
+                                let tokenAccepted =
+                                    match shapes with
+                                    | Some ps when ps.Length = arity ->
+                                        // is there a sibling overload with the
+                                        // same prefix plus a trailing token?
+                                        (try
+                                            match mfv.DeclaringEntity with
+                                            | Some entity ->
+                                                entity.MembersFunctionsAndValues
+                                                |> Seq.exists (fun m ->
+                                                    m.DisplayName = mfv.DisplayName
+                                                    && (match parameterShapes symbolUse.DisplayContext m with
+                                                        | Some mps when mps.Length = arity + 1 ->
+                                                            List.truncate arity mps = ps
+                                                            && (m.CurriedParameterGroups
+                                                                |> Seq.collect id
+                                                                |> Seq.tryLast
+                                                                |> Option.map (fun p -> isCancellationToken p.Type)
+                                                                |> Option.defaultValue false)
+                                                        | _ -> false))
+                                            | None -> false
+                                         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                             false)
+                                    | Some ps when ps.Length = arity + 1 ->
+                                        // the method itself has a trailing
+                                        // OPTIONAL token the call omits
+                                        (try
+                                            let last = mfv.CurriedParameterGroups |> Seq.collect id |> Seq.last
+                                            last.IsOptionalArg && isCancellationToken last.Type
+                                         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                             false)
+                                    | _ -> false
 
-                              if tokenAccepted then
-                                  match args with
-                                  | SynExpr.Const(SynConst.Unit, unitRange) ->
-                                      { Range = unitRange
-                                        Original = "()"
-                                        Replacement = $"({token})"
-                                        MethodName = methodId.idText
-                                        TokenName = token
-                                        Kind = TokenGap.Omitted }
-                                  | SynExpr.Paren(expr = inner) ->
-                                      // a trailing lambda, match or if runs
-                                      // to the closing parenthesis: `, ct`
-                                      // appended bare joins its BODY as a
-                                      // tuple — Paket's
-                                      // `ContinueWith(fun (_: Task) -> (), ct)`
-                                      // returned `unit * CancellationToken`
-                                      // and the pass rolled back. Such an
-                                      // argument is wrapped first
-                                      let lastElement =
-                                          match inner with
-                                          | SynExpr.Tuple(exprs = es) -> List.last es
-                                          | e -> e
-
-                                      let openEnded =
-                                          match lastElement with
-                                          | SynExpr.Lambda _
-                                          | SynExpr.MatchLambda _
-                                          | SynExpr.Match _
-                                          | SynExpr.IfThenElse _
-                                          | SynExpr.TryWith _
-                                          | SynExpr.TryFinally _
-                                          | SynExpr.Sequential _
-                                          | SynExpr.LetOrUse _ -> true
-                                          | _ -> false
-
-                                      if openEnded then
-                                          { Range = lastElement.Range
-                                            Original = textOfRange source lastElement.Range
-                                            Replacement = $"({textOfRange source lastElement.Range}), {token}"
+                                if tokenAccepted then
+                                    match args with
+                                    | SynExpr.Const(SynConst.Unit, unitRange) ->
+                                        {
+                                            Range = unitRange
+                                            Original = "()"
+                                            Replacement = $"({token})"
                                             MethodName = methodId.idText
                                             TokenName = token
-                                            Kind = TokenGap.Omitted }
-                                      else
-                                          let at = Range.mkRange expr.Range.FileName inner.Range.End inner.Range.End
+                                            Kind = TokenGap.Omitted
+                                        }
+                                    | SynExpr.Paren(expr = inner) ->
+                                        // a trailing lambda, match or if runs
+                                        // to the closing parenthesis: `, ct`
+                                        // appended bare joins its BODY as a
+                                        // tuple — Paket's
+                                        // `ContinueWith(fun (_: Task) -> (), ct)`
+                                        // returned `unit * CancellationToken`
+                                        // and the pass rolled back. Such an
+                                        // argument is wrapped first
+                                        let lastElement =
+                                            match inner with
+                                            | SynExpr.Tuple(exprs = es) -> List.last es
+                                            | e -> e
 
-                                          { Range = at
-                                            Original = ""
-                                            Replacement = $", {token}"
-                                            MethodName = methodId.idText
-                                            TokenName = token
-                                            Kind = TokenGap.Omitted }
-                                  | _ -> ()
-                          | _ -> ()
-                      | None -> ()
-                  | _ -> ()
-              | _ -> ()
+                                        let openEnded =
+                                            match lastElement with
+                                            | SynExpr.Lambda _
+                                            | SynExpr.MatchLambda _
+                                            | SynExpr.Match _
+                                            | SynExpr.IfThenElse _
+                                            | SynExpr.TryWith _
+                                            | SynExpr.TryFinally _
+                                            | SynExpr.Sequential _
+                                            | SynExpr.LetOrUse _ -> true
+                                            | _ -> false
 
-              // propagation: `CancellationToken.None` as an ARGUMENT while
-              // the enclosing binding receives a real token — the chain is
-              // cut one call too early on purpose-by-accident
-              match expr with
-              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when pathEndsWith "CancellationToken" "None" ids ->
-                  match tokenFor expr.Range with
-                  | Some token ->
-                      // only as an argument: replacing a stored binding's
-                      // RHS would rewrite intent this scan cannot see
-                      let enclosingCall =
-                          index.Exprs
-                          |> Array.tryPick (fun (_, e) ->
-                              match e with
-                              | SynExpr.App(funcExpr = callee; argExpr = a) when
-                                  Range.equals a.Range expr.Range
-                                  || (match a with
-                                      | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) ->
-                                          es |> List.exists (fun x -> Range.equals x.Range expr.Range)
-                                      | SynExpr.Paren(expr = inner) -> Range.equals inner.Range expr.Range
-                                      | _ -> false)
-                                  ->
-                                  Some callee
-                              | _ -> None)
+                                        if openEnded then
+                                            {
+                                                Range = lastElement.Range
+                                                Original = textOfRange source lastElement.Range
+                                                Replacement = $"({textOfRange source lastElement.Range}), {token}"
+                                                MethodName = methodId.idText
+                                                TokenName = token
+                                                Kind = TokenGap.Omitted
+                                            }
+                                        else
+                                            let at = Range.mkRange expr.Range.FileName inner.Range.End inner.Range.End
 
-                      let isArgument = enclosingCall.IsSome
+                                            {
+                                                Range = at
+                                                Original = ""
+                                                Replacement = $", {token}"
+                                                MethodName = methodId.idText
+                                                TokenName = token
+                                                Kind = TokenGap.Omitted
+                                            }
+                                    | _ -> ()
+                            | _ -> ()
+                        | None -> ()
+                    | _ -> ()
+                | _ -> ()
 
-                      // an explicit None on Task.Run / StartNew is the
-                      // author choosing to always start the work
-                      let schedulesWork =
-                          match enclosingCall with
-                          | Some(CallIdent calleeId) ->
-                              resolveMember calleeId |> Option.exists (fun (_, mfv) -> schedulesDelegate mfv)
-                          | _ -> false
+                // propagation: `CancellationToken.None` as an ARGUMENT while
+                // the enclosing binding receives a real token — the chain is
+                // cut one call too early on purpose-by-accident
+                match expr with
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when pathEndsWith "CancellationToken" "None" ids ->
+                    match tokenFor expr.Range with
+                    | Some token ->
+                        // only as an argument: replacing a stored binding's
+                        // RHS would rewrite intent this scan cannot see
+                        let enclosingCall =
+                            index.Exprs
+                            |> Array.tryPick (fun (_, e) ->
+                                match e with
+                                | SynExpr.App(funcExpr = callee; argExpr = a) when
+                                    Range.equals a.Range expr.Range
+                                    || (match a with
+                                        | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) ->
+                                            es |> List.exists (fun x -> Range.equals x.Range expr.Range)
+                                        | SynExpr.Paren(expr = inner) -> Range.equals inner.Range expr.Range
+                                        | _ -> false)
+                                    ->
+                                    Some callee
+                                | _ -> None)
 
-                      let typedGate =
-                          let noneId = List.last ids
-                          let lineText = source.GetLineString(noneId.idRange.EndLine - 1)
+                        let isArgument = enclosingCall.IsSome
 
-                          match
-                              check.GetSymbolUseAtLocation(
-                                  noneId.idRange.EndLine,
-                                  noneId.idRange.EndColumn,
-                                  lineText,
-                                  [ noneId.idText ]
-                              )
-                          with
-                          | Some symbolUse ->
-                              match symbolUse.Symbol with
-                              | :? FSharpMemberOrFunctionOrValue as p ->
-                                  (try
-                                      p.DeclaringEntity
-                                      |> Option.bind (fun e -> e.TryFullName)
-                                      |> Option.map (fun n -> n.StartsWith "System.Threading.CancellationToken")
-                                      |> Option.defaultValue false
-                                   with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                                       false)
-                              | _ -> false
-                          | None -> false
+                        // an explicit None on Task.Run / StartNew is the
+                        // author choosing to always start the work
+                        let schedulesWork =
+                            match enclosingCall with
+                            | Some(CallIdent calleeId) ->
+                                resolveMember calleeId |> Option.exists (fun (_, mfv) -> schedulesDelegate mfv)
+                            | _ -> false
 
-                      if isArgument && typedGate && not schedulesWork then
-                          { Range = expr.Range
-                            Original = textOfRange source expr.Range
-                            Replacement = token
-                            MethodName = "CancellationToken.None"
-                            TokenName = token
-                            Kind = TokenGap.NonePassed }
-                  | None -> ()
-              | _ -> () ]
+                        let typedGate =
+                            let noneId = List.last ids
+                            let lineText = source.GetLineString(noneId.idRange.EndLine - 1)
+
+                            match
+                                check.GetSymbolUseAtLocation(
+                                    noneId.idRange.EndLine,
+                                    noneId.idRange.EndColumn,
+                                    lineText,
+                                    [ noneId.idText ]
+                                )
+                            with
+                            | Some symbolUse ->
+                                match symbolUse.Symbol with
+                                | :? FSharpMemberOrFunctionOrValue as p ->
+                                    (try
+                                        p.DeclaringEntity
+                                        |> Option.bind (fun e -> e.TryFullName)
+                                        |> Option.map (fun n -> n.StartsWith "System.Threading.CancellationToken")
+                                        |> Option.defaultValue false
+                                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                         false)
+                                | _ -> false
+                            | None -> false
+
+                        if isArgument && typedGate && not schedulesWork then
+                            {
+                                Range = expr.Range
+                                Original = textOfRange source expr.Range
+                                Replacement = token
+                                MethodName = "CancellationToken.None"
+                                TokenName = token
+                                Kind = TokenGap.NonePassed
+                            }
+                    | None -> ()
+                | _ -> ()
+        ]

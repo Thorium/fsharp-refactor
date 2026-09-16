@@ -556,11 +556,13 @@ let find
                         leaked
                         |> List.iteri (fun i (fieldName, fieldRange) ->
                             disposables.Add
-                                { TypeName = typeName
-                                  FieldName = fieldName
-                                  Range = fieldRange
-                                  DisposableBase = disposableBase
-                                  Fix = if i = 0 then typeFix else None })
+                                {
+                                    TypeName = typeName
+                                    FieldName = fieldName
+                                    Range = fieldRange
+                                    DisposableBase = disposableBase
+                                    Fix = if i = 0 then typeFix else None
+                                })
                     else
                         // FR0047 (CA2213): disposable, but the field is
                         // never touched by any Dispose body
@@ -719,11 +721,13 @@ let find
                                             None)
 
                                 undisposed.Add
-                                    { TypeName = typeName
-                                      FieldName = fieldName
-                                      Range = fieldRange
-                                      MentionedOnly = mentionedOnly
-                                      Fix = fix }
+                                    {
+                                        TypeName = typeName
+                                        FieldName = fieldName
+                                        Range = fieldRange
+                                        MentionedOnly = mentionedOnly
+                                        Fix = fix
+                                    }
 
                     // FR0033: instance members touching no instance state —
                     // except where instance-ness is a contract (CE builders,
@@ -778,8 +782,10 @@ let find
 
                             if not (mentions instanceNames bodyExpr.Range) then
                                 statics.Add
-                                    { MemberName = nameId.idText
-                                      Range = m.Range }
+                                    {
+                                        MemberName = nameId.idText
+                                        Range = m.Range
+                                    }
                         | _ -> ()
                 | _ -> ()
         | _ -> ()
@@ -817,50 +823,54 @@ let disposeWithoutInterface
             | Some(:? FSharpEntity as entity) -> entityIsDisposable entity
             | _ -> false
 
-        [ for _, decl in index.Decls do
-              match decl with
-              | SynModuleDecl.Types(typeDefns = defns) ->
-                  for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds); typeRepr = repr; members = extra) in
-                      defns do
-                      let members =
-                          match repr with
-                          | SynTypeDefnRepr.ObjectModel(members = ms) -> ms @ extra
-                          | _ -> extra
+        [
+            for _, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Types(typeDefns = defns) ->
+                    for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds); typeRepr = repr; members = extra) in
+                        defns do
+                        let members =
+                            match repr with
+                            | SynTypeDefnRepr.ObjectModel(members = ms) -> ms @ extra
+                            | _ -> extra
 
-                      let publicDispose =
-                          members
-                          |> List.tryPick (fun m ->
-                              match m with
-                              | SynMemberDefn.Member(
-                                  memberDefn = SynBinding(
-                                      valData = SynValData(memberFlags = Some flags)
-                                      accessibility = bindingAccess
-                                      headPat = SynPat.LongIdent(
-                                          longDotId = SynLongIdent(id = [ _; nameId ])
-                                          argPats = SynArgPats.Pats [ arg ]
-                                          accessibility = patAccess))) when
-                                  nameId.idText = "Dispose"
-                                  && flags.IsInstance
-                                  && not flags.IsOverrideOrExplicitImpl
-                                  && (let rec unparen (p: SynPat) =
-                                          match p with
-                                          | SynPat.Paren(pat = inner) -> unparen inner
-                                          | p -> p
+                        let publicDispose =
+                            members
+                            |> List.tryPick (fun m ->
+                                match m with
+                                | SynMemberDefn.Member(
+                                    memberDefn = SynBinding(
+                                        valData = SynValData(memberFlags = Some flags)
+                                        accessibility = bindingAccess
+                                        headPat = SynPat.LongIdent(
+                                            longDotId = SynLongIdent(id = [ _; nameId ])
+                                            argPats = SynArgPats.Pats [ arg ]
+                                            accessibility = patAccess))) when
+                                    nameId.idText = "Dispose"
+                                    && flags.IsInstance
+                                    && not flags.IsOverrideOrExplicitImpl
+                                    && (let rec unparen (p: SynPat) =
+                                            match p with
+                                            | SynPat.Paren(pat = inner) -> unparen inner
+                                            | p -> p
 
-                                      match unparen arg with
-                                      | SynPat.Const(SynConst.Unit, _) -> true
-                                      | _ -> false)
-                                  && (match bindingAccess, patAccess with
-                                      | Some(SynAccess.Private _), _
-                                      | _, Some(SynAccess.Private _) -> false
-                                      | _ -> true)
-                                  ->
-                                  Some m.Range
-                              | _ -> None)
+                                        match unparen arg with
+                                        | SynPat.Const(SynConst.Unit, _) -> true
+                                        | _ -> false)
+                                    && (match bindingAccess, patAccess with
+                                        | Some(SynAccess.Private _), _
+                                        | _, Some(SynAccess.Private _) -> false
+                                        | _ -> true)
+                                    ->
+                                    Some m.Range
+                                | _ -> None)
 
-                      match publicDispose, List.tryLast typeIds with
-                      | Some memberRange, Some typeId when not (typeIsDisposable typeId) ->
-                          { TypeName = typeIds |> List.map (fun i -> i.idText) |> String.concat "."
-                            Range = memberRange }
-                      | _ -> ()
-              | _ -> () ]
+                        match publicDispose, List.tryLast typeIds with
+                        | Some memberRange, Some typeId when not (typeIsDisposable typeId) ->
+                            {
+                                TypeName = typeIds |> List.map (fun i -> i.idText) |> String.concat "."
+                                Range = memberRange
+                            }
+                        | _ -> ()
+                | _ -> ()
+        ]

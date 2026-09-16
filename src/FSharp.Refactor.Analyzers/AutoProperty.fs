@@ -148,11 +148,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                             (textOfRange source init.Range)
 
                                     suggestions.Add
-                                        { PropertyName = getProp.idText
-                                          Range = memberDefn.Range
-                                          Edits =
-                                            [ deleteRange, textOfRange source deleteRange, ""
-                                              memberDefn.Range, textOfRange source memberDefn.Range, replacement ] }
+                                        {
+                                            PropertyName = getProp.idText
+                                            Range = memberDefn.Range
+                                            Edits =
+                                                [
+                                                    deleteRange, textOfRange source deleteRange, ""
+                                                    memberDefn.Range, textOfRange source memberDefn.Range, replacement
+                                                ]
+                                        }
                             | _ -> ()
                         | _ -> ()
                 | _ -> ()

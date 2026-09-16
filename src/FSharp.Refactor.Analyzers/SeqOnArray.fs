@@ -62,26 +62,28 @@ type Suggestion =
 /// `contains` is absent for a sharper reason — see below.
 let private sameResultShape =
     set
-        [ "length"
-          "isEmpty"
-          "exists"
-          "forall"
-          "find"
-          "tryFind"
-          "findIndex"
-          "tryFindIndex"
-          "findBack"
-          "tryFindBack"
-          "pick"
-          "tryPick"
-          "head"
-          "tryHead"
-          "last"
-          "tryLast"
-          "exactlyOne"
-          "tryExactlyOne"
-          "fold"
-          "reduce" ]
+        [
+            "length"
+            "isEmpty"
+            "exists"
+            "forall"
+            "find"
+            "tryFind"
+            "findIndex"
+            "tryFindIndex"
+            "findBack"
+            "tryFindBack"
+            "pick"
+            "tryPick"
+            "head"
+            "tryHead"
+            "last"
+            "tryLast"
+            "exactlyOne"
+            "tryExactlyOne"
+            "fold"
+            "reduce"
+        ]
 
 /// An identifier or dotted path — the only collection shapes typed here.
 [<return: Struct>]
@@ -174,52 +176,58 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              let candidate =
-                  match expr with
-                  // arr |> Seq.length   /   arr |> Seq.exists p
-                  | PipeApp(Path(root, text), rhs) ->
-                      match seqHead rhs with
-                      | ValueSome(m, f) -> Some(m, f, root, text)
-                      | ValueNone -> None
-                  // Seq.length arr   /   Seq.exists p arr
-                  | SynExpr.App(isInfix = false; funcExpr = fn; argExpr = Path(root, text)) ->
-                      match seqHead fn with
-                      | ValueSome(m, f) -> Some(m, f, root, text)
-                      | ValueNone -> None
-                  | _ -> None
+        [
+            for _, expr in index.Exprs do
+                let candidate =
+                    match expr with
+                    // arr |> Seq.length   /   arr |> Seq.exists p
+                    | PipeApp(Path(root, text), rhs) ->
+                        match seqHead rhs with
+                        | ValueSome(m, f) -> Some(m, f, root, text)
+                        | ValueNone -> None
+                    // Seq.length arr   /   Seq.exists p arr
+                    | SynExpr.App(isInfix = false; funcExpr = fn; argExpr = Path(root, text)) ->
+                        match seqHead fn with
+                        | ValueSome(m, f) -> Some(m, f, root, text)
+                        | ValueNone -> None
+                    | _ -> None
 
-              match candidate with
-              | Some(m, f, root, text) when resolvesToSeqModule check source f ->
-                  match arrayElementOf check source root with
-                  | None -> ()
-                  | Some element ->
-                      if sameResultShape.Contains f.idText then
-                          { Range = m.idRange
-                            FunctionName = f.idText
-                            CollectionText = text
-                            LinqSpelling = None }
-                      elif f.idText = "contains" && vectorisableElements.Contains element then
-                          // the second, faster answer, spelled so it
-                          // resolves whether or not System.Linq is open
-                          let prefix =
-                              if opensNamespace source "System.Linq" then
-                                  "Enumerable"
-                              else
-                                  "System.Linq.Enumerable"
-
-                          let needle =
-                              match expr with
-                              | PipeApp(_, rhs) ->
-                                  match rhs with
-                                  | SynExpr.App(argExpr = arg) -> textOfRange source arg.Range
-                                  | _ -> ""
-                              | SynExpr.App(funcExpr = SynExpr.App(argExpr = arg)) -> textOfRange source arg.Range
-                              | _ -> ""
-
-                          if needle <> "" then
-                              { Range = m.idRange
+                match candidate with
+                | Some(m, f, root, text) when resolvesToSeqModule check source f ->
+                    match arrayElementOf check source root with
+                    | None -> ()
+                    | Some element ->
+                        if sameResultShape.Contains f.idText then
+                            {
+                                Range = m.idRange
                                 FunctionName = f.idText
                                 CollectionText = text
-                                LinqSpelling = Some(expr.Range, $"{prefix}.Contains({text}, {needle})") }
-              | _ -> () ]
+                                LinqSpelling = None
+                            }
+                        elif f.idText = "contains" && vectorisableElements.Contains element then
+                            // the second, faster answer, spelled so it
+                            // resolves whether or not System.Linq is open
+                            let prefix =
+                                if opensNamespace source "System.Linq" then
+                                    "Enumerable"
+                                else
+                                    "System.Linq.Enumerable"
+
+                            let needle =
+                                match expr with
+                                | PipeApp(_, rhs) ->
+                                    match rhs with
+                                    | SynExpr.App(argExpr = arg) -> textOfRange source arg.Range
+                                    | _ -> ""
+                                | SynExpr.App(funcExpr = SynExpr.App(argExpr = arg)) -> textOfRange source arg.Range
+                                | _ -> ""
+
+                            if needle <> "" then
+                                {
+                                    Range = m.idRange
+                                    FunctionName = f.idText
+                                    CollectionText = text
+                                    LinqSpelling = Some(expr.Range, $"{prefix}.Contains({text}, {needle})")
+                                }
+                | _ -> ()
+        ]

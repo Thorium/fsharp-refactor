@@ -20,9 +20,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// How many attributes may share one bracket. Four is about where a merged
 /// line stops being a list you scan and starts being one you parse — but
@@ -90,9 +92,11 @@ let private suggestionFor
                 None
             else
                 Some
-                    { Range = span
-                      OriginalText = textOfRange source span
-                      ReplacementText = replacement }
+                    {
+                        Range = span
+                        OriginalText = textOfRange source span
+                        ReplacementText = replacement
+                    }
 
 /// Find declarations wearing more than one attribute bracket group.
 let find (maxMerged: int) (wrapColumn: int) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =

@@ -57,17 +57,19 @@ type Suggestion =
 /// "TODO" and "FIXME" alone are absent on purpose: they mark future work of
 /// every kind, most of it nothing to do with the value below them.
 let private stubPhrases =
-    [ "not implemented"
-      "not yet implemented"
-      "notimplemented"
-      "unimplemented"
-      "not supported"
-      "not yet supported"
-      "unsupported"
-      "not finished"
-      "not done yet"
-      "todo: implement"
-      "fixme: implement" ]
+    [
+        "not implemented"
+        "not yet implemented"
+        "notimplemented"
+        "unimplemented"
+        "not supported"
+        "not yet supported"
+        "unsupported"
+        "not finished"
+        "not done yet"
+        "todo: implement"
+        "fixme: implement"
+    ]
 
 /// Commented-OUT code is not a note about the branch. The F# compiler's
 /// ServiceInterfaceStubGenerator.fs had
@@ -235,11 +237,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 | true, Some arrow when not (isNone body && noneIsContract.Value) ->
                     if accusedBy comments.Value arrow body.Range then
                         suggestions.Add
-                            { Range = body.Range
-                              OriginalText = textOfRange source body.Range
-                              ReplacementText =
-                                (let prefix = if opensSystemNamespace source then "" else "System."
-                                 $"raise ({prefix}NotImplementedException())") }
+                            {
+                                Range = body.Range
+                                OriginalText = textOfRange source body.Range
+                                ReplacementText =
+                                    (let prefix = if opensSystemNamespace source then "" else "System."
+                                     $"raise ({prefix}NotImplementedException())")
+                            }
                 | _ -> ()
 
     for path, expr in index.Exprs do

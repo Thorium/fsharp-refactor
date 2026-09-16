@@ -225,15 +225,17 @@ let (|AsyncModule|_|) (e: SynExpr) =
     | _ -> ValueNone
 
 let private blocking site awaitable =
-    { Site = site
-      Awaitable = awaitable
-      DoText = awaitable
-      UnitResult = false
-      BindsValue = true
-      PlainTask = false
-      NoBind = false
-      WrapsFaults = false
-      ValueTask = false }
+    {
+        Site = site
+        Awaitable = awaitable
+        DoText = awaitable
+        UnitResult = false
+        BindsValue = true
+        PlainTask = false
+        NoBind = false
+        WrapsFaults = false
+        ValueTask = false
+    }
 
 /// `<blocking> |> ignore` — the result was thrown away.
 [<return: Struct>]
@@ -355,7 +357,8 @@ let rec assertThrows (check: FSharpCheckFileResults) (source: ISourceText) (e: S
 
                     Some
                         { blocking e.Range text with
-                            NoBind = noBind }
+                            NoBind = noBind
+                        }
                 | _ -> None
             | _ -> None
         | _ -> None
@@ -377,7 +380,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
             Some
                 { blocking e.Range (textOfRange source inner.Range) with
                     UnitResult = receiverIdent inner |> Option.exists (taskResultIsUnit check source)
-                    PlainTask = arity = Some 0 }
+                    PlainTask = arity = Some 0
+                }
         | _ ->
             // everything up to the operand — the pipe and its line break,
             // if the pipe opened a new line — stays as written
@@ -386,7 +390,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
 
             Some
                 { blocking e.Range $"{upToOperand}Async.StartImmediateAsTask" with
-                    UnitResult = computationResultIsUnit check source comp }
+                    UnitResult = computationResultIsUnit check source comp
+                }
     // `Async.RunSynchronously comp` / `Async.RunSynchronously(comp)` — a
     // timeout or cancellation argument is a different contract, left alone
     | SynExpr.App(isInfix = false; funcExpr = AsyncModule f; argExpr = arg) when
@@ -398,7 +403,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
         | comp ->
             Some
                 { blocking e.Range $"{atomicText source comp} |> Async.StartImmediateAsTask" with
-                    UnitResult = computationResultIsUnit check source comp }
+                    UnitResult = computationResultIsUnit check source comp
+                }
     // `t.Wait()` — unit by construction — and `t.GetAwaiter().GetResult()`
     | UnitCall f ->
         match dotMember source f with
@@ -415,7 +421,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                         UnitResult = true
                         BindsValue = false
                         PlainTask = arity = 0
-                        WrapsFaults = true }
+                        WrapsFaults = true
+                    }
             | None -> None
         | Some(_, _, gr) when gr.idText = "GetResult" ->
             match f with
@@ -429,7 +436,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                             { blocking e.Range recvText with
                                 UnitResult = taskResultIsUnit check source rid
                                 PlainTask = arity = 0
-                                ValueTask = isValueTaskTyped check source rid }
+                                ValueTask = isValueTaskTyped check source rid
+                            }
                     | None -> None
                 | _ -> None
             | _ -> None
@@ -466,14 +474,16 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                             UnitResult = allPlain
                             PlainTask = allPlain
                             BindsValue = false
-                            WrapsFaults = true }
+                            WrapsFaults = true
+                        }
                 else
                     // WhenAny yields the finished task, WaitAny its index:
                     // a bound value would change type, so only a discarded
                     // call moves
                     Some
                         { blocking e.Range text with
-                            BindsValue = false }
+                            BindsValue = false
+                        }
     // `t.Result`
     | other ->
         match dotMember source other with
@@ -482,7 +492,8 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                 { blocking e.Range recvText with
                     UnitResult = taskResultIsUnit check source rid
                     WrapsFaults = true
-                    ValueTask = isValueTaskTyped check source rid }
+                    ValueTask = isValueTaskTyped check source rid
+                }
         | _ -> assertThrows check source other
 
 /// Is this body choreographed around a THREAD? Code that hands work to a
@@ -497,19 +508,21 @@ let threadBound (source: ISourceText) (body: SynExpr) =
     // `do! Async.Sleep` fix exists for
     let text = (textOfRange source body.Range).Replace("Thread.Sleep", "")
 
-    [ "Monitor."
-      "Mutex"
-      "ReaderWriterLock"
-      "ThreadStatic"
-      "ThreadLocal"
-      "WaitOne"
-      "ManualResetEvent"
-      "CountdownEvent"
-      "Barrier"
-      "SemaphoreSlim"
-      "CurrentManagedThreadId"
-      "SynchronizationContext"
-      "Interlocked." ]
+    [
+        "Monitor."
+        "Mutex"
+        "ReaderWriterLock"
+        "ThreadStatic"
+        "ThreadLocal"
+        "WaitOne"
+        "ManualResetEvent"
+        "CountdownEvent"
+        "Barrier"
+        "SemaphoreSlim"
+        "CurrentManagedThreadId"
+        "SynchronizationContext"
+        "Interlocked."
+    ]
     |> List.exists text.Contains
     // The two Thread spellings need a word boundary, which a substring test
     // cannot give them: plain "Thread(" also reads ThrowIfNotOnUIThread(),

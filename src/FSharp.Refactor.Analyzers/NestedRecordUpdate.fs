@@ -49,9 +49,11 @@ let private identPath (e: SynExpr) =
 /// A flattened field: its dotted path, its value, and the line its name
 /// was written on — the line structure of the original is kept.
 type private Leaf =
-    { Path: string
-      Value: SynExpr
-      Line: int }
+    {
+        Path: string
+        Value: SynExpr
+        Line: int
+    }
 
 /// Flatten record fields into (dotted-path, value-expr) leaves, walking
 /// nested copy-and-updates whose source matches `basePath` + the field
@@ -76,9 +78,11 @@ let rec private flattenLoop
                 flattenLoop basePath acc ((innerFields |> List.map (fun f -> fieldPath, f)) @ rest)
             | _ when isSingleLine value.Range ->
                 let leaf =
-                    { Path = String.concat "." fieldPath
-                      Value = value
-                      Line = (List.head fieldIds).idRange.StartLine }
+                    {
+                        Path = String.concat "." fieldPath
+                        Value = value
+                        Line = (List.head fieldIds).idRange.StartLine
+                    }
 
                 flattenLoop basePath (leaf :: acc) rest
             | _ -> None
@@ -191,67 +195,71 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
     let scopeMemo = System.Collections.Generic.Dictionary<string * pos, bool>()
 
-    [ for path, expr in index.Exprs do
-          match expr with
-          | SynExpr.Record(copyInfo = Some(outerBase, _); recordFields = fields) ->
-              match identPath outerBase with
-              | Some basePath ->
-                  for field in fields do
-                      match field with
-                      // only fields whose value IS a nested copy-and-update
-                      // are rewritten; sibling plain fields stay untouched
-                      | SynExprRecordField(
-                          fieldName = (SynLongIdent(id = fieldIds), _)
-                          expr = Some(SynExpr.Record(copyInfo = Some _) as value)) when not fieldIds.IsEmpty ->
-                          match flattenField basePath field with
-                          // a leaf without a dot means the inner source did
-                          // not match — a genuine cross-record copy, no gain
-                          | Some leaves when
-                              not leaves.IsEmpty
-                              && leaves |> List.exists (fun leaf -> leaf.Path.Contains '.')
-                              // collision gate: the path head must not name
-                              // a type, module or namespace
-                              && (let head = (List.head fieldIds).idText
+    [
+        for path, expr in index.Exprs do
+            match expr with
+            | SynExpr.Record(copyInfo = Some(outerBase, _); recordFields = fields) ->
+                match identPath outerBase with
+                | Some basePath ->
+                    for field in fields do
+                        match field with
+                        // only fields whose value IS a nested copy-and-update
+                        // are rewritten; sibling plain fields stay untouched
+                        | SynExprRecordField(
+                            fieldName = (SynLongIdent(id = fieldIds), _)
+                            expr = Some(SynExpr.Record(copyInfo = Some _) as value)) when not fieldIds.IsEmpty ->
+                            match flattenField basePath field with
+                            // a leaf without a dot means the inner source did
+                            // not match — a genuine cross-record copy, no gain
+                            | Some leaves when
+                                not leaves.IsEmpty
+                                && leaves |> List.exists (fun leaf -> leaf.Path.Contains '.')
+                                // collision gate: the path head must not name
+                                // a type, module or namespace
+                                && (let head = (List.head fieldIds).idText
 
-                                  not (fileTypeNames.Contains head)
-                                  && fieldTypeName check source (List.head fieldIds) <> Some head
-                                  && not (headIsEntityInScope check source scopeMemo path outerBase head))
-                              ->
-                              let fieldStart = (List.head fieldIds).idRange.Start
+                                    not (fileTypeNames.Contains head)
+                                    && fieldTypeName check source (List.head fieldIds) <> Some head
+                                    && not (headIsEntityInScope check source scopeMemo path outerBase head))
+                                ->
+                                let fieldStart = (List.head fieldIds).idRange.Start
 
-                              let editRange = Range.mkRange value.Range.FileName fieldStart value.Range.End
+                                let editRange = Range.mkRange value.Range.FileName fieldStart value.Range.End
 
-                              // the original's line structure survives: a
-                              // field that started a new line starts one
-                              // here too, at the outer field's column, and
-                              // fields that shared a line still do. Joining
-                              // everything with `; ` made a 170-column line
-                              // of suave's Stream.fs — correct, and rejected
-                              // by fantomas --check.
-                              let indent = System.String(' ', fieldStart.Column)
+                                // the original's line structure survives: a
+                                // field that started a new line starts one
+                                // here too, at the outer field's column, and
+                                // fields that shared a line still do. Joining
+                                // everything with `; ` made a 170-column line
+                                // of suave's Stream.fs — correct, and rejected
+                                // by fantomas --check.
+                                let indent = System.String(' ', fieldStart.Column)
 
-                              let replacement =
-                                  leaves
-                                  |> List.mapi (fun i leaf ->
-                                      let text = $"{leaf.Path} = {textOfRange source leaf.Value.Range}"
+                                let replacement =
+                                    leaves
+                                    |> List.mapi (fun i leaf ->
+                                        let text = $"{leaf.Path} = {textOfRange source leaf.Value.Range}"
 
-                                      if i = 0 then
-                                          text
-                                      elif leaf.Line > leaves.[i - 1].Line then
-                                          $"\n{indent}{text}"
-                                      else
-                                          "; " + text)
-                                  |> String.concat ""
+                                        if i = 0 then
+                                            text
+                                        elif leaf.Line > leaves.[i - 1].Line then
+                                            $"\n{indent}{text}"
+                                        else
+                                            "; " + text)
+                                    |> String.concat ""
 
-                              if not (spansDirective source editRange) then
-                                  { Range = editRange
-                                    OriginalText = textOfRange source editRange
-                                    ReplacementText = replacement
-                                    Path = leaves |> List.map (fun leaf -> leaf.Path) |> String.concat ", " }
-                          | _ -> ()
-                      | _ -> ()
-              | None -> ()
-          | _ -> () ]
+                                if not (spansDirective source editRange) then
+                                    {
+                                        Range = editRange
+                                        OriginalText = textOfRange source editRange
+                                        ReplacementText = replacement
+                                        Path = leaves |> List.map (fun leaf -> leaf.Path) |> String.concat ", "
+                                    }
+                            | _ -> ()
+                        | _ -> ()
+                | None -> ()
+            | _ -> ()
+    ]
     // outermost wins: an inner copy-update also matches as its own outer,
     // but its rewrite is subsumed by the enclosing suggestion
     |> fun all ->

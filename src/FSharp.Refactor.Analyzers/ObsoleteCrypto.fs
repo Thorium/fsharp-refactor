@@ -17,27 +17,31 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      ObsoleteName: string
-      Replacement: string }
+    {
+        Range: range
+        ObsoleteName: string
+        Replacement: string
+    }
 
 let private factories =
     dict
-        [ "MD5CryptoServiceProvider", "MD5"
-          "SHA1CryptoServiceProvider", "SHA1"
-          "SHA1Managed", "SHA1"
-          "SHA256CryptoServiceProvider", "SHA256"
-          "SHA256Managed", "SHA256"
-          "SHA384CryptoServiceProvider", "SHA384"
-          "SHA384Managed", "SHA384"
-          "SHA512CryptoServiceProvider", "SHA512"
-          "SHA512Managed", "SHA512"
-          "AesCryptoServiceProvider", "Aes"
-          "AesManaged", "Aes"
-          "TripleDESCryptoServiceProvider", "TripleDES"
-          "DESCryptoServiceProvider", "DES"
-          "RC2CryptoServiceProvider", "RC2"
-          "RNGCryptoServiceProvider", "RandomNumberGenerator" ]
+        [
+            "MD5CryptoServiceProvider", "MD5"
+            "SHA1CryptoServiceProvider", "SHA1"
+            "SHA1Managed", "SHA1"
+            "SHA256CryptoServiceProvider", "SHA256"
+            "SHA256Managed", "SHA256"
+            "SHA384CryptoServiceProvider", "SHA384"
+            "SHA384Managed", "SHA384"
+            "SHA512CryptoServiceProvider", "SHA512"
+            "SHA512Managed", "SHA512"
+            "AesCryptoServiceProvider", "Aes"
+            "AesManaged", "Aes"
+            "TripleDESCryptoServiceProvider", "TripleDES"
+            "DESCryptoServiceProvider", "DES"
+            "RC2CryptoServiceProvider", "RC2"
+            "RNGCryptoServiceProvider", "RandomNumberGenerator"
+        ]
 
 let private replacementFor (ids: Ident list) =
     match factories.TryGetValue (List.last ids).idText with
@@ -54,40 +58,48 @@ let private replacementFor (ids: Ident list) =
 let private sites (parseTree: ParsedInput) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
-    [ for _, e in index.Exprs do
-          match e with
-          // new SHA256Managed()
-          | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = arg) when
-              not ids.IsEmpty
-              && (match stripParens arg with
-                  | SynExpr.Const(SynConst.Unit, _) -> true
-                  | _ -> false)
-              ->
-              match replacementFor ids with
-              | ValueSome(name, replacement) ->
-                  { Range = e.Range
-                    ObsoleteName = name
-                    Replacement = replacement }
-              | ValueNone -> ()
-          // SHA256Managed() without new
-          | SynExpr.App(
-              isInfix = false
-              funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-              argExpr = SynExpr.Const(SynConst.Unit, _)) when not ids.IsEmpty ->
-              match replacementFor ids with
-              | ValueSome(name, replacement) ->
-                  { Range = e.Range
-                    ObsoleteName = name
-                    Replacement = replacement }
-              | ValueNone -> ()
-          | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ctor; argExpr = SynExpr.Const(SynConst.Unit, _)) ->
-              match replacementFor [ ctor ] with
-              | ValueSome(name, replacement) ->
-                  { Range = e.Range
-                    ObsoleteName = name
-                    Replacement = replacement }
-              | ValueNone -> ()
-          | _ -> () ]
+    [
+        for _, e in index.Exprs do
+            match e with
+            // new SHA256Managed()
+            | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = arg) when
+                not ids.IsEmpty
+                && (match stripParens arg with
+                    | SynExpr.Const(SynConst.Unit, _) -> true
+                    | _ -> false)
+                ->
+                match replacementFor ids with
+                | ValueSome(name, replacement) ->
+                    {
+                        Range = e.Range
+                        ObsoleteName = name
+                        Replacement = replacement
+                    }
+                | ValueNone -> ()
+            // SHA256Managed() without new
+            | SynExpr.App(
+                isInfix = false
+                funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                argExpr = SynExpr.Const(SynConst.Unit, _)) when not ids.IsEmpty ->
+                match replacementFor ids with
+                | ValueSome(name, replacement) ->
+                    {
+                        Range = e.Range
+                        ObsoleteName = name
+                        Replacement = replacement
+                    }
+                | ValueNone -> ()
+            | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ctor; argExpr = SynExpr.Const(SynConst.Unit, _)) ->
+                match replacementFor [ ctor ] with
+                | ValueSome(name, replacement) ->
+                    {
+                        Range = e.Range
+                        ObsoleteName = name
+                        Replacement = replacement
+                    }
+                | ValueNone -> ()
+            | _ -> ()
+    ]
 
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // The factories return the BASE type (SHA256.Create() : SHA256, not

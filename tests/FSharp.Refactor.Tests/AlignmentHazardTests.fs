@@ -25,8 +25,10 @@ let ``fparsec's paren block aligned under the shortened line is a hazard`` () =
     // dropping the parens of `("inf")` moves `flags` two columns left and
     // the line under it, aligned to `flags`, re-parses as an application
     let lines =
-        [ "    s.SkipCaseFolded(\"inf\") && (flags <- flags ||| 1"
-          "                                stream.SkipCaseFolded(\"inity\") |> ignore" ]
+        [
+            "    s.SkipCaseFolded(\"inf\") && (flags <- flags ||| 1"
+            "                                stream.SkipCaseFolded(\"inity\") |> ignore"
+        ]
 
     Assert.True(hazardIn lines 1 27 -2)
 
@@ -36,8 +38,10 @@ let ``an argument continued to the right of every anchor is no hazard`` () =
     // after `=`, anchored to `ClearBank` (column 26), which the edit does not
     // move; standing right of the anchor before and after, it reads the same
     let lines =
-        [ "            let! actual = ClearBank.UK.MultiCurrency.createNewAccount cfg cert (Guid.NewGuid()) sortCode \"x\""
-          "                                                            ClearBank.UK.MultiCurrency.AccountKind.General [||] None" ]
+        [
+            "            let! actual = ClearBank.UK.MultiCurrency.createNewAccount cfg cert (Guid.NewGuid()) sortCode \"x\""
+            "                                                            ClearBank.UK.MultiCurrency.AccountKind.General [||] None"
+        ]
 
     Assert.False(hazardIn lines 1 36 -10)
 

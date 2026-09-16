@@ -24,7 +24,8 @@ let private optionsFor (dir: string) (files: string list) =
 
     { scriptOptions with
         ProjectFileName = Path.Combine(dir, "Test.fsproj")
-        SourceFiles = Array.ofList files }
+        SourceFiles = Array.ofList files
+    }
 
 let private contextFor (options: FSharpProjectOptions) (file: string) : Text.FileContext =
     let sourceText = SourceText.ofString (File.ReadAllText file)
@@ -33,9 +34,11 @@ let private contextFor (options: FSharpProjectOptions) (file: string) : Text.Fil
     let parsed =
         checker.ParseFile(file, sourceText, parsingOptions) |> Async.RunSynchronously
 
-    { FileName = file
-      Source = sourceText
-      ParseTree = parsed.ParseTree }
+    {
+        FileName = file
+        Source = sourceText
+        ParseTree = parsed.ParseTree
+    }
 
 let private checkFile (options: FSharpProjectOptions) (ctx: Text.FileContext) =
     let _, answer =
@@ -120,9 +123,11 @@ let ``internal tupled function is curried with call sites in another file`` () =
         Assert.Equal("add", name)
 
         Assert.Equal<(string * string * string) list>(
-            [ "LibA.fs", "(a, b)", "a b"
-              "LibB.fs", "(1, 2)", "1 2"
-              "LibB.fs", "(total, 4)", "total 4" ],
+            [
+                "LibA.fs", "(a, b)", "a b"
+                "LibB.fs", "(1, 2)", "1 2"
+                "LibB.fs", "(total, 4)", "total 4"
+            ],
             edits
         )
     | other -> failwithf "expected one suggestion, got %A" other
@@ -172,12 +177,14 @@ let ``internal function is reordered with call sites in another file`` () =
         Assert.Equal("scale", name)
 
         Assert.Equal<(string * string * string) list>(
-            [ "LibA.fs", "(x: int)", "(k: string)"
-              "LibA.fs", "(k: string)", "(x: int)"
-              // the lambda's own range, inside the parens List.map needs
-              "LibB.fs", "fun x -> LibA.scale x \"m\"", "LibA.scale \"m\""
-              "LibB.fs", "3", "\"cm\""
-              "LibB.fs", "\"cm\"", "3" ],
+            [
+                "LibA.fs", "(x: int)", "(k: string)"
+                "LibA.fs", "(k: string)", "(x: int)"
+                // the lambda's own range, inside the parens List.map needs
+                "LibB.fs", "fun x -> LibA.scale x \"m\"", "LibA.scale \"m\""
+                "LibB.fs", "3", "\"cm\""
+                "LibB.fs", "\"cm\"", "3"
+            ],
             edits
         )
     | other -> failwithf "expected one reorder suggestion, got %A" other
@@ -301,9 +308,11 @@ let private withScriptCallSite (defSource: string) (useSource: string) (scriptSo
                 checker.ParseFile(script, scriptText, parsingOptions) |> Async.RunSynchronously
 
             contexts.[Path.GetFullPath script] <-
-                { FileName = script
-                  Source = scriptText
-                  ParseTree = parsed.ParseTree }
+                {
+                    FileName = script
+                    Source = scriptText
+                    ParseTree = parsed.ParseTree
+                }
 
         let fileLookup (name: string) =
             match contexts.TryGetValue(Path.GetFullPath name) with
@@ -319,7 +328,8 @@ let private withScriptCallSite (defSource: string) (useSource: string) (scriptSo
             project
             fileLookup
             { Visibility.unknownOutside with
-                Uses = extraUses }
+                Uses = extraUses
+            }
         |> List.map (fun s ->
             s.FunctionName,
             s.Edits
@@ -374,7 +384,8 @@ let ``a public tupled function is curried once every referencing compilation has
     let found =
         findWithOutside
             { Visibility.unknownOutside with
-                PublicRead = (fun () -> true) }
+                PublicRead = (fun () -> true)
+            }
             "module LibA\n\nlet add (a, b) = a + b\n"
             "module LibB\n\nlet total = LibA.add (1, 2)\n"
 
@@ -398,7 +409,8 @@ let ``FR0091 reorders a public function once every referencing compilation has b
                     project
                     fileLookup
                     { Visibility.unknownOutside with
-                        PublicRead = (fun () -> true) }
+                        PublicRead = (fun () -> true)
+                    }
                 |> List.map (fun s -> s.FunctionName))
 
     Assert.Equal<string list>([ "scale" ], found)
@@ -419,7 +431,8 @@ let ``an internal function of an assembly with friends waits for every friend to
     Assert.Empty(
         findWithOutside
             { Visibility.unknownOutside with
-                AssemblyRead = (fun name -> name = "Other.Tests") }
+                AssemblyRead = (fun name -> name = "Other.Tests")
+            }
             source
             useSource
     )
@@ -427,7 +440,8 @@ let ``an internal function of an assembly with friends waits for every friend to
     match
         findWithOutside
             { Visibility.unknownOutside with
-                AssemblyRead = (fun name -> name = "Lib.Tests") }
+                AssemblyRead = (fun name -> name = "Lib.Tests")
+            }
             source
             useSource
     with
@@ -471,7 +485,8 @@ let private withSiblingProject
 
             { plain with
                 ProjectFileName = Path.Combine(dir, "Lib", "Lib.fsproj")
-                OtherOptions = Array.append plain.OtherOptions [| $"-o:{libOutput}" |] }
+                OtherOptions = Array.append plain.OtherOptions [| $"-o:{libOutput}" |]
+            }
 
         let testOptions =
             let plain = optionsFor (Path.Combine(dir, "Tests")) [ testFile ]
@@ -479,7 +494,8 @@ let private withSiblingProject
             { plain with
                 ProjectFileName = Path.Combine(dir, "Tests", "Tests.fsproj")
                 OtherOptions = Array.append plain.OtherOptions [| $"-r:{libOutput}" |]
-                ReferencedProjects = [| FSharpReferencedProject.FSharpReference(libOutput, libOptions) |] }
+                ReferencedProjects = [| FSharpReferencedProject.FSharpReference(libOutput, libOptions) |]
+            }
 
         let libProject = checker.ParseAndCheckProject libOptions |> Async.RunSynchronously
         let testProject = checker.ParseAndCheckProject testOptions |> Async.RunSynchronously
@@ -522,15 +538,17 @@ let private withSiblingProject
             | _ -> false
 
         let outside: Visibility.Outside =
-            { Uses =
-                (fun symbol ->
-                    match fullName symbol with
-                    | Some name ->
-                        siblingUses
-                        |> Array.filter (fun u -> fullName u.Symbol = Some name && sameDeclaration symbol u.Symbol)
-                    | None -> [||])
-              PublicRead = (fun () -> true)
-              AssemblyRead = (fun _ -> true) }
+            {
+                Uses =
+                    (fun symbol ->
+                        match fullName symbol with
+                        | Some name ->
+                            siblingUses
+                            |> Array.filter (fun u -> fullName u.Symbol = Some name && sameDeclaration symbol u.Symbol)
+                        | None -> [||])
+                PublicRead = (fun () -> true)
+                AssemblyRead = (fun _ -> true)
+            }
 
         let contexts =
             System.Collections.Generic.Dictionary<string, Text.FileContext>(StringComparer.OrdinalIgnoreCase)
@@ -565,8 +583,10 @@ let ``a sibling project's call site resolves to the library's source declaration
     match found with
     | [ "add", edits ] ->
         Assert.Equal<(string * string * string) list>(
-            [ "Library.fs", "(a: int, b: int)", "(a: int) (b: int)"
-              "Tests.fs", "(1, 2)", "1 2" ],
+            [
+                "Library.fs", "(a: int, b: int)", "(a: int) (b: int)"
+                "Tests.fs", "(1, 2)", "1 2"
+            ],
             edits
         )
     | other -> failwithf "expected the definition and the sibling's call site rewritten, got %A" other

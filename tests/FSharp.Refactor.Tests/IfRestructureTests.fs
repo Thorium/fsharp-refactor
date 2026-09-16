@@ -545,15 +545,21 @@ let ``commentSafeOnly drops a message whose fix swallows a comment`` () =
     let messages =
         raw
         |> List.map (fun s ->
-            { Type = "test"
-              Message = "m"
-              Code = "FR0001"
-              Severity = Severity.Hint
-              Range = s.Range
-              Fixes =
-                [ { FromRange = s.Range
-                    FromText = s.OriginalText
-                    ToText = s.ReplacementText } ] })
+            {
+                Type = "test"
+                Message = "m"
+                Code = "FR0001"
+                Severity = Severity.Hint
+                Range = s.Range
+                Fixes =
+                    [
+                        {
+                            FromRange = s.Range
+                            FromText = s.OriginalText
+                            ToText = s.ReplacementText
+                        }
+                    ]
+            })
 
     // …and the editor filter withholds it
     Assert.Empty(Analyzers.commentSafeOnly tree sourceText messages)
@@ -568,18 +574,28 @@ let ``commentSafeOnly keeps a fix that carries the comment along`` () =
     match recGroupsIn source with
     | [ s ] ->
         let messages =
-            [ { Type = "test"
-                Message = "m"
-                Code = "FR0116"
-                Severity = Severity.Hint
-                Range = s.RemoveRange
-                Fixes =
-                  [ { FromRange = s.InsertRange
-                      FromText = ""
-                      ToText = s.InsertText }
-                    { FromRange = s.RemoveRange
-                      FromText = ""
-                      ToText = "" } ] } ]
+            [
+                {
+                    Type = "test"
+                    Message = "m"
+                    Code = "FR0116"
+                    Severity = Severity.Hint
+                    Range = s.RemoveRange
+                    Fixes =
+                        [
+                            {
+                                FromRange = s.InsertRange
+                                FromText = ""
+                                ToText = s.InsertText
+                            }
+                            {
+                                FromRange = s.RemoveRange
+                                FromText = ""
+                                ToText = ""
+                            }
+                        ]
+                }
+            ]
 
         // the remove-half spans the /// comment, but the insert-half
         // re-emits it: message-level accounting keeps the fix

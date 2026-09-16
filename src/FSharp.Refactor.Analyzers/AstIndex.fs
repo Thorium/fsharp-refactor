@@ -19,11 +19,13 @@ open FSharp.Analyzers.SDK
 open FSharp.Analyzers.SDK.ASTCollecting
 
 type Index =
-    { Exprs: (SyntaxNode list * SynExpr)[]
-      Decls: (SyntaxNode list * SynModuleDecl)[]
-      Pats: (SyntaxNode list * SynPat)[]
-      Types: (SyntaxNode list * SynType)[]
-      Attributes: (SyntaxNode list * SynAttribute)[] }
+    {
+        Exprs: (SyntaxNode list * SynExpr)[]
+        Decls: (SyntaxNode list * SynModuleDecl)[]
+        Pats: (SyntaxNode list * SynPat)[]
+        Types: (SyntaxNode list * SynType)[]
+        Attributes: (SyntaxNode list * SynAttribute)[]
+    }
 
 let private cache = ConditionalWeakTable<ParsedInput, Index>()
 
@@ -101,7 +103,9 @@ let private syntheticTree (bindings: SynBinding list) : ParsedInput =
             [],
             None,
             Range.range0,
-            { LeadingKeyword = SynModuleOrNamespaceLeadingKeyword.None }
+            {
+                LeadingKeyword = SynModuleOrNamespaceLeadingKeyword.None
+            }
         )
 
     ParsedInput.ImplFile(
@@ -112,9 +116,11 @@ let private syntheticTree (bindings: SynBinding list) : ParsedInput =
             [],
             [ modOrNs ],
             (false, false),
-            { ConditionalDirectives = []
-              WarnDirectives = []
-              CodeComments = [] },
+            {
+                ConditionalDirectives = []
+                WarnDirectives = []
+                CodeComments = []
+            },
             Set.empty
         )
     )
@@ -134,7 +140,9 @@ let private syntheticExprTree (children: SynExpr list) : ParsedInput =
             [],
             None,
             Range.range0,
-            { LeadingKeyword = SynModuleOrNamespaceLeadingKeyword.None }
+            {
+                LeadingKeyword = SynModuleOrNamespaceLeadingKeyword.None
+            }
         )
 
     ParsedInput.ImplFile(
@@ -145,9 +153,11 @@ let private syntheticExprTree (children: SynExpr list) : ParsedInput =
             [],
             [ modOrNs ],
             (false, false),
-            { ConditionalDirectives = []
-              WarnDirectives = []
-              CodeComments = [] },
+            {
+                ConditionalDirectives = []
+                WarnDirectives = []
+                CodeComments = []
+            },
             Set.empty
         )
     )
@@ -164,7 +174,8 @@ let private build (tree: ParsedInput) : Index =
             override _.WalkExpr(path, expr) = exprs.Add(path, expr)
             override _.WalkSynModuleDecl(path, decl) = decls.Add(path, decl)
             override _.WalkPat(path, pat) = pats.Add(path, pat)
-            override _.WalkType(path, synType) = types.Add(path, synType) }
+            override _.WalkType(path, synType) = types.Add(path, synType)
+        }
 
     walkAst collector tree
 
@@ -292,7 +303,8 @@ let private build (tree: ParsedInput) : Index =
                 { new SyntaxCollectorBase() with
                     override _.WalkExpr(path, expr) = liftedExprs.Add(path, expr)
                     override _.WalkPat(path, pat) = liftedPats.Add(path, pat)
-                    override _.WalkType(path, synType) = liftedTypes.Add(path, synType) }
+                    override _.WalkType(path, synType) = liftedTypes.Add(path, synType)
+                }
 
             walkAst liftedCollector syntheticInput
 
@@ -318,11 +330,13 @@ let private build (tree: ParsedInput) : Index =
     pats.AddRange supplementalPats
     types.AddRange supplementalTypes
 
-    { Exprs = exprs.ToArray()
-      Decls = decls.ToArray()
-      Pats = pats.ToArray()
-      Types = types.ToArray()
-      Attributes = attributes.ToArray() }
+    {
+        Exprs = exprs.ToArray()
+        Decls = decls.ToArray()
+        Pats = pats.ToArray()
+        Types = types.ToArray()
+        Attributes = attributes.ToArray()
+    }
 
 /// The memoized flat node index for a parse tree.
 let ofTree (tree: ParsedInput) : Index = cache.GetValue(tree, build)
@@ -392,12 +406,14 @@ let replay (collector: SyntaxCollectorBase) (tree: ParsedInput) : unit =
 /// Namespaces whose `open` marks a test file.
 let private testFrameworkOpens =
     set
-        [ "Xunit"
-          "NUnit.Framework"
-          "Expecto"
-          "Microsoft.VisualStudio.TestTools.UnitTesting"
-          "Fuchu"
-          "TUnit" ]
+        [
+            "Xunit"
+            "NUnit.Framework"
+            "Expecto"
+            "Microsoft.VisualStudio.TestTools.UnitTesting"
+            "Fuchu"
+            "TUnit"
+        ]
 
 /// A test attribute (`[<Test>]`, `[<Fact>]`, `[<TestCase ..>]`,
 /// `[<Property>]`, `[<TestMethod>]`) or an Expecto `testCase "..."`, for

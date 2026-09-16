@@ -232,9 +232,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         Range.mkRange fileName (Position.mkPos lineNumber blankStartedAt) semicolonEnd
 
                     suggestions.Add
-                        { Range = span
-                          OriginalText = textOfRange source span
-                          ReplacementText = "" }
+                        {
+                            Range = span
+                            OriginalText = textOfRange source span
+                            ReplacementText = ""
+                        }
             | _ -> ()
 
         List.ofSeq suggestions

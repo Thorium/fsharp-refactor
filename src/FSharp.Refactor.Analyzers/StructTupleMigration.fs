@@ -31,7 +31,10 @@ let private tupleExprEdits (source: ISourceText) (e: SynExpr) : (range * string 
         let at = Range.mkRange e.Range.FileName e.Range.Start e.Range.Start
         Some [ at, "", "struct " ]
     | SynExpr.Tuple(isStruct = false) ->
-        Some [ e.Range, textOfRange source e.Range, $"struct ({textOfRange source e.Range})" ]
+        Some
+            [
+                e.Range, textOfRange source e.Range, $"struct ({textOfRange source e.Range})"
+            ]
     | _ -> None
 
 /// `(a, b)` / bare / `_` as a PATTERN, or-patterns included.
@@ -41,7 +44,10 @@ let rec private tuplePatEdits (source: ISourceText) (p: SynPat) : (range * strin
         let at = Range.mkRange p.Range.FileName p.Range.Start p.Range.Start
         Some [ at, "", "struct " ]
     | SynPat.Tuple(isStruct = false) ->
-        Some [ p.Range, textOfRange source p.Range, $"struct ({textOfRange source p.Range})" ]
+        Some
+            [
+                p.Range, textOfRange source p.Range, $"struct ({textOfRange source p.Range})"
+            ]
     | SynPat.Wild _ -> Some []
     | SynPat.Or(lhsPat = l; rhsPat = r) ->
         match tuplePatEdits source l, tuplePatEdits source r with
@@ -76,26 +82,30 @@ let classifierFor
 
     // record construction sites, field-name position -> assigned expr
     let constructionRhs =
-        [ for _, e in index.Exprs do
-              match e with
-              | SynExpr.Record(recordFields = fields) ->
-                  for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
-                      if not ids.IsEmpty then
-                          yield (List.last ids).idRange, rhs
-              | _ -> () ]
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.Record(recordFields = fields) ->
+                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
+                        if not ids.IsEmpty then
+                            yield (List.last ids).idRange, rhs
+                | _ -> ()
+        ]
         |> List.map (fun (r, rhs) -> (r.StartLine, r.StartColumn), rhs)
         |> dict
 
     // record patterns, field-name position -> inner pattern
     let patternInner =
-        [ for _, p in index.Pats do
-              match p with
-              | SynPat.Record(fieldPats = fieldPats) ->
-                  for NamePatPairField(fieldName = SynLongIdent(id = fids); pat = inner) in fieldPats do
-                      if not fids.IsEmpty then
-                          let fr = (List.last fids).idRange
-                          yield (fr.StartLine, fr.StartColumn), inner
-              | _ -> () ]
+        [
+            for _, p in index.Pats do
+                match p with
+                | SynPat.Record(fieldPats = fieldPats) ->
+                    for NamePatPairField(fieldName = SynLongIdent(id = fids); pat = inner) in fieldPats do
+                        if not fids.IsEmpty then
+                            let fr = (List.last fids).idRange
+                            yield (fr.StartLine, fr.StartColumn), inner
+                | _ -> ()
+        ]
         |> dict
 
     let nodeAt (r: range) =

@@ -144,87 +144,95 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | _ -> None
 
         let canonical =
-            [ for _, e in index.Exprs do
-                  match e with
-                  | SynExpr.Sequential(
-                      expr1 = MonitorCall(enterId, lockArg) & enterExpr
-                      expr2 = GuardingTry(body, exitArg, tfTrivia, tf)) when enterId.idText = "Enter" ->
-                      guarded.Add(enterExpr.Range.StartLine, enterExpr.Range.StartColumn) |> ignore
+            [
+                for _, e in index.Exprs do
+                    match e with
+                    | SynExpr.Sequential(
+                        expr1 = MonitorCall(enterId, lockArg) & enterExpr
+                        expr2 = GuardingTry(body, exitArg, tfTrivia, tf)) when enterId.idText = "Enter" ->
+                        guarded.Add(enterExpr.Range.StartLine, enterExpr.Range.StartColumn) |> ignore
 
-                      let lockText = textOfRange source lockArg.Range
-                      let tryLine = tfTrivia.TryKeyword.StartLine
-                      let finallyLine = tfTrivia.FinallyKeyword.StartLine
+                        let lockText = textOfRange source lockArg.Range
+                        let tryLine = tfTrivia.TryKeyword.StartLine
+                        let finallyLine = tfTrivia.FinallyKeyword.StartLine
 
-                      let fix =
-                          if
-                              lockText = textOfRange source exitArg.Range
-                              && isMonitorEntity check source enterId
-                              && startsOwnLine enterExpr.Range
-                              && startsOwnLine tfTrivia.TryKeyword
-                              && startsOwnLine tfTrivia.FinallyKeyword
-                              // body strictly between the keyword lines, so
-                              // every line — comments included — travels
-                              && body.Range.StartLine > tryLine
-                              && body.Range.EndLine < finallyLine
-                              && lineTailBlank body.Range
-                              && not (containsBindLike body.Range)
-                              && not (spansDirective source e.Range)
-                          then
-                              let indent = String.replicate enterExpr.Range.StartColumn " "
+                        let fix =
+                            if
+                                lockText = textOfRange source exitArg.Range
+                                && isMonitorEntity check source enterId
+                                && startsOwnLine enterExpr.Range
+                                && startsOwnLine tfTrivia.TryKeyword
+                                && startsOwnLine tfTrivia.FinallyKeyword
+                                // body strictly between the keyword lines, so
+                                // every line — comments included — travels
+                                && body.Range.StartLine > tryLine
+                                && body.Range.EndLine < finallyLine
+                                && lineTailBlank body.Range
+                                && not (containsBindLike body.Range)
+                                && not (spansDirective source e.Range)
+                            then
+                                let indent = String.replicate enterExpr.Range.StartColumn " "
 
-                              let bodyLines =
-                                  [ for l in tryLine + 1 .. finallyLine - 1 -> source.GetLineString(l - 1) ]
-                                  |> String.concat "\n"
+                                let bodyLines =
+                                    [ for l in tryLine + 1 .. finallyLine - 1 -> source.GetLineString(l - 1) ]
+                                    |> String.concat "\n"
 
-                              let replaceRange = Range.mkRange e.Range.FileName enterExpr.Range.Start tf.Range.End
+                                let replaceRange = Range.mkRange e.Range.FileName enterExpr.Range.Start tf.Range.End
 
-                              let bodyRegion =
-                                  Range.mkRange
-                                      e.Range.FileName
-                                      (Position.mkPos (tryLine + 1) 0)
-                                      (Position.mkPos finallyLine 0)
+                                let bodyRegion =
+                                    Range.mkRange
+                                        e.Range.FileName
+                                        (Position.mkPos (tryLine + 1) 0)
+                                        (Position.mkPos finallyLine 0)
 
-                              if mentionsForeignMutable bodyRegion bodyLines then
-                                  // the lambda could not capture it (FS0407)
-                                  None
-                              else
-                                  // fantomas closes the lambda at the end of its
-                                  // last line, not on a line of its own — unless
-                                  // that line ends in a comment, which would
-                                  // swallow the paren
-                                  let body = bodyLines.TrimEnd()
-                                  let lastLine = body.Substring(body.LastIndexOf '\n' + 1)
+                                if mentionsForeignMutable bodyRegion bodyLines then
+                                    // the lambda could not capture it (FS0407)
+                                    None
+                                else
+                                    // fantomas closes the lambda at the end of its
+                                    // last line, not on a line of its own — unless
+                                    // that line ends in a comment, which would
+                                    // swallow the paren
+                                    let body = bodyLines.TrimEnd()
+                                    let lastLine = body.Substring(body.LastIndexOf '\n' + 1)
 
-                                  let closing = if lastLine.Contains "//" then $"\n{indent})" else ")"
+                                    let closing = if lastLine.Contains "//" then $"\n{indent})" else ")"
 
-                                  Some(
-                                      replaceRange,
-                                      textOfRange source replaceRange,
-                                      $"lock {lockText} (fun () ->\n{body}{closing}"
-                                  )
-                          else
-                              None
+                                    Some(
+                                        replaceRange,
+                                        textOfRange source replaceRange,
+                                        $"lock {lockText} (fun () ->\n{body}{closing}"
+                                    )
+                            else
+                                None
 
-                      yield
-                          { Range = enterExpr.Range
-                            Fix = fix
-                            LockText = lockText
-                            Guarded = true }
-                  | _ -> () ]
+                        yield
+                            {
+                                Range = enterExpr.Range
+                                Fix = fix
+                                LockText = lockText
+                                Guarded = true
+                            }
+                    | _ -> ()
+            ]
 
         // bare Enter with no guarding try at all: leaks on first exception
         let bare =
-            [ for _, e in index.Exprs do
-                  match e with
-                  | MonitorCall(enterId, lockArg) when
-                      enterId.idText = "Enter"
-                      && not (guarded.Contains(e.Range.StartLine, e.Range.StartColumn))
-                      && isMonitorEntity check source enterId
-                      ->
-                      { Range = e.Range
-                        Fix = None
-                        LockText = textOfRange source lockArg.Range
-                        Guarded = false }
-                  | _ -> () ]
+            [
+                for _, e in index.Exprs do
+                    match e with
+                    | MonitorCall(enterId, lockArg) when
+                        enterId.idText = "Enter"
+                        && not (guarded.Contains(e.Range.StartLine, e.Range.StartColumn))
+                        && isMonitorEntity check source enterId
+                        ->
+                        {
+                            Range = e.Range
+                            Fix = None
+                            LockText = textOfRange source lockArg.Range
+                            Guarded = false
+                        }
+                    | _ -> ()
+            ]
 
         canonical @ bare

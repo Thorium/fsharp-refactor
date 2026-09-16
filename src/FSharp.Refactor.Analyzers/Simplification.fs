@@ -54,10 +54,12 @@ type SimplificationKind =
     | Emptiness
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string
-      Kind: SimplificationKind }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+        Kind: SimplificationKind
+    }
 
 /// `lhs OP rhs` for a named infix operator.
 [<return: Struct>]
@@ -148,10 +150,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     let add (path: SyntaxNode list) (range: range) (replacement: string) kind =
         if not (inExpressionTree path range) then
             suggestions.Add
-                { Range = range
-                  OriginalText = textOfRange source range
-                  ReplacementText = replacement
-                  Kind = kind }
+                {
+                    Range = range
+                    OriginalText = textOfRange source range
+                    ReplacementText = replacement
+                    Kind = kind
+                }
 
     let noneComparison
         (path: SyntaxNode list)
@@ -304,7 +308,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | InfixApp("op_GreaterThan", LengthOf(m, f, arg, piped), ZeroConst)
                 | InfixApp("op_LessThan", ZeroConst, LengthOf(m, f, arg, piped)) ->
                     emptiness path expr.Range true m f arg piped
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions

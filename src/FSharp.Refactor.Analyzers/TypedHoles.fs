@@ -42,14 +42,16 @@ let private hasUnescapedSpecifier (text: string) = endsWithFormatSpecifier text
 
 let private integerTypes =
     set
-        [ "System.Int32"
-          "System.Int64"
-          "System.Int16"
-          "System.SByte"
-          "System.Byte"
-          "System.UInt16"
-          "System.UInt32"
-          "System.UInt64" ]
+        [
+            "System.Int32"
+            "System.Int64"
+            "System.Int16"
+            "System.SByte"
+            "System.Byte"
+            "System.UInt16"
+            "System.UInt32"
+            "System.UInt64"
+        ]
 
 /// The provably ToString-identical specifier for the fill's type.
 let private specifierFor (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =
@@ -95,76 +97,80 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.InterpolatedString(contents = parts; range = stringRange) ->
-                  // `$$"""…"""` (F# 8): as many `$` as open the string, so
-                  // many braces open a hole and so many `%` start a
-                  // specifier — a lone `{` or `%` is text there. The parser
-                  // hands the String parts back with `%%s` already folded
-                  // to `%s`, so past one `$` the raw text decides; and a
-                  // part's range ends after ALL the braces opening its hole
-                  let dollars =
-                      let lineText = source.GetLineString(stringRange.StartLine - 1)
-                      let mutable n = 0
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.InterpolatedString(contents = parts; range = stringRange) ->
+                    // `$$"""…"""` (F# 8): as many `$` as open the string, so
+                    // many braces open a hole and so many `%` start a
+                    // specifier — a lone `{` or `%` is text there. The parser
+                    // hands the String parts back with `%%s` already folded
+                    // to `%s`, so past one `$` the raw text decides; and a
+                    // part's range ends after ALL the braces opening its hole
+                    let dollars =
+                        let lineText = source.GetLineString(stringRange.StartLine - 1)
+                        let mutable n = 0
 
-                      while stringRange.StartColumn + n < lineText.Length
-                            && lineText.[stringRange.StartColumn + n] = '$' do
-                          n <- n + 1
+                        while stringRange.StartColumn + n < lineText.Length
+                              && lineText.[stringRange.StartColumn + n] = '$' do
+                            n <- n + 1
 
-                      max 1 n
+                        max 1 n
 
-                  let opensHole (leadRange: range) =
-                      let raw = textOfRange source leadRange
+                    let opensHole (leadRange: range) =
+                        let raw = textOfRange source leadRange
 
-                      raw.Length >= dollars
-                      && raw.Substring(raw.Length - dollars) = String.replicate dollars "{"
-                      && (raw.Length = dollars || raw.[raw.Length - dollars - 1] <> '{')
+                        raw.Length >= dollars
+                        && raw.Substring(raw.Length - dollars) = String.replicate dollars "{"
+                        && (raw.Length = dollars || raw.[raw.Length - dollars - 1] <> '{')
 
-                  // the lexer folds a `$$` part's value into printf
-                  // convention (`%%s` → `%s`, a literal `%` stays `%%`), so
-                  // the same parity-aware check reads every dollar count;
-                  // the raw text would misread `%%%s{{x}}` (literal percent
-                  // and then a specifier) as untyped
-                  let typedLead (lead: string) (_: range) = hasUnescapedSpecifier lead
+                    // the lexer folds a `$$` part's value into printf
+                    // convention (`%%s` → `%s`, a literal `%` stays `%%`), so
+                    // the same parity-aware check reads every dollar count;
+                    // the raw text would misread `%%%s{{x}}` (literal percent
+                    // and then a specifier) as untyped
+                    let typedLead (lead: string) (_: range) = hasUnescapedSpecifier lead
 
-                  // pair every fill with the literal text preceding it
-                  let fillsWithLeadText =
-                      parts
-                      |> List.pairwise
-                      |> List.choose (fun pair ->
-                          match pair with
-                          | SynInterpolatedStringPart.String(value = lead; range = leadRange),
-                            SynInterpolatedStringPart.FillExpr(fillExpr = fill; qualifiers = None) when
-                              opensHole leadRange
-                              ->
-                              Some(lead, leadRange, fill)
-                          | _ -> None)
+                    // pair every fill with the literal text preceding it
+                    let fillsWithLeadText =
+                        parts
+                        |> List.pairwise
+                        |> List.choose (fun pair ->
+                            match pair with
+                            | SynInterpolatedStringPart.String(value = lead; range = leadRange),
+                              SynInterpolatedStringPart.FillExpr(fillExpr = fill; qualifiers = None) when
+                                opensHole leadRange
+                                ->
+                                Some(lead, leadRange, fill)
+                            | _ -> None)
 
-                  let anyTyped =
-                      fillsWithLeadText
-                      |> List.exists (fun (lead, leadRange, _) -> typedLead lead leadRange)
+                    let anyTyped =
+                        fillsWithLeadText
+                        |> List.exists (fun (lead, leadRange, _) -> typedLead lead leadRange)
 
-                  if anyTyped then
-                      for lead, leadRange, fill in fillsWithLeadText do
-                          if not (typedLead lead leadRange) then
-                              let fillIdent =
-                                  match stripParens fill with
-                                  | SynExpr.Ident id -> Some id
-                                  | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
-                                      Some(List.last ids)
-                                  | _ -> None
+                    if anyTyped then
+                        for lead, leadRange, fill in fillsWithLeadText do
+                            if not (typedLead lead leadRange) then
+                                let fillIdent =
+                                    match stripParens fill with
+                                    | SynExpr.Ident id -> Some id
+                                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                        Some(List.last ids)
+                                    | _ -> None
 
-                              match fillIdent |> Option.bind (specifierFor check source) with
-                              | Some specifier when leadRange.EndColumn >= dollars ->
-                                  // the String part's range includes the
-                                  // trailing `{` (`{{` under `$$`); insert
-                                  // just before it, with as many `%` as
-                                  // the string has `$`
-                                  let insertAt = Position.mkPos leadRange.EndLine (leadRange.EndColumn - dollars)
+                                match fillIdent |> Option.bind (specifierFor check source) with
+                                | Some specifier when leadRange.EndColumn >= dollars ->
+                                    // the String part's range includes the
+                                    // trailing `{` (`{{` under `$$`); insert
+                                    // just before it, with as many `%` as
+                                    // the string has `$`
+                                    let insertAt = Position.mkPos leadRange.EndLine (leadRange.EndColumn - dollars)
 
-                                  { Range = Range.mkRange leadRange.FileName insertAt insertAt
-                                    Specifier = String.replicate (dollars - 1) "%" + specifier
-                                    FillText = textOfRange source fill.Range }
-                              | _ -> ()
-              | _ -> () ]
+                                    {
+                                        Range = Range.mkRange leadRange.FileName insertAt insertAt
+                                        Specifier = String.replicate (dollars - 1) "%" + specifier
+                                        FillText = textOfRange source fill.Range
+                                    }
+                                | _ -> ()
+                | _ -> ()
+        ]

@@ -113,17 +113,21 @@ let private sinkMethods = set [ "Add"; "AddHandler"; "Subscribe" ]
 
 /// Enclosing types whose Add/AddHandler/Subscribe members store handlers.
 let private sinkEntityPrefixes =
-    [ "System.IObservable"
-      "Microsoft.FSharp.Control.IEvent"
-      "Microsoft.FSharp.Control.IDelegateEvent"
-      // the `.Add` extension on IObservable lives here
-      "Microsoft.FSharp.Core.CommonExtensions" ]
+    [
+        "System.IObservable"
+        "Microsoft.FSharp.Control.IEvent"
+        "Microsoft.FSharp.Control.IDelegateEvent"
+        // the `.Add` extension on IObservable lives here
+        "Microsoft.FSharp.Core.CommonExtensions"
+    ]
 
 /// Module functions that store a handler.
 let private sinkFunctionPrefixes =
-    [ "Microsoft.FSharp.Control.Observable."
-      "Microsoft.FSharp.Control.Event."
-      "Microsoft.FSharp.Core.CommonExtensions." ]
+    [
+        "Microsoft.FSharp.Control.Observable."
+        "Microsoft.FSharp.Control.Event."
+        "Microsoft.FSharp.Core.CommonExtensions."
+    ]
 
 /// Does the method identifier resolve to an event/observable sink?
 let private resolvesToSink (check: FSharpCheckFileResults) (source: ISourceText) (methodId: Ident) =
@@ -209,53 +213,58 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // per type: (type range, instance let-bound names, member scopes)
         let typeContexts =
-            [ for _, decl in index.Decls do
-                  match decl with
-                  | SynModuleDecl.Types(typeDefns = defns) ->
-                      for typeDefn in defns do
-                          match typeDefn with
-                          | SynTypeDefn(typeRepr = SynTypeDefnRepr.ObjectModel(members = members)) ->
-                              let ctorSelf =
-                                  members
-                                  |> List.tryPick (fun m ->
-                                      match m with
-                                      | SynMemberDefn.ImplicitCtor(selfIdentifier = Some selfId) -> Some selfId.idText
-                                      | _ -> None)
+            [
+                for _, decl in index.Decls do
+                    match decl with
+                    | SynModuleDecl.Types(typeDefns = defns) ->
+                        for typeDefn in defns do
+                            match typeDefn with
+                            | SynTypeDefn(typeRepr = SynTypeDefnRepr.ObjectModel(members = members)) ->
+                                let ctorSelf =
+                                    members
+                                    |> List.tryPick (fun m ->
+                                        match m with
+                                        | SynMemberDefn.ImplicitCtor(selfIdentifier = Some selfId) ->
+                                            Some selfId.idText
+                                        | _ -> None)
 
-                              let instanceLetNames =
-                                  members
-                                  |> List.collect (fun m ->
-                                      match m with
-                                      | SynMemberDefn.LetBindings(isStatic = false; bindings = bindings) ->
-                                          bindings
-                                          |> List.choose (fun (SynBinding(headPat = p)) ->
-                                              match p with
-                                              | SynPat.Named(ident = SynIdent(ident = var)) -> Some var.idText
-                                              | SynPat.LongIdent(longDotId = SynLongIdent(id = [ f ])) ->
-                                                  Some f.idText
-                                              | _ -> None)
-                                      | _ -> [])
-                                  |> Set.ofList
+                                let instanceLetNames =
+                                    members
+                                    |> List.collect (fun m ->
+                                        match m with
+                                        | SynMemberDefn.LetBindings(isStatic = false; bindings = bindings) ->
+                                            bindings
+                                            |> List.choose (fun (SynBinding(headPat = p)) ->
+                                                match p with
+                                                | SynPat.Named(ident = SynIdent(ident = var)) -> Some var.idText
+                                                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ f ])) ->
+                                                    Some f.idText
+                                                | _ -> None)
+                                        | _ -> [])
+                                    |> Set.ofList
 
-                              let selfOf (SynBinding(headPat = p)) =
-                                  match p with
-                                  | SynPat.LongIdent(longDotId = SynLongIdent(id = [ self; _ ])) when self.idText <> "_" ->
-                                      Some self.idText
-                                  | _ -> None
+                                let selfOf (SynBinding(headPat = p)) =
+                                    match p with
+                                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ self; _ ])) when
+                                        self.idText <> "_"
+                                        ->
+                                        Some self.idText
+                                    | _ -> None
 
-                              let memberScopes =
-                                  members
-                                  |> List.collect (fun m ->
-                                      match m with
-                                      | SynMemberDefn.Member(memberDefn = binding) -> [ m.Range, selfOf binding ]
-                                      | SynMemberDefn.GetSetMember(memberDefnForGet = g; memberDefnForSet = s) ->
-                                          [ for b in List.choose id [ g; s ] -> m.Range, selfOf b ]
-                                      | SynMemberDefn.LetBindings(isStatic = false) -> [ m.Range, ctorSelf ]
-                                      | _ -> [])
+                                let memberScopes =
+                                    members
+                                    |> List.collect (fun m ->
+                                        match m with
+                                        | SynMemberDefn.Member(memberDefn = binding) -> [ m.Range, selfOf binding ]
+                                        | SynMemberDefn.GetSetMember(memberDefnForGet = g; memberDefnForSet = s) ->
+                                            [ for b in List.choose id [ g; s ] -> m.Range, selfOf b ]
+                                        | SynMemberDefn.LetBindings(isStatic = false) -> [ m.Range, ctorSelf ]
+                                        | _ -> [])
 
-                              typeDefn.Range, instanceLetNames, memberScopes
-                          | _ -> ()
-                  | _ -> () ]
+                                typeDefn.Range, instanceLetNames, memberScopes
+                            | _ -> ()
+                    | _ -> ()
+            ]
 
         // does any expression inside `r` read or assign one of `names`?
         let mentioned (names: Set<string>) (r: range) =
@@ -274,68 +283,72 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     Some firstId.idText
                 | _ -> None)
 
-        [ for path, expr in index.Exprs do
-              match expr with
-              | SinkCall(methodId, lambda, receiver) ->
-                  let enclosing =
-                      typeContexts
-                      |> List.tryPick (fun (typeRange, letNames, scopes) ->
-                          if Range.rangeContainsRange typeRange expr.Range then
-                              scopes
-                              |> List.tryPick (fun (scopeRange, selfOpt) ->
-                                  if Range.rangeContainsRange scopeRange expr.Range then
-                                      Some(letNames, selfOpt)
-                                  else
-                                      None)
-                          else
-                              None)
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                | SinkCall(methodId, lambda, receiver) ->
+                    let enclosing =
+                        typeContexts
+                        |> List.tryPick (fun (typeRange, letNames, scopes) ->
+                            if Range.rangeContainsRange typeRange expr.Range then
+                                scopes
+                                |> List.tryPick (fun (scopeRange, selfOpt) ->
+                                    if Range.rangeContainsRange scopeRange expr.Range then
+                                        Some(letNames, selfOpt)
+                                    else
+                                        None)
+                            else
+                                None)
 
-                  match enclosing with
-                  | Some(letNames, selfOpt) ->
-                      let capturable =
-                          Option.fold (fun names self -> Set.add self names) letNames selfOpt
-                          - lambdaBoundNames lambda
+                    match enclosing with
+                    | Some(letNames, selfOpt) ->
+                        let capturable =
+                            Option.fold (fun names self -> Set.add self names) letNames selfOpt
+                            - lambdaBoundNames lambda
 
-                      // a publisher the object owns — its own event
-                      // (`x.Disposing.Add(fun _ -> ... x ...)`), or one held
-                      // in its own field — cannot outlive the object: the
-                      // reference is a cycle inside one lifetime, not a leak
-                      let ownPublisher =
-                          match receiver with
-                          | Some root -> capturable.Contains root || (localEventNames path).Contains root
-                          | None -> false
+                        // a publisher the object owns — its own event
+                        // (`x.Disposing.Add(fun _ -> ... x ...)`), or one held
+                        // in its own field — cannot outlive the object: the
+                        // reference is a cycle inside one lifetime, not a leak
+                        let ownPublisher =
+                            match receiver with
+                            | Some root -> capturable.Contains root || (localEventNames path).Contains root
+                            | None -> false
 
-                      // the publisher's own spelling — `AppDomain.CurrentDomain
-                      // .UnhandledException.Add` — or, for `x |> Event.add f`,
-                      // the left side of the pipe
-                      let publisherIds =
-                          match expr with
-                          | SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
-                              ids |> List.map (fun i -> i.idText)
-                          | SynExpr.App(funcExpr = SynExpr.DotGet(expr = receiverExpr)) -> leadingIds receiverExpr
-                          | _ -> []
+                        // the publisher's own spelling — `AppDomain.CurrentDomain
+                        // .UnhandledException.Add` — or, for `x |> Event.add f`,
+                        // the left side of the pipe
+                        let publisherIds =
+                            match expr with
+                            | SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
+                                ids |> List.map (fun i -> i.idText)
+                            | SynExpr.App(funcExpr = SynExpr.DotGet(expr = receiverExpr)) -> leadingIds receiverExpr
+                            | _ -> []
 
-                      let pipedIds =
-                          match path with
-                          | SyntaxNode.SynExpr(SynExpr.App(
-                              funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = lhs))) :: _ when
-                              op.idText = "op_PipeRight"
-                              ->
-                              leadingIds lhs
-                          | _ -> []
+                        let pipedIds =
+                            match path with
+                            | SyntaxNode.SynExpr(SynExpr.App(
+                                funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = lhs))) :: _ when
+                                op.idText = "op_PipeRight"
+                                ->
+                                leadingIds lhs
+                            | _ -> []
 
-                      let publisher =
-                          if isProcessWide publisherIds || isProcessWide pipedIds then
-                              PublisherKind.ProcessWide
-                          else
-                              PublisherKind.External
+                        let publisher =
+                            if isProcessWide publisherIds || isProcessWide pipedIds then
+                                PublisherKind.ProcessWide
+                            else
+                                PublisherKind.External
 
-                      match mentioned capturable lambda.Range with
-                      | Some captured when not ownPublisher && resolvesToSink check source methodId ->
-                          { Range = lambda.Range
-                            CapturedName = captured
-                            SinkName = methodId.idText
-                            Publisher = publisher }
-                      | _ -> ()
-                  | None -> ()
-              | _ -> () ]
+                        match mentioned capturable lambda.Range with
+                        | Some captured when not ownPublisher && resolvesToSink check source methodId ->
+                            {
+                                Range = lambda.Range
+                                CapturedName = captured
+                                SinkName = methodId.idText
+                                Publisher = publisher
+                            }
+                        | _ -> ()
+                    | None -> ()
+                | _ -> ()
+        ]

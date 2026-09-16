@@ -16,9 +16,11 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 type Suggestion =
-    { Range: range
-      OriginalText: string
-      ReplacementText: string }
+    {
+        Range: range
+        OriginalText: string
+        ReplacementText: string
+    }
 
 /// `BitConverter.ToString(<single arg>)`, optionally System-qualified.
 [<return: Struct>]
@@ -72,27 +74,31 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     let index = AstIndex.ofTree parseTree
 
     let candidates =
-        [ for _, expr in index.Exprs do
-              match expr with
-              | SynExpr.App(
-                  isInfix = false
-                  funcExpr = SynExpr.DotGet(
-                      expr = BitConverterToString bytes; longDotId = SynLongIdent(id = [ replaceId ]))
-                  argExpr = arg) when replaceId.idText = "Replace" && isSingleLine expr.Range ->
-                  match stripParens arg with
-                  | SynExpr.Tuple(exprs = [ StringConst "-"; StringConst "" ]) ->
-                      { Range = expr.Range
-                        OriginalText = textOfRange source expr.Range
-                        ReplacementText =
-                          (let prefix = if opensSystemNamespace source then "" else "System."
-                           let call = $"{prefix}Convert.ToHexString {argumentText source bytes}"
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.App(
+                    isInfix = false
+                    funcExpr = SynExpr.DotGet(
+                        expr = BitConverterToString bytes; longDotId = SynLongIdent(id = [ replaceId ]))
+                    argExpr = arg) when replaceId.idText = "Replace" && isSingleLine expr.Range ->
+                    match stripParens arg with
+                    | SynExpr.Tuple(exprs = [ StringConst "-"; StringConst "" ]) ->
+                        {
+                            Range = expr.Range
+                            OriginalText = textOfRange source expr.Range
+                            ReplacementText =
+                                (let prefix = if opensSystemNamespace source then "" else "System."
+                                 let call = $"{prefix}Convert.ToHexString {argumentText source bytes}"
 
-                           if continuesIntoMemberAccess source expr.Range then
-                               $"({call})"
-                           else
-                               call) }
-                  | _ -> ()
-              | _ -> () ]
+                                 if continuesIntoMemberAccess source expr.Range then
+                                     $"({call})"
+                                 else
+                                     call)
+                        }
+                    | _ -> ()
+                | _ -> ()
+        ]
 
     // gate only when there is something to gate: the assembly scan is the
     // expensive part

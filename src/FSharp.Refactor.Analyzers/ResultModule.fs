@@ -375,15 +375,18 @@ let private findCandidates (parseTree: ParsedInput) (source: ISourceText) : Cand
 
                             if producedLineLength source m replacement <= MaxLineLength then
                                 candidates.Add
-                                    { MatchRange = m
-                                      OkIdent = okIdent
-                                      ErrorIdent = errorIdent
-                                      Replacement = replacement
-                                      Target = target
-                                      MapBody = mapBody }
+                                    {
+                                        MatchRange = m
+                                        OkIdent = okIdent
+                                        ErrorIdent = errorIdent
+                                        Replacement = replacement
+                                        Target = target
+                                        MapBody = mapBody
+                                    }
                         | None -> ()
                     | _ -> ()
-                | _ -> () }
+                | _ -> ()
+        }
 
     AstIndex.replay collector parseTree
     List.ofSeq candidates
@@ -394,14 +397,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     if OptionModule.hasErrors check then
         []
     else
+        let index = AstIndex.ofTree parseTree
+
         findCandidates parseTree source
         |> List.filter (fun c ->
             not (spansDirective source c.MatchRange)
+            // the arms move into a lambda, which cannot capture a Span or
+            // other byref-like local declared above the match
+            && not (OptionModule.capturesByRefLike check index source c.MatchRange)
             && OptionModule.resolvesToCoreCase check source "Microsoft.FSharp.Core.Result<" c.OkIdent
             && OptionModule.resolvesToCoreCase check source "Microsoft.FSharp.Core.Result<" c.ErrorIdent
             && not (c.MapBody |> Option.exists (returnsUnit check source)))
         |> List.map (fun c ->
-            { Range = c.MatchRange
-              OriginalText = textOfRange source c.MatchRange
-              ReplacementText = c.Replacement
-              Target = c.Target })
+            {
+                Range = c.MatchRange
+                OriginalText = textOfRange source c.MatchRange
+                ReplacementText = c.Replacement
+                Target = c.Target
+            })

@@ -15,15 +15,17 @@ let textOfRange (source: ISourceText) (r: range) : string =
     if r.StartLine = r.EndLine then
         source.GetLineString(r.StartLine - 1).Substring(r.StartColumn, r.EndColumn - r.StartColumn)
     else
-        [ for lineNumber in r.StartLine .. r.EndLine do
-              let line = source.GetLineString(lineNumber - 1)
+        [
+            for lineNumber in r.StartLine .. r.EndLine do
+                let line = source.GetLineString(lineNumber - 1)
 
-              if lineNumber = r.StartLine then
-                  line.Substring r.StartColumn
-              elif lineNumber = r.EndLine then
-                  line.Substring(0, r.EndColumn)
-              else
-                  line ]
+                if lineNumber = r.StartLine then
+                    line.Substring r.StartColumn
+                elif lineNumber = r.EndLine then
+                    line.Substring(0, r.EndColumn)
+                else
+                    line
+        ]
         |> String.concat "\n"
 
 let isSingleLine (r: range) = r.StartLine = r.EndLine
@@ -68,9 +70,11 @@ let attributeInsertPos (source: ISourceText) (declRange: range) : pos =
 /// rule variants: they read call sites out of files other than the one the
 /// definition lives in.
 type FileContext =
-    { FileName: string
-      Source: ISourceText
-      ParseTree: ParsedInput }
+    {
+        FileName: string
+        Source: ISourceText
+        ParseTree: ParsedInput
+    }
 
 /// True when any two of these ranges nest or coincide within one file.
 ///
@@ -174,23 +178,27 @@ let (|LetOrUseE|_|) (e: SynExpr) =
     match e with
     | SynExpr.LetOrUse(isRecursive = isRecursive; isUse = isUse; isBang = isBang; bindings = bindings; body = body) ->
         ValueSome
-            {| IsRecursive = isRecursive
-               IsUse = isUse
-               IsBang = isBang
-               Bindings = bindings
-               Body = body
-               Range = e.Range |}
+            {|
+                IsRecursive = isRecursive
+                IsUse = isUse
+                IsBang = isBang
+                Bindings = bindings
+                Body = body
+                Range = e.Range
+            |}
     | _ -> ValueNone
 #else
     match e with
     | SynExpr.LetOrUse lou ->
         ValueSome
-            {| IsRecursive = lou.IsRecursive
-               IsUse = lou.IsUse
-               IsBang = lou.IsBang
-               Bindings = lou.Bindings
-               Body = lou.Body
-               Range = lou.Range |}
+            {|
+                IsRecursive = lou.IsRecursive
+                IsUse = lou.IsUse
+                IsBang = lou.IsBang
+                Bindings = lou.Bindings
+                Body = lou.Body
+                Range = lou.Range
+            |}
     | _ -> ValueNone
 #endif
 
@@ -376,23 +384,25 @@ let hasAttributeNamed (name: string) (attrs: SynAttributes) =
 /// members to be instance members (the builder is a value).
 let ceProtocolNames =
     set
-        [ "Bind"
-          "Return"
-          "ReturnFrom"
-          "Yield"
-          "YieldFrom"
-          "Zero"
-          "Combine"
-          "Delay"
-          "Run"
-          "For"
-          "While"
-          "TryWith"
-          "TryFinally"
-          "Using"
-          "Source"
-          "MergeSources"
-          "BindReturn" ]
+        [
+            "Bind"
+            "Return"
+            "ReturnFrom"
+            "Yield"
+            "YieldFrom"
+            "Zero"
+            "Combine"
+            "Delay"
+            "Run"
+            "For"
+            "While"
+            "TryWith"
+            "TryFinally"
+            "Using"
+            "Source"
+            "MergeSources"
+            "BindReturn"
+        ]
 
 /// The name of a `member this.Name ...` definition, if that is its shape.
 let memberDefnName (m: SynMemberDefn) =
@@ -446,15 +456,17 @@ let private continuationIndents (lineAt: int -> string) (lineCount: int) (line: 
     let mutable l = line + 1
     let mutable inside = true
 
-    [ while inside && l <= lineCount do
-          let text = lineAt l
-          let trimmed = text.TrimStart()
+    [
+        while inside && l <= lineCount do
+            let text = lineAt l
+            let trimmed = text.TrimStart()
 
-          if trimmed = "" || trimmed.StartsWith "//" then ()
-          elif indentOf text > own then yield indentOf text
-          else inside <- false
+            if trimmed = "" || trimmed.StartsWith "//" then ()
+            elif indentOf text > own then yield indentOf text
+            else inside <- false
 
-          l <- l + 1 ]
+            l <- l + 1
+    ]
 
 /// The tokens that open an offside context: the first token after one of
 /// them sets the column its block continues at on the lines below - a line
@@ -462,28 +474,30 @@ let private continuationIndents (lineAt: int -> string) (lineCount: int) (line: 
 /// continuation of the current item, one short of it closes the block.
 let private contextOpeners =
     set
-        [ "LPAREN"
-          "LBRACK"
-          "LBRACE"
-          "LBRACK_BAR"
-          "LBRACE_BAR"
-          "BEGIN"
-          "EQUALS"
-          "RARROW"
-          "THEN"
-          "ELSE"
-          "DO"
-          "WITH"
-          "FUN"
-          "FUNCTION"
-          "TRY"
-          "FINALLY"
-          "LAZY"
-          "YIELD"
-          "YIELD_BANG"
-          "LARROW"
-          "COLON_EQUALS"
-          "ASSERT" ]
+        [
+            "LPAREN"
+            "LBRACK"
+            "LBRACE"
+            "LBRACK_BAR"
+            "LBRACE_BAR"
+            "BEGIN"
+            "EQUALS"
+            "RARROW"
+            "THEN"
+            "ELSE"
+            "DO"
+            "WITH"
+            "FUN"
+            "FUNCTION"
+            "TRY"
+            "FINALLY"
+            "LAZY"
+            "YIELD"
+            "YIELD_BANG"
+            "LARROW"
+            "COLON_EQUALS"
+            "ASSERT"
+        ]
 
 let private bracketOpeners =
     set [ "LPAREN"; "LBRACK"; "LBRACE"; "LBRACK_BAR"; "LBRACE_BAR"; "BEGIN" ]

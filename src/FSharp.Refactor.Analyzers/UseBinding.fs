@@ -124,27 +124,31 @@ let describeEscape (s: Suggestion) =
 
 /// BCL factories whose result the caller owns, by enclosing type.
 let private bclFactories =
-    [ "System.IO.File",
-      set
-          [ "Open"
-            "OpenRead"
-            "OpenWrite"
-            "OpenText"
-            "Create"
-            "CreateText"
-            "AppendText" ]
-      "System.Xml.XmlReader", set [ "Create" ]
-      "System.Xml.XmlWriter", set [ "Create" ]
-      // the hash and cipher factories: `MD5.Create()` is THE way to get
-      // one (the F# compiler's Hashing.fs, suave's WebSocket handshake)
-      "System.Security.Cryptography.MD5", set [ "Create" ]
-      "System.Security.Cryptography.SHA1", set [ "Create" ]
-      "System.Security.Cryptography.SHA256", set [ "Create" ]
-      "System.Security.Cryptography.SHA384", set [ "Create" ]
-      "System.Security.Cryptography.SHA512", set [ "Create" ]
-      "System.Security.Cryptography.HashAlgorithm", set [ "Create" ]
-      "System.Security.Cryptography.Aes", set [ "Create" ]
-      "System.Security.Cryptography.RandomNumberGenerator", set [ "Create" ] ]
+    [
+        "System.IO.File",
+        set
+            [
+                "Open"
+                "OpenRead"
+                "OpenWrite"
+                "OpenText"
+                "Create"
+                "CreateText"
+                "AppendText"
+            ]
+        "System.Xml.XmlReader", set [ "Create" ]
+        "System.Xml.XmlWriter", set [ "Create" ]
+        // the hash and cipher factories: `MD5.Create()` is THE way to get
+        // one (the F# compiler's Hashing.fs, suave's WebSocket handshake)
+        "System.Security.Cryptography.MD5", set [ "Create" ]
+        "System.Security.Cryptography.SHA1", set [ "Create" ]
+        "System.Security.Cryptography.SHA256", set [ "Create" ]
+        "System.Security.Cryptography.SHA384", set [ "Create" ]
+        "System.Security.Cryptography.SHA512", set [ "Create" ]
+        "System.Security.Cryptography.HashAlgorithm", set [ "Create" ]
+        "System.Security.Cryptography.Aes", set [ "Create" ]
+        "System.Security.Cryptography.RandomNumberGenerator", set [ "Create" ]
+    ]
 
 /// The construction under the wrappers that leave it what it is: parens,
 /// a type annotation, an upcast (`new StringWriter(sb) :> TextWriter`).
@@ -256,10 +260,12 @@ let private symbolType (symbol: FSharpSymbol) =
 /// default to owning).
 let private adoptedResourceBases =
     set
-        [ "System.IO.Stream"
-          "System.IO.TextReader"
-          "System.IO.TextWriter"
-          "System.Net.Http.HttpMessageHandler" ]
+        [
+            "System.IO.Stream"
+            "System.IO.TextReader"
+            "System.IO.TextWriter"
+            "System.Net.Http.HttpMessageHandler"
+        ]
 
 /// A wrapper built over a resource the scope did not create: its Dispose
 /// closes that resource too (leaveOpen is false by default, HttpClient
@@ -538,14 +544,16 @@ let private parameterNames (pats: SynPat list) (argument: int) (element: int opt
 /// request or per message.
 let private handlerAttributes =
     set
-        [ "HttpGet"
-          "HttpPost"
-          "HttpPut"
-          "HttpDelete"
-          "HttpPatch"
-          "HttpHead"
-          "HttpOptions"
-          "Route" ]
+        [
+            "HttpGet"
+            "HttpPost"
+            "HttpPut"
+            "HttpDelete"
+            "HttpPatch"
+            "HttpHead"
+            "HttpOptions"
+            "Route"
+        ]
 
 let private handlerBases =
     set [ "Controller"; "ControllerBase"; "ApiController"; "Hub" ]
@@ -611,10 +619,12 @@ let private bindingContext (path: SyntaxNode list) (at: range) =
 /// and transactions.
 let private flushSensitiveBases =
     set
-        [ "System.IO.Stream"
-          "System.IO.TextWriter"
-          "System.IO.BinaryWriter"
-          "System.Data.Common.DbTransaction" ]
+        [
+            "System.IO.Stream"
+            "System.IO.TextWriter"
+            "System.IO.BinaryWriter"
+            "System.Data.Common.DbTransaction"
+        ]
 
 /// Is the binder's type one of `bases` or derived from one, or does it
 /// implement one of `interfaces`?
@@ -640,14 +650,16 @@ let private typeIsA
 /// it, never by the scope that started it.
 let private selfActiveBases =
     set
-        [ "System.Timers.Timer"
-          "System.Threading.Timer"
-          "System.Threading.PeriodicTimer"
-          "System.IO.FileSystemWatcher"
-          "System.Diagnostics.Process"
-          "System.Net.Sockets.TcpListener"
-          "System.Net.Sockets.Socket"
-          "System.Net.HttpListener" ]
+        [
+            "System.Timers.Timer"
+            "System.Threading.Timer"
+            "System.Threading.PeriodicTimer"
+            "System.IO.FileSystemWatcher"
+            "System.Diagnostics.Process"
+            "System.Net.Sockets.TcpListener"
+            "System.Net.Sockets.Socket"
+            "System.Net.HttpListener"
+        ]
 
 let private selfActiveType check source binder =
     typeIsA selfActiveBases Set.empty check source binder
@@ -659,15 +671,17 @@ let private flushSensitive check source binder =
 /// closes the MemoryStreams it writes into).
 let private closeDisposesBases =
     set
-        [ "System.IO.Stream"
-          "System.IO.TextWriter"
-          "System.IO.TextReader"
-          "System.IO.BinaryWriter"
-          "System.IO.BinaryReader"
-          "System.Net.Sockets.Socket"
-          "System.Net.Sockets.TcpClient"
-          "System.Net.Sockets.UdpClient"
-          "System.Threading.WaitHandle" ]
+        [
+            "System.IO.Stream"
+            "System.IO.TextWriter"
+            "System.IO.TextReader"
+            "System.IO.BinaryWriter"
+            "System.IO.BinaryReader"
+            "System.Net.Sockets.Socket"
+            "System.Net.Sockets.TcpClient"
+            "System.Net.Sockets.UdpClient"
+            "System.Threading.WaitHandle"
+        ]
 
 let private closeDisposes check source binder =
     typeIsA closeDisposesBases Set.empty check source binder
@@ -678,37 +692,41 @@ let private closeDisposes check source binder =
 /// Stream from x would still need it afterwards.
 let private plainValueTypes =
     set
-        [ "System.String"
-          "System.Boolean"
-          "System.Char"
-          "System.Byte"
-          "System.SByte"
-          "System.Int16"
-          "System.UInt16"
-          "System.Int32"
-          "System.UInt32"
-          "System.Int64"
-          "System.UInt64"
-          "System.Single"
-          "System.Double"
-          "System.Decimal"
-          "System.Guid"
-          "System.DateTime"
-          "System.DateTimeOffset"
-          "System.TimeSpan"
-          "Microsoft.FSharp.Core.Unit"
-          "Microsoft.FSharp.Core.unit" ]
+        [
+            "System.String"
+            "System.Boolean"
+            "System.Char"
+            "System.Byte"
+            "System.SByte"
+            "System.Int16"
+            "System.UInt16"
+            "System.Int32"
+            "System.UInt32"
+            "System.Int64"
+            "System.UInt64"
+            "System.Single"
+            "System.Double"
+            "System.Decimal"
+            "System.Guid"
+            "System.DateTime"
+            "System.DateTimeOffset"
+            "System.TimeSpan"
+            "Microsoft.FSharp.Core.Unit"
+            "Microsoft.FSharp.Core.unit"
+        ]
 
 /// Immutable containers that are fully evaluated when built: plain when
 /// their contents are (a `string option`, an `int list`). A seq is not —
 /// it runs when enumerated.
 let private plainContainerTypes =
     set
-        [ "Microsoft.FSharp.Core.FSharpOption`1"
-          "Microsoft.FSharp.Core.FSharpValueOption`1"
-          "Microsoft.FSharp.Core.FSharpResult`2"
-          "Microsoft.FSharp.Collections.FSharpList`1"
-          "System.Nullable`1" ]
+        [
+            "Microsoft.FSharp.Core.FSharpOption`1"
+            "Microsoft.FSharp.Core.FSharpValueOption`1"
+            "Microsoft.FSharp.Core.FSharpResult`2"
+            "Microsoft.FSharp.Collections.FSharpList`1"
+            "System.Nullable`1"
+        ]
 
 let rec private isPlainValue (t: FSharpType) =
     let t = OptionModule.stripAbbreviations t
@@ -982,11 +1000,13 @@ let private returnedThroughTo check source (isResult: range -> bool) (path: Synt
 /// from the moment the member returns it; an Async runs once started.
 let private pendingTypes =
     set
-        [ "System.Threading.Tasks.Task"
-          "System.Threading.Tasks.Task`1"
-          "System.Threading.Tasks.ValueTask"
-          "System.Threading.Tasks.ValueTask`1"
-          "Microsoft.FSharp.Control.FSharpAsync`1" ]
+        [
+            "System.Threading.Tasks.Task"
+            "System.Threading.Tasks.Task`1"
+            "System.Threading.Tasks.ValueTask"
+            "System.Threading.Tasks.ValueTask`1"
+            "Microsoft.FSharp.Control.FSharpAsync`1"
+        ]
 
 /// Does the member return pending work — and is it already running when
 /// returned (a Task) or not until started (an Async)? ValueNone for any
@@ -1273,342 +1293,352 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | SynPat.As(lhsPat = lhs; rhsPat = rhs) -> patIdents lhs @ patIdents rhs
             | _ -> []
 
-        [ for declPath, expr in index.Exprs do
-              match expr with
-              | LetOrUseE lou when not (lou.IsBang || lou.IsUse || lou.IsRecursive) ->
-                  match lou.Bindings with
-                  | [ SynBinding(
-                          isMutable = false
-                          headPat = (SynPat.Named(ident = SynIdent(ident = binder); accessibility = None) | SynPat.LongIdent(
-                              longDotId = SynLongIdent(id = [ binder ])
-                              argPats = SynArgPats.Pats []
-                              accessibility = None))
-                          expr = rhs) ] when
-                      (let rhs = unwrapped rhs
+        [
+            for declPath, expr in index.Exprs do
+                match expr with
+                | LetOrUseE lou when not (lou.IsBang || lou.IsUse || lou.IsRecursive) ->
+                    match lou.Bindings with
+                    | [ SynBinding(
+                            isMutable = false
+                            headPat = (SynPat.Named(ident = SynIdent(ident = binder); accessibility = None) | SynPat.LongIdent(
+                                longDotId = SynLongIdent(id = [ binder ])
+                                argPats = SynArgPats.Pats []
+                                accessibility = None))
+                            expr = rhs) ] when
+                        (let rhs = unwrapped rhs
 
-                       locallyConstructed check source rhs
-                       && not (wrapsForeignResource check source (ownedHere declPath expr.Range rhs.Range) rhs)
-                       && not (ObjectDesign.ownsNoResource check source rhs))
-                      && ObjectDesign.resolvesToDisposable check source binder
-                      ->
-                      let name = binder.idText
-                      let body = lou.Body
-                      let holders = holdersOn index declPath expr.Range
+                         locallyConstructed check source rhs
+                         && not (wrapsForeignResource check source (ownedHere declPath expr.Range rhs.Range) rhs)
+                         && not (ObjectDesign.ownsNoResource check source rhs))
+                        && ObjectDesign.resolvesToDisposable check source binder
+                        ->
+                        let name = binder.idText
+                        let body = lou.Body
+                        let holders = holdersOn index declPath expr.Range
 
-                      let mentionsOf (names: Set<string>) =
-                          index.Exprs
-                          |> Array.filter (fun (_, e) ->
-                              match e with
-                              | SynExpr.Ident id when names.Contains id.idText ->
-                                  Range.rangeContainsRange body.Range id.idRange
-                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = firstId :: _)) when
-                                  names.Contains firstId.idText
-                                  ->
-                                  Range.rangeContainsRange body.Range firstId.idRange
-                              | _ -> false)
+                        let mentionsOf (names: Set<string>) =
+                            index.Exprs
+                            |> Array.filter (fun (_, e) ->
+                                match e with
+                                | SynExpr.Ident id when names.Contains id.idText ->
+                                    Range.rangeContainsRange body.Range id.idRange
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = firstId :: _)) when
+                                    names.Contains firstId.idText
+                                    ->
+                                    Range.rangeContainsRange body.Range firstId.idRange
+                                | _ -> false)
 
-                      // every mention of the binder itself in the scope
-                      let binderMentions = mentionsOf (Set.singleton name)
+                        // every mention of the binder itself in the scope
+                        let binderMentions = mentionsOf (Set.singleton name)
 
-                      // the locals bound to values reached THROUGH the
-                      // binder — `let pending = client.GetStringAsync url`,
-                      // `let cmd = conn.CreateCommand()`, `let f = c.Convert`
-                      // — and through those in turn: a task, a command, a
-                      // reader, a method group still needs the binder
-                      // behind it, so where such an alias goes is where the
-                      // binder goes. A plain-valued local (`let b =
-                      // stream.ReadByte()`) is evaluated and done
-                      let aliases =
-                          let localBindings =
-                              index.Exprs
-                              |> Array.collect (fun (_, e) ->
-                                  match e with
-                                  | LetOrUseE inner when Range.rangeContainsRange body.Range inner.Range ->
-                                      inner.Bindings
-                                      |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
-                                          match p with
-                                          // a local function: its body's mentions
-                                          // are captures already
-                                          | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> None
-                                          | _ -> Some(patIdents p, rhs.Range))
-                                      |> Array.ofList
-                                  | _ -> [||])
-
-                          let rec grow (tracked: Set<string>) =
-                              let mentioned = mentionsOf tracked
-
-                              let more =
-                                  localBindings
-                                  |> Array.collect (fun (ids, rhsRange) ->
-                                      if
-                                          mentioned
-                                          |> Array.exists (fun (_, m) -> Range.rangeContainsRange rhsRange m.Range)
-                                      then
-                                          ids
-                                          |> List.filter (fun id ->
-                                              not (tracked.Contains id.idText)
-                                              && not (plainValuedLocal check source id))
-                                          |> List.map (fun id -> id.idText)
-                                          |> Array.ofList
-                                      else
-                                          [||])
-
-                              if more.Length = 0 then
-                                  tracked
-                              else
-                                  grow (Set.union tracked (Set.ofArray more))
-
-                          grow (Set.singleton name) |> Set.remove name
-
-                      // classify every mention of the binder and of its
-                      // aliases in the scope
-                      let mentions =
-                          if aliases.IsEmpty then
-                              binderMentions
-                          else
-                              mentionsOf (Set.add name aliases)
-
-                      // `x.Dispose()`, `x.Close()` where Close is Dispose
-                      // (streams, writers, sockets), and
-                      // `(x :> IDisposable).Dispose()` (fantomas's daemon
-                      // tests), whose upcast hides the receiver
-                      let manuallyDisposed =
-                          binderMentions
-                          |> Array.exists (fun (_, e) ->
-                              match e with
-                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ _; m ])) ->
-                                  m.idText = "Dispose"
-                                  || m.idText = "DisposeAsync"
-                                  || (m.idText = "Close" && closeDisposes check source binder)
-                              | _ -> false)
-                          || index.Exprs
-                             |> Array.exists (fun (_, e) ->
-                                 match e with
-                                 | SynExpr.DotGet(expr = receiver; longDotId = SynLongIdent(id = [ m ])) when
-                                     (m.idText = "Dispose" || m.idText = "DisposeAsync")
-                                     && Range.rangeContainsRange body.Range e.Range
-                                     ->
-                                     binderMentions
-                                     |> Array.exists (fun (_, mention) ->
-                                         match mention with
-                                         | SynExpr.Ident _ -> Range.rangeContainsRange receiver.Range mention.Range
-                                         | _ -> false)
-                                 | _ -> false)
-
-                      if not manuallyDisposed then
-                          let results = resultsLoop [] [ body ]
-
-                          let isResult (r: range) =
-                              results |> List.exists (fun x -> x.Range = r)
-
-                          // returned inside a tuple, a record, an upcast or a
-                          // union case: still the caller's
-                          let returnedThrough = returnedThroughTo check source isResult
-
-                          // a mention that runs LATER than the scope: inside a
-                          // lambda, a local function, an object expression, or
-                          // a computation expression that starts after the
-                          // binding (a `task { }` the function returns)
-                          let inLambda = runsAfter lou.Range body.Range
-
-                          // a `x.Member` mention that is not the function
-                          // of an application is a method group handed on
-                          // (`Seq.map c.Convert xs`, `changed.Add c.Refresh`):
-                          // it runs after the scope, on a disposed receiver
-                          let methodGroup (path: SyntaxNode list) (e: SynExpr) =
-                              match e with
-                              | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
-                                  not (invokedAt path e.Range) && isMethod check source (List.last ids)
-                              | _ -> false
-
-                          // where each mention sends the value. An alias
-                          // returned is the RESULT reading the binder, not
-                          // an ownership transfer of it; an alias adopted or
-                          // held goes somewhere this rule cannot follow
-                          let escapes =
-                              [ for path, e in mentions do
+                        // the locals bound to values reached THROUGH the
+                        // binder — `let pending = client.GetStringAsync url`,
+                        // `let cmd = conn.CreateCommand()`, `let f = c.Convert`
+                        // — and through those in turn: a task, a command, a
+                        // reader, a method group still needs the binder
+                        // behind it, so where such an alias goes is where the
+                        // binder goes. A plain-valued local (`let b =
+                        // stream.ReadByte()`) is evaluated and done
+                        let aliases =
+                            let localBindings =
+                                index.Exprs
+                                |> Array.collect (fun (_, e) ->
                                     match e with
-                                    | SynExpr.Ident id ->
-                                        let escape =
-                                            if inLambda path then
-                                                Captured
-                                            elif isResult e.Range || returnedThrough path then
-                                                Returned
-                                            else
-                                                classifyLoop check source holders.Contains e.Range false None path
+                                    | LetOrUseE inner when Range.rangeContainsRange body.Range inner.Range ->
+                                        inner.Bindings
+                                        |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
+                                            match p with
+                                            // a local function: its body's mentions
+                                            // are captures already
+                                            | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> None
+                                            | _ -> Some(patIdents p, rhs.Range))
+                                        |> Array.ofList
+                                    | _ -> [||])
 
-                                        if id.idText = name then
-                                            escape
+                            let rec grow (tracked: Set<string>) =
+                                let mentioned = mentionsOf tracked
+
+                                let more =
+                                    localBindings
+                                    |> Array.collect (fun (ids, rhsRange) ->
+                                        if
+                                            mentioned
+                                            |> Array.exists (fun (_, m) -> Range.rangeContainsRange rhsRange m.Range)
+                                        then
+                                            ids
+                                            |> List.filter (fun id ->
+                                                not (tracked.Contains id.idText)
+                                                && not (plainValuedLocal check source id))
+                                            |> List.map (fun id -> id.idText)
+                                            |> Array.ofList
                                         else
-                                            match escape with
-                                            | Returned -> ResultReads
-                                            | Adopted
-                                            | Held -> Handed None
-                                            | other -> other
-                                    | SynExpr.LongIdent _ when inLambda path || methodGroup path e -> Captured
-                                    | _ -> () ]
-                              // a same-file callee is read one hop: disposing
-                              // the parameter is an ownership transfer, not
-                              // disposing it is a leak this note can name
-                              |> List.map (fun escape ->
-                                  match escape with
-                                  | HandedAt(callee, argument, element) ->
-                                      match Map.tryFind callee sameFileFunctions with
-                                      | Some target when calleeDisposes target argument element -> Adopted
-                                      | Some _ -> escape
-                                      | None -> Handed(Some callee)
-                                  | other -> other)
+                                            [||])
 
-                          // a member access in result position may hand out
-                          // something still tied to the object (`client.GetAsync
-                          // url` as the value: a task the scope's `use` would
-                          // dispose the client under); a plain value
-                          // (`md5.ComputeHash bytes`, `reader.ReadToEnd()`) is
-                          // computed before the scope exits
-                          // — and only when the member is a property read
-                          // or INVOKED there: a method group's plain return
-                          // type says nothing about when it runs
-                          let inResult =
-                              mentions
-                              |> Array.exists (fun (path, e) ->
-                                  inLambda path
-                                  || (results |> List.exists (fun r -> Range.rangeContainsRange r.Range e.Range)
-                                      && not (
-                                          match e with
-                                          | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
-                                              let last = List.last ids
+                                if more.Length = 0 then
+                                    tracked
+                                else
+                                    grow (Set.union tracked (Set.ofArray more))
 
-                                              (invokedAt path e.Range || not (isMethod check source last))
-                                              && plainValued check source last
-                                          | _ -> false
-                                      )))
+                            grow (Set.singleton name) |> Set.remove name
 
-                          // an object that does work of its own after the
-                          // scope returns: a timer, a watcher, a listener by
-                          // type; anything constructed with a callback; an
-                          // event of it the scope subscribes to (`w.Changed.Add
-                          // f`, `t.Elapsed |> Event.add f`, `x.Subscribe o`), a
-                          // token registration, a `Start()`/`Enable...` call.
-                          // `use` would stop it on the way out
-                          let selfActive =
-                              selfActiveType check source binder
-                              || index.Exprs
-                                 |> Array.exists (fun (_, e) ->
-                                     match e with
-                                     | SynExpr.Lambda _
-                                     | SynExpr.MatchLambda _ -> Range.rangeContainsRange rhs.Range e.Range
-                                     | _ -> false)
-                              || binderMentions
-                                 |> Array.exists (fun (path, e) ->
-                                     match e with
-                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = _ :: (_ :: _ as members))) ->
-                                         let last = List.last members
+                        // classify every mention of the binder and of its
+                        // aliases in the scope
+                        let mentions =
+                            if aliases.IsEmpty then
+                                binderMentions
+                            else
+                                mentionsOf (Set.add name aliases)
 
-                                         last.idText = "Subscribe"
-                                         || last.idText = "AddHandler"
-                                         || last.idText.StartsWith "add_"
-                                         || (last.idText = "Register"
-                                             && members |> List.exists (fun m -> m.idText = "Token"))
-                                         || members |> List.exists (isEvent check source)
-                                         || (invokedAt path e.Range && startsWork check source last)
-                                     | _ -> false)
-                              || index.Exprs
-                                 |> Array.exists (fun (_, e) ->
-                                     match e with
-                                     | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = first :: (_ :: _ as members))) ->
-                                         first.idText = name
-                                         && Range.rangeContainsRange body.Range e.Range
-                                         && (List.last members).idText.StartsWith "Enable"
-                                     | _ -> false)
+                        // `x.Dispose()`, `x.Close()` where Close is Dispose
+                        // (streams, writers, sockets), and
+                        // `(x :> IDisposable).Dispose()` (fantomas's daemon
+                        // tests), whose upcast hides the receiver
+                        let manuallyDisposed =
+                            binderMentions
+                            |> Array.exists (fun (_, e) ->
+                                match e with
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ _; m ])) ->
+                                    m.idText = "Dispose"
+                                    || m.idText = "DisposeAsync"
+                                    || (m.idText = "Close" && closeDisposes check source binder)
+                                | _ -> false)
+                            || index.Exprs
+                               |> Array.exists (fun (_, e) ->
+                                   match e with
+                                   | SynExpr.DotGet(expr = receiver; longDotId = SynLongIdent(id = [ m ])) when
+                                       (m.idText = "Dispose" || m.idText = "DisposeAsync")
+                                       && Range.rangeContainsRange body.Range e.Range
+                                       ->
+                                       binderMentions
+                                       |> Array.exists (fun (_, mention) ->
+                                           match mention with
+                                           | SynExpr.Ident _ -> Range.rangeContainsRange receiver.Range mention.Range
+                                           | _ -> false)
+                                   | _ -> false)
 
-                          // a Task/Async-returning member of the binder called
-                          // and its result dropped (`|> ignore`, `|> Async.AwaitTask
-                          // |> ignore`, a bare statement, `Async.Start`): work
-                          // still running at scope exit, on a receiver `use`
-                          // would dispose under it (FsCheck's Runner test:
-                          // `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`)
-                          let inFlight =
-                              binderMentions
-                              |> Array.tryPick (fun (path, e) -> discardedPending check source path e)
+                        if not manuallyDisposed then
+                            let results = resultsLoop [] [ body ]
 
-                          // `use` inside a computation expression binds to
-                          // the builder's Using: `query { }` and a hand-written
-                          // builder without one make it an FS0708
-                          let builderSupportsUse =
-                              match enclosingComputation declPath with
-                              | None -> true
-                              | Some(Some builder) -> builderDefinesUsing check source builder
-                              | Some None -> false
+                            let isResult (r: range) =
+                                results |> List.exists (fun x -> x.Range = r)
 
-                          let destinations =
-                              escapes
-                              |> List.choose (fun e ->
-                                  match e with
-                                  | Handed(Some d) -> Some(Destination.Function(d, false))
-                                  | Handed None -> Some Destination.Unknown
-                                  | HandedAt(callee, _, _) -> Some(Destination.Function(callee, true))
-                                  | StoredLocally name -> Some(Destination.StoredLocally name)
-                                  | Captured -> Some Destination.Captured
-                                  | ResultReads -> Some Destination.ReadInResult
-                                  | Returned
-                                  | Adopted
-                                  | Held
-                                  | Kept -> None)
+                            // returned inside a tuple, a record, an upcast or a
+                            // union case: still the caller's
+                            let returnedThrough = returnedThroughTo check source isResult
 
-                          // the first named destination, else the unnamed one
-                          let handedTo =
-                              destinations
-                              |> List.tryFind (fun d -> d <> Destination.Unknown)
-                              |> Option.orElse (List.tryHead destinations)
+                            // a mention that runs LATER than the scope: inside a
+                            // lambda, a local function, an object expression, or
+                            // a computation expression that starts after the
+                            // binding (a `task { }` the function returns)
+                            let inLambda = runsAfter lou.Range body.Range
 
-                          // an escape is an ownership transfer: the caller gets
-                          // it back, another disposable adopts it, a holder beyond
-                          // this scope keeps it. The owner is decided, whatever
-                          // else the scope did with the value on the way (Activity.fs
-                          // registers its listener and returns it) — a `use` here
-                          // would be wrong, and there is nothing to say
-                          let transferred =
-                              escapes |> List.exists (fun e -> e = Returned || e = Adopted || e = Held)
+                            // a `x.Member` mention that is not the function
+                            // of an application is a method group handed on
+                            // (`Seq.map c.Convert xs`, `changed.Add c.Refresh`):
+                            // it runs after the scope, on a disposed receiver
+                            let methodGroup (path: SyntaxNode list) (e: SynExpr) =
+                                match e with
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                    not (invokedAt path e.Range) && isMethod check source (List.last ids)
+                                | _ -> false
 
-                          // the `let` keyword: the LetOrUse node starts at it
-                          let letRange =
-                              Range.mkRange
-                                  expr.Range.FileName
-                                  expr.Range.Start
-                                  (Position.mkPos expr.Range.StartLine (expr.Range.StartColumn + 3))
+                            // where each mention sends the value. An alias
+                            // returned is the RESULT reading the binder, not
+                            // an ownership transfer of it; an alias adopted or
+                            // held goes somewhere this rule cannot follow
+                            let escapes =
+                                [
+                                    for path, e in mentions do
+                                        match e with
+                                        | SynExpr.Ident id ->
+                                            let escape =
+                                                if inLambda path then
+                                                    Captured
+                                                elif isResult e.Range || returnedThrough path then
+                                                    Returned
+                                                else
+                                                    classifyLoop check source holders.Contains e.Range false None path
 
-                          if textOfRange source letRange = "let" && not transferred then
-                              let canFix =
-                                  handedTo.IsNone
-                                  && not inResult
-                                  && not selfActive
-                                  && inFlight.IsNone
-                                  && builderSupportsUse
+                                            if id.idText = name then
+                                                escape
+                                            else
+                                                match escape with
+                                                | Returned -> ResultReads
+                                                | Adopted
+                                                | Held -> Handed None
+                                                | other -> other
+                                        | SynExpr.LongIdent _ when inLambda path || methodGroup path e -> Captured
+                                        | _ -> ()
+                                ]
+                                // a same-file callee is read one hop: disposing
+                                // the parameter is an ownership transfer, not
+                                // disposing it is a leak this note can name
+                                |> List.map (fun escape ->
+                                    match escape with
+                                    | HandedAt(callee, argument, element) ->
+                                        match Map.tryFind callee sameFileFunctions with
+                                        | Some target when calleeDisposes target argument element -> Adopted
+                                        | Some _ -> escape
+                                        | None -> Handed(Some callee)
+                                    | other -> other)
 
-                              { Range = letRange
-                                Name = name
-                                Fix = if canFix then Some("let", "use") else None
-                                Destination =
-                                  if canFix then
-                                      None
-                                  elif handedTo.IsSome then
-                                      handedTo
-                                  elif selfActive then
-                                      Some Destination.SelfActive
-                                  elif inFlight.IsSome then
-                                      Some(Destination.InFlight inFlight.Value)
-                                  elif inResult then
-                                      Some Destination.ReadInResult
-                                  else
-                                      Some Destination.NoBuilderUsing
-                                Context =
-                                  match bindingContext declPath expr.Range with
-                                  // a handle the OS reclaims at exit is no loss
-                                  // in main; unflushed work is
-                                  | Some ScopeContext.EntryPoint when not (flushSensitive check source binder) -> None
-                                  | context -> context }
-                  | _ -> ()
-              | _ -> () ]
+                            // a member access in result position may hand out
+                            // something still tied to the object (`client.GetAsync
+                            // url` as the value: a task the scope's `use` would
+                            // dispose the client under); a plain value
+                            // (`md5.ComputeHash bytes`, `reader.ReadToEnd()`) is
+                            // computed before the scope exits
+                            // — and only when the member is a property read
+                            // or INVOKED there: a method group's plain return
+                            // type says nothing about when it runs
+                            let inResult =
+                                mentions
+                                |> Array.exists (fun (path, e) ->
+                                    inLambda path
+                                    || (results |> List.exists (fun r -> Range.rangeContainsRange r.Range e.Range)
+                                        && not (
+                                            match e with
+                                            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                                                not ids.IsEmpty
+                                                ->
+                                                let last = List.last ids
+
+                                                (invokedAt path e.Range || not (isMethod check source last))
+                                                && plainValued check source last
+                                            | _ -> false
+                                        )))
+
+                            // an object that does work of its own after the
+                            // scope returns: a timer, a watcher, a listener by
+                            // type; anything constructed with a callback; an
+                            // event of it the scope subscribes to (`w.Changed.Add
+                            // f`, `t.Elapsed |> Event.add f`, `x.Subscribe o`), a
+                            // token registration, a `Start()`/`Enable...` call.
+                            // `use` would stop it on the way out
+                            let selfActive =
+                                selfActiveType check source binder
+                                || index.Exprs
+                                   |> Array.exists (fun (_, e) ->
+                                       match e with
+                                       | SynExpr.Lambda _
+                                       | SynExpr.MatchLambda _ -> Range.rangeContainsRange rhs.Range e.Range
+                                       | _ -> false)
+                                || binderMentions
+                                   |> Array.exists (fun (path, e) ->
+                                       match e with
+                                       | SynExpr.LongIdent(longDotId = SynLongIdent(id = _ :: (_ :: _ as members))) ->
+                                           let last = List.last members
+
+                                           last.idText = "Subscribe"
+                                           || last.idText = "AddHandler"
+                                           || last.idText.StartsWith "add_"
+                                           || (last.idText = "Register"
+                                               && members |> List.exists (fun m -> m.idText = "Token"))
+                                           || members |> List.exists (isEvent check source)
+                                           || (invokedAt path e.Range && startsWork check source last)
+                                       | _ -> false)
+                                || index.Exprs
+                                   |> Array.exists (fun (_, e) ->
+                                       match e with
+                                       | SynExpr.LongIdentSet(
+                                           longDotId = SynLongIdent(id = first :: (_ :: _ as members))) ->
+                                           first.idText = name
+                                           && Range.rangeContainsRange body.Range e.Range
+                                           && (List.last members).idText.StartsWith "Enable"
+                                       | _ -> false)
+
+                            // a Task/Async-returning member of the binder called
+                            // and its result dropped (`|> ignore`, `|> Async.AwaitTask
+                            // |> ignore`, a bare statement, `Async.Start`): work
+                            // still running at scope exit, on a receiver `use`
+                            // would dispose under it (FsCheck's Runner test:
+                            // `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`)
+                            let inFlight =
+                                binderMentions
+                                |> Array.tryPick (fun (path, e) -> discardedPending check source path e)
+
+                            // `use` inside a computation expression binds to
+                            // the builder's Using: `query { }` and a hand-written
+                            // builder without one make it an FS0708
+                            let builderSupportsUse =
+                                match enclosingComputation declPath with
+                                | None -> true
+                                | Some(Some builder) -> builderDefinesUsing check source builder
+                                | Some None -> false
+
+                            let destinations =
+                                escapes
+                                |> List.choose (fun e ->
+                                    match e with
+                                    | Handed(Some d) -> Some(Destination.Function(d, false))
+                                    | Handed None -> Some Destination.Unknown
+                                    | HandedAt(callee, _, _) -> Some(Destination.Function(callee, true))
+                                    | StoredLocally name -> Some(Destination.StoredLocally name)
+                                    | Captured -> Some Destination.Captured
+                                    | ResultReads -> Some Destination.ReadInResult
+                                    | Returned
+                                    | Adopted
+                                    | Held
+                                    | Kept -> None)
+
+                            // the first named destination, else the unnamed one
+                            let handedTo =
+                                destinations
+                                |> List.tryFind (fun d -> d <> Destination.Unknown)
+                                |> Option.orElse (List.tryHead destinations)
+
+                            // an escape is an ownership transfer: the caller gets
+                            // it back, another disposable adopts it, a holder beyond
+                            // this scope keeps it. The owner is decided, whatever
+                            // else the scope did with the value on the way (Activity.fs
+                            // registers its listener and returns it) — a `use` here
+                            // would be wrong, and there is nothing to say
+                            let transferred =
+                                escapes |> List.exists (fun e -> e = Returned || e = Adopted || e = Held)
+
+                            // the `let` keyword: the LetOrUse node starts at it
+                            let letRange =
+                                Range.mkRange
+                                    expr.Range.FileName
+                                    expr.Range.Start
+                                    (Position.mkPos expr.Range.StartLine (expr.Range.StartColumn + 3))
+
+                            if textOfRange source letRange = "let" && not transferred then
+                                let canFix =
+                                    handedTo.IsNone
+                                    && not inResult
+                                    && not selfActive
+                                    && inFlight.IsNone
+                                    && builderSupportsUse
+
+                                {
+                                    Range = letRange
+                                    Name = name
+                                    Fix = if canFix then Some("let", "use") else None
+                                    Destination =
+                                        if canFix then
+                                            None
+                                        elif handedTo.IsSome then
+                                            handedTo
+                                        elif selfActive then
+                                            Some Destination.SelfActive
+                                        elif inFlight.IsSome then
+                                            Some(Destination.InFlight inFlight.Value)
+                                        elif inResult then
+                                            Some Destination.ReadInResult
+                                        else
+                                            Some Destination.NoBuilderUsing
+                                    Context =
+                                        match bindingContext declPath expr.Range with
+                                        // a handle the OS reclaims at exit is no loss
+                                        // in main; unflushed work is
+                                        | Some ScopeContext.EntryPoint when not (flushSensitive check source binder) ->
+                                            None
+                                        | context -> context
+                                }
+                    | _ -> ()
+                | _ -> ()
+        ]
 
 /// FR0150 (correctness): a `use`-bound disposable captured by a
 /// computation that OUTLIVES the scope.
@@ -1706,98 +1736,103 @@ let findEscapingUse
             | tail -> List.rev acc, tail
 
 
-        [ for _, expr in index.Exprs do
-              match expr with
-              | LetOrUseE lou when lou.IsUse && not lou.IsBang ->
-                  match lou.Bindings with
-                  | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = binder)); expr = rhs) ] when
-                      locallyConstructed check source rhs
-                      ->
-                      let passed, tail = tailOf [] lou.Body
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | LetOrUseE lou when lou.IsUse && not lou.IsBang ->
+                    match lou.Bindings with
+                    | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = binder)); expr = rhs) ] when
+                        locallyConstructed check source rhs
+                        ->
+                        let passed, tail = tailOf [] lou.Body
 
-                      // the computation the scope hands back: the tail
-                      // itself, or the one binding whose name it returns
-                      let escaping =
-                          match tail with
-                          | BuilderLiteral(builder, body) -> Some(builder, body, tail)
-                          | SynExpr.Ident named ->
-                              index.Exprs
-                              |> Array.tryPick (fun (_, outer) ->
-                                  match outer with
-                                  | LetOrUseE inner when
-                                      not inner.IsBang && Range.rangeContainsRange lou.Range inner.Range
-                                      ->
-                                      inner.Bindings
-                                      |> List.tryPick (fun (SynBinding(headPat = p; expr = r)) ->
-                                          match p, r with
-                                          | SynPat.Named(ident = SynIdent(ident = id)), BuilderLiteral(builder, body) when
-                                              id.idText = named.idText
-                                              ->
-                                              Some(builder, body, r)
-                                          | _ -> None)
-                                  | _ -> None)
-                          | _ -> None
+                        // the computation the scope hands back: the tail
+                        // itself, or the one binding whose name it returns
+                        let escaping =
+                            match tail with
+                            | BuilderLiteral(builder, body) -> Some(builder, body, tail)
+                            | SynExpr.Ident named ->
+                                index.Exprs
+                                |> Array.tryPick (fun (_, outer) ->
+                                    match outer with
+                                    | LetOrUseE inner when
+                                        not inner.IsBang && Range.rangeContainsRange lou.Range inner.Range
+                                        ->
+                                        inner.Bindings
+                                        |> List.tryPick (fun (SynBinding(headPat = p; expr = r)) ->
+                                            match p, r with
+                                            | SynPat.Named(ident = SynIdent(ident = id)),
+                                              BuilderLiteral(builder, body) when id.idText = named.idText ->
+                                                Some(builder, body, r)
+                                            | _ -> None)
+                                    | _ -> None)
+                            | _ -> None
 
-                      match escaping with
-                      | Some(builder, body, ceExpr) when mentionsIn binder.idText body.Range ->
-                          // the binding moves only when nothing it passes
-                          // on the way touches it, and it owns its line so
-                          // the edit is a whole-line move
-                          let untouchedBetween =
-                              passed
-                              |> List.forall (fun e ->
-                                  Range.rangeContainsRange e.Range ceExpr.Range
-                                  || not (mentionsIn binder.idText e.Range))
+                        match escaping with
+                        | Some(builder, body, ceExpr) when mentionsIn binder.idText body.Range ->
+                            // the binding moves only when nothing it passes
+                            // on the way touches it, and it owns its line so
+                            // the edit is a whole-line move
+                            let untouchedBetween =
+                                passed
+                                |> List.forall (fun e ->
+                                    Range.rangeContainsRange e.Range ceExpr.Range
+                                    || not (mentionsIn binder.idText e.Range))
 
-                          let useLine = lou.Range.StartLine
-                          let useText = (source.GetLineString(useLine - 1)).TrimEnd()
+                            let useLine = lou.Range.StartLine
+                            let useText = (source.GetLineString(useLine - 1)).TrimEnd()
 
-                          let ownsItsLine =
-                              useText.TrimStart().StartsWith "use " && rhs.Range.EndLine = useLine
+                            let ownsItsLine =
+                                useText.TrimStart().StartsWith "use " && rhs.Range.EndLine = useLine
 
-                          // the computation's first statement: the binding
-                          // slots in above it, at its indentation
-                          let firstStatement =
-                              let inner =
-                                  match body with
-                                  | LetOrUseE i -> i.Range.Start
-                                  | SynExpr.Sequential(expr1 = a) -> a.Range.Start
-                                  | other -> other.Range.Start
+                            // the computation's first statement: the binding
+                            // slots in above it, at its indentation
+                            let firstStatement =
+                                let inner =
+                                    match body with
+                                    | LetOrUseE i -> i.Range.Start
+                                    | SynExpr.Sequential(expr1 = a) -> a.Range.Start
+                                    | other -> other.Range.Start
 
-                              if
-                                  inner.Line > ceExpr.Range.StartLine
-                                  && inner.Column <= (source.GetLineString(inner.Line - 1)).Length
-                                  && (source.GetLineString(inner.Line - 1)).Substring(0, inner.Column).Trim() = ""
-                              then
-                                  Some inner
-                              else
-                                  None
+                                if
+                                    inner.Line > ceExpr.Range.StartLine
+                                    && inner.Column <= (source.GetLineString(inner.Line - 1)).Length
+                                    && (source.GetLineString(inner.Line - 1)).Substring(0, inner.Column).Trim() = ""
+                                then
+                                    Some inner
+                                else
+                                    None
 
-                          let edits =
-                              match untouchedBetween && ownsItsLine, firstStatement with
-                              | true, Some p ->
-                                  let indent = System.String(' ', p.Column)
+                            let edits =
+                                match untouchedBetween && ownsItsLine, firstStatement with
+                                | true, Some p ->
+                                    let indent = System.String(' ', p.Column)
 
-                                  let removeRange =
-                                      Range.mkRange
-                                          lou.Range.FileName
-                                          (Position.mkPos useLine 0)
-                                          (Position.mkPos (useLine + 1) 0)
+                                    let removeRange =
+                                        Range.mkRange
+                                            lou.Range.FileName
+                                            (Position.mkPos useLine 0)
+                                            (Position.mkPos (useLine + 1) 0)
 
-                                  let insertAt = Range.mkRange lou.Range.FileName p p
+                                    let insertAt = Range.mkRange lou.Range.FileName p p
 
-                                  [ insertAt, "", useText.TrimStart() + "\n" + indent
-                                    removeRange, textOfRange source removeRange, "" ]
-                              | _ -> []
+                                    [
+                                        insertAt, "", useText.TrimStart() + "\n" + indent
+                                        removeRange, textOfRange source removeRange, ""
+                                    ]
+                                | _ -> []
 
-                          { Range = lou.Range
-                            Name = binder.idText
-                            Builder = builder
-                            Edits =
-                              (if edits |> List.exists (fun (r, _, _) -> spansDirective source r) then
-                                   []
-                               else
-                                   edits) }
-                      | _ -> ()
-                  | _ -> ()
-              | _ -> () ]
+                            {
+                                Range = lou.Range
+                                Name = binder.idText
+                                Builder = builder
+                                Edits =
+                                    (if edits |> List.exists (fun (r, _, _) -> spansDirective source r) then
+                                         []
+                                     else
+                                         edits)
+                            }
+                        | _ -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]
