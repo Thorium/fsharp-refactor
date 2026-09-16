@@ -93,13 +93,7 @@ let private resolvesToString (check: FSharpCheckFileResults) (source: ISourceTex
     match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
-        | :? FSharpMemberOrFunctionOrValue as value ->
-            isStringType (
-                try
-                    value.ReturnParameter.Type
-                with _ ->
-                    value.FullType
-            )
+        | :? FSharpMemberOrFunctionOrValue as value -> isStringType (resultTypeOf value)
         // record fields resolve as FSharpField, not as a value
         | :? FSharpField as field -> isStringType field.FieldType
         | _ -> false

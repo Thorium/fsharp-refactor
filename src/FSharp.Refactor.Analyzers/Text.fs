@@ -8,7 +8,19 @@ open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open System
 open System.Collections.Generic
+open System.IO
 open System.Text.RegularExpressions
+
+/// The type a use of `value` has as an expression: what it returns when
+/// it is a function or member, the value's own type otherwise. FCS raises
+/// on `ReturnParameter` for a plain value rather than answering, so the
+/// fallback is the whole type - the same probe eight rules once spelled
+/// out by hand.
+let resultTypeOf (value: FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue) =
+    try
+        value.ReturnParameter.Type
+    with _ -> // FCS: a value has no return parameter; fsharpanalyzer: ignore-line FR0055
+        value.FullType
 
 /// The exact source text covered by a range.
 let textOfRange (source: ISourceText) (r: range) : string =
@@ -505,6 +517,109 @@ let private bracketOpeners =
 let private bracketClosers =
     set [ "RPAREN"; "RBRACK"; "RBRACE"; "BAR_RBRACK"; "BAR_RBRACE"; "END" ]
 
+/// Every string literal of a file, lexed — plain, verbatim, triple-quoted
+/// and interpolated alike, a multi-line one as the text of each of its
+/// lines. Read once per file for the run.
+///
+/// The question a call-site migration asks of it: does any string in the
+/// project spell the function it is about to reshape? A code generator
+/// writes calls from templates — SQLProvider.Fable's CodeGen emits
+/// `Row.text r "Name"` from a string — and no symbol table lists those
+/// calls, so FR0091 reordered `Row.text`'s parameters, rewrote the fifty
+/// calls it could see, and left the generator producing the old order.
+let private stringLiteralsCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+
+let stringLiteralsOf (path: string) : string[] =
+    stringLiteralsCache.GetOrAdd(
+        path,
+        fun p ->
+            try
+                let tokenizer = FSharpSourceTokenizer([], Some p, None, None)
+                let literals = ResizeArray<string>()
+                let mutable state = FSharpTokenizerLexState.Initial
+
+                for line in File.ReadLines p do
+                    let lineTokenizer = tokenizer.CreateLineTokenizer line
+                    let mutable scanning = true
+
+                    while scanning do
+                        match lineTokenizer.ScanToken state with
+                        | Some token, next ->
+                            state <- next
+
+                            if
+                                token.CharClass = FSharpTokenCharKind.String
+                                && token.RightColumn >= token.LeftColumn
+                            then
+                                literals.Add(
+                                    line.Substring(
+                                        token.LeftColumn,
+                                        min (line.Length - token.LeftColumn) (token.RightColumn - token.LeftColumn + 1)
+                                    )
+                                )
+                        | None, next ->
+                            state <- next
+                            scanning <- false
+
+                literals.ToArray()
+            with _ -> // unreadable: no literal known, the caller's other guards stand; fsharpanalyzer: ignore-line FR0055
+                [||]
+    )
+
+/// Does any of `files` name `identifier` on a line inside an `#if` /
+/// `#else` / `#endif` region? Such a line is in the parse tree under one
+/// set of defines only, so a rewrite of the definition and "every call
+/// site" reaches the calls of one branch and leaves the other's behind —
+/// found by building the other configuration, which is late. Only the
+/// regions that branch on the build CONFIGURATION (`DEBUG`, `RELEASE`,
+/// `TRACE`) count: a framework region's other branch is a compilation of
+/// its own, which the narrowest-first passes and the all-frameworks
+/// build already answer for. Textual and over-eager within that.
+let private configurationCondition = Regex(@"^\s*#if\b.*\b(DEBUG|RELEASE|TRACE)\b")
+
+let namedInDirectiveRegion (files: string seq) (identifier: string) =
+    let word = Regex($@"(?<![\w'`]){Regex.Escape identifier}(?![\w'`])")
+
+    files
+    |> Seq.exists (fun f ->
+        try
+            // one entry per open `#if`: whether it branches on the configuration
+            let regions = Stack<bool>()
+            let mutable found = false
+
+            for line in File.ReadLines f do
+                if not found then
+                    let t = line.TrimStart()
+
+                    if t.StartsWith "#if" then
+                        regions.Push(configurationCondition.IsMatch t)
+                    elif t.StartsWith "#endif" then
+                        if regions.Count > 0 then
+                            regions.Pop() |> ignore
+                    elif
+                        regions.Contains true
+                        && not (t.StartsWith "#else")
+                        && line.Contains identifier
+                        && word.IsMatch line
+                    then
+                        found <- true
+
+            found
+        with _ -> // unreadable: assume the worst, the migration waits; fsharpanalyzer: ignore-line FR0055
+            true)
+
+/// Does a string literal in any of `files` name `identifier` as a whole
+/// word? `Row.text` and `text` both count for `text`: a template spells
+/// the call the way the code does.
+let stringLiteralMentions (files: string seq) (identifier: string) =
+    let word = Regex($@"(?<![\w'`]){Regex.Escape identifier}(?![\w'`])")
+
+    files
+    |> Seq.exists (fun f ->
+        stringLiteralsOf f
+        |> Array.exists (fun literal -> literal.Contains identifier && word.IsMatch literal))
+
 /// The columns of `lineText` a line below may be anchored to: for every
 /// context opener still open at the end of the line, the column of the
 /// token that follows it. A bracket closed on the same line takes every
@@ -721,7 +836,7 @@ let commentsWithText (parseTree: ParsedInput) (source: ISourceText) =
 let hasSignatureFile (fileName: string) =
     try
         not (String.IsNullOrEmpty fileName)
-        && System.IO.File.Exists(System.IO.Path.ChangeExtension(fileName, ".fsi"))
+        && File.Exists(Path.ChangeExtension(fileName, ".fsi"))
     with _ -> // an unreadable path simply is not a signature; fsharpanalyzer: ignore-line FR0055
         false
 
@@ -750,10 +865,10 @@ let signatureMentions (fileName: string) (name: string) =
         if String.IsNullOrEmpty fileName || String.IsNullOrEmpty name then
             false
         else
-            let signature = System.IO.Path.ChangeExtension(fileName, ".fsi")
+            let signature = Path.ChangeExtension(fileName, ".fsi")
 
-            System.IO.File.Exists signature
-            && (let text = System.IO.File.ReadAllText signature
+            File.Exists signature
+            && (let text = File.ReadAllText signature
                 // whole-word: `Value` must not match `ValueKind`
                 let escaped = Regex.Escape name
 

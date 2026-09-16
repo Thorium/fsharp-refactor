@@ -62,13 +62,7 @@ let private specifierFor (check: FSharpCheckFileResults) (source: ISourceText) (
     | Some symbolUse ->
         let fillType =
             match symbolUse.Symbol with
-            | :? FSharpMemberOrFunctionOrValue as value ->
-                Some(
-                    try
-                        value.ReturnParameter.Type
-                    with _ ->
-                        value.FullType
-                )
+            | :? FSharpMemberOrFunctionOrValue as value -> Some(resultTypeOf value)
             | :? FSharpField as field -> Some field.FieldType
             | _ -> None
 

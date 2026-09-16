@@ -35,10 +35,8 @@ open FSharp.Compiler.Text
 /// remains the arbiter. Editors never set the variable, so light bulbs
 /// stay plain everywhere.
 let dualGuardConstant () : string voption =
-    match Environment.GetEnvironmentVariable "FSREF_DUAL_TFM" with
-    | null
-    | "" -> ValueNone
-    | c when c |> Seq.forall (fun ch -> Char.IsLetterOrDigit ch || ch = '_') -> ValueSome c
+    match (Scope.scope ()).DualTfmConstant with
+    | ValueSome c when c |> Seq.forall (fun ch -> Char.IsLetterOrDigit ch || ch = '_') -> ValueSome c
     | _ -> ValueNone
 
 /// Set on a pass over a framework WIDER than the project's narrowest,
@@ -51,8 +49,7 @@ let dualGuardConstant () : string voption =
 ///
 /// Nothing can be emitted safely in that position, so nothing is: the
 /// rule keeps its advice and drops the fix.
-let guardUnavailable () =
-    Environment.GetEnvironmentVariable "FSREF_NO_GUARD" = "1"
+let guardUnavailable () = (Scope.scope ()).GuardUnavailable
 
 /// `obj/project.assets.json` per project: the file's write stamp and the
 /// lowest FSharp.Core major it resolves across the project's targets.

@@ -587,17 +587,7 @@ let isIgnoredPath (analyzedFile: string) : bool =
 /// --codes, never a --categories expansion (a category is a filter, not
 /// an ask). An explicit ask turns a rule on even when it is default-off
 /// or config-disabled — naming it outranks defaults.
-let private forcedOn (code: string) (analyzerName: string) =
-    match Environment.GetEnvironmentVariable "FSREF_FORCE_CODES" with
-    | null
-    | "" -> false
-    | s ->
-        s.Split ','
-        |> Array.exists (fun c ->
-            let c = c.Trim()
-
-            c.Equals(code, StringComparison.OrdinalIgnoreCase)
-            || c.Equals(analyzerName, StringComparison.OrdinalIgnoreCase))
+let private forcedOn (code: string) (analyzerName: string) = Scope.forced code analyzerName
 
 /// A rule's numeric knob from the effective configuration, falling back
 /// to the rule's own default. Looked up under the rule CODE first, the

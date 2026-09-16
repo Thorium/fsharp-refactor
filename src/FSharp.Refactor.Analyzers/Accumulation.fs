@@ -136,11 +136,7 @@ let private collectionModule (check: FSharpCheckFileResults) (source: ISourceTex
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value ->
-                let t =
-                    try
-                        value.ReturnParameter.Type
-                    with _ ->
-                        value.FullType
+                let t = resultTypeOf value
 
                 (try
                     let t = stripInstance t

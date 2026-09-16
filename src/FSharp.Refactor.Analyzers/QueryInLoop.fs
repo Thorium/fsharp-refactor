@@ -65,13 +65,7 @@ let private resolvesToQueryable (check: FSharpCheckFileResults) (source: ISource
     match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
-        | :? FSharpMemberOrFunctionOrValue as value ->
-            isQueryableType (
-                try
-                    value.ReturnParameter.Type
-                with _ ->
-                    value.FullType
-            )
+        | :? FSharpMemberOrFunctionOrValue as value -> isQueryableType (resultTypeOf value)
         | _ -> false
     | None -> false
 

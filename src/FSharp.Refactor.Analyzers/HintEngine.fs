@@ -593,13 +593,7 @@ let private resolvedOperandType
         match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
-            | :? FSharpMemberOrFunctionOrValue as value ->
-                ValueSome(
-                    try
-                        value.ReturnParameter.Type
-                    with _ ->
-                        value.FullType
-                )
+            | :? FSharpMemberOrFunctionOrValue as value -> ValueSome(resultTypeOf value)
             | :? FSharpField as field -> ValueSome field.FieldType
             | _ -> ValueNone
         | None -> ValueNone

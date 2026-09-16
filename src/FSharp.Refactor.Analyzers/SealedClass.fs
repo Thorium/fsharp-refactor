@@ -337,7 +337,6 @@ let find
         else
             let index = AstIndex.ofTree parseTree
             let readLine = lineReader parseTree.FileName source
-            let results = ResizeArray<Suggestion>()
 
             // the project's typed uses and base types, read only once a
             // syntactic candidate asks for them
@@ -369,111 +368,106 @@ let find
                      with _ -> // fsharpanalyzer: ignore-line FR0055
                          [])
 
-            for path, decl in index.Decls do
+            let same (entity: FSharpEntity) (other: FSharpEntity) =
+                try
+                    other.IsEffectivelySameAs entity
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    false
+
+            // the class's uses: the entity itself, and its constructors
+            // (`new Node()` resolves to those)
+            let ofClass (entity: FSharpEntity) (u: FSharpSymbolUse) =
+                not u.IsFromDefinition
+                && (match u.Symbol with
+                    | :? FSharpEntity as e -> same entity e
+                    | :? FSharpMemberOrFunctionOrValue as m ->
+                        (try
+                            m.IsConstructor && (m.DeclaringEntity |> Option.exists (same entity))
+                         with _ -> // fsharpanalyzer: ignore-line FR0055
+                             false)
+                    | _ -> false)
+
+            // the attribute on its own line above `type`, or above the
+            // attributes already there; an `and` definition or attributes on
+            // the type line itself keep the advice without the edit
+            let placement (attrs: SynAttributes) (trivia: SynTypeDefnTrivia) (fileName: string) =
+                match trivia.LeadingKeyword with
+                | SynTypeDefnLeadingKeyword.Type kwRange ->
+                    let anchor =
+                        match attrs with
+                        | [] -> Some kwRange
+                        | first :: _ when first.Range.StartLine < kwRange.StartLine -> Some first.Range
+                        | _ -> None
+
+                    anchor
+                    |> Option.filter (fun a ->
+                        (source.GetLineString(a.StartLine - 1)).Substring(0, a.StartColumn).Trim() = "")
+                    |> Option.map (fun a ->
+                        let at = Position.mkPos a.StartLine 0
+                        let indent = String.replicate a.StartColumn " "
+                        Range.mkRange fileName at at, $"{indent}[<Sealed>]\n")
+                | _ -> None
+
+            /// One type definition's suggestion, when every guard passes.
+            let candidate (path: SyntaxNode list) (decl: SynModuleDecl) (defn: SynTypeDefn) =
+                let (SynTypeDefn(typeInfo = info; typeRepr = repr; trivia = defnTrivia)) = defn
+
+                let (SynComponentInfo(attributes = attrs; longId = typeIds; accessibility = access)) =
+                    info
+
+                match repr, List.tryLast typeIds with
+                | SynTypeDefnRepr.ObjectModel(
+                    kind = SynTypeDefnKind.Class | SynTypeDefnKind.Unspecified; members = members),
+                  Some nameId when
+                    not (attributeNamed "Sealed" attrs)
+                    && not (attributeNamed "AbstractClass" attrs)
+                    && not (attributeNamed "Struct" attrs)
+                    && not (attributeNamed "Interface" attrs)
+                    && members
+                       |> List.forall (fun m ->
+                           match m with
+                           | SynMemberDefn.AbstractSlot _ -> false
+                           | _ -> true)
+                    && Visibility.isInScopeNamed allowApiChanges path [ access ] nameId.idText
+                    ->
+                    match entityAt check source nameId with
+                    | Some entity when isPlainClass entity && not (baseTypes.Value |> List.exists (same entity)) ->
+                        let verdicts =
+                            uses.Value |> Array.filter (ofClass entity) |> Array.map (judgeUse readLine)
+
+                        let unknown = verdicts |> Array.exists Option.isNone
+                        let vetoed = verdicts |> Array.exists (fun v -> v = Some Veto)
+                        let arrays = verdicts |> Array.exists (fun v -> v = Some ArrayOf)
+                        let tests = verdicts |> Array.exists (fun v -> v = Some TypeTest)
+                        let name = nameId.idText
+
+                        if
+                            not unknown
+                            && not vetoed
+                            && (arrays || tests)
+                            && not (extendedOutside projectFiles.Value parseTree.FileName name)
+                        then
+                            let reason =
+                                match arrays, tests with
+                                | true, true -> $"a {name}[] and a :? {name} test"
+                                | true, false -> $"a {name}[]"
+                                | _ -> $"a :? {name} test"
+
+                            Some
+                                {
+                                    Range = nameId.idRange
+                                    TypeName = name
+                                    Reason = reason
+                                    Fix = placement attrs defnTrivia decl.Range.FileName
+                                }
+                        else
+                            None
+                    | _ -> None
+                | _ -> None
+
+            index.Decls
+            |> Seq.collect (fun (path, decl) ->
                 match decl with
-                | SynModuleDecl.Types(typeDefns = defns) ->
-                    for SynTypeDefn(typeInfo = info; typeRepr = repr; trivia = defnTrivia) in defns do
-                        let (SynComponentInfo(attributes = attrs; longId = typeIds; accessibility = access)) =
-                            info
-
-                        match repr, List.tryLast typeIds with
-                        | SynTypeDefnRepr.ObjectModel(
-                            kind = SynTypeDefnKind.Class | SynTypeDefnKind.Unspecified; members = members),
-                          Some nameId when
-                            not (attributeNamed "Sealed" attrs)
-                            && not (attributeNamed "AbstractClass" attrs)
-                            && not (attributeNamed "Struct" attrs)
-                            && not (attributeNamed "Interface" attrs)
-                            && members
-                               |> List.forall (fun m ->
-                                   match m with
-                                   | SynMemberDefn.AbstractSlot _ -> false
-                                   | _ -> true)
-                            && Visibility.isInScopeNamed allowApiChanges path [ access ] nameId.idText
-                            ->
-                            match entityAt check source nameId with
-                            | Some entity when isPlainClass entity ->
-                                let same (other: FSharpEntity) =
-                                    try
-                                        other.IsEffectivelySameAs entity
-                                    with _ -> // fsharpanalyzer: ignore-line FR0055
-                                        false
-
-                                let inherited = baseTypes.Value |> List.exists same
-
-                                if not inherited then
-                                    // the class's uses: the entity itself, and its
-                                    // constructors (`new Node()` resolves to those)
-                                    let ofThisClass (u: FSharpSymbolUse) =
-                                        not u.IsFromDefinition
-                                        && (match u.Symbol with
-                                            | :? FSharpEntity as e -> same e
-                                            | :? FSharpMemberOrFunctionOrValue as m ->
-                                                (try
-                                                    m.IsConstructor && (m.DeclaringEntity |> Option.exists same)
-                                                 with _ -> // fsharpanalyzer: ignore-line FR0055
-                                                     false)
-                                            | _ -> false)
-
-                                    let verdicts =
-                                        uses.Value |> Array.filter ofThisClass |> Array.map (judgeUse readLine)
-
-                                    let unknown = verdicts |> Array.exists Option.isNone
-                                    let vetoed = verdicts |> Array.exists (fun v -> v = Some Veto)
-                                    let arrays = verdicts |> Array.exists (fun v -> v = Some ArrayOf)
-                                    let tests = verdicts |> Array.exists (fun v -> v = Some TypeTest)
-
-                                    let name = nameId.idText
-
-                                    if
-                                        not unknown
-                                        && not vetoed
-                                        && (arrays || tests)
-                                        && not (extendedOutside projectFiles.Value parseTree.FileName name)
-                                    then
-
-                                        let reason =
-                                            match arrays, tests with
-                                            | true, true -> $"a {name}[] and a :? {name} test"
-                                            | true, false -> $"a {name}[]"
-                                            | _ -> $"a :? {name} test"
-
-                                        // the attribute on its own line above `type`,
-                                        // or above the attributes already there; an
-                                        // `and` definition or attributes on the type
-                                        // line itself keep the advice without the edit
-                                        let placement =
-                                            match defnTrivia.LeadingKeyword with
-                                            | SynTypeDefnLeadingKeyword.Type kwRange ->
-                                                let anchor =
-                                                    match attrs with
-                                                    | [] -> Some kwRange
-                                                    | first :: _ when first.Range.StartLine < kwRange.StartLine ->
-                                                        Some first.Range
-                                                    | _ -> None
-
-                                                anchor
-                                                |> Option.filter (fun a ->
-                                                    (source.GetLineString(a.StartLine - 1))
-                                                        .Substring(0, a.StartColumn)
-                                                        .Trim()
-                                                        =
-                                                        "")
-                                                |> Option.map (fun a ->
-                                                    let at = Position.mkPos a.StartLine 0
-                                                    let indent = String.replicate a.StartColumn " "
-                                                    Range.mkRange decl.Range.FileName at at, $"{indent}[<Sealed>]\n")
-                                            | _ -> None
-
-                                        results.Add
-                                            {
-                                                Range = nameId.idRange
-                                                TypeName = name
-                                                Reason = reason
-                                                Fix = placement
-                                            }
-                            | _ -> ()
-                        | _ -> ()
-                | _ -> ()
-
-            List.ofSeq results
+                | SynModuleDecl.Types(typeDefns = defns) -> defns |> List.choose (candidate path decl)
+                | _ -> [])
+            |> List.ofSeq

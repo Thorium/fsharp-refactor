@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <Compile Include="..\FSharp.Refactor.Analyzers\RuleCatalog.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\Scope.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\Text.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\Visibility.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\AstIndex.fs" />

@@ -982,3 +982,22 @@ let ``the tail extraction is a quickfix or nothing, never a note`` () =
     match tails 4 Set.empty with
     | [ edits ] -> Assert.NotEmpty edits
     | other -> failwithf "Expected one tail fix, got %A" other
+
+[<Fact>]
+let ``a two-line member header keeps its leading lets inside the builder`` () =
+    // welendus's fixtures: `[<Fact>] member test.` on one line, the backticked
+    // name and `()=` on the next, the builder undented below the name. Lets
+    // hoisted to the builder's column are offside of the name line - the
+    // sweep rolled them back - so the advice carries no edit here
+    let source =
+        "module Test\ntype Tests() =\n    [<Xunit.Fact>] member test.\n     ``a test`` ()=\n        task {\n            let a = 1\n            let b = a * 2\n"
+        + (awaits 8).Replace("    let!", "            let!")
+        + "\n            return a + b + x1\n        }"
+
+    let edits =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.HoistPlainLets _ -> true
+            | _ -> false)
+
+    Assert.Empty edits

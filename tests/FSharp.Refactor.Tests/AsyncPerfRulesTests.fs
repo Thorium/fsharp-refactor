@@ -1277,7 +1277,7 @@ let ``an internal boundary drain taskifies across files under api-changes`` () =
     let treeA, sourceTextA, checkA, projectResults, _, _, recheck =
         parseAndCheckPair sourceA sourceB
 
-    System.Environment.SetEnvironmentVariable("FSREF_API_CHANGES", "1")
+    Scope.set { Scope.editor with ApiChanges = true }
 
     try
         match Taskify.find treeA sourceTextA checkA (Some projectResults) with
@@ -1301,7 +1301,7 @@ let ``an internal boundary drain taskifies across files under api-changes`` () =
             Assert.True(Array.isEmpty errors, $"patched pair does not typecheck: %A{errors}")
         | other -> failwithf "Expected one internal taskify, got %A" other
     finally
-        System.Environment.SetEnvironmentVariable("FSREF_API_CHANGES", null)
+        Scope.reset ()
 
 [<Fact>]
 let ``an internal drain without api-changes stays a note`` () =

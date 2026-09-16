@@ -4,6 +4,9 @@
 /// (FR0017/FR0149, FR0075/FR0150, FR0127/FR0153), the FR0105 scale-factor
 /// note surviving every int32 spelling, and FR0092's test-source detection
 /// no longer reading `Contest` as a test.
+/// In the "ProjectSources" collection: some tests set the process-wide
+/// analysis scope (Scope.set), which must not run beside another test's.
+[<Xunit.Collection("ProjectSources")>]
 module FSharp.Refactor.Tests.AuditInfraTests
 
 open System
@@ -267,7 +270,10 @@ let ``FR0149 false keeps FR0017`` () =
 
 [<Fact>]
 let ``--codes FR0149 brings FR0149 back on its own`` () =
-    Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", "FR0149")
+    Scope.set
+        { Scope.editor with
+            ForcedCodes = set [ "FR0149" ]
+        }
 
     try
         Assert.Equal<string list>(
@@ -280,7 +286,7 @@ let ``--codes FR0149 brings FR0149 back on its own`` () =
             )
         )
     finally
-        Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", null)
+        Scope.reset ()
 
 [<Literal>]
 let private useSource =
@@ -411,7 +417,7 @@ let private enrichmentWith (assertion: string) =
     Directory.CreateDirectory tests |> ignore
     let testFile = Path.Combine(tests, "RulesTests.fs")
     File.WriteAllText(testFile, $"module RulesTests\n\nlet check (ex: exn) (s: string) =\n    {assertion}\n")
-    Environment.SetEnvironmentVariable("FSREF_API_CHANGES", "1")
+    Scope.set { Scope.editor with ApiChanges = true }
 
     try
         let messages =
@@ -419,7 +425,7 @@ let private enrichmentWith (assertion: string) =
 
         testFile, messages
     finally
-        Environment.SetEnvironmentVariable("FSREF_API_CHANGES", null)
+        Scope.reset ()
 
 [<Fact>]
 let ``FR0092: the assertion loosens in the production message's own fix`` () =

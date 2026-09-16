@@ -134,13 +134,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
-                | :? FSharpMemberOrFunctionOrValue as value ->
-                    isListType (
-                        try
-                            value.ReturnParameter.Type
-                        with _ ->
-                            value.FullType
-                    )
+                | :? FSharpMemberOrFunctionOrValue as value -> isListType (resultTypeOf value)
                 | :? FSharpField as field -> isListType field.FieldType
                 | _ -> false
             | None -> false

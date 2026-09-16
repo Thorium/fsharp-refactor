@@ -907,6 +907,97 @@ let private whitespaceRunRegex =
 let private compileItemRegex =
     Text.RegularExpressions.Regex("<Compile\\s+Include=\"([^\"]+)\"", Text.RegularExpressions.RegexOptions.Compiled)
 
+/// The `<Compile>` items of one fsproj, as full paths, lowercased. Read
+/// once per project file; items with a property or a wildcard are the
+/// evaluation's business and are left out, as `registerFileFloors` does.
+let private compileItemsCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, Set<string>>(StringComparer.OrdinalIgnoreCase)
+
+let private compileItemsOf (project: string) =
+    compileItemsCache.GetOrAdd(
+        project,
+        fun p ->
+            try
+                let dir = Path.GetDirectoryName p
+
+                compileItemRegex.Matches(File.ReadAllText p)
+                |> Seq.map (fun m -> m.Groups.[1].Value)
+                |> Seq.filter (fun item -> not (item.Contains '$') && not (item.Contains '*'))
+                |> Seq.map (fun item -> Path.GetFullPath(Path.Combine(dir, item.Replace('\\', '/'))).ToLowerInvariant())
+                |> Set.ofSeq
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                Set.empty
+    )
+
+/// Do the project's sources branch on the build CONFIGURATION — `#if
+/// DEBUG`, `#if !DEBUG`, `#if RELEASE`, `#if TRACE`? The analysis sees one
+/// configuration's branch; the other is not in the parse tree at all, and
+/// a call-site migration rewrites the definition for both while reaching
+/// the call sites of one. Rare (7 of the 34 repositories swept), and the
+/// extra build below is a cheap price for knowing.
+let private configurationConditional =
+    Text.RegularExpressions.Regex(
+        @"^\s*#if\b.*\b(DEBUG|RELEASE|TRACE)\b",
+        Text.RegularExpressions.RegexOptions.Multiline
+    )
+
+let private configurationConditionals =
+    System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+
+/// Memoised per project for the run: asked at the verification, at the
+/// extra pass and at the sibling check, and no fix writes such a
+/// directive (the capability fixes emit framework ones).
+let private hasConfigurationConditionals (project: string) =
+    configurationConditionals.GetOrAdd(
+        Path.GetFullPath project,
+        fun p ->
+            compileItemsOf p
+            |> Seq.exists (fun file ->
+                try
+                    configurationConditional.IsMatch(File.ReadAllText file)
+                with _ -> // unreadable: assume the worst and build both; fsharpanalyzer: ignore-line FR0055
+                    true)
+    )
+
+/// The build configuration the CURRENT compilation is analysed under:
+/// "" for the project's default, or the other one during the extra pass a
+/// project with configuration conditionals gets (see executeRun), where
+/// the `#if !DEBUG` branches are the parse tree. Process-wide like the
+/// FSREF_* flags: one compilation runs at a time.
+let mutable private analysisConfiguration = ""
+
+let private configurationArg () =
+    if analysisConfiguration = "" then
+        ""
+    else
+        $" -p:Configuration={analysisConfiguration}"
+
+let private configurationSuffix () =
+    if analysisConfiguration = "" then
+        ""
+    else
+        $"+{analysisConfiguration}"
+
+/// The configuration the project builds by default (Debug unless it says
+/// otherwise), so the verification can build the OTHER one.
+let private defaultConfigurations =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+
+let private defaultConfiguration (project: string) =
+    defaultConfigurations.GetOrAdd(
+        Path.GetFullPath project,
+        fun p ->
+            let exitCode, stdout, _ =
+                runForProject p processTimeout "dotnet" $"msbuild \"{p}\" -getProperty:Configuration"
+
+            let answer = stdout.Trim()
+
+            if exitCode = 0 && answer <> "" && not (answer.Contains '\n') then
+                answer
+            else
+                "Debug"
+    )
+
 /// A PropertyGroup carrying a Condition — usually `'$(TargetFramework)'
 /// == 'net8.0'`. Its constants belong to ONE framework, and --parse-only
 /// picks no framework at all, so taking them would activate `#if`
@@ -1309,11 +1400,12 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                 targetFrameworksOf projectPath |> List.tryHead
 
         let tfmArg =
-            match targetFramework with
-            | Some tfm ->
-                Out.dim $"  (multi-targeted; analysing against {tfm})"
-                $" -p:TargetFramework={tfm}"
-            | None -> ""
+            (match targetFramework with
+             | Some tfm ->
+                 Out.dim $"  (multi-targeted; analysing against {tfm})"
+                 $" -p:TargetFramework={tfm}"
+             | None -> "")
+            + configurationArg ()
 
         let runner, prefix =
             if isSdkStyle then
@@ -1358,7 +1450,10 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
             run $"msbuild \"{projectPath}\" -t:Restore"
 
         let frameworks = targetFrameworksOf projectPath
-        let frameworkName = targetFramework |> Option.defaultValue "all"
+
+        let frameworkName =
+            (targetFramework |> Option.defaultValue "all") + configurationSuffix ()
+
         let harvestKey = fallbackHarvestKey projectPath
 
         let cachedSites =
@@ -1373,7 +1468,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         let buildsEveryFramework =
             frameworks.Length > 1 && targetFramework = List.tryHead frameworks
 
-        let buildScope = if buildsEveryFramework then "" else tfmArg
+        let buildScope = if buildsEveryFramework then configurationArg () else tfmArg
 
         let skipBuild = Environment.GetEnvironmentVariable "FSREF_SKIP_BUILD" = "1"
 
@@ -2835,7 +2930,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
             match info.Context with
             | None ->
                 Out.skip
-                    $"  ({Path.GetFileName script} does not typecheck, so its calls cannot be read; nothing it #loads will be reshaped)"
+                    $"  ({Path.GetFileName script} does not typecheck, so its calls cannot be read: the files it #loads get no cross-file signature migration (FR0049/FR0069/FR0090/FR0091/FR0093), every other rule still runs on them)"
 
                 for e in info.Errors do
                     Out.dim $"    {e}"
@@ -3544,6 +3639,45 @@ let private runApiPass
             |> List.exists (fun shared ->
                 String.Equals(Path.GetFullPath shared, Path.GetFullPath file, StringComparison.OrdinalIgnoreCase))
 
+        // a function a STRING LITERAL names, anywhere in this project or in
+        // one that reads it, has call sites no symbol table lists: a code
+        // generator's template. SQLProvider.Fable's CodeGen emits
+        // `Row.text r "Name"` from a string; FR0091 reordered `Row.text`,
+        // rewrote the fifty calls it could see, and the generated code kept
+        // the old order. Such a function keeps its shape.
+        let sourcesInPlay =
+            lazy
+                (Seq.concat
+                    [
+                        options.SourceFiles |> Seq.ofArray
+                        siblingSites.Value.Read |> Seq.collect (fun info -> info.Options.SourceFiles)
+                        scriptSites.Referencing.Value.Read |> Seq.map fst
+                    ]
+                 |> Seq.distinct
+                 |> List.ofSeq)
+
+        let namedInAString (functionName: string) =
+            let short = functionName.Split('.') |> Array.last
+            Text.stringLiteralMentions sourcesInPlay.Value short
+
+        let templated = ResizeArray<string>()
+        let branched = ResizeArray<string>()
+
+        // ...and one named inside an `#if` region has call sites in a
+        // branch the parse tree does not hold: the migration would reach
+        // one configuration's calls and leave the other's tupled
+        let notTemplated (functionName: string) =
+            let short = functionName.Split('.') |> Array.last
+
+            if namedInAString functionName then
+                templated.Add functionName
+                false
+            elif Text.namedInDirectiveRegion sourcesInPlay.Value short then
+                branched.Add functionName
+                false
+            else
+                true
+
         for file in reshapable do
             let ctx = fileContexts.[Path.GetFullPath file]
 
@@ -3556,7 +3690,7 @@ let private runApiPass
                 if wanted file "FR0090" "TupleParams" then
                     for s in
                         TupleParams.findApiChanges ctx checkResults projectResults fileLookup outside
-                        |> List.filter (fun _ -> not (inUnreadShared file)) do
+                        |> List.filter (fun s -> not (inUnreadShared file) && notTemplated s.FunctionName) do
                         suggestions.Add
                             {
                                 Code = "FR0090"
@@ -3567,7 +3701,7 @@ let private runApiPass
                 if wanted file "FR0091" "ParamOrder" then
                     for s in
                         ParamOrder.findApiChanges ctx checkResults projectResults fileLookup outside
-                        |> List.filter (fun _ -> not (inUnreadShared file)) do
+                        |> List.filter (fun s -> not (inUnreadShared file) && notTemplated s.FunctionName) do
                         suggestions.Add
                             {
                                 Code = "FR0091"
@@ -3575,6 +3709,18 @@ let private runApiPass
                                 Edits = s.Edits
                             }
             | FSharpCheckFileAnswer.Aborted -> ()
+
+        if templated.Count > 0 then
+            let names = templated |> Seq.distinct |> String.concat ", "
+
+            Out.skip
+                $"  ({templated.Count} migration(s) kept back: a string literal in the project names the function — a template's calls no symbol table lists: {names})"
+
+        if branched.Count > 0 then
+            let names = branched |> Seq.distinct |> String.concat ", "
+
+            Out.skip
+                $"  ({branched.Count} migration(s) kept back: the function is named inside an #if region, whose other branch has call sites no parse tree holds: {names})"
 
         let editsByFile =
             System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>(
@@ -3713,24 +3859,68 @@ let private runApiPass
                         |> Array.filter (fun d ->
                             d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
 
-                    if Array.isEmpty errors then
-                        []
-                    else
-                        let own =
-                            compilation.SourceFiles
-                            |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant())
-                            |> Set.ofArray
+                    let own =
+                        compilation.SourceFiles
+                        |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant())
+                        |> Set.ofArray
 
-                        let touched =
-                            changed
-                            |> List.filter (fun cf -> own.Contains(Path.GetFullPath(cf.Path).ToLowerInvariant()))
+                    let touched =
+                        changed
+                        |> List.filter (fun cf -> own.Contains(Path.GetFullPath(cf.Path).ToLowerInvariant()))
 
-                        let blamed =
-                            (if touched.IsEmpty then
-                                 groupsIn changed
-                             else
-                                 groupsIn touched)
-                            |> List.distinct
+                    let blamed () =
+                        (if touched.IsEmpty then
+                             groupsIn changed
+                         else
+                             groupsIn touched)
+                        |> List.distinct
+
+                    // the check above saw the configuration the sibling was
+                    // read under. An edited file that branches on `#if DEBUG`
+                    // has call sites in the OTHER configuration's branch that
+                    // no parse tree showed and the definition just changed
+                    // under: only a build of that configuration knows
+                    let otherConfigurationBreaks () =
+                        let project = compilation.ProjectFileName
+
+                        if
+                            project.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
+                            && File.Exists project
+                            && touched
+                               |> List.exists (fun cf ->
+                                   try
+                                       configurationConditional.IsMatch(File.ReadAllText cf.Path)
+                                   with _ -> // fsharpanalyzer: ignore-line FR0055
+                                       true)
+                        then
+                            let other =
+                                if defaultConfiguration project = "Release" then
+                                    "Debug"
+                                else
+                                    "Release"
+
+                            let exitCode, stdout, stderr =
+                                runForProject
+                                    project
+                                    processTimeout
+                                    "dotnet"
+                                    $"build \"{project}\" --nologo -v q -c {other}"
+
+                            if exitCode = 0 then
+                                None
+                            else
+                                Some(
+                                    other,
+                                    (stdout + stderr).Split '\n'
+                                    |> Array.filter (fun l -> l.Contains "error")
+                                    |> Array.map (fun l -> l.Trim())
+                                    |> Array.distinct
+                                )
+                        else
+                            None
+
+                    if not (Array.isEmpty errors) then
+                        let blamed = blamed ()
 
                         Out.skip
                             $"  ({name} stopped typechecking after the edits: {blamed.Length} suggestion(s) put back)"
@@ -3738,7 +3928,20 @@ let private runApiPass
                         for d in errors |> Array.truncate 2 do
                             Out.dim $"    {Path.GetFileName d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}"
 
-                        blamed)
+                        blamed
+                    else
+                        match otherConfigurationBreaks () with
+                        | Some(other, lines) ->
+                            let blamed = blamed ()
+
+                            Out.skip
+                                $"  ({name} stopped building as {other} after the edits — the #if branch the analysis could not see: {blamed.Length} suggestion(s) put back)"
+
+                            for l in lines |> Array.truncate 2 do
+                                Out.dim $"    {l}"
+
+                            blamed
+                        | None -> [])
                 |> Set.ofList
 
         linkedFiles.Clear()
@@ -3948,28 +4151,6 @@ let private sourcesUseConditionals (projectPath: string) =
 /// re-sweep, because a pass-1 fix can enable a pass-2 one); cleared at
 /// the start of each run.
 let private sweptFiles = System.Collections.Generic.HashSet<string * string>()
-
-/// The `<Compile>` items of one fsproj, as full paths, lowercased. Read
-/// once per project file; items with a property or a wildcard are the
-/// evaluation's business and are left out, as `registerFileFloors` does.
-let private compileItemsCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, Set<string>>(StringComparer.OrdinalIgnoreCase)
-
-let private compileItemsOf (project: string) =
-    compileItemsCache.GetOrAdd(
-        project,
-        fun p ->
-            try
-                let dir = Path.GetDirectoryName p
-
-                compileItemRegex.Matches(File.ReadAllText p)
-                |> Seq.map (fun m -> m.Groups.[1].Value)
-                |> Seq.filter (fun item -> not (item.Contains '$') && not (item.Contains '*'))
-                |> Seq.map (fun item -> Path.GetFullPath(Path.Combine(dir, item.Replace('\\', '/'))).ToLowerInvariant())
-                |> Set.ofSeq
-            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                Set.empty
-    )
 
 /// The project that compiles a source file a SCRIPT `#load`s, when one
 /// does: an fsproj in the file's directory or one above it (up to the
@@ -5349,11 +5530,29 @@ let private runPass
                     f.FromRange.EndColumn
                     (f.ToText.Length - (f.FromRange.EndColumn - f.FromRange.StartColumn)))
 
+        // a fix whose span covers a `#if` / `#else` / `#endif` line: the
+        // parse tree only sees the active branch, so the replacement
+        // would splice the directive structure apart and leave the OTHER
+        // configuration's code broken or gone. Most rules ask
+        // Text.spansDirective themselves; this is the backstop for every
+        // rule, since one that does not is one directive away from
+        // deleting an `#else` branch
+        let spansDirective (f: Fix) =
+            let lines = sourceLines.Value
+
+            f.FromRange.StartLine <> f.FromRange.EndLine
+            && seq { f.FromRange.StartLine .. min f.FromRange.EndLine lines.Length }
+               |> Seq.exists (fun l ->
+                   let text = lines.[l - 1].TrimStart()
+
+                   text.StartsWith "#if" || text.StartsWith "#else" || text.StartsWith "#endif")
+
         for msg in outcome.Messages do
             nextGroup <- nextGroup + 1
 
             let alignmentHazard =
-                msg.Fixes |> List.exists (fun f -> isSameFile (targetOf f) && breaksAlignment f)
+                msg.Fixes
+                |> List.exists (fun f -> isSameFile (targetOf f) && (breaksAlignment f || spansDirective f))
 
             for f in msg.Fixes do
                 let target = targetOf f
@@ -5854,18 +6053,33 @@ let private buildAllFrameworks (project: string) =
     // a path given relative to the caller's directory must become absolute
     let project = Path.GetFullPath project
 
-    let exitCode, stdout, stderr =
-        runForProject project processTimeout "dotnet" $"build \"{project}\" --nologo -v q"
+    let build (arguments: string) =
+        let exitCode, stdout, stderr =
+            runForProject project processTimeout "dotnet" $"build \"{project}\" --nologo -v q{arguments}"
 
-    if exitCode = 0 then
-        Ok()
-    else
-        Error(
-            (stdout + stderr).Split '\n'
-            |> Array.filter (fun l -> l.Contains "error")
-            |> Array.map (fun l -> l.Trim())
-            |> Array.distinct
-        )
+        if exitCode = 0 then
+            Ok()
+        else
+            Error(
+                (stdout + stderr).Split '\n'
+                |> Array.filter (fun l -> l.Contains "error")
+                |> Array.map (fun l -> l.Trim())
+                |> Array.distinct
+            )
+
+    match build "" with
+    | Ok() when hasConfigurationConditionals project ->
+        // the configuration the analysis did not see: its `#if` branches
+        // hold code no rule read, and a migration's call sites among them
+        let other =
+            if defaultConfiguration project = "Release" then
+                "Debug"
+            else
+                "Release"
+
+        printfn $"  (the sources branch on the build configuration: building {other} too)"
+        build $" -c {other}"
+    | result -> result
 
 /// An error line with its position taken out, so the same pre-existing
 /// error reads the same after a fix above it has moved the line it sits
@@ -6619,7 +6833,12 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         | Target.Script _ -> None
 
     // which framework this pass is for, when the project has several
-    let frameworkLabel = if opts.Framework = "" then "" else $" [{opts.Framework}]"
+    let frameworkLabel =
+        match opts.Framework, analysisConfiguration with
+        | "", "" -> ""
+        | tfm, "" -> $" [{tfm}]"
+        | "", cfg -> $" [{cfg}]"
+        | tfm, cfg -> $" [{tfm} {cfg}]"
 
     let label =
         match target with
@@ -6680,6 +6899,14 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
         printfn $"{analyzers.Length} analyzers, {options.SourceFiles.Length} files"
 
+        if analysisConfiguration <> "" then
+            let defines =
+                options.OtherOptions
+                |> Array.filter (fun o -> o.StartsWith "--define:")
+                |> String.concat " "
+
+            Out.dim $"  (defines: {defines})"
+
         // a test project exports no API: nothing links to its declarations,
         // so the cross-file reshapes --api-changes gates (FR0090, FR0091,
         // FR0069, FR0093, FR0049) are as safe there as in a private module
@@ -6712,16 +6939,16 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // stay silent in editors and in default runs. Set per compilation
         // either way: a test project turns it on for itself alone, and the
         // library compiled after it must find it off again
-        Environment.SetEnvironmentVariable("FSREF_API_CHANGES", (if opts.ApiChanges then "1" else null))
-
         // only codes the user TYPED outrank a rule's default-off status and
         // a config disable — asking for FR0099 by name and getting silence
         // would be a lie. A --categories expansion deliberately does NOT
         // qualify: a category is a filter, not an ask, and
         // `--categories idiom` must not quietly turn on FR0002
-        match opts.ExplicitCodes with
-        | Some codes -> Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", String.concat "," codes)
-        | None -> ()
+        Scope.set
+            { Scope.scope () with
+                ApiChanges = opts.ApiChanges
+                ForcedCodes = opts.ExplicitCodes |> Option.defaultValue Set.empty
+            }
 
         // Not worth skipping on a dry run: measured, the cost simply
         // moves to runPass's own ParseAndCheckProject, which is only
@@ -7195,10 +7422,16 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 // multi-targeted project has others, and a fix valid for one
                 // can fail on another, so build the lot before claiming
                 // success.
-                elif isMultiTargeted target && not opts.ParseOnly then
+                elif
+                    not opts.ParseOnly
+                    && (isMultiTargeted target
+                        || (match target with
+                            | Target.Project(project, _) -> hasConfigurationConditionals project
+                            | Target.Script _ -> false))
+                then
                     match target with
                     | Target.Project(project, _) ->
-                        printfn "verifying every target framework..."
+                        printfn "verifying every target framework and configuration..."
 
                         match buildAllFrameworks project with
                         | Ok() ->
@@ -7770,6 +8003,8 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         compileItemsCache.Clear()
         projectCompilingCache.Clear()
         prefetchedOptions.Clear()
+        configurationConditionals.Clear()
+        defaultConfigurations.Clear()
         // a sibling's compiler arguments and typecheck are this run's: the
         // corpus harness runs main in-process, and the next run's sources
         // may be another tree's
@@ -7804,9 +8039,45 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         // narrowest first, so the fixes valid everywhere land before any
         // that only suit a wider surface. The final all-framework build
         // is what catches a fix that does not generalise.
-        let runOne target =
-            let checker = checkerRef.Value
+        /// The extra pass a project with `#if DEBUG`-style conditionals
+        /// gets: the same rules under the OTHER build configuration, where
+        /// the branches the first pass could not see are the parse tree.
+        /// The sweep dedup keys a file carrying such a directive by its
+        /// defines, so only those files are swept again; the rest are
+        /// skipped as already done. A configuration that does not build
+        /// here (a dacpac step, an npm task) costs a note, not the run's
+        /// exit code: the default configuration's pass stands on its own.
+        let otherConfigurationPass (checker: FSharpChecker) (target: Target) =
+            match target with
+            | Target.Project(project, _) when not opts.ParseOnly && hasConfigurationConditionals project ->
+                let other =
+                    if defaultConfiguration project = "Release" then
+                        "Debug"
+                    else
+                        "Release"
 
+                printfn
+                    $"{Path.GetFileName project}: its sources branch on the build configuration — analysing the {other} branches too"
+
+                analysisConfiguration <- other
+
+                try
+                    let narrowest = frameworksOf target |> List.tryHead |> Option.defaultValue ""
+
+                    let code = runTarget checker { opts with Framework = narrowest } true target
+
+                    if code <> 0 then
+                        // reported by runTarget; the exit reason it recorded
+                        // names the configuration, and the default pass's
+                        // result is what the caller relies on
+                        Out.skip $"  ({other} did not complete cleanly; the {other}-only branches keep their code)"
+
+                    0
+                finally
+                    analysisConfiguration <- ""
+            | _ -> 0
+
+        let runOneConfiguration (checker: FSharpChecker) target =
             match opts.Framework, frameworksOf target with
             // parse-only has no per-framework defines to vary; one pass
             | _ when opts.ParseOnly -> runTarget checker opts several target
@@ -7866,38 +8137,42 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                     let results =
                         frameworks
                         |> List.mapi (fun index tfm ->
-                            Environment.SetEnvironmentVariable(
-                                "FSREF_DUAL_TFM",
-                                (match dualConstant with
-                                 | Some c when not (isLegacy tfm) -> c
-                                 | _ -> null)
-                            )
-
                             // no constant to guard with, and this pass sees a
                             // wider surface than the narrowest target: a
                             // capability fix here can only go in plainly and
                             // be reverted by the all-frameworks build, taking
                             // the innocent fixes in those files with it
-                            Environment.SetEnvironmentVariable(
-                                "FSREF_NO_GUARD",
-                                (if dualConstant.IsNone && not (isLegacy tfm) && not legacyTfms.IsEmpty then
-                                     "1"
-                                 else
-                                     null)
-                            )
+                            Scope.set
+                                { Scope.scope () with
+                                    DualTfmConstant =
+                                        (match dualConstant with
+                                         | Some c when not (isLegacy tfm) -> ValueSome c
+                                         | _ -> ValueNone)
+                                    GuardUnavailable =
+                                        dualConstant.IsNone && not (isLegacy tfm) && not legacyTfms.IsEmpty
+                                }
 
                             runTarget (checkerForFramework checker index) { opts with Framework = tfm } true target)
 
                     // both are this project's rounds' business only: a
-                    // leaked FSREF_NO_GUARD dropped the capability fixes of
-                    // every later target in the run, single-target net8.0
+                    // leaked no-guard flag once dropped the capability fixes
+                    // of every later target in the run, single-target net8.0
                     // projects included
-                    Environment.SetEnvironmentVariable("FSREF_DUAL_TFM", null)
-                    Environment.SetEnvironmentVariable("FSREF_NO_GUARD", null)
+                    Scope.set
+                        { Scope.scope () with
+                            DualTfmConstant = ValueNone
+                            GuardUnavailable = false
+                        }
+
                     frameworksInTurn <- []
                     releaseFrameworkCheckers ()
                     results |> List.fold max 0
             | _ -> runTarget checker opts several target
+
+        let runOne target =
+            let checker = checkerRef.Value
+            let code = runOneConfiguration checker target
+            max code (otherConfigurationPass checker target)
 
         try
             let writeReportNow () =
@@ -8005,14 +8280,11 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
             else
                 exitCode
         finally
-            // runTarget sets these for the rule variants; the corpus
-            // harness runs main IN-PROCESS, so a leaked flag would make
+            // runTarget sets the scope for the rule variants; the corpus
+            // harness runs main IN-PROCESS, so a leaked scope would make
             // later analyzer calls in the same process api-changes- or
             // forced-code-scoped
-            Environment.SetEnvironmentVariable("FSREF_API_CHANGES", null)
-            Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", null)
-            Environment.SetEnvironmentVariable("FSREF_DUAL_TFM", null)
-            Environment.SetEnvironmentVariable("FSREF_NO_GUARD", null)
+            Scope.reset ()
 
 /// --rules: the catalog, human table by default, JSON on request.
 let private printRules (json: bool) =

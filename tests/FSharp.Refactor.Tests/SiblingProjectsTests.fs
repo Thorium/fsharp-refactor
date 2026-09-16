@@ -170,6 +170,85 @@ let ``a test project's own public functions reshape without --api-changes; the l
         Assert.True(built, $"the rewritten solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
 
 [<Fact>]
+let ``a function called inside an #if region keeps its shape: the other branch's call sites are in no parse tree``
+    ()
+    : unit =
+    // the analysis sees the `#if DEBUG` branch; the `#else` call site is not
+    // in the parse tree, so FR0090 would curry the definition and the one
+    // call it can see. The name inside a directive region keeps it back up
+    // front; the other-configuration build is the backstop behind that
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let library = Path.Combine(root, "src", "Lib", "Library.fs")
+        let tests = Path.Combine(root, "tests", "Tests", "Tests.fs")
+
+        File.WriteAllText(
+            tests,
+            "module Tests\n\nlet three () =\n#if DEBUG\n    Lib.add (1, 2)\n#else\n    Lib.add (2, 1)\n#endif\n"
+        )
+
+        let _code, output =
+            runTool [| solution; "--codes"; "FR0090"; "--api-changes"; "--no-color" |]
+
+        Assert.Contains("named inside an #if region", output)
+        Assert.Contains("let add (a: int, b: int) = a + b", File.ReadAllText library)
+        Assert.Contains("Lib.add (1, 2)", File.ReadAllText tests)
+        Assert.Contains("Lib.add (2, 1)", File.ReadAllText tests)
+
+        let built, buildOutput = builds solution
+        Assert.True(built, $"the put-back solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
+
+[<Fact>]
+let ``a function a string literal names keeps its shape: a template's calls are not in any symbol table`` () : unit =
+    // SQLProvider.Fable's CodeGen writes `Row.text r "Name"` from a string;
+    // FR0091 reordered Row.text and the generator kept emitting the old order
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let library = Path.Combine(root, "src", "Lib", "Library.fs")
+        let tests = Path.Combine(root, "tests", "Tests", "Tests.fs")
+
+        File.WriteAllText(
+            tests,
+            "module Tests\n\nlet three () = Lib.add (1, 2)\n\nlet template (name: string) = $\"let x = Lib.add ({name}, 2)\"\n"
+        )
+
+        let code, output =
+            runTool [| solution; "--codes"; "FR0090"; "--api-changes"; "--no-color" |]
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("a string literal in the project names the function", output)
+        Assert.Contains("let add (a: int, b: int) = a + b", File.ReadAllText library)
+        Assert.Contains("Lib.add (1, 2)", File.ReadAllText tests))
+
+[<Fact>]
+let ``a project whose own sources branch on the configuration gets the other configuration's pass`` () : unit =
+    // the same hazard inside one project keeps the migration back, and the
+    // `#else` branch - invisible to the Debug pass - is swept by a Release
+    // pass of its own, where the in-place rules reach it
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let library = Path.Combine(root, "src", "Lib", "Library.fs")
+
+        File.WriteAllText(
+            library,
+            "module Lib\n\nlet add (a: int, b: int) = a + b\n\nlet internal three () =\n#if DEBUG\n    add (1, 2)\n#else\n    let flag = if 2 > 1 then true else false\n    if flag then add (2, 1) else 0\n#endif\n"
+        )
+
+        let project = Path.Combine(root, "src", "Lib", "Lib.fsproj")
+
+        let _code, output =
+            runTool [| project; "--codes"; "FR0090,FR0010"; "--api-changes"; "--no-color" |]
+
+        Assert.Contains("analysing the Release branches too", output)
+        Assert.Contains("[Release] ==", output)
+        Assert.Contains("let flag = 2 > 1", File.ReadAllText library)
+        Assert.Contains("let add (a: int, b: int) = a + b", File.ReadAllText library)
+        Assert.Contains("add (2, 1)", File.ReadAllText library)
+
+        let built, buildOutput = builds solution
+        Assert.True(built, $"the put-back solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
+
+[<Fact>]
 let ``a script leaves the #loaded sources of a project to that project`` () : unit =
     // Owin.Compression: Script.fsx `#load`s the net48 CompressionModule.fs,
     // and the script's sweep - typechecked as .NET Core - wrote

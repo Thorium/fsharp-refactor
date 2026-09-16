@@ -131,6 +131,44 @@ let private startsOwnLine (source: ISourceText) (r: range) =
 let private leadingSpaces (line: string) =
     line.Length - line.TrimStart(' ').Length
 
+/// Is the builder on `taskLine` the body of a binding whose header ends on
+/// the line just above, with the binding keyword on that same line? The
+/// hoist puts `let`s at the builder's column, and a `let` there is only
+/// legal where the builder was: a `task {` may undent below a header that
+/// spans two lines (`[<Fact>] member test.` on one, the backticked name and
+/// `()=` on the next — welendus's fixtures), but the lets hoisted above it
+/// are offside of the name line and the pass rolled them back. A header on
+/// one line, or none at all, is where the layout is known.
+let private hoistLandsOnOwnHeader (source: ISourceText) (taskLine: int) =
+    let mutable line = taskLine - 1
+
+    while line >= 1 && (source.GetLineString(line - 1)).Trim() = "" do
+        line <- line - 1
+
+    if line < 1 then
+        false
+    else
+        let header = (source.GetLineString(line - 1)).TrimEnd()
+
+        header.EndsWith '='
+        && (let t = header.TrimStart()
+
+            [
+                "let "
+                "let! "
+                "member "
+                "static member "
+                "override "
+                "default "
+                "abstract "
+                "and "
+                "use "
+                "[<"
+                "member private "
+                "member internal "
+            ]
+            |> List.exists (fun k -> t.StartsWith k))
+
 let private isBlank (line: string) = System.String.IsNullOrWhiteSpace line
 
 /// Lines of the file from `startLine` to `endLine` inclusive (1-based).
@@ -680,6 +718,7 @@ let find
 
                             if
                                 startsOwnLine source fe.Range
+                                && hoistLandsOnOwnHeader source fe.Range.StartLine
                                 && startLine > fe.Range.StartLine
                                 && endLineExcl > startLine
                                 // the last moved binding must not spill onto

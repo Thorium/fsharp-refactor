@@ -2,6 +2,9 @@
 /// file, timed individually after a warmup round. A report with per-rule
 /// timings lands in the temp directory; the assertion only catches
 /// pathological blowups (quadratic scans and the like), not CI jitter.
+/// In the "ProjectSources" collection: some tests set the process-wide
+/// analysis scope (Scope.set), which must not run beside another test's.
+[<Xunit.Collection("ProjectSources")>]
 module FSharp.Refactor.Tests.PerfTests
 
 open System
@@ -210,12 +213,15 @@ let ``byref TryParse spelling is deliberately untouched`` () =
 // ---- CapabilityFix dual-framework emission ----
 
 let private withDualTfm (f: unit -> unit) =
-    Environment.SetEnvironmentVariable("FSREF_DUAL_TFM", "NETSTANDARD21")
+    FSharp.Refactor.Scope.set
+        { FSharp.Refactor.Scope.editor with
+            DualTfmConstant = ValueSome "NETSTANDARD21"
+        }
 
     try
         f ()
     finally
-        Environment.SetEnvironmentVariable("FSREF_DUAL_TFM", null)
+        FSharp.Refactor.Scope.reset ()
 
 let private dualFixFor (source: string) =
     let tree, sourceText, checkResults =

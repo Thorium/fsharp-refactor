@@ -19,8 +19,7 @@ open FSharp.Compiler.Syntax
 /// True when the apply tool was started with --api-changes, which opts into
 /// rewrites that change the assembly's public surface. Never set in editors,
 /// so the editor channel always sees the narrow, always-safe rules.
-let apiChangesAllowed () =
-    Environment.GetEnvironmentVariable "FSREF_API_CHANGES" = "1"
+let apiChangesAllowed () = (Scope.scope ()).ApiChanges
 
 /// Does this modifier hide the declaration from outside the assembly?
 let private isNonPublic (accessibility: SynAccess option) =

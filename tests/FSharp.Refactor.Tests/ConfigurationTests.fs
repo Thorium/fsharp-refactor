@@ -133,12 +133,15 @@ let ``the configuration can turn FR0099 back on`` () =
 
 [<Fact>]
 let ``an explicit --codes ask outranks the default-off status`` () =
-    Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", "FR0002,FR0099")
+    Scope.set
+        { Scope.editor with
+            ForcedCodes = set [ "FR0002"; "FR0099" ]
+        }
 
     try
         Assert.True(Configuration.isRuleEnabled "Test.fs" "FR0099" "TrailingSemicolon")
     finally
-        Environment.SetEnvironmentVariable("FSREF_FORCE_CODES", null)
+        Scope.reset ()
 
     Assert.False(Configuration.isRuleEnabled "Test.fs" "FR0099" "TrailingSemicolon")
 
