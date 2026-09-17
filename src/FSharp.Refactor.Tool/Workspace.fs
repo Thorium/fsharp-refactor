@@ -96,12 +96,13 @@ let projectReferenceShapesOf (projectPath: string) : ProjectReference list =
 
     Regex.Matches(text, "<ProjectReference\\s[^>]*?Include\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)
     |> Seq.collect (fun m -> m.Groups.[1].Value.Split(';', StringSplitOptions.RemoveEmptyEntries))
-    |> Seq.map (fun reference ->
-        reference
-            .Trim()
-            .Replace("$(MSBuildThisFileDirectory)", dir + string Path.DirectorySeparatorChar)
-            .Replace("$(MSBuildProjectDirectory)", dir))
-    |> Seq.map (fun reference ->
+    |> Seq.map (fun raw ->
+        let reference =
+            raw
+                .Trim()
+                .Replace("$(MSBuildThisFileDirectory)", dir + string Path.DirectorySeparatorChar)
+                .Replace("$(MSBuildProjectDirectory)", dir)
+
         if reference.Contains "$(" then
             let name = reference.Substring(reference.LastIndexOfAny [| '\\'; '/' |] + 1)
 
@@ -240,7 +241,7 @@ let workspaceOf (runTarget: string) (project: string) : string list option =
             File.Exists t
             && (t.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
                 || t.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase)))
-        |> Option.map (fun t -> projectsInSolution t)
+        |> Option.map projectsInSolution
         |> Option.filter (List.exists (samePath project))
 
     match solutionRun with

@@ -4,6 +4,7 @@
 module FSharp.Refactor.Text
 
 open FSharp.Compiler.Syntax
+open FSharp.Compiler.SyntaxTrivia
 open FSharp.Compiler.Text
 open FSharp.Compiler.Tokenization
 open System
@@ -64,10 +65,10 @@ let attributeInsertPos (source: ISourceText) (declRange: range) : pos =
         n <= source.GetLineCount()
         && (source.GetLineString(n - 1)).TrimStart().StartsWith "///"
 
-    let mutable line = declRange.StartLine
+    let rec advanceLine line =
+        if isDocLine line then advanceLine (line + 1) else line
 
-    while isDocLine line do
-        line <- line + 1
+    let line = advanceLine declRange.StartLine
 
     let column =
         if line <= source.GetLineCount() then
@@ -449,7 +450,12 @@ let instanceIsContract (members: SynMemberDefn list) =
 /// Does the range cover a line carrying a compiler directive
 /// (#if/#else/#endif)? The parse tree only sees the active branch, so a fix
 /// replacing such a range would splice the directive structure apart and
-/// leave code that no longer compiles under the other defines.
+/// leave code that no longer compiles under the other defines. Read from
+/// the lines, not the parser's trivia: the trivia belongs to a tree this
+/// guard is not handed, and a registry by file name is process-wide state
+/// that another parse of the same name overwrites. The scan's one error is
+/// a `#if`-looking line inside a string or a comment, and it errs toward
+/// standing down.
 let spansDirective (source: ISourceText) (r: range) =
     seq { r.StartLine .. r.EndLine }
     |> Seq.exists (fun line ->
@@ -527,87 +533,214 @@ let private bracketClosers =
 /// `Row.text r "Name"` from a string — and no symbol table lists those
 /// calls, so FR0091 reordered `Row.text`'s parameters, rewrote the fifty
 /// calls it could see, and left the generator producing the old order.
+/// Keyed by path and stamped with the file's write time: a pass that edits
+/// the file, or a resident host that lives through the user's edits, must
+/// read the literals as they are now, and a file that went away must not
+/// keep its entry warm.
 let private stringLiteralsCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * string[]>(StringComparer.OrdinalIgnoreCase)
 
 let stringLiteralsOf (path: string) : string[] =
-    stringLiteralsCache.GetOrAdd(
-        path,
-        fun p ->
-            try
-                let tokenizer = FSharpSourceTokenizer([], Some p, None, None)
-                let literals = ResizeArray<string>()
-                let mutable state = FSharpTokenizerLexState.Initial
+    let stamp =
+        try
+            File.GetLastWriteTimeUtc path
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            DateTime.MinValue
 
-                for line in File.ReadLines p do
-                    let lineTokenizer = tokenizer.CreateLineTokenizer line
-                    let mutable scanning = true
+    let read (p: string) =
+        try
+            let tokenizer = FSharpSourceTokenizer([], Some p, None, None)
+            let literals = ResizeArray<string>()
+            let mutable state = FSharpTokenizerLexState.Initial
 
-                    while scanning do
-                        match lineTokenizer.ScanToken state with
-                        | Some token, next ->
-                            state <- next
+            for line in File.ReadLines p do
+                let lineTokenizer = tokenizer.CreateLineTokenizer line
+                let mutable scanning = true
 
-                            if
-                                token.CharClass = FSharpTokenCharKind.String
-                                && token.RightColumn >= token.LeftColumn
-                            then
-                                literals.Add(
-                                    line.Substring(
-                                        token.LeftColumn,
-                                        min (line.Length - token.LeftColumn) (token.RightColumn - token.LeftColumn + 1)
-                                    )
+                while scanning do
+                    match lineTokenizer.ScanToken state with
+                    | Some token, next ->
+                        state <- next
+
+                        if
+                            token.CharClass = FSharpTokenCharKind.String
+                            && token.RightColumn >= token.LeftColumn
+                        then
+                            literals.Add(
+                                line.Substring(
+                                    token.LeftColumn,
+                                    min (line.Length - token.LeftColumn) (token.RightColumn - token.LeftColumn + 1)
                                 )
-                        | None, next ->
-                            state <- next
-                            scanning <- false
+                            )
+                    | None, next ->
+                        state <- next
+                        scanning <- false
 
-                literals.ToArray()
-            with _ -> // unreadable: no literal known, the caller's other guards stand; fsharpanalyzer: ignore-line FR0055
-                [||]
+            literals.ToArray()
+        with _ -> // unreadable: no literal known, the caller's other guards stand; fsharpanalyzer: ignore-line FR0055
+            [||]
+
+    let _, literals =
+        stringLiteralsCache.AddOrUpdate(
+            path,
+            (fun p -> stamp, read p),
+            (fun p (cachedStamp, cached) ->
+                if cachedStamp = stamp then
+                    cachedStamp, cached
+                else
+                    stamp, read p)
+        )
+
+    literals
+
+/// An `#if` region of a file as the parser saw it: the lines from the
+/// `#if` to its `#endif`, both branches, and the names its condition tests.
+type DirectiveRegion =
+    {
+        StartLine: int
+        EndLine: int
+        Names: string list
+    }
+
+let private directiveChecker =
+    lazy (FSharp.Compiler.CodeAnalysis.FSharpChecker.Create(keepAssemblyContents = false))
+
+/// Keyed by path and stamped with the file's write time, as stringLiteralsCache.
+let private directiveRegionsCache =
+    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * DirectiveRegion list option>(
+        StringComparer.OrdinalIgnoreCase
     )
 
-/// Does any of `files` name `identifier` on a line inside an `#if` /
-/// `#else` / `#endif` region? Such a line is in the parse tree under one
-/// set of defines only, so a rewrite of the definition and "every call
-/// site" reaches the calls of one branch and leaves the other's behind —
-/// found by building the other configuration, which is late. Only the
-/// regions that branch on the build CONFIGURATION (`DEBUG`, `RELEASE`,
-/// `TRACE`) count: a framework region's other branch is a compilation of
-/// its own, which the narrowest-first passes and the all-frameworks
-/// build already answer for. Textual and over-eager within that.
-let private configurationCondition = Regex(@"^\s*#if\b.*\b(DEBUG|RELEASE|TRACE)\b")
+let rec private namesInCondition (e: IfDirectiveExpression) =
+    match e with
+    | IfDirectiveExpression.And(a, b)
+    | IfDirectiveExpression.Or(a, b) -> namesInCondition a @ namesInCondition b
+    | IfDirectiveExpression.Not a -> namesInCondition a
+    | IfDirectiveExpression.Ident name -> [ name ]
 
+/// The `#if` regions of `path`, read from the parser's trivia rather than
+/// matched as text: a `#if` inside a block comment or a multi-line string
+/// is text, and the condition is the expression it is, not a word in a
+/// line. The lexer records every directive whichever branch is taken, so
+/// the parse needs no defines. None for a file that cannot be read; the
+/// callers decide what not knowing means to them.
+let directiveRegionsOf (path: string) : DirectiveRegion list option =
+    let stamp =
+        try
+            File.GetLastWriteTimeUtc path
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            DateTime.MinValue
+
+    let read (p: string) =
+        try
+            let text = File.ReadAllText p
+
+            // a file without the characters has no directive to read, and
+            // most files have none: the parse is for the ones that do
+            let directives =
+                if not (text.Contains "#if") then
+                    []
+                else
+                    let parsingOptions =
+                        { FSharp.Compiler.CodeAnalysis.FSharpParsingOptions.Default with
+                            SourceFiles = [| p |]
+                        }
+
+                    let result =
+                        directiveChecker.Value.ParseFile(p, SourceText.ofString text, parsingOptions)
+                        // fsharplint:disable-next-line NoAsyncRunSynchronouslyInLibrary
+                        |> Async.RunSynchronously
+
+                    match result.ParseTree with
+                    | ParsedInput.ImplFile(ParsedImplFileInput(trivia = trivia)) -> trivia.ConditionalDirectives
+                    | ParsedInput.SigFile(ParsedSigFileInput(trivia = trivia)) -> trivia.ConditionalDirectives
+
+            // one entry per open `#if`
+            let open' = Stack<int * string list>()
+
+            Some
+                [
+                    for directive in directives do
+                        match directive with
+                        | ConditionalDirectiveTrivia.If(condition, r) ->
+                            open'.Push(r.StartLine, namesInCondition condition)
+                        | ConditionalDirectiveTrivia.Else _ -> ()
+                        | ConditionalDirectiveTrivia.EndIf r ->
+                            if open'.Count > 0 then
+                                let start, names = open'.Pop()
+
+                                {
+                                    StartLine = start
+                                    EndLine = r.StartLine
+                                    Names = names
+                                }
+                ]
+        with _ -> // unreadable: no regions known; fsharpanalyzer: ignore-line FR0055
+            None
+
+    let _, regions =
+        directiveRegionsCache.AddOrUpdate(
+            path,
+            (fun p -> stamp, read p),
+            (fun p (cachedStamp, cached) ->
+                if cachedStamp = stamp then
+                    cachedStamp, cached
+                else
+                    stamp, read p)
+        )
+
+    regions
+
+/// The names a directive tests when it branches on the build
+/// CONFIGURATION. A framework region's other branch is a compilation of
+/// its own, which the narrowest-first passes and the all-frameworks build
+/// already answer for; these are the ones the parse tree never holds.
+let private configurationNames = set [ "DEBUG"; "RELEASE"; "TRACE" ]
+
+let private branchesOnConfiguration (region: DirectiveRegion) =
+    region.Names |> List.exists configurationNames.Contains
+
+/// Does `path` branch on the build configuration - `#if DEBUG`, `#if
+/// !DEBUG`, `#if RELEASE`, `#if TRACE`? The analysis sees one
+/// configuration's branch; the other is not in the parse tree at all. An
+/// unreadable file is taken to.
+let hasConfigurationConditional (path: string) =
+    match directiveRegionsOf path with
+    | Some regions -> regions |> List.exists branchesOnConfiguration
+    | None -> true
+
+/// Does any of `files` name `identifier` on a line inside an `#if` region
+/// that branches on the build configuration? Such a line is in the parse
+/// tree under one set of defines only, so a rewrite of the definition and
+/// "every call site" reaches the calls of one branch and leaves the
+/// other's behind — found by building the other configuration, which is
+/// late. The regions come from the parser; the lines inside them are text
+/// by nature (the untaken branch is in no parse tree), so the name is
+/// matched as a word there, over-eagerly within that.
 let namedInDirectiveRegion (files: string seq) (identifier: string) =
     let word = Regex($@"(?<![\w'`]){Regex.Escape identifier}(?![\w'`])")
 
     files
     |> Seq.exists (fun f ->
-        try
-            // one entry per open `#if`: whether it branches on the configuration
-            let regions = Stack<bool>()
-            let mutable found = false
+        match directiveRegionsOf f with
+        | None -> true // unreadable: assume the worst, the migration waits
+        | Some regions ->
+            match regions |> List.filter branchesOnConfiguration with
+            | [] -> false
+            | configured ->
+                try
+                    File.ReadLines f
+                    |> Seq.indexed
+                    |> Seq.exists (fun (i, line) ->
+                        let lineNumber = i + 1
 
-            for line in File.ReadLines f do
-                if not found then
-                    let t = line.TrimStart()
-
-                    if t.StartsWith "#if" then
-                        regions.Push(configurationCondition.IsMatch t)
-                    elif t.StartsWith "#endif" then
-                        if regions.Count > 0 then
-                            regions.Pop() |> ignore
-                    elif
-                        regions.Contains true
-                        && not (t.StartsWith "#else")
+                        configured
+                        |> List.exists (fun r -> r.StartLine < lineNumber && lineNumber < r.EndLine)
+                        && not (line.TrimStart().StartsWith "#")
                         && line.Contains identifier
-                        && word.IsMatch line
-                    then
-                        found <- true
-
-            found
-        with _ -> // unreadable: assume the worst, the migration waits; fsharpanalyzer: ignore-line FR0055
-            true)
+                        && word.IsMatch line)
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    true)
 
 /// Does a string literal in any of `files` name `identifier` as a whole
 /// word? `Row.text` and `text` both count for `text`: a template spells
@@ -719,9 +852,7 @@ let directiveFollows (source: ISourceText) (r: range) =
         else
             let text = (source.GetLineString(line - 1)).TrimStart()
 
-            if text = "" then scan (line + 1)
-            elif text.StartsWith '#' then true
-            else false
+            if text = "" then scan (line + 1) else text.StartsWith '#'
 
     scan (r.EndLine + 1)
 

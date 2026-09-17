@@ -258,7 +258,9 @@ let private categories =
         Category.Correctness,
         "GetOrAdd caching a Task or Lazy, so one failure is cached for every later reader"
         "FR0153", Category.Correctness, "a credential in a [<Literal>], which should be a development one"
-        "FR0154", Category.Performance, "TryGetValue then a store on a ConcurrentDictionary becomes one GetOrAdd"
+        "FR0154",
+        Category.Correctness,
+        "a store after a TryGetValue miss on a ConcurrentDictionary races other callers; the miss arm becomes GetOrAdd"
         "FR0155",
         Category.Performance,
         "an internal class nothing inherits, stored in arrays or type-tested, gains [<Sealed>]"
@@ -285,6 +287,15 @@ let private categories =
         "A lambda that restates a built-in: fun x -> x → id, fun (a, b) -> a → fst, fun (a, b) -> b → snd"
         "FR0101", Category.Idiom, "index-based loop over a collection it only indexes"
         "FR0103", Category.Idiom, "isinstance-style type-test ladders as match"
+        "FR0156",
+        Category.Idiom,
+        "a ResizeArray filled one Add at a time by loops and only read after is a list expression"
+        "FR0157",
+        Category.Idiom,
+        "a closed set of string literals matched by name becomes a union with a ToString returning the text"
+        "FR0158",
+        Category.Idiom,
+        "a while loop walking a mutable index while a condition holds is a tail-recursive local function"
 
         // --- cosmetic: punctuation and spelling of code
         "FR0013", Category.Cosmetic, "Redundant parentheses around single atomic arguments to a *function*: List.max([4"

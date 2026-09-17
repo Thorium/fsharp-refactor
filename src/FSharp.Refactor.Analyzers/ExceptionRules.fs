@@ -59,8 +59,6 @@ let private (|RaisedTypeName|_|) (e: SynExpr) =
 let find (parseTree: ParsedInput) (source: ISourceText) : FinallySuggestion list * ReservedSuggestion list =
     ignore source
     let index = AstIndex.ofTree parseTree
-    let finallies = ResizeArray<FinallySuggestion>()
-    let reserved = ResizeArray<ReservedSuggestion>()
 
     // raise-like application ranges
     let raiseSites =
@@ -72,23 +70,27 @@ let find (parseTree: ParsedInput) (source: ISourceText) : FinallySuggestion list
             | _ -> None)
 
     // FR0063: raises in finally blocks, minus ones a nested try-with handles
-    for _, e in index.Exprs do
-        match e with
-        | SynExpr.TryFinally(finallyExpr = fin) ->
-            let handled =
-                index.Exprs
-                |> Array.choose (fun (_, inner) ->
-                    match inner with
-                    | SynExpr.TryWith(tryExpr = t) when Range.rangeContainsRange fin.Range inner.Range -> Some t.Range
-                    | _ -> None)
+    let finallies: FinallySuggestion list =
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.TryFinally(finallyExpr = fin) ->
+                    let handled =
+                        index.Exprs
+                        |> Array.choose (fun (_, inner) ->
+                            match inner with
+                            | SynExpr.TryWith(tryExpr = t) when Range.rangeContainsRange fin.Range inner.Range ->
+                                Some t.Range
+                            | _ -> None)
 
-            for site in raiseSites do
-                if
-                    Range.rangeContainsRange fin.Range site
-                    && not (handled |> Array.exists (fun h -> Range.rangeContainsRange h site))
-                then
-                    finallies.Add { Range = site }
-        | _ -> ()
+                    for site in raiseSites do
+                        if
+                            Range.rangeContainsRange fin.Range site
+                            && not (handled |> Array.exists (fun h -> Range.rangeContainsRange h site))
+                        then
+                            { Range = site }
+                | _ -> ()
+        ]
 
     // a match whose sibling arms raise three or more DISTINCT exception
     // types is a dispatch table — FCS's `SimulateException` fault injection
@@ -120,10 +122,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : FinallySuggestion list
         dispatchTableArms |> Array.exists (fun arm -> Range.rangeContainsRange arm r)
 
     // FR0064: reserved exception constructions
-    for _, e in index.Exprs do
-        match e with
-        | RaisedTypeName name when reservedExceptions.Contains name && not (inDispatchTable e.Range) ->
-            reserved.Add { Range = e.Range; TypeName = name }
-        | _ -> ()
+    let reserved: ReservedSuggestion list =
+        [
+            for _, e in index.Exprs do
+                match e with
+                | RaisedTypeName name when reservedExceptions.Contains name && not (inDispatchTable e.Range) ->
+                    { Range = e.Range; TypeName = name }
+                | _ -> ()
+        ]
 
-    List.ofSeq finallies, List.ofSeq reserved
+    finallies, reserved

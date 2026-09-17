@@ -227,10 +227,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // then nothing — fantomas's EndToEndTests) or double
                         // the gap above the match (fsharplint's TestApi.fs)
                         let matchLine = lou.Body.Range.StartLine
-                        let mutable removeEnd = letLine + 1
 
-                        while removeEnd < matchLine && (source.GetLineString(removeEnd - 1)).Trim() = "" do
-                            removeEnd <- removeEnd + 1
+                        let rec advanceRemoveEnd removeEnd =
+                            if removeEnd < matchLine && (source.GetLineString(removeEnd - 1)).Trim() = "" then
+                                advanceRemoveEnd (removeEnd + 1)
+                            else
+                                removeEnd
+
+                        let removeEnd = advanceRemoveEnd (letLine + 1)
 
                         let removeRange =
                             Range.mkRange

@@ -215,23 +215,17 @@ let ``a re-pointable reference stays a path, never a package reference`` () =
 [<Fact>]
 let ``an #I search directory gets no package reference`` () =
     // a package reference is not a search path, so there is nothing to offer
-    withPackage [ "packages/Other/lib/net48" ] "#I @\"../packages/Sql/lib/net451\"" None (fun suggestions ->
-        Assert.Empty suggestions)
+    withPackage [ "packages/Other/lib/net48" ] "#I @\"../packages/Sql/lib/net451\"" None Assert.Empty
 
 [<Fact>]
 let ``a reference that resolves is left alone`` () =
-    withPackage
-        [ "packages/Sql.1.2.3/lib/net451" ]
-        "#r @\"../packages/Sql.1.2.3/lib/net451/Sql.dll\""
-        None
-        (fun suggestions -> Assert.Empty suggestions)
+    withPackage [ "packages/Sql.1.2.3/lib/net451" ] "#r @\"../packages/Sql.1.2.3/lib/net451/Sql.dll\"" None Assert.Empty
 
 [<Fact>]
 let ``a net4x asset gets no package reference`` () =
     // a net451 asset says the script runs on the .NET Framework's fsi.exe,
     // which cannot resolve `#r "nuget: ..."` at all
-    withPackage [ "packages/Other/lib/net48" ] "#r @\"../packages/Sql/lib/net451/Sql.dll\"" None (fun suggestions ->
-        Assert.Empty suggestions)
+    withPackage [ "packages/Other/lib/net48" ] "#r @\"../packages/Sql/lib/net451/Sql.dll\"" None Assert.Empty
 
 [<Fact>]
 let ``a package that IS on disk gets no package reference, whatever else is wrong`` () =
@@ -242,4 +236,4 @@ let ``a package that IS on disk gets no package reference, whatever else is wron
         [ "packages/Sql.1.2.3/lib/netstandard2.0" ]
         "#r @\"../packages/Sql.1.2.3/lib/netstandard2.0/Sqll.dll\""
         None
-        (fun suggestions -> Assert.Empty suggestions)
+        Assert.Empty

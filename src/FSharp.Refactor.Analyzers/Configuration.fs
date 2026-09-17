@@ -527,7 +527,7 @@ let private hasGeneratedHeader (path: string) =
                 // leave in their output (no auto-generated banner at all);
                 // fantomas's generated lexer carried 14 notes and every
                 // fix there is lost at the next build
-                || head |> List.exists (fun line -> lineDirective.IsMatch line)
+                || head |> List.exists lineDirective.IsMatch
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                 false
     )

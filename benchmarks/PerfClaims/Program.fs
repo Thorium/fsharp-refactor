@@ -89,6 +89,11 @@ let private allocIsTheClaim = set [ "FR0011"; "FR0106" ]
 /// for time (FR0035's build-a-HashSet note). Allocation cannot gate a
 /// trade whose before-side allocates nothing; instead the time win must
 /// be DECISIVE — at least 2x — or naming the trade isn't worth it.
+/// FR0154 was here while its fix replaced the whole match: at tier 0 the
+/// tuple-returning TryGetValue match measured 2.4x slower than GetOrAdd, at
+/// tier 1 (5M iterations) 3.5x FASTER - 2.1 ns and nothing against 7.3 ns
+/// and the 64 B delegate F# allocates per call. The fix now leaves the hit
+/// path alone and rewrites the miss arm, and gates as parity below.
 let private timeIsTheClaim = set [ "FR0035" ]
 
 /// The gates. Time tolerances are generous because stopwatch loops
@@ -210,10 +215,41 @@ let guardDict =
         |> Seq.map (fun i -> System.Collections.Generic.KeyValuePair(i, i))
     )
 
+let concurrentCache =
+    System.Collections.Concurrent.ConcurrentDictionary<int, int>(
+        Seq.init 100 id
+        |> Seq.map (fun i -> System.Collections.Generic.KeyValuePair(i, i))
+    )
+
+// FR0158's pair: 200 lines, the first 37 blank
+let scanLines = Array.init 200 (fun i -> if i < 37 then "" else "text")
+
 let calc = Calc()
 let oneItem = [ 42 ]
 let pieces200 = List.init 200 (fun i -> string (i % 10))
 let orderId = "ORDER-12345-CONFIRMED"
+
+// FR0157's pair: the string the match reads today, and the union it becomes
+[<RequireQualifiedAccess>]
+type Region =
+    | Eu
+    | Uk
+    | Us
+
+    override this.ToString() =
+        match this with
+        | Region.Eu -> "eu"
+        | Region.Uk -> "united kingdom"
+        | Region.Us -> "united states"
+
+// built at runtime, as parsed input is: a literal in the array would be the
+// very instance the match compares against, and String.Equals answers a
+// reference-equal pair before reading a character
+let regionStrings =
+    [| "eu"; "united kingdom"; "united states"; "united states" |]
+    |> Array.map (fun s -> String(s.ToCharArray()))
+
+let regionCases = [| Region.Eu; Region.Uk; Region.Us; Region.Us |]
 
 // keys 100..199, evens present, odds absent — the FR0018 workload
 let halfDict =
@@ -960,7 +996,214 @@ let cases =
                     acc
         }
 
+        // FR0154: TryGetValue then a store on a ConcurrentDictionary against
+        // the same match with GetOrAdd in the miss arm - measured on the hit
+        // path, the one a cache takes almost every time, which the fix leaves
+        // as it was. 5M iterations: at tier 0 the tuple-returning match reads
+        // 2.4x slower than a whole-match GetOrAdd, at tier 1 3.5x faster
+        {
+            Code = "FR0154"
+            Name = "TryGetValue + store -> GetOrAdd in the miss arm (hit path)"
+            Cat = Idiom
+            Iters = 5_000_000
+            Before =
+                fun () ->
+                    match concurrentCache.TryGetValue 42 with
+                    | true, v -> v
+                    | false, _ ->
+                        let v = 42 * 2
+                        concurrentCache.[42] <- v
+                        v
+            After =
+                fun () ->
+                    match concurrentCache.TryGetValue 42 with
+                    | true, v -> v
+                    | false, _ -> concurrentCache.GetOrAdd(42, (fun k -> k * 2))
+        }
+
         // ================= idiom rules (parity gates) =================
+        // FR0158: the mutable-index while against the tail-recursive function
+        // it becomes. Measured beside it, and not written: `Seq.tryFind` over
+        // a range doubled the time and allocated 104 B per call
+        {
+            Code = "FR0158"
+            Name = "while index scan -> tail-recursive function"
+            Cat = Idiom
+            Iters = 2_000_000
+            Before =
+                fun () ->
+                    let mutable line = 0
+
+                    while line < scanLines.Length && scanLines.[line].Trim() = "" do
+                        line <- line + 1
+
+                    line
+            After =
+                fun () ->
+                    let rec advanceLine line =
+                        if line < scanLines.Length && scanLines.[line].Trim() = "" then
+                            advanceLine (line + 1)
+                        else
+                            line
+
+                    advanceLine 0
+        }
+
+        // FR0157: a match on string literals against the same match on the
+        // union that replaces them - a tag compare in place of string
+        // equality per arm
+        {
+            Code = "FR0157"
+            Name = "match on string literals -> match on a union"
+            Cat = Idiom
+            Iters = 5_000_000
+            Before =
+                fun () ->
+                    let mutable acc = 0
+
+                    for r in regionStrings do
+                        acc <-
+                            acc
+                            + (match r with
+                               | "eu" -> 1
+                               | "united kingdom" -> 2
+                               | "united states" -> 3
+                               | _ -> 0)
+
+                    acc
+            After =
+                fun () ->
+                    let mutable acc = 0
+
+                    for r in regionCases do
+                        acc <-
+                            acc
+                            + (match r with
+                               | Region.Eu -> 1
+                               | Region.Uk -> 2
+                               | Region.Us -> 3)
+
+                    acc
+        }
+
+        // FR0156: the loop-and-Add fill against the list expression it
+        // becomes, with the guard and the drain the rule keeps. Measured
+        // (.NET 10, x64, 1000 ints, two thirds kept): the list expression
+        // collects through ListCollector, no growth-doubling reallocations
+        // and no final List.ofSeq copy, and comes out 20% faster on 30%
+        // less allocation; the array expression's ArrayCollector is 1.6x
+        // the loop's time on the same allocation - and `Array.choose`,
+        // the other spelling the rule could emit, the same time on twice
+        // the allocation (a Some per kept element), which is why the rule
+        // stands down where the drains want an array: the second case is
+        // the measurement behind that, not a rewrite the rule makes
+        {
+            Code = "FR0156"
+            Name = "ResizeArray Add loop + List.ofSeq -> list expression"
+            Cat = Idiom
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let acc = ResizeArray<int>()
+
+                    for x in xsArr do
+                        if x % 3 <> 0 then
+                            acc.Add(x * 2)
+
+                    (List.ofSeq acc).Length
+            After =
+                fun () ->
+                    let acc =
+                        [
+                            for x in xsArr do
+                                if x % 3 <> 0 then
+                                    x * 2
+                        ]
+
+                    acc.Length
+        }
+
+        // the seq-only drain: nothing converts the ResizeArray, so the bare
+        // fill is the baseline and BOTH expressions lose to it - the rule
+        // stands down there by default, and the arrays knob takes the array
+        {
+            Code = "FR0156"
+            Name = "seq-only drain -> list expression (NOT emitted)"
+            Cat = Idiom
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let acc = ResizeArray<int>()
+
+                    for x in xsArr do
+                        if x % 3 <> 0 then
+                            acc.Add(x * 2)
+
+                    Seq.sum acc
+            After =
+                fun () ->
+                    let acc =
+                        [
+                            for x in xsArr do
+                                if x % 3 <> 0 then
+                                    x * 2
+                        ]
+
+                    Seq.sum acc
+        }
+
+        {
+            Code = "FR0156"
+            Name = "seq-only drain -> array expression (arrays knob)"
+            Cat = Idiom
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let acc = ResizeArray<int>()
+
+                    for x in xsArr do
+                        if x % 3 <> 0 then
+                            acc.Add(x * 2)
+
+                    Seq.sum acc
+            After =
+                fun () ->
+                    let acc =
+                        [|
+                            for x in xsArr do
+                                if x % 3 <> 0 then
+                                    x * 2
+                        |]
+
+                    Seq.sum acc
+        }
+
+        {
+            Code = "FR0156"
+            Name = "ToArray -> array expression (NOT emitted: 1.6x slower)"
+            Cat = Idiom
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let acc = ResizeArray<int>()
+
+                    for x in xsArr do
+                        if x % 3 <> 0 then
+                            acc.Add(x * 2)
+
+                    (acc.ToArray()).Length
+            After =
+                fun () ->
+                    let acc =
+                        [|
+                            for x in xsArr do
+                                if x % 3 <> 0 then
+                                    x * 2
+                        |]
+
+                    acc.Length
+        }
+
         {
             Code = "FR0001"
             Name = "match bool -> if"

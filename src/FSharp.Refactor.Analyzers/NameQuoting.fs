@@ -62,9 +62,7 @@ let quotedForm (name: string) : string option =
         None
     else
         let words =
-            name.Split '_'
-            |> Array.collect (fun part -> aZRegex.Split part)
-            |> Array.filter (fun s -> s <> "")
+            name.Split '_' |> Array.collect aZRegex.Split |> Array.filter (fun s -> s <> "")
 
         if words.Length > 4 then
             Some(words |> Array.map (fun w -> w.ToLowerInvariant()) |> String.concat " ")

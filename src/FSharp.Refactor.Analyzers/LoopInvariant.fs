@@ -117,7 +117,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         []
     else
         let index = AstIndex.ofTree parseTree
-        let suggestions = ResizeArray<Suggestion>()
 
         // (loop node, loop-bound names, body) for every loop-like shape
         let candidates =
@@ -177,97 +176,99 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | true, ranges -> ranges |> Seq.exists (Range.rangeContainsRange r >> not)
             | false, _ -> false
 
-        for path, loopExpr, loopVars, body in candidates do
-            match insertionAnchor source path loopExpr with
-            | Some anchor ->
-                let mutable boundEarlier = Set.empty
+        let suggestions: Suggestion list =
+            [
+                for path, loopExpr, loopVars, body in candidates do
+                    match insertionAnchor source path loopExpr with
+                    | Some anchor ->
+                        let mutable boundEarlier = Set.empty
 
-                for binding, continuation in leadingLets [] body do
-                    match binding with
-                    | SynBinding(
-                        isMutable = false
-                        isInline = false
-                        headPat = SynPat.Named(ident = SynIdent(ident = name); accessibility = None)
-                        expr = rhs) when
-                        isSingleLine binding.RangeOfBindingWithRhs
-                        && binding.RangeOfBindingWithRhs.EndLine < continuation.Range.StartLine
-                        ->
-                        let forbidden = loopVars + boundEarlier |> Set.add name.idText
-
-                        match pureIdentsLoop [] [] [ rhs ] with
-                        | ValueSome(reads, ops) when
-                            // only an invariant that DOES WORK is worth
-                            // hoisting: an operator expression (`a + 3`).
-                            // A bare identifier, constant or literal
-                            // copy costs nothing per iteration, and
-                            // hoisting `let ny = sinPhi` out of Mibo's
-                            // Primitive3D inner loop only separated it
-                            // from the `nx`/`nz` it belongs with
-                            not ops.IsEmpty
-                            && reads
-                               |> List.forall (fun rd ->
-                                   not (forbidden.Contains rd || assignedInside loopExpr.Range rd))
-                            // the hoisted binding's wider scope must collide
-                            // with nothing: the name may live only in the loop
-                            && not (usedOutside loopExpr.Range name.idText)
-                            // a shadowed operator can have arbitrary
-                            // semantics; the typed gate runs last
-                            && ops |> List.forall (OptionModule.resolvesToCoreOperator check source)
-                            ->
-                            let letLine = binding.RangeOfBindingWithRhs.StartLine
-                            // the binding range starts at the pattern; the
-                            // `let` keyword lives before it on the same line
-                            let bindingText = textOfRange source binding.RangeOfBindingWithRhs
-
-                            let removeRange =
-                                Range.mkRange
-                                    binding.RangeOfBindingWithRhs.FileName
-                                    (Position.mkPos letLine 0)
-                                    (Position.mkPos (letLine + 1) 0)
-
-                            let indent = System.String(' ', anchor.StartColumn)
-
-                            // a binding lifted out of the loop keeps the `#if`
-                            // it was written under; a directive has to open its
-                            // own line, so that form is inserted at column 0 of
-                            // the anchor's line, ahead of its indentation
-                            let insert =
-                                match conditionToKeep source letLine anchor.StartLine with
-                                | Some condition ->
-                                    Range.mkRange
-                                        anchor.FileName
-                                        (Position.mkPos anchor.StartLine 0)
-                                        (Position.mkPos anchor.StartLine 0),
-                                    "",
-                                    $"#if {condition}\n{indent}let {bindingText}\n#endif\n"
-                                | None ->
-                                    Range.mkRange anchor.FileName anchor.Start anchor.Start,
-                                    "",
-                                    $"let {bindingText}\n{indent}"
-
-                            let edits = [ insert; removeRange, textOfRange source removeRange, "" ]
-
-                            if
-                                not (edits |> List.exists (fun (r, _, _) -> spansDirective source r))
-                                // the let must own its whole line, so the
-                                // line delete removes exactly the binding
-                                && (source.GetLineString(letLine - 1)).Trim() = $"let {bindingText}"
-                            then
-                                suggestions.Add
-                                    {
-                                        Range = binding.RangeOfBindingWithRhs
-                                        Name = name.idText
-                                        Edits = edits
-                                    }
-                        | _ -> ()
-                    | _ -> ()
-
-                    boundEarlier <-
-                        boundEarlier
-                        + Set.ofList (
+                        for binding, continuation in leadingLets [] body do
                             match binding with
-                            | SynBinding(headPat = p) -> patBoundNames p
-                        )
-            | None -> ()
+                            | SynBinding(
+                                isMutable = false
+                                isInline = false
+                                headPat = SynPat.Named(ident = SynIdent(ident = name); accessibility = None)
+                                expr = rhs) when
+                                isSingleLine binding.RangeOfBindingWithRhs
+                                && binding.RangeOfBindingWithRhs.EndLine < continuation.Range.StartLine
+                                ->
+                                let forbidden = loopVars + boundEarlier |> Set.add name.idText
 
-        List.ofSeq suggestions
+                                match pureIdentsLoop [] [] [ rhs ] with
+                                | ValueSome(reads, ops) when
+                                    // only an invariant that DOES WORK is worth
+                                    // hoisting: an operator expression (`a + 3`).
+                                    // A bare identifier, constant or literal
+                                    // copy costs nothing per iteration, and
+                                    // hoisting `let ny = sinPhi` out of Mibo's
+                                    // Primitive3D inner loop only separated it
+                                    // from the `nx`/`nz` it belongs with
+                                    not ops.IsEmpty
+                                    && reads
+                                       |> List.forall (fun rd ->
+                                           not (forbidden.Contains rd || assignedInside loopExpr.Range rd))
+                                    // the hoisted binding's wider scope must collide
+                                    // with nothing: the name may live only in the loop
+                                    && not (usedOutside loopExpr.Range name.idText)
+                                    // a shadowed operator can have arbitrary
+                                    // semantics; the typed gate runs last
+                                    && ops |> List.forall (OptionModule.resolvesToCoreOperator check source)
+                                    ->
+                                    let letLine = binding.RangeOfBindingWithRhs.StartLine
+                                    // the binding range starts at the pattern; the
+                                    // `let` keyword lives before it on the same line
+                                    let bindingText = textOfRange source binding.RangeOfBindingWithRhs
+
+                                    let removeRange =
+                                        Range.mkRange
+                                            binding.RangeOfBindingWithRhs.FileName
+                                            (Position.mkPos letLine 0)
+                                            (Position.mkPos (letLine + 1) 0)
+
+                                    let indent = System.String(' ', anchor.StartColumn)
+
+                                    // a binding lifted out of the loop keeps the `#if`
+                                    // it was written under; a directive has to open its
+                                    // own line, so that form is inserted at column 0 of
+                                    // the anchor's line, ahead of its indentation
+                                    let insert =
+                                        match conditionToKeep source letLine anchor.StartLine with
+                                        | Some condition ->
+                                            Range.mkRange
+                                                anchor.FileName
+                                                (Position.mkPos anchor.StartLine 0)
+                                                (Position.mkPos anchor.StartLine 0),
+                                            "",
+                                            $"#if {condition}\n{indent}let {bindingText}\n#endif\n"
+                                        | None ->
+                                            Range.mkRange anchor.FileName anchor.Start anchor.Start,
+                                            "",
+                                            $"let {bindingText}\n{indent}"
+
+                                    let edits = [ insert; removeRange, textOfRange source removeRange, "" ]
+
+                                    if
+                                        not (edits |> List.exists (fun (r, _, _) -> spansDirective source r))
+                                        // the let must own its whole line, so the
+                                        // line delete removes exactly the binding
+                                        && (source.GetLineString(letLine - 1)).Trim() = $"let {bindingText}"
+                                    then
+                                        {
+                                            Range = binding.RangeOfBindingWithRhs
+                                            Name = name.idText
+                                            Edits = edits
+                                        }
+                                | _ -> ()
+                            | _ -> ()
+
+                            boundEarlier <-
+                                boundEarlier
+                                + Set.ofList (
+                                    match binding with
+                                    | SynBinding(headPat = p) -> patBoundNames p
+                                )
+                    | None -> ()
+            ]
+
+        suggestions

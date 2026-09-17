@@ -48,44 +48,46 @@ type Suggestion =
 ///                                OptionalQuote q ]) -> ...
 let private separatorRanges (parseTree: ParsedInput) =
     let index = AstIndex.ofTree parseTree
-    let ranges = ResizeArray<range>()
 
-    for _, expr in index.Exprs do
-        match expr with
-        | SynExpr.ArrayOrList _
-        | SynExpr.ArrayOrListComputed _
-        | SynExpr.Record _
-        | SynExpr.AnonRecd _
-        // A computation expression too, though its `;` sequences rather than
-        // separates. Inside one it also holds the LAYOUT together:
-        //
-        //     seq { yield 1;
-        //         yield 2;
-        //       yield 3 }
-        //
-        // parses, and the same lines without the semicolons do not (FS0010).
-        // Cleaning a `;` that reads as redundant is not worth breaking that.
-        | SynExpr.ComputationExpr _ -> ranges.Add expr.Range
-        | _ -> ()
-
-    for _, pat in index.Pats do
-        match pat with
-        | SynPat.ArrayOrList _
-        | SynPat.Record _ -> ranges.Add pat.Range
-        | _ -> ()
-
-    // a record TYPE's field list separates with `;` exactly as a record
-    // expression does
-    for _, decl in index.Decls do
-        match decl with
-        | SynModuleDecl.Types(typeDefns = defns) ->
-            for SynTypeDefn(typeRepr = repr) in defns do
-                match repr with
-                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(range = r)) -> ranges.Add r
+    let ranges: range list =
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.ArrayOrList _
+                | SynExpr.ArrayOrListComputed _
+                | SynExpr.Record _
+                | SynExpr.AnonRecd _
+                // A computation expression too, though its `;` sequences rather than
+                // separates. Inside one it also holds the LAYOUT together:
+                //
+                //     seq { yield 1;
+                //         yield 2;
+                //       yield 3 }
+                //
+                // parses, and the same lines without the semicolons do not (FS0010).
+                // Cleaning a `;` that reads as redundant is not worth breaking that.
+                | SynExpr.ComputationExpr _ -> expr.Range
                 | _ -> ()
-        | _ -> ()
 
-    List.ofSeq ranges
+            for _, pat in index.Pats do
+                match pat with
+                | SynPat.ArrayOrList _
+                | SynPat.Record _ -> pat.Range
+                | _ -> ()
+
+            // a record TYPE's field list separates with `;` exactly as a record
+            // expression does
+            for _, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Types(typeDefns = defns) ->
+                    for SynTypeDefn(typeRepr = repr) in defns do
+                        match repr with
+                        | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(range = r)) -> r
+                        | _ -> ()
+                | _ -> ()
+        ]
+
+    ranges
 
 /// How many times does `needle` occur in `text`? Counting a two-character
 /// literal is a plain scan; a regex would parse its pattern on every line,
@@ -107,10 +109,13 @@ let private countOccurrences (needle: string) (text: string) =
 let private endsWithSemicolon (line: string) =
     /// The last non-blank character at or before `from`, or -1.
     let lastNonBlankAt (from: int) =
-        let mutable i = from
+        let rec retreatI i =
+            if i >= 0 && Char.IsWhiteSpace line.[i] then
+                retreatI (i - 1)
+            else
+                i
 
-        while i >= 0 && Char.IsWhiteSpace line.[i] do
-            i <- i - 1
+        let i = retreatI from
 
         i
 
@@ -187,7 +192,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         []
     else
 
-        let suggestions = ResizeArray<Suggestion>()
         let protectedRanges = separatorRanges parseTree
         let fileName = parseTree.FileName
 
@@ -198,45 +202,47 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         // attribute groups span lines: `[<Foo;` then `Bar>]`
         let mutable attributeDepth = 0
 
-        for lineIndex in 0 .. source.GetLineCount() - 1 do
-            let lineText = source.GetLineString lineIndex
-            let lineNumber = lineIndex + 1
+        let suggestions: Suggestion list =
+            [
+                for lineIndex in 0 .. source.GetLineCount() - 1 do
+                    let lineText = source.GetLineString lineIndex
+                    let lineNumber = lineIndex + 1
 
-            // depth entering this line decides whether its own `;` is inside a
-            // group; count the line's brackets afterwards for the next line
-            let depthEnteringLine = attributeDepth
+                    // depth entering this line decides whether its own `;` is inside a
+                    // group; count the line's brackets afterwards for the next line
+                    let depthEnteringLine = attributeDepth
 
-            let opened = countOccurrences "[<" lineText
-            let closed = countOccurrences ">]" lineText
+                    let opened = countOccurrences "[<" lineText
+                    let closed = countOccurrences ">]" lineText
 
-            attributeDepth <- max 0 (attributeDepth + opened - closed)
+                    attributeDepth <- max 0 (attributeDepth + opened - closed)
 
-            let last, nextState = lastMeaningfulToken tokenizer lineText state
-            state <- nextState
+                    let last, nextState = lastMeaningfulToken tokenizer lineText state
+                    state <- nextState
 
-            match last with
-            | Some(info, blankStartedAt) when info.TokenName = "SEMICOLON" ->
-                let semicolonStart = Position.mkPos lineNumber info.LeftColumn
-                let semicolonEnd = Position.mkPos lineNumber (info.RightColumn + 1)
+                    match last with
+                    | Some(info, blankStartedAt) when info.TokenName = "SEMICOLON" ->
+                        let semicolonStart = Position.mkPos lineNumber info.LeftColumn
+                        let semicolonEnd = Position.mkPos lineNumber (info.RightColumn + 1)
 
-                let insideSeparatorList =
-                    protectedRanges
-                    |> List.exists (fun r -> Range.rangeContainsPos r semicolonStart)
+                        let insideSeparatorList =
+                            protectedRanges
+                            |> List.exists (fun r -> Range.rangeContainsPos r semicolonStart)
 
-                // an attribute group open on this line, or still open from an
-                // earlier one, makes the `;` a separator
-                let insideAttribute = depthEnteringLine > 0 || opened > closed
+                        // an attribute group open on this line, or still open from an
+                        // earlier one, makes the `;` a separator
+                        let insideAttribute = depthEnteringLine > 0 || opened > closed
 
-                if not (insideSeparatorList || insideAttribute) then
-                    let span =
-                        Range.mkRange fileName (Position.mkPos lineNumber blankStartedAt) semicolonEnd
+                        if not (insideSeparatorList || insideAttribute) then
+                            let span =
+                                Range.mkRange fileName (Position.mkPos lineNumber blankStartedAt) semicolonEnd
 
-                    suggestions.Add
-                        {
-                            Range = span
-                            OriginalText = textOfRange source span
-                            ReplacementText = ""
-                        }
-            | _ -> ()
+                            {
+                                Range = span
+                                OriginalText = textOfRange source span
+                                ReplacementText = ""
+                            }
+                    | _ -> ()
+            ]
 
-        List.ofSeq suggestions
+        suggestions

@@ -68,38 +68,40 @@ let private isAtomicType (t: SynType) =
 /// FR0097: parenthesized types whose parens do nothing.
 let findRedundantParens (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
-    let suggestions = ResizeArray<Suggestion>()
 
-    for _, synType in index.Types do
-        match synType with
-        | SynType.Paren(innerType = inner) when isSingleLine synType.Range && isAtomicType inner ->
-            suggestions.Add
-                {
-                    Range = synType.Range
-                    OriginalText = textOfRange source synType.Range
-                    ReplacementText = textOfRange source inner.Range
-                }
-        | _ -> ()
+    let suggestions: Suggestion list =
+        [
+            for _, synType in index.Types do
+                match synType with
+                | SynType.Paren(innerType = inner) when isSingleLine synType.Range && isAtomicType inner ->
+                    {
+                        Range = synType.Range
+                        OriginalText = textOfRange source synType.Range
+                        ReplacementText = textOfRange source inner.Range
+                    }
+                | _ -> ()
+        ]
 
-    List.ofSeq suggestions
+    suggestions
 
 /// FR0098: `System.Int32` and friends, written the F# way.
 let findAbbreviations (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
-    let suggestions = ResizeArray<Suggestion>()
 
-    for _, synType in index.Types do
-        match synType with
-        | SynType.LongIdent(SynLongIdent(id = [ qualifier; name ])) when qualifier.idText = "System" ->
-            match abbreviations.TryFind name.idText with
-            | Some abbreviation ->
-                suggestions.Add
-                    {
-                        Range = synType.Range
-                        OriginalText = textOfRange source synType.Range
-                        ReplacementText = abbreviation
-                    }
-            | None -> ()
-        | _ -> ()
+    let suggestions: Suggestion list =
+        [
+            for _, synType in index.Types do
+                match synType with
+                | SynType.LongIdent(SynLongIdent(id = [ qualifier; name ])) when qualifier.idText = "System" ->
+                    match abbreviations.TryFind name.idText with
+                    | Some abbreviation ->
+                        {
+                            Range = synType.Range
+                            OriginalText = textOfRange source synType.Range
+                            ReplacementText = abbreviation
+                        }
+                    | None -> ()
+                | _ -> ()
+        ]
 
-    List.ofSeq suggestions
+    suggestions

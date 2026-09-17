@@ -68,7 +68,6 @@ let private (|SingletonAppendTo|_|) (paramNames: Set<string>) (e: SynExpr) =
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     ignore source
     let index = AstIndex.ofTree parseTree
-    let suggestions = ResizeArray<Suggestion>()
 
     // (name, parameter names, body range) of every recursive binding
     let recBindings =
@@ -101,35 +100,37 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     | _ -> [])
         ]
 
-    for name, parameters, bodyRange in recBindings do
-        if not parameters.IsEmpty then
-            // self-call application spines inside the body whose arguments
-            // include a singleton append to a parameter
-            for _, e in index.Exprs do
-                match e with
-                | SynExpr.App(isInfix = false; argExpr = SingletonAppendTo parameters accParam) when
-                    Range.rangeContainsRange bodyRange e.Range
-                    ->
-                    // walk to the spine head: is this an application of the
-                    // recursive function itself?
-                    let rec headOf (f: SynExpr) =
-                        match f with
-                        | SynExpr.App(isInfix = false; funcExpr = inner) -> headOf inner
-                        | SynExpr.Ident id -> Some id
-                        | _ -> None
+    let suggestions: Suggestion list =
+        [
+            for name, parameters, bodyRange in recBindings do
+                if not parameters.IsEmpty then
+                    // self-call application spines inside the body whose arguments
+                    // include a singleton append to a parameter
+                    for _, e in index.Exprs do
+                        match e with
+                        | SynExpr.App(isInfix = false; argExpr = SingletonAppendTo parameters accParam) when
+                            Range.rangeContainsRange bodyRange e.Range
+                            ->
+                            // walk to the spine head: is this an application of the
+                            // recursive function itself?
+                            let rec headOf (f: SynExpr) =
+                                match f with
+                                | SynExpr.App(isInfix = false; funcExpr = inner) -> headOf inner
+                                | SynExpr.Ident id -> Some id
+                                | _ -> None
 
-                    match e with
-                    | SynExpr.App(funcExpr = f) ->
-                        match headOf f with
-                        | Some head when head.idText = name ->
-                            suggestions.Add
-                                {
-                                    Range = e.Range
-                                    FunctionName = name
-                                    AccumulatorName = accParam.idText
-                                }
+                            match e with
+                            | SynExpr.App(funcExpr = f) ->
+                                match headOf f with
+                                | Some head when head.idText = name ->
+                                    {
+                                        Range = e.Range
+                                        FunctionName = name
+                                        AccumulatorName = accParam.idText
+                                    }
+                                | _ -> ()
+                            | _ -> ()
                         | _ -> ()
-                    | _ -> ()
-                | _ -> ()
+        ]
 
-    List.ofSeq suggestions
+    suggestions

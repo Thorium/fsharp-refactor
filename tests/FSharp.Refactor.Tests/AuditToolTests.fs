@@ -230,17 +230,15 @@ let ``a #r with a path into an #I directory is checked there too`` () =
 
 [<Fact>]
 let ``a #load of a file that is gone still makes the script stale`` () =
-    withScript "#load \"../gone.fs\"\n#load \"../src/Lib/Core.fs\"" (fun suggestions -> Assert.Empty suggestions)
+    withScript "#load \"../gone.fs\"\n#load \"../src/Lib/Core.fs\"" Assert.Empty
 
 [<Fact>]
 let ``a #r with a path that leads nowhere still makes the script stale`` () =
-    withScript "#r \"../src/Lib/bin/Nope.dll\"\n#load \"../src/Lib/Core.fs\"" (fun suggestions ->
-        Assert.Empty suggestions)
+    withScript "#r \"../src/Lib/bin/Nope.dll\"\n#load \"../src/Lib/Core.fs\"" Assert.Empty
 
 [<Fact>]
 let ``a #load with nothing missing gets no suggestion`` () =
-    withScript "#load \"../src/Lib/Util.fs\"\n#load \"../src/Lib/Core.fs\"" (fun suggestions ->
-        Assert.Empty suggestions)
+    withScript "#load \"../src/Lib/Util.fs\"\n#load \"../src/Lib/Core.fs\"" Assert.Empty
 
 // ---- D1, end to end: a sibling's call site goes back with the definition ----
 

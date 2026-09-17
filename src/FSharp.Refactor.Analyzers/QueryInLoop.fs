@@ -158,24 +158,26 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             e
 
                     let outerLoops =
-                        let loops = ResizeArray<SynExpr option>()
                         let mutable sawLambda = false
 
-                        for node in path do
-                            match node with
-                            | SyntaxNode.SynExpr(SynExpr.ForEach(enumExpr = outerEnum)) -> loops.Add(Some outerEnum)
-                            | SyntaxNode.SynExpr(SynExpr.For _)
-                            | SyntaxNode.SynExpr(SynExpr.While _) -> loops.Add None
-                            | SyntaxNode.SynExpr(SynExpr.Lambda _) -> sawLambda <- true
-                            | SyntaxNode.SynExpr(SynExpr.App(
-                                funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = m :: _))) as app) when
-                                sawLambda && (m.idText = "List" || m.idText = "Array" || m.idText = "Seq")
-                                ->
-                                loops.Add(Some(widen app))
-                                sawLambda <- false
-                            | _ -> ()
+                        let loops: (SynExpr option) list =
+                            [
+                                for node in path do
+                                    match node with
+                                    | SyntaxNode.SynExpr(SynExpr.ForEach(enumExpr = outerEnum)) -> Some outerEnum
+                                    | SyntaxNode.SynExpr(SynExpr.For _)
+                                    | SyntaxNode.SynExpr(SynExpr.While _) -> None
+                                    | SyntaxNode.SynExpr(SynExpr.Lambda _) -> sawLambda <- true
+                                    | SyntaxNode.SynExpr(SynExpr.App(
+                                        funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = m :: _))) as app) when
+                                        sawLambda && (m.idText = "List" || m.idText = "Array" || m.idText = "Seq")
+                                        ->
+                                        Some(widen app)
+                                        sawLambda <- false
+                                    | _ -> ()
+                            ]
 
-                        List.ofSeq loops
+                        loops
 
                     let intentionalBatching =
                         outerLoops

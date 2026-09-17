@@ -103,11 +103,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     // part's range ends after ALL the braces opening its hole
                     let dollars =
                         let lineText = source.GetLineString(stringRange.StartLine - 1)
-                        let mutable n = 0
 
-                        while stringRange.StartColumn + n < lineText.Length
-                              && lineText.[stringRange.StartColumn + n] = '$' do
-                            n <- n + 1
+                        let rec advanceN n =
+                            if
+                                stringRange.StartColumn + n < lineText.Length
+                                && lineText.[stringRange.StartColumn + n] = '$'
+                            then
+                                advanceN (n + 1)
+                            else
+                                n
+
+                        let n = advanceN 0
 
                         max 1 n
 

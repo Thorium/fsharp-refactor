@@ -1,5 +1,8 @@
 /// FR0155: `[<Sealed>]` on an internal class nothing inherits, where the
 /// project stores it in arrays or type-tests it.
+/// In the "ProjectSources" collection: parseAndCheckPair installs the
+/// cross-file parser, process-wide state the signature tests read too.
+[<Xunit.Collection("ProjectSources")>]
 module FSharp.Refactor.Tests.SealedClassTests
 
 open Xunit

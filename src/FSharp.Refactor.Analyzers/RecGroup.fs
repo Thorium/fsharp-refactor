@@ -270,10 +270,10 @@ let private codeOnly (text: string) =
             let c = chars.[j]
 
             if c = '{' then
-                let mutable run = 0
+                let rec advanceRun run =
+                    if at (j + run) = '{' then advanceRun (run + 1) else run
 
-                while at (j + run) = '{' do
-                    run <- run + 1
+                let run = advanceRun 0
 
                 // `$"…"` opens a hole with one brace and escapes one with
                 // two; `$$"""…"""` opens with two and takes one literally
@@ -741,10 +741,13 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                             (source.GetLineString(r.StartLine - 1)).Substring(0, r.StartColumn).Trim() = ""
 
                         if startsOwnLine && Position.posEq r.End decl.Range.End then
-                            let mutable l = r.StartLine - 1
+                            let rec retreatL l =
+                                if l > 1 && String.IsNullOrWhiteSpace(source.GetLineString(l - 1)) then
+                                    retreatL (l - 1)
+                                else
+                                    l
 
-                            while l > 1 && String.IsNullOrWhiteSpace(source.GetLineString(l - 1)) do
-                                l <- l - 1
+                            let l = retreatL (r.StartLine - 1)
 
                             let previous = source.GetLineString(l - 1)
 
@@ -839,18 +842,21 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                             // too, as the head alone did: ending at the next
                             // keyword's column ate that `and`'s indentation
                             // and left it at the margin (ProvidedTypes.fs,
-                            // "Unexpected keyword 'and'")
+                            // "Unexpected keyword 'and'"), then
+                            // the tail trimmed
                             |> List.map (fun r ->
-                                if
+                                let atMargin =
                                     r.StartColumn = 0
                                     && r.End.Column > 0
                                     && not (Position.posEq r.End decl.Range.End)
                                     && (source.GetLineString(r.EndLine - 1)).Substring(0, r.End.Column).Trim() = ""
-                                then
-                                    Range.mkRange r.FileName r.Start (Position.mkPos r.EndLine 0)
-                                else
-                                    r)
-                            |> List.map trimmedTail
+
+                                trimmedTail (
+                                    if atMargin then
+                                        Range.mkRange r.FileName r.Start (Position.mkPos r.EndLine 0)
+                                    else
+                                        r
+                                ))
 
                         let first = List.head plain
 

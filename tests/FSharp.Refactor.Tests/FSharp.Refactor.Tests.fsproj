@@ -49,6 +49,10 @@
     <Compile Include="QueryInLoopTests.fs" />
     <Compile Include="TaskStateMachineTests.fs" />
     <Compile Include="AddRangeTests.fs" />
+    <Compile Include="AccumulatorLoopTests.fs" />
+    <Compile Include="StringUnionTests.fs" />
+    <Compile Include="IndexScanTests.fs" />
+    <Compile Include="DirectiveRegionTests.fs" />
     <Compile Include="ObjectDesignTests.fs" />
     <Compile Include="OptionMatchTests.fs" />
     <Compile Include="LoopPerfTests.fs" />

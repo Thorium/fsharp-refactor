@@ -64,7 +64,6 @@ let rec private chain
 
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
-    let suggestions = ResizeArray<Suggestion>()
 
     // only the OUTERMOST if of a chain; the elifs are visited separately
     // and must not each produce a (nested, garbled) suggestion
@@ -73,119 +72,125 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         | SynExpr.IfThenElse(trivia = trivia) -> trivia.IsElif
         | _ -> false
 
-    for _, expr in index.Exprs do
-        match expr with
-        | SynExpr.IfThenElse _ when not ((isElifItself expr) || (spansDirective source expr.Range)) ->
-            match chain source [] expr with
-            | Some((_ :: _ :: _ as branches), finalElse) ->
-                let subject = let (s, _, _) = List.head branches in s
+    let suggestions: Suggestion list =
+        [
+            for _, expr in index.Exprs do
+                match expr with
+                | SynExpr.IfThenElse _ when not ((isElifItself expr) || (spansDirective source expr.Range)) ->
+                    match chain source [] expr with
+                    | Some((_ :: _ :: _ as branches), finalElse) ->
+                        let subject = let (s, _, _) = List.head branches in s
 
-                let sameSubject =
-                    branches |> List.forall (fun (s, _, _) -> s.idText = subject.idText)
+                        let sameSubject =
+                            branches |> List.forall (fun (s, _, _) -> s.idText = subject.idText)
 
-                let distinctTypes =
-                    branches |> List.map (fun (_, ty, _) -> ty) |> List.distinct |> List.length = branches.Length
+                        let distinctTypes =
+                            branches |> List.map (fun (_, ty, _) -> ty) |> List.distinct |> List.length =
+                                branches.Length
 
-                let bodies =
-                    branches
-                    |> List.map (fun (_, _, b) -> b)
-                    |> List.append (Option.toList finalElse)
-
-                let bodiesInline =
-                    bodies |> List.forall (fun b -> isSingleLine b.Range && isSafeInline b)
-
-                // casts of the subject inside each branch, and proof that
-                // each targets that branch's own type
-                let castsOf (body: SynExpr) =
-                    index.Exprs
-                    |> Array.choose (fun (_, e) ->
-                        match e with
-                        | SynExpr.Downcast(expr = SynExpr.Ident castSubj; targetType = ty) when
-                            castSubj.idText = subject.idText && Range.rangeContainsRange body.Range e.Range
-                            ->
-                            Some(e, textOfRange source ty.Range)
-                        | _ -> None)
-
-                let castsAgree =
-                    branches
-                    |> List.forall (fun (_, tyText, body) ->
-                        castsOf body |> Array.forall (fun (_, castTy) -> castTy = tyText))
-
-                let subjectAssigned =
-                    index.Exprs
-                    |> Array.exists (fun (_, e) ->
-                        match e with
-                        | SynExpr.LongIdentSet(SynLongIdent(id = first :: _), _, _) when
-                            first.idText = subject.idText && Range.rangeContainsRange expr.Range e.Range
-                            ->
-                            true
-                        | _ -> false)
-
-                if
-                    sameSubject
-                    && distinctTypes
-                    && bodiesInline
-                    && castsAgree
-                    && not subjectAssigned
-                then
-                    let wholeText = textOfRange source expr.Range
-
-                    let binder =
-                        [ "v"; $"{subject.idText}Value" ]
-                        |> List.tryFind (fun name -> not (Regex.IsMatch(wholeText, @"\b" + Regex.Escape name + @"\b")))
-
-                    match binder with
-                    | Some binder ->
-                        // substitute each `(subj :?> Ty)`-shaped cast (the
-                        // parens included when present) with the binder,
-                        // right-to-left per body
-                        let substituted (body: SynExpr) =
-                            let casts =
-                                castsOf body
-                                |> Array.map (fun (castExpr, _) ->
-                                    // widen to the enclosing parens when the
-                                    // cast is parenthesized
-                                    index.Exprs
-                                    |> Array.tryPick (fun (_, e) ->
-                                        match e with
-                                        | SynExpr.Paren(expr = inner) when Range.equals inner.Range castExpr.Range ->
-                                            Some e.Range
-                                        | _ -> None)
-                                    |> Option.defaultValue castExpr.Range)
-
-                            casts
-                            |> Array.sortByDescending (fun r -> r.StartColumn)
-                            |> Array.fold
-                                (fun (text: string) (r: range) ->
-                                    let start = r.StartColumn - body.Range.StartColumn
-                                    let length = r.EndColumn - r.StartColumn
-                                    text.Remove(start, length).Insert(start, binder))
-                                (textOfRange source body.Range)
-
-                        let arms =
+                        let bodies =
                             branches
-                            |> List.map (fun (_, tyText, body) ->
-                                if castsOf body |> Array.isEmpty then
-                                    $"| :? {tyText} -> {substituted body}"
-                                else
-                                    $"| :? {tyText} as {binder} -> {substituted body}")
+                            |> List.map (fun (_, _, b) -> b)
+                            |> List.append (Option.toList finalElse)
 
-                        let finalArm =
-                            match finalElse with
-                            | Some e -> $"| _ -> {textOfRange source e.Range}"
-                            | None -> "| _ -> ()"
+                        let bodiesInline =
+                            bodies |> List.forall (fun b -> isSingleLine b.Range && isSafeInline b)
 
-                        let replacement =
-                            $"match {subject.idText} with " + String.concat " " arms + " " + finalArm
+                        // casts of the subject inside each branch, and proof that
+                        // each targets that branch's own type
+                        let castsOf (body: SynExpr) =
+                            index.Exprs
+                            |> Array.choose (fun (_, e) ->
+                                match e with
+                                | SynExpr.Downcast(expr = SynExpr.Ident castSubj; targetType = ty) when
+                                    castSubj.idText = subject.idText && Range.rangeContainsRange body.Range e.Range
+                                    ->
+                                    Some(e, textOfRange source ty.Range)
+                                | _ -> None)
 
-                        suggestions.Add
-                            {
-                                Range = expr.Range
-                                OriginalText = wholeText
-                                ReplacementText = replacement
-                            }
-                    | None -> ()
-            | _ -> ()
-        | _ -> ()
+                        let castsAgree =
+                            branches
+                            |> List.forall (fun (_, tyText, body) ->
+                                castsOf body |> Array.forall (fun (_, castTy) -> castTy = tyText))
 
-    List.ofSeq suggestions
+                        let subjectAssigned =
+                            index.Exprs
+                            |> Array.exists (fun (_, e) ->
+                                match e with
+                                | SynExpr.LongIdentSet(SynLongIdent(id = first :: _), _, _) when
+                                    first.idText = subject.idText && Range.rangeContainsRange expr.Range e.Range
+                                    ->
+                                    true
+                                | _ -> false)
+
+                        if
+                            sameSubject
+                            && distinctTypes
+                            && bodiesInline
+                            && castsAgree
+                            && not subjectAssigned
+                        then
+                            let wholeText = textOfRange source expr.Range
+
+                            let binder =
+                                [ "v"; $"{subject.idText}Value" ]
+                                |> List.tryFind (fun name ->
+                                    not (Regex.IsMatch(wholeText, @"\b" + Regex.Escape name + @"\b")))
+
+                            match binder with
+                            | Some binder ->
+                                // substitute each `(subj :?> Ty)`-shaped cast (the
+                                // parens included when present) with the binder,
+                                // right-to-left per body
+                                let substituted (body: SynExpr) =
+                                    let casts =
+                                        castsOf body
+                                        |> Array.map (fun (castExpr, _) ->
+                                            // widen to the enclosing parens when the
+                                            // cast is parenthesized
+                                            index.Exprs
+                                            |> Array.tryPick (fun (_, e) ->
+                                                match e with
+                                                | SynExpr.Paren(expr = inner) when
+                                                    Range.equals inner.Range castExpr.Range
+                                                    ->
+                                                    Some e.Range
+                                                | _ -> None)
+                                            |> Option.defaultValue castExpr.Range)
+
+                                    casts
+                                    |> Array.sortByDescending (fun r -> r.StartColumn)
+                                    |> Array.fold
+                                        (fun (text: string) (r: range) ->
+                                            let start = r.StartColumn - body.Range.StartColumn
+                                            let length = r.EndColumn - r.StartColumn
+                                            text.Remove(start, length).Insert(start, binder))
+                                        (textOfRange source body.Range)
+
+                                let arms =
+                                    branches
+                                    |> List.map (fun (_, tyText, body) ->
+                                        if castsOf body |> Array.isEmpty then
+                                            $"| :? {tyText} -> {substituted body}"
+                                        else
+                                            $"| :? {tyText} as {binder} -> {substituted body}")
+
+                                let finalArm =
+                                    match finalElse with
+                                    | Some e -> $"| _ -> {textOfRange source e.Range}"
+                                    | None -> "| _ -> ()"
+
+                                let replacement =
+                                    $"match {subject.idText} with " + String.concat " " arms + " " + finalArm
+
+                                {
+                                    Range = expr.Range
+                                    OriginalText = wholeText
+                                    ReplacementText = replacement
+                                }
+                            | None -> ()
+                    | _ -> ()
+                | _ -> ()
+        ]
+
+    suggestions

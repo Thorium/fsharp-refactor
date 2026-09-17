@@ -67,6 +67,9 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\QueryInLoop.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\TaskStateMachine.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\AddRange.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\AccumulatorLoop.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\StringUnion.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\IndexScan.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\StringConcat.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ObjectDesign.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\OptionMatch.fs" />

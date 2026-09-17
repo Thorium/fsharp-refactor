@@ -434,31 +434,57 @@ let findTryAdd (parseTree: ParsedInput) (source: ISourceText) (check: FSharpChec
         AstIndex.replay collector parseTree
         List.ofSeq suggestions
 
-// ---- FR0154: TryGetValue-then-store becomes GetOrAdd ----
+// ---- FR0154: the store after a TryGetValue miss becomes GetOrAdd ----
 
 /// A suggestion for the TryGetValue-then-store shape (FR0154).
 type GetOrAddSuggestion =
     {
-        /// The whole match expression, replaced by the GetOrAdd call.
+        /// The miss arm's body, replaced by the GetOrAdd call; the match and
+        /// its hit arm stay, so the hit path keeps TryGetValue's speed. For a
+        /// deferred value (see Deferred) the whole match, and the message alone.
         Range: range
         OriginalText: string
         ReplacementText: string
+        /// `xs.GetOrAdd(key, fun _ ->` - the message spells the Lazy shape with it.
+        Head: string
+        /// The factory expression when the miss arm computes the value in one
+        /// expression that CALLS something (`compute ()`, `load key`), the case
+        /// where running it once across concurrent misses can matter; None for
+        /// a pure spelling (`key * 2`) or a body of several lets.
+        Factory: string option
+        /// The value is a Task, ValueTask or Async: two concurrent misses start
+        /// two of them and one is thrown away already running, which GetOrAdd
+        /// alone does not change - a `Lazy` value does. Note only: the value
+        /// type changes and every reader with it.
+        Deferred: bool
     }
 
-/// A value type the factory result must not be: a Task or Lazy REMEMBERS
-/// a failure (FR0152 says why), an Async is a recipe whose caching is a
-/// design of its own, and a function value would make the lambda argument
-/// ambiguous with GetOrAdd's plain-value overload.
-let private wrapperValueTypes =
+/// A value type whose computation is DEFERRED - a Task, ValueTask or
+/// Async: two concurrent misses start two of them and one runs to waste,
+/// which GetOrAdd's atomic add does not change. Reported without a fix,
+/// the message naming the `Lazy` value that starts it once.
+let private deferredValueTypes =
     set
         [
             "System.Threading.Tasks.Task"
             "System.Threading.Tasks.Task`1"
             "System.Threading.Tasks.ValueTask"
             "System.Threading.Tasks.ValueTask`1"
-            "System.Lazy`1"
             "Microsoft.FSharp.Control.FSharpAsync`1"
         ]
+
+/// A value type the rule leaves alone: a Lazy REMEMBERS a failure and is
+/// FR0152's subject once it sits behind GetOrAdd, and a function value
+/// would make the lambda argument ambiguous with GetOrAdd's plain-value
+/// overload.
+let private refusedValueTypes = set [ "System.Lazy`1" ]
+
+/// What the rule can do for a container, by its value type.
+[<RequireQualifiedAccess>]
+type private ValueKind =
+    | Plain
+    | Deferred
+    | Refused
 
 /// `<container>.TryGetValue <key>` / `<container>.TryGetValue(<key>)` —
 /// the container segments and the key expression (parens stripped). The
@@ -565,18 +591,24 @@ let private reraiseRegex = Regex @"\breraise\b"
 
 /// Find the TryGetValue-then-store shape on a ConcurrentDictionary:
 ///
-///     match xs.TryGetValue key with        xs.GetOrAdd(key, fun _ -> compute ())
-///     | true, x -> x
-///     | false, _ ->                   →
+///     match xs.TryGetValue key with        match xs.TryGetValue key with
+///     | true, x -> x                       | true, x -> x
+///     | false, _ ->                   →    | false, _ -> xs.GetOrAdd(key, fun _ -> compute ())
 ///         let res = compute ()
 ///         xs.[key] <- res
 ///         res
 ///
-/// One lookup where there were two, and no window between them for another
-/// thread to store first. The factory runs outside the dictionary's locks,
-/// as the original arm did, so under contention it may still run twice;
-/// what changes is that every caller then holds the value the dictionary
-/// holds. A miss arm of several `let`s keeps them, as the lambda's body.
+/// Only the miss arm changes: the store after the miss is the window for
+/// another thread to store first, after which two callers hold two
+/// different values for the same key; GetOrAdd's add is atomic, so every
+/// caller holds the value the dictionary holds. The factory runs outside
+/// the dictionary's locks, as the original arm did, so under contention it
+/// may still run twice. The match and its hit arm stay because the hit
+/// path is the one a cache takes almost every time, and there TryGetValue
+/// is a lock-free read (2.1 ns, nothing allocated) where GetOrAdd with a
+/// lambda allocates the delegate on every call (7.3 ns, 64 B; measured in
+/// benchmarks/PerfClaims). A miss arm of several `let`s keeps them, as the
+/// lambda's body.
 ///
 /// Safety rules:
 ///   - the container resolves to ConcurrentDictionary — the only one of
@@ -602,24 +634,50 @@ let findGetOrAdd
     else
         let index = AstIndex.ofTree parseTree
 
-        let wrapperValued (t: FSharpType) =
+        let valueKind (t: FSharpType) =
             try
                 match List.ofSeq t.GenericArguments with
                 | [ _; v ] ->
                     let v = OptionModule.stripAbbreviations v
 
-                    v.IsFunctionType
-                    || (match fullNameOf v with
-                        | Some n -> wrapperValueTypes.Contains n
-                        | None -> false)
-                | _ -> true
+                    if v.IsFunctionType then
+                        ValueKind.Refused
+                    else
+                        match fullNameOf v with
+                        | Some n when deferredValueTypes.Contains n -> ValueKind.Deferred
+                        | Some n when refusedValueTypes.Contains n -> ValueKind.Refused
+                        | Some _ -> ValueKind.Plain
+                        | None -> ValueKind.Refused
+                | _ -> ValueKind.Refused
             with OptionModule.FcsSymbolFailure ->
-                true
+                ValueKind.Refused
 
-        let concurrentPlainValued (containerIds: Ident list) =
+        let concurrentValueKind (containerIds: Ident list) =
             match containerType source check containerIds with
-            | Some t -> fullNameOf t = Some ConcurrentDictionaryType && not (wrapperValued t)
-            | None -> false
+            | Some t when fullNameOf t = Some ConcurrentDictionaryType -> valueKind t
+            | _ -> ValueKind.Refused
+
+        // the factory CALLS something: an application whose head is no
+        // operator, or a constructor - `key * 2` is neither
+        let rec headOf (e: SynExpr) =
+            match e with
+            | SynExpr.App(funcExpr = f) -> headOf f
+            | SynExpr.Paren(expr = inner) -> headOf inner
+            | _ -> e
+
+        let callsSomething (e: SynExpr) =
+            index.Exprs
+            |> Seq.exists (fun (_, sub) ->
+                Range.rangeContainsRange e.Range sub.Range
+                && (match sub with
+                    | SynExpr.App _ ->
+                        // an operator is a LongIdent of one `op_` segment
+                        (match headOf sub with
+                         | SynExpr.Ident id
+                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> not (id.idText.StartsWith "op_")
+                         | _ -> true)
+                    | SynExpr.New _ -> true
+                    | _ -> false))
 
         // hit arm first with any miss arm, or the explicit `false, _` miss
         // arm first (a leading `_` would take the hit case too)
@@ -674,10 +732,17 @@ let findGetOrAdd
                             && not (reraiseRegex.IsMatch armText)
                             && not (OptionModule.capturesMutableLocal index missBody.Range)
                             && not (OptionModule.capturesByRefLike check index source missBody.Range)
-                            && concurrentPlainValued containerIds
+                            && concurrentValueKind containerIds <> ValueKind.Refused
                             ->
                             let keyArg = argumentText source keyExpr
                             let head = $"{container}.GetOrAdd({keyArg}, fun _ ->"
+                            let deferred = concurrentValueKind containerIds = ValueKind.Deferred
+
+                            let factory =
+                                match lets with
+                                | [ SynBinding(expr = rhs) ] when isSingleLine rhs.Range && callsSomething rhs ->
+                                    Some(textOfRange source rhs.Range)
+                                | _ -> None
 
                             let replacement =
                                 match lets with
@@ -717,15 +782,27 @@ let findGetOrAdd
                                         ]
                                         |> String.concat "\n"
 
-                                    reindentBlock (expr.Range.StartColumn + 4) missBody.Range.StartColumn body
+                                    reindentBlock (missBody.Range.StartColumn + 4) missBody.Range.StartColumn body
                                     |> Option.map (fun block -> $"{head}\n{block})")
 
                             match replacement with
-                            | Some replacement ->
+                            | Some _ when deferred ->
                                 {
                                     Range = expr.Range
                                     OriginalText = textOfRange source expr.Range
+                                    ReplacementText = ""
+                                    Head = head
+                                    Factory = factory
+                                    Deferred = true
+                                }
+                            | Some replacement ->
+                                {
+                                    Range = missBody.Range
+                                    OriginalText = armText
                                     ReplacementText = replacement
+                                    Head = head
+                                    Factory = factory
+                                    Deferred = false
                                 }
                             | None -> ()
                         | _ -> ()

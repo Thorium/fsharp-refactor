@@ -328,13 +328,13 @@ let ``several lets move into the lambda body`` () =
     assertGetOrAdd
         (concurrentLookup
             "    | true, x -> x\n    | false, _ ->\n        let a = compute ()\n        let res = a + 1\n        xs.[key] <- res\n        res")
-        "xs.GetOrAdd(key, fun _ ->\n        let a = compute ()\n        let res = a + 1\n        res)"
+        "xs.GetOrAdd(key, fun _ ->\n            let a = compute ()\n            let res = a + 1\n            res)"
 
 [<Fact>]
-let ``a match starting mid-line indents the body under it`` () =
+let ``a match starting mid-line indents the body under the lambda`` () =
     assertGetOrAdd
         "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, int>) (key: string) (compute: unit -> int) =\n    let v = match xs.TryGetValue key with\n            | true, x -> x\n            | false, _ ->\n                let a = compute ()\n                let res = a + 1\n                xs.[key] <- res\n                res\n    v + 1"
-        "xs.GetOrAdd(key, fun _ ->\n                let a = compute ()\n                let res = a + 1\n                res)"
+        "xs.GetOrAdd(key, fun _ ->\n                    let a = compute ()\n                    let res = a + 1\n                    res)"
 
 [<Fact>]
 let ``a comment after the last body line stays outside the replaced range`` () =
@@ -344,7 +344,9 @@ let ``a comment after the last body line stays outside the replaced range`` () =
         concurrentLookup
             "    | true, x -> x\n    | false, _ ->\n        let a = compute ()\n        let res = a + 1\n        xs.[key] <- res\n        res // computed once"
 
-    assertGetOrAdd source "xs.GetOrAdd(key, fun _ ->\n        let a = compute ()\n        let res = a + 1\n        res)"
+    assertGetOrAdd
+        source
+        "xs.GetOrAdd(key, fun _ ->\n            let a = compute ()\n            let res = a + 1\n            res)"
 
     match findGetOrAddIn source with
     | [ s ] -> Assert.EndsWith("res) // computed once", applyEdit source s.Range s.ReplacementText)
@@ -362,10 +364,70 @@ let ``a plain Dictionary has no GetOrAdd`` () =
         "open System.Collections.Generic\nlet f (xs: Dictionary<string, int>) (key: string) (compute: unit -> int) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res = compute ()\n        xs.[key] <- res\n        res"
 
 [<Fact>]
-let ``a Task-valued cache stays as it is`` () =
-    // FR0152's territory: a cached Task remembers its failure
+let ``a Task-valued cache gets the Lazy note and no fix`` () =
+    // two concurrent misses start two tasks; GetOrAdd alone does not change
+    // that, a Lazy value does - a design change, so the message alone
+    match
+        findGetOrAddIn
+            "open System.Collections.Concurrent\nopen System.Threading.Tasks\nlet f (xs: ConcurrentDictionary<string, Task<int>>) (key: string) (compute: unit -> Task<int>) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res = compute ()\n        xs.[key] <- res\n        res"
+    with
+    | [ s ] ->
+        Assert.True s.Deferred
+        Assert.Equal("xs.GetOrAdd(key, fun _ ->", s.Head)
+        Assert.Equal(Some "compute ()", s.Factory)
+        Assert.Equal(4, s.Range.StartLine)
+    | other -> failwithf "Expected one deferred suggestion, got %A" other
+
+[<Fact>]
+let ``an Async-valued cache gets the Lazy note too`` () =
+    match
+        findGetOrAddIn
+            "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, Async<int>>) (key: string) (compute: unit -> Async<int>) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res = compute ()\n        xs.[key] <- res\n        res"
+    with
+    | [ s ] -> Assert.True s.Deferred
+    | other -> failwithf "Expected one deferred suggestion, got %A" other
+
+[<Fact>]
+let ``a Lazy-valued cache stays as it is`` () =
+    // FR0152's subject once it sits behind GetOrAdd
     assertNoGetOrAdd
-        "open System.Collections.Concurrent\nopen System.Threading.Tasks\nlet f (xs: ConcurrentDictionary<string, Task<int>>) (key: string) (compute: unit -> Task<int>) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res = compute ()\n        xs.[key] <- res\n        res"
+        "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, Lazy<int>>) (key: string) (compute: unit -> int) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res = lazy (compute ())\n        xs.[key] <- res\n        res"
+
+[<Fact>]
+let ``a factory that calls something carries the Lazy hint`` () =
+    match
+        findGetOrAddIn (
+            concurrentLookup
+                "    | true, x -> x\n    | false, _ ->\n        let res = compute ()\n        xs.[key] <- res\n        res"
+        )
+    with
+    | [ s ] ->
+        Assert.False s.Deferred
+        Assert.Equal(Some "compute ()", s.Factory)
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``a pure factory carries no Lazy hint`` () =
+    match
+        findGetOrAddIn
+            "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<int, int>) (key: int) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res = key * 2 + 1\n        xs.[key] <- res\n        res"
+    with
+    | [ s ] ->
+        Assert.False s.Deferred
+        Assert.Equal(None, s.Factory)
+        Assert.Equal("xs.GetOrAdd(key, fun _ -> key * 2 + 1)", s.ReplacementText)
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``a body of several lets carries no factory`` () =
+    match
+        findGetOrAddIn (
+            concurrentLookup
+                "    | true, x -> x\n    | false, _ ->\n        let a = compute ()\n        let res = a + 1\n        xs.[key] <- res\n        res"
+        )
+    with
+    | [ s ] -> Assert.Equal(None, s.Factory)
+    | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
 let ``a store under another key stays`` () =
@@ -408,16 +470,16 @@ let ``an effectful key is not evaluated once in GetOrAdd`` () =
 // ---- FR0154: layouts and closure limits ----
 
 [<Fact>]
-let ``a match in argument position keeps its body under the match`` () =
+let ``a match in argument position keeps its body under the lambda`` () =
     assertGetOrAdd
         "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, int>) (key: string) (compute: unit -> int) =\n    string (match xs.TryGetValue key with\n            | true, x -> x\n            | false, _ ->\n                let a = compute ()\n                let res = a + 1\n                xs.[key] <- res\n                res)"
-        "xs.GetOrAdd(key, fun _ ->\n                let a = compute ()\n                let res = a + 1\n                res)"
+        "xs.GetOrAdd(key, fun _ ->\n                    let a = compute ()\n                    let res = a + 1\n                    res)"
 
 [<Fact>]
 let ``a match in an if branch is rewritten`` () =
     assertGetOrAdd
         "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, int>) (key: string) (compute: unit -> int) (fresh: bool) =\n    if fresh then\n        match xs.TryGetValue key with\n        | true, x -> x\n        | false, _ ->\n            let a = compute ()\n            let res = a + 1\n            xs.[key] <- res\n            res\n    else\n        0"
-        "xs.GetOrAdd(key, fun _ ->\n            let a = compute ()\n            let res = a + 1\n            res)"
+        "xs.GetOrAdd(key, fun _ ->\n                let a = compute ()\n                let res = a + 1\n                res)"
 
 [<Fact>]
 let ``a match inside a task is rewritten`` () =
@@ -426,16 +488,16 @@ let ``a match inside a task is rewritten`` () =
         "xs.GetOrAdd(key, fun _ -> compute ())"
 
 [<Fact>]
-let ``a two-space body is shifted under the match`` () =
+let ``a two-space body is shifted under the lambda`` () =
     assertGetOrAdd
         "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, int>) (key: string) (compute: unit -> int) =\n  match xs.TryGetValue key with\n  | true, x -> x\n  | false, _ ->\n    let a = compute ()\n    let res = a + 1\n    xs.[key] <- res\n    res"
-        "xs.GetOrAdd(key, fun _ ->\n      let a = compute ()\n      let res = a + 1\n      res)"
+        "xs.GetOrAdd(key, fun _ ->\n        let a = compute ()\n        let res = a + 1\n        res)"
 
 [<Fact>]
 let ``a nested match in the body moves with its arms`` () =
     assertGetOrAdd
         "open System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, int>) (key: string) (compute: unit -> int) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let res =\n            match compute () with\n            | 0 -> 1\n            | n -> n\n        xs.[key] <- res\n        res"
-        "xs.GetOrAdd(key, fun _ ->\n        let res =\n            match compute () with\n            | 0 -> 1\n            | n -> n\n        res)"
+        "xs.GetOrAdd(key, fun _ ->\n            let res =\n                match compute () with\n                | 0 -> 1\n                | n -> n\n            res)"
 
 [<Fact>]
 let ``an arm reading a Span parameter is not made a closure`` () =
@@ -448,7 +510,7 @@ let ``a Span declared inside the arm moves with it`` () =
     // declared inside, it is a local of the lambda, which is fine
     assertGetOrAdd
         "open System\nopen System.Collections.Concurrent\nlet f (xs: ConcurrentDictionary<string, int>) (key: string) =\n    match xs.TryGetValue key with\n    | true, x -> x\n    | false, _ ->\n        let span = key.AsSpan()\n        let res = span.Length\n        xs.[key] <- res\n        res"
-        "xs.GetOrAdd(key, fun _ ->\n        let span = key.AsSpan()\n        let res = span.Length\n        res)"
+        "xs.GetOrAdd(key, fun _ ->\n            let span = key.AsSpan()\n            let res = span.Length\n            res)"
 
 [<Fact>]
 let ``an arm taking an address is not made a closure`` () =

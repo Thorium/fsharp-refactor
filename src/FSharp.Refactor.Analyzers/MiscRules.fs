@@ -51,8 +51,6 @@ let find
     : MutableStateSuggestion list * CultureParseSuggestion list * DuplicateEnumSuggestion list =
     let index = AstIndex.ofTree parseTree
     let mutables = ResizeArray<MutableStateSuggestion>()
-    let parses = ResizeArray<CultureParseSuggestion>()
-    let enums = ResizeArray<DuplicateEnumSuggestion>()
 
     // FR0062: non-private module-level mutables outside private/internal
     // modules
@@ -123,110 +121,116 @@ let find
     let inTranslatedContext (r: range) =
         translatedRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
 
-    for _, e in index.Exprs do
-        match e with
-        // FR0067: single-argument Parse on culture-sensitive types
-        | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) ->
-            match List.rev ids with
-            | parseId :: owner :: _ when
-                parseId.idText = "Parse"
-                && cultureSensitiveOwners.Contains owner.idText
-                // inside a query/quotation the whole suggestion stands
-                // down, note included: the expression belongs to the
-                // database's type system, where cultures do not exist and
-                // the only safe change is a human moving the parse out
-                && not (inTranslatedContext e.Range)
-                ->
-                match stripParens arg with
-                | SynExpr.Tuple _ -> () // culture already supplied
-                | inner ->
-                    // the culture edit: `Parse(s)` grows a second tuple
-                    // element, a juxtaposed `Parse s` gains the parens too
-                    let cultureFix =
-                        if inTranslatedContext e.Range then
-                            None
-                        else
-                            match arg with
-                            | SynExpr.Paren _ ->
-                                let at = Range.mkRange e.Range.FileName inner.Range.End inner.Range.End
-                                Some(fun (culture: string) -> at, "", $", {cultureSpelling culture}")
-                            | _ ->
-                                let argText = textOfRange source arg.Range
+    let parses: CultureParseSuggestion list =
+        [
+            for _, e in index.Exprs do
+                match e with
+                // FR0067: single-argument Parse on culture-sensitive types
+                | SynExpr.App(
+                    isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) ->
+                    match List.rev ids with
+                    | parseId :: owner :: _ when
+                        parseId.idText = "Parse"
+                        && cultureSensitiveOwners.Contains owner.idText
+                        // inside a query/quotation the whole suggestion stands
+                        // down, note included: the expression belongs to the
+                        // database's type system, where cultures do not exist and
+                        // the only safe change is a human moving the parse out
+                        && not (inTranslatedContext e.Range)
+                        ->
+                        match stripParens arg with
+                        | SynExpr.Tuple _ -> () // culture already supplied
+                        | inner ->
+                            // the culture edit: `Parse(s)` grows a second tuple
+                            // element, a juxtaposed `Parse s` gains the parens too
+                            let cultureFix =
+                                if inTranslatedContext e.Range then
+                                    None
+                                else
+                                    match arg with
+                                    | SynExpr.Paren _ ->
+                                        let at = Range.mkRange e.Range.FileName inner.Range.End inner.Range.End
+                                        Some(fun (culture: string) -> at, "", $", {cultureSpelling culture}")
+                                    | _ ->
+                                        let argText = textOfRange source arg.Range
 
-                                Some(fun (culture: string) ->
-                                    arg.Range, argText, $"({argText}, {cultureSpelling culture})")
+                                        Some(fun (culture: string) ->
+                                            arg.Range, argText, $"({argText}, {cultureSpelling culture})")
 
-                    parses.Add
-                        {
-                            Range = e.Range
-                            CallName = owner.idText + ".Parse"
-                            CultureFix = cultureFix
-                        }
-            | _ -> ()
-        | _ -> ()
+                            {
+                                Range = e.Range
+                                CallName = owner.idText + ".Parse"
+                                CultureFix = cultureFix
+                            }
+                    | _ -> ()
+                | _ -> ()
+        ]
 
     // FR0068: duplicate literal enum values
-    for _, decl in index.Decls do
-        match decl with
-        | SynModuleDecl.Types(typeDefns = defns) ->
-            for SynTypeDefn(typeInfo = SynComponentInfo(attributes = typeAttrs); typeRepr = repr) in defns do
-                match repr with
-                // a [<Flags>] enum names bits, and one bit under two
-                // names is how such tables are written (FCS's
-                // ilnativeres.fs mirrors winnt.h: `MemProtected = 16384u |
-                // NoDeferSpecExc = 16384u`) — not a slip
-                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Enum(cases = cases)) when
-                    not (hasAttributeNamed "Flags" typeAttrs)
-                    ->
-                    let seen = System.Collections.Generic.Dictionary<string, string * int>()
+    let enums: DuplicateEnumSuggestion list =
+        [
+            for _, decl in index.Decls do
+                match decl with
+                | SynModuleDecl.Types(typeDefns = defns) ->
+                    for SynTypeDefn(typeInfo = SynComponentInfo(attributes = typeAttrs); typeRepr = repr) in defns do
+                        match repr with
+                        // a [<Flags>] enum names bits, and one bit under two
+                        // names is how such tables are written (FCS's
+                        // ilnativeres.fs mirrors winnt.h: `MemProtected = 16384u |
+                        // NoDeferSpecExc = 16384u`) — not a slip
+                        | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Enum(cases = cases)) when
+                            not (hasAttributeNamed "Flags" typeAttrs)
+                            ->
+                            let seen = System.Collections.Generic.Dictionary<string, string * int>()
 
-                    // `Default = 0 | Text = 0`: a zero alias declared right
-                    // beside its twin is a deliberate synonym (FCS's public
-                    // FSharpTokenColorKind), not the copy-paste slip that
-                    // lands far from the value it duplicates
-                    let declaredAlias
-                        (key: string)
-                        (originalName: string)
-                        (originalIndex: int)
-                        (i: int)
-                        (name: string)
-                        =
-                        key = "0"
-                        && originalIndex = i - 1
-                        && [ originalName; name ] |> List.exists (fun n -> n = "Default" || n = "None")
+                            // `Default = 0 | Text = 0`: a zero alias declared right
+                            // beside its twin is a deliberate synonym (FCS's public
+                            // FSharpTokenColorKind), not the copy-paste slip that
+                            // lands far from the value it duplicates
+                            let declaredAlias
+                                (key: string)
+                                (originalName: string)
+                                (originalIndex: int)
+                                (i: int)
+                                (name: string)
+                                =
+                                key = "0"
+                                && originalIndex = i - 1
+                                && [ originalName; name ] |> List.exists (fun n -> n = "Default" || n = "None")
 
-                    for i, SynEnumCase(ident = SynIdent(ident = caseId); valueExpr = valueExpr) in List.indexed cases do
-                        // every integral spelling keys the same way: `16`,
-                        // `0x10` and `16u` are one value (FCS's vendored
-                        // ilnativeres.fs aliases its flags with `u` suffixes)
-                        let key =
-                            match valueExpr with
-                            | SynExpr.Const(SynConst.Int32 v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.Int64 v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.Byte v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.SByte v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.Int16 v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.UInt16 v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.UInt32 v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.UInt64 v, _) -> Some(string v)
-                            | SynExpr.Const(SynConst.Char v, _) -> Some(string (int v))
-                            | _ -> None
+                            for i, SynEnumCase(ident = SynIdent(ident = caseId); valueExpr = valueExpr) in
+                                List.indexed cases do
+                                // every integral spelling keys the same way: `16`,
+                                // `0x10` and `16u` are one value (FCS's vendored
+                                // ilnativeres.fs aliases its flags with `u` suffixes)
+                                let key =
+                                    match valueExpr with
+                                    | SynExpr.Const(SynConst.Int32 v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.Int64 v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.Byte v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.SByte v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.Int16 v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.UInt16 v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.UInt32 v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.UInt64 v, _) -> Some(string v)
+                                    | SynExpr.Const(SynConst.Char v, _) -> Some(string (int v))
+                                    | _ -> None
 
-                        match key with
-                        | Some k ->
-                            match seen.TryGetValue k with
-                            | true, (original, originalIndex) ->
-                                if not (declaredAlias k original originalIndex i caseId.idText) then
-                                    enums.Add
-                                        {
-                                            Range = caseId.idRange
-                                            CaseName = caseId.idText
-                                            OriginalName = original
-                                        }
-                            | _ -> seen.[k] <- (caseId.idText, i)
-                        | None -> ()
+                                match key with
+                                | Some k ->
+                                    match seen.TryGetValue k with
+                                    | true, (original, originalIndex) ->
+                                        if not (declaredAlias k original originalIndex i caseId.idText) then
+                                            {
+                                                Range = caseId.idRange
+                                                CaseName = caseId.idText
+                                                OriginalName = original
+                                            }
+                                    | _ -> seen.[k] <- (caseId.idText, i)
+                                | None -> ()
+                        | _ -> ()
                 | _ -> ()
-        | _ -> ()
+        ]
 
     // FR0062 refinement: a public mutable ASSIGNED at most once in this
     // file — and never from itself — reads as the two legitimate patterns:
@@ -262,4 +266,4 @@ let find
             || selfReferential.Contains m.Name)
         |> List.ofSeq
 
-    churningMutables, List.ofSeq parses, List.ofSeq enums
+    churningMutables, parses, enums

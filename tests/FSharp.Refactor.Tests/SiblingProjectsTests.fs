@@ -490,3 +490,55 @@ let ``a #r script that does not typecheck keeps the public function as it is`` (
         Assert.Contains("let add (a: int, b: int) = a + b", library)
         Assert.Contains("Lib.add (1, 2)", scriptText)
         Assert.Contains("could not be checked against its sources", output))
+
+[<Fact>]
+let ``a public function matched on strings becomes a union together with the sibling's literal call sites`` () : unit =
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let library = Path.Combine(root, "src", "Lib", "Library.fs")
+        let tests = Path.Combine(root, "tests", "Tests", "Tests.fs")
+
+        File.WriteAllText(
+            library,
+            "module Lib\n\nlet describe (region: string) =\n    match region with\n    | \"eu\" -> 1\n    | \"uk\" -> 2\n    | _ -> failwith \"unsupported\"\n"
+        )
+
+        File.WriteAllText(tests, "module Tests\n\nlet three () = Lib.describe \"eu\" + Lib.describe \"uk\"\n")
+
+        let code, output =
+            runTool [| solution; "--api-changes"; "--codes"; "FR0157"; "--no-color" |]
+
+        let libraryText = File.ReadAllText library
+        let testsText = File.ReadAllText tests
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("type Region =", libraryText)
+        Assert.Contains("let describe (region: Region) =", libraryText)
+        Assert.DoesNotContain("failwith", libraryText)
+        Assert.Contains("Lib.describe Lib.Region.Eu + Lib.describe Lib.Region.Uk", testsText)
+
+        let built, buildOutput = builds solution
+        Assert.True(built, $"the rewritten solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
+
+[<Fact>]
+let ``a public function matched on strings keeps its shape while a sibling passes a variable`` () : unit =
+    withSolution false (fun solution ->
+        let root = Path.GetDirectoryName solution
+        let library = Path.Combine(root, "src", "Lib", "Library.fs")
+        let tests = Path.Combine(root, "tests", "Tests", "Tests.fs")
+
+        File.WriteAllText(
+            library,
+            "module Lib\n\nlet describe (region: string) =\n    match region with\n    | \"eu\" -> 1\n    | \"uk\" -> 2\n    | _ -> failwith \"unsupported\"\n"
+        )
+
+        File.WriteAllText(
+            tests,
+            "module Tests\n\nlet three (s: string) = Lib.describe \"eu\" + Lib.describe (s.Trim())\n"
+        )
+
+        let code, output =
+            runTool [| solution; "--api-changes"; "--codes"; "FR0157"; "--no-color" |]
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("let describe (region: string) =", File.ReadAllText library))

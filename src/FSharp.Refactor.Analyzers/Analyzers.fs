@@ -164,6 +164,24 @@ let private whenAnyEnabled (fileName: string) (codes: string list) (name: string
 let private leafCompilations =
     System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
 
+/// The gate for a rule whose proof READS every caller: `--api-changes`
+/// cannot open it, because a sibling project's call sites are not in this
+/// compilation's symbol tables - a public function with no caller in sight
+/// is one whose callers sit in the test project, not one with none. Only
+/// a leaf compilation (or an explicit `publicApi: false`) says its public
+/// declarations have no callers elsewhere.
+let private leafScopeOpen (fileName: string) (options: AnalyzerProjectOptions) =
+    match Configuration.publicSurfaceSetting fileName with
+    | Some declared -> declared
+    | None ->
+        let leaf =
+            leafCompilations.GetOrAdd(
+                options.ProjectFileName,
+                fun _ -> Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
+            )
+
+        Visibility.isApplication fileName leaf
+
 let private shapeScopeOpen (fileName: string) (options: AnalyzerProjectOptions) =
     Visibility.apiChangesAllowed ()
     || match Configuration.publicSurfaceSetting fileName with
@@ -367,7 +385,7 @@ let private widened (scopeOpen: bool) (build: bool -> Message list) =
             m.Code, m.Range.FileName, m.Range.StartLine, m.Range.StartColumn
 
         let known = narrow |> List.map key |> Set.ofList
-        let extras = build true |> List.filter (fun m -> not (known.Contains(key m)))
+        let extras = build true |> List.filter (key >> known.Contains >> not)
 
         for m in extras do
             heldByScope.AddOrUpdate(m.Code, 1, (fun _ n -> n + 1)) |> ignore
@@ -1868,11 +1886,27 @@ let dictTryAddCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private dictGetOrAddMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
     DictTryGet.findGetOrAdd parseTree source checkResults
     |> List.map (fun s ->
-        hint
-            "FR0154"
-            "TryGetValue followed by a store looks the key up twice and leaves a window for another thread to store first; GetOrAdd does both in one call."
-            s.Range
-            [ fix s.Range s.OriginalText s.ReplacementText ])
+        let factory = defaultArg s.Factory "..."
+        let lazyShape = $"{s.Head} lazy ({factory})).Force()"
+
+        if s.Deferred then
+            hint
+                "FR0154"
+                $"A store after a TryGetValue miss leaves a window for another thread to store first, and two concurrent misses START two of the value and throw one away already running - which GetOrAdd alone does not change. A Lazy value - `{lazyShape}` on a ConcurrentDictionary<_, Lazy<_>> - starts it once and hands every caller the same one; remove the entry when it faults (FR0152)."
+                s.Range
+                []
+        else
+            let lazyHint =
+                match s.Factory with
+                | Some factory ->
+                    $" If `{factory}` is costly, a Lazy value - `{lazyShape}` - runs it once across concurrent misses (FR0152 on removing a faulted one)."
+                | None -> ""
+
+            hint
+                "FR0154"
+                $"A store after a TryGetValue miss leaves a window for another thread to store first, after which two callers hold two different values for the key; GetOrAdd in the miss arm adds atomically, and the hit path keeps TryGetValue's speed.{lazyHint}"
+                s.Range
+                [ fix s.Range s.OriginalText s.ReplacementText ])
 
 [<EditorAnalyzer("DictGetOrAdd", "Replace TryGetValue-then-store on ConcurrentDictionary with GetOrAdd", HelpBase)>]
 let dictGetOrAddEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -2212,6 +2246,274 @@ let addRangeCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0030" "AddRange" (fun () ->
         addRangeMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
+
+// ---- FR0156 AccumulatorLoop ----
+
+let private accumulatorLoopMessages
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    // an accumulator drained as an array becomes an array expression only
+    // on request: measured 1.6x the ResizeArray fill's time
+    //     { "FR0156": { "arrays": true } }
+    let arrays =
+        Configuration.parameterBool fileName "FR0156" "AccumulatorLoop" "arrays" false
+
+    // implicit yields arrived with F# 4.7; an older compiler wants them spelled
+    //     { "FR0156": { "explicitYield": true } }
+    let explicitYield =
+        Configuration.parameterBool fileName "FR0156" "AccumulatorLoop" "explicitYield" false
+
+    AccumulatorLoop.findWith arrays explicitYield parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0156"
+            $"ResizeArray '%s{s.Name}' is filled one Add at a time by its loops and only read after: the loops are a list expression, with each Add's argument as its yield."
+            s.Range
+            (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
+
+[<EditorAnalyzer("AccumulatorLoop", "Turn an Add-by-Add ResizeArray fill into a list expression", HelpBase)>]
+let accumulatorLoopEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0156" "AccumulatorLoop" (fun () ->
+        whenChecked ctx (accumulatorLoopMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("AccumulatorLoop", "Turn an Add-by-Add ResizeArray fill into a list expression", HelpBase)>]
+let accumulatorLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0156" "AccumulatorLoop" (fun () ->
+        accumulatorLoopMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+
+// ---- FR0157 StringUnion ----
+
+/// Every symbol use of the project, indexed once per project results (see
+/// StringUnion.indexUses): a flow analysis asks for the uses of a dozen
+/// locals, parameters and fields per candidate, and a walk of every file's
+/// typed tree per question would be the whole sweep's cost. Public: the
+/// apply tool's api pass adds the sibling projects' uses beside it.
+let private projectUseIndexes =
+    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckProjectResults, StringUnion.UseIndex>()
+
+let projectUseIndex (project: FSharpCheckProjectResults) : StringUnion.UseIndex =
+    projectUseIndexes.GetValue(
+        project,
+        fun p ->
+            StringUnion.indexUses (
+                try
+                    p.GetAllUsesOfAllSymbols()
+                with _ -> // no uses known: every candidate stands down; fsharpanalyzer: ignore-line FR0055
+                    [||]
+            )
+    )
+
+/// The type names a compilation declares, nested ones included.
+let rec private entityNames (entities: FSharp.Compiler.Symbols.FSharpEntity seq) : string seq =
+    seq {
+        for e in entities do
+            yield e.DisplayName
+
+            yield! entityNames e.NestedEntities
+    }
+
+/// The world a rule sees from one file: the project's uses where the host
+/// has project results, this file's alone where it has not.
+let private stringUnionWorld
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    (project: FSharpCheckProjectResults option)
+    (options: AnalyzerProjectOptions)
+    (scopeOpen: bool)
+    : StringUnion.World =
+    let sameFile (a: string) (b: string) =
+        String.Equals(IO.Path.GetFullPath a, IO.Path.GetFullPath b, StringComparison.OrdinalIgnoreCase)
+
+    // the project's use index is built on the first question, never for a
+    // file that asks none: it is the whole compilation's symbol uses
+    let indexes =
+        lazy
+            (match project with
+             | Some p -> [ projectUseIndex p ]
+             | None -> [])
+
+    {
+        UsesOf =
+            (fun symbol ->
+                match project with
+                | Some _ -> StringUnion.usesIn indexes.Value symbol
+                | None -> check.GetUsesOfSymbolInFile symbol)
+        File =
+            (fun path ->
+                if sameFile path fileName then
+                    Some(parseTree, source)
+                else
+                    ProjectSources.tryParse path)
+        SymbolAt =
+            (fun file id ->
+                if sameFile file fileName then
+                    let r = id.idRange
+                    let lineText = source.GetLineString(r.EndLine - 1)
+                    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+                else
+                    StringUnion.symbolIn indexes.Value file id)
+        FileOrder =
+            (fun path ->
+                options.SourceFiles
+                |> Seq.tryFindIndex (fun f -> sameFile f path)
+                |> Option.defaultValue Int32.MaxValue)
+        ScopeOpen = scopeOpen
+        TypeNames =
+            try
+                match project with
+                | Some p -> entityNames p.AssemblySignature.Entities |> Set.ofSeq
+                | None -> entityNames check.PartialAssemblySignature.Entities |> Set.ofSeq
+            with _ -> // fsharpanalyzer: ignore-line FR0055
+                Set.empty
+        InternalsVisible =
+            match project with
+            | Some p -> ProjectSources.hasInternalsVisibleTo p
+            | None -> true
+        SourceFiles = List.ofSeq options.SourceFiles
+    }
+
+/// The world the apply tool's api pass builds, with the sibling projects'
+/// uses and files beside the project's own: every call site of an exported
+/// function is then in sight, and its literals can prove the set closed.
+let stringUnionApiWorld
+    (project: FSharpCheckProjectResults)
+    (sourceFiles: string[])
+    (siblingUses: FSharpSymbolUse seq)
+    (fileLookup: string -> (ParsedInput * ISourceText) option)
+    (publicRead: bool)
+    (internalsVisible: bool)
+    : StringUnion.World =
+    let sameFile (a: string) (b: string) =
+        String.Equals(IO.Path.GetFullPath a, IO.Path.GetFullPath b, StringComparison.OrdinalIgnoreCase)
+
+    let indexes = lazy [ projectUseIndex project; StringUnion.indexUses siblingUses ]
+
+    {
+        UsesOf = (fun symbol -> StringUnion.usesIn indexes.Value symbol)
+        File = fileLookup
+        SymbolAt = (fun file id -> StringUnion.symbolIn indexes.Value file id)
+        // a sibling's files come after every file of the project: the union
+        // belongs beside the project's declaration, never in a caller
+        FileOrder =
+            (fun path ->
+                sourceFiles
+                |> Seq.tryFindIndex (fun f -> sameFile f path)
+                |> Option.defaultValue Int32.MaxValue)
+        ScopeOpen = publicRead
+        TypeNames =
+            try
+                entityNames project.AssemblySignature.Entities |> Set.ofSeq
+            with _ -> // fsharpanalyzer: ignore-line FR0055
+                Set.empty
+        InternalsVisible = internalsVisible
+        SourceFiles = List.ofArray sourceFiles
+    }
+
+/// The FR0157 messages for a file, from a world the host built.
+let stringUnionMessagesIn (world: StringUnion.World) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    // the cheap syntactic question first: most files hold no match on two
+    // string literals, and the world's index is not built for them
+    (if StringUnion.hasCandidates parseTree then
+         StringUnion.find world parseTree source
+     else
+         [])
+    |> List.map (fun s ->
+        let cases = s.Literals |> List.map (fun l -> $"\"{l}\"") |> String.concat ", "
+
+        let shadowed =
+            match s.ShadowedConstants with
+            | [] -> ""
+            | names ->
+                let list = names |> List.map (fun n -> $"'{n}'") |> String.concat ", "
+
+                $" The arm(s) {list} bind a fresh variable and match every value, not the constant of that name; the case is the comparison they read as."
+
+        let files =
+            s.Edits |> List.map (fun e -> e.Range.FileName) |> List.distinct |> List.length
+
+        let crossFile = if files > 1 then $" ({files} files)" else ""
+
+        hint
+            "FR0157"
+            $"This value can only ever be one of {cases}: a union '{s.Name}' with a case for each, and a ToString returning the original text, names them and makes the match exhaustive{crossFile}.{shadowed}"
+            s.Range
+            (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
+
+
+[<EditorAnalyzer("StringUnion", "Turn a closed set of matched string literals into a union", HelpBase)>]
+let stringUnionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0157" "StringUnion" (fun () ->
+        whenChecked ctx (fun check ->
+            let world =
+                stringUnionWorld
+                    ctx.FileName
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText
+                    check
+                    None
+                    ctx.ProjectOptions
+                    (leafScopeOpen ctx.FileName ctx.ProjectOptions)
+
+            stringUnionMessagesIn world ctx.ParseFileResults.ParseTree ctx.SourceText
+            // the editor applies a fix to the file in the buffer: a
+            // rewrite that reaches another file is reported without it
+            |> List.map (fun m ->
+                if m.Fixes |> List.exists (fun f -> f.FromRange.FileName <> ctx.FileName) then
+                    { m with Fixes = [] }
+                else
+                    m))
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("StringUnion", "Turn a closed set of matched string literals into a union", HelpBase)>]
+let stringUnionCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0157" "StringUnion" (fun () ->
+        // under --api-changes the apply tool's api pass runs the rule with the
+        // sibling projects' call sites in sight, which this pass has not got:
+        // its findings would be the same set minus the exported ones
+        if Visibility.apiChangesAllowed () then
+            []
+        else
+
+            let world =
+                stringUnionWorld
+                    ctx.FileName
+                    ctx.ParseFileResults.ParseTree
+                    ctx.SourceText
+                    ctx.CheckFileResults
+                    (Some ctx.CheckProjectResults)
+                    ctx.ProjectOptions
+                    (leafScopeOpen ctx.FileName ctx.ProjectOptions)
+
+            stringUnionMessagesIn world ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+// ---- FR0158 IndexScan ----
+
+let private indexScanMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    IndexScan.find parseTree source
+    |> List.map (fun s ->
+        hint
+            "FR0158"
+            $"This while loop only walks '%s{s.Name}' while the condition holds: a tail-recursive local function returns the index it stops at, and '%s{s.Name}' needs no mutable (measured level with the loop)."
+            s.Range
+            [ fix s.Range s.OriginalText s.ReplacementText ])
+
+[<EditorAnalyzer("IndexScan", "Turn a while loop that walks an index into a tail-recursive function", HelpBase)>]
+let indexScanEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0158" "IndexScan" (fun () ->
+        indexScanMessages ctx.ParseFileResults.ParseTree ctx.SourceText
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("IndexScan", "Turn a while loop that walks an index into a tail-recursive function", HelpBase)>]
+let indexScanCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0158" "IndexScan" (fun () ->
+        indexScanMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0031 StringConcat ----
 

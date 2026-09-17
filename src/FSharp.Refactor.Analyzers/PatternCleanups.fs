@@ -70,7 +70,6 @@ let find
     let index = AstIndex.ofTree parseTree
     let conses = ResizeArray<ConsSuggestion>()
     let wilds = ResizeArray<WildFieldsSuggestion>()
-    let tuples = ResizeArray<TupleInListSuggestion>()
     let hasErrors = OptionModule.hasErrors check
 
     for _, p in index.Pats do
@@ -220,43 +219,45 @@ let find
             synTypeHasTuple ty
         | _ -> false
 
-    for path, e in index.Exprs do
-        match e with
-        | SynExpr.ArrayOrListComputed(expr = SynExpr.Tuple(isStruct = false; exprs = elems)) when
-            not (inIndexPosition path e)
-            && not (expectsTuples path e)
-            && elems.Length >= 2
-            && elems
-               |> List.forall (fun el ->
-                   match el with
-                   | SynExpr.Const(SynConst.Int32 _, _)
-                   | SynExpr.Const(SynConst.Int64 _, _)
-                   | SynExpr.Const(SynConst.Double _, _)
-                   | SynExpr.Const(SynConst.Single _, _)
-                   | SynExpr.Const(SynConst.Decimal _, _) -> true
-                   | _ -> false)
-            ->
-            // the editor's fix: the same elements separated by `;` — the
-            // list the author most likely meant
-            let original = textOfRange source e.Range
+    let tuples: TupleInListSuggestion list =
+        [
+            for path, e in index.Exprs do
+                match e with
+                | SynExpr.ArrayOrListComputed(expr = SynExpr.Tuple(isStruct = false; exprs = elems)) when
+                    not (inIndexPosition path e)
+                    && not (expectsTuples path e)
+                    && elems.Length >= 2
+                    && elems
+                       |> List.forall (fun el ->
+                           match el with
+                           | SynExpr.Const(SynConst.Int32 _, _)
+                           | SynExpr.Const(SynConst.Int64 _, _)
+                           | SynExpr.Const(SynConst.Double _, _)
+                           | SynExpr.Const(SynConst.Single _, _)
+                           | SynExpr.Const(SynConst.Decimal _, _) -> true
+                           | _ -> false)
+                    ->
+                    // the editor's fix: the same elements separated by `;` — the
+                    // list the author most likely meant
+                    let original = textOfRange source e.Range
 
-            let opening, closing =
-                if original.StartsWith "[|" then
-                    "[| ", " |]"
-                else
-                    "[ ", " ]"
+                    let opening, closing =
+                        if original.StartsWith "[|" then
+                            "[| ", " |]"
+                        else
+                            "[ ", " ]"
 
-            let separated =
-                opening
-                + (elems |> List.map (fun el -> textOfRange source el.Range) |> String.concat "; ")
-                + closing
+                    let separated =
+                        opening
+                        + (elems |> List.map (fun el -> textOfRange source el.Range) |> String.concat "; ")
+                        + closing
 
-            tuples.Add
-                {
-                    Fix = (e.Range, original, separated)
-                    Range = e.Range
-                    Elements = elems.Length
-                }
-        | _ -> ()
+                    {
+                        Fix = (e.Range, original, separated)
+                        Range = e.Range
+                        Elements = elems.Length
+                    }
+                | _ -> ()
+        ]
 
-    List.ofSeq conses, List.ofSeq wilds, List.ofSeq tuples
+    List.ofSeq conses, List.ofSeq wilds, tuples

@@ -140,10 +140,13 @@ let private leadingSpaces (line: string) =
 /// are offside of the name line and the pass rolled them back. A header on
 /// one line, or none at all, is where the layout is known.
 let private hoistLandsOnOwnHeader (source: ISourceText) (taskLine: int) =
-    let mutable line = taskLine - 1
+    let rec retreatLine line =
+        if line >= 1 && (source.GetLineString(line - 1)).Trim() = "" then
+            retreatLine (line - 1)
+        else
+            line
 
-    while line >= 1 && (source.GetLineString(line - 1)).Trim() = "" do
-        line <- line - 1
+    let line = retreatLine (taskLine - 1)
 
     if line < 1 then
         false
@@ -167,7 +170,7 @@ let private hoistLandsOnOwnHeader (source: ISourceText) (taskLine: int) =
                 "member private "
                 "member internal "
             ]
-            |> List.exists (fun k -> t.StartsWith k))
+            |> List.exists t.StartsWith)
 
 let private isBlank (line: string) = System.String.IsNullOrWhiteSpace line
 

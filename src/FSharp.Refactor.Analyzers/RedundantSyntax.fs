@@ -206,10 +206,14 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                 // every `$` of the opener goes: a `$$"""…"""` (F# 8) with
                 // no hole is as plain a string as a `$"…"` with none
                 let first = text.IndexOf '$'
-                let mutable last = first
 
-                while last + 1 < text.Length && text.[last + 1] = '$' do
-                    last <- last + 1
+                let rec advanceLast last =
+                    if last + 1 < text.Length && text.[last + 1] = '$' then
+                        advanceLast (last + 1)
+                    else
+                        last
+
+                let last = advanceLast first
 
                 suggestions.Add
                     {

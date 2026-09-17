@@ -89,205 +89,215 @@ let private (|ZeroToLengthMinusOne|_|) (e: SynExpr) =
 /// collection.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
-    let suggestions = ResizeArray<Suggestion>()
 
-    for path, expr in index.Exprs do
-        match expr with
-        | SynExpr.ForEach(
-            pat = SynPat.Named(ident = SynIdent(ident = i))
-            enumExpr = ZeroToLengthMinusOne collText & enumExpr
-            bodyExpr = body) when not (spansDirective source expr.Range) ->
-            let collRoot = collText.Split('.').[0]
+    let suggestions: Suggestion list =
+        [
+            for path, expr in index.Exprs do
+                match expr with
+                | SynExpr.ForEach(
+                    pat = SynPat.Named(ident = SynIdent(ident = i))
+                    enumExpr = ZeroToLengthMinusOne collText & enumExpr
+                    bodyExpr = body) when not (spansDirective source expr.Range) ->
+                    let collRoot = collText.Split('.').[0]
 
-            let inBody (r: range) = Range.rangeContainsRange body.Range r
+                    let inBody (r: range) = Range.rangeContainsRange body.Range r
 
-            let sameColl (e: SynExpr) =
-                match e with
-                | Path(_, text) -> text = collText
-                | _ -> false
+                    let sameColl (e: SynExpr) =
+                        match e with
+                        | Path(_, text) -> text = collText
+                        | _ -> false
 
-            let isIndexIdent (e: SynExpr) =
-                match stripParens e with
-                | SynExpr.Ident id -> id.idText = i.idText
-                | _ -> false
+                    let isIndexIdent (e: SynExpr) =
+                        match stripParens e with
+                        | SynExpr.Ident id -> id.idText = i.idText
+                        | _ -> false
 
-            // every `<xs>.[i]` / `<xs>[i]` in the body: its whole range and
-            // the range of the index ident inside it
-            let indexedUses =
-                index.Exprs
-                |> Array.choose (fun (_, e) ->
-                    match e with
-                    | SynExpr.DotIndexedGet(objectExpr = o; indexArgs = idx) when
-                        inBody e.Range && sameColl o && isIndexIdent idx
-                        ->
-                        Some(e.Range, (stripParens idx).Range)
-                    | SynExpr.App(
-                        flag = ExprAtomicFlag.Atomic; funcExpr = o; argExpr = SynExpr.ArrayOrListComputed(expr = idx)) when
-                        inBody e.Range && sameColl o && isIndexIdent idx
-                        ->
-                        Some(e.Range, (stripParens idx).Range)
-                    | _ -> None)
-
-            let indexIdentRanges = indexedUses |> Array.map snd
-
-            // every mention of the index variable in the body
-            let indexMentions =
-                index.Exprs
-                |> Array.choose (fun (_, e) ->
-                    match e with
-                    | SynExpr.Ident id when id.idText = i.idText && inBody id.idRange -> Some id.idRange
-                    | _ -> None)
-
-            let onlyIndexes =
-                indexMentions.Length > 0
-                && indexMentions
-                   |> Array.forall (fun m -> indexIdentRanges |> Array.exists (fun r -> Range.equals r m))
-
-            // nothing may write an element or assign the collection or the
-            // index inside the body
-            let mutates =
-                index.Exprs
-                |> Array.exists (fun (_, e) ->
-                    inBody e.Range
-                    && (match e with
-                        | SynExpr.DotIndexedSet(objectExpr = o) -> sameColl o
-                        // the F#6 spelling of the same element write
-                        | SynExpr.Set(targetExpr = t) ->
-                            (match stripParens t with
-                             | SynExpr.App(
-                                 flag = ExprAtomicFlag.Atomic; funcExpr = o; argExpr = SynExpr.ArrayOrListComputed _) ->
-                                 sameColl o
-                             | _ -> false)
-                        | SynExpr.LongIdentSet(SynLongIdent(id = first :: _), _, _) ->
-                            first.idText = collRoot || first.idText = i.idText
-                        | _ -> false))
-
-            // ...and nothing may REBIND either name: a nested `for i in`,
-            // a lambda, a let, or a match pattern shadowing `i` makes the
-            // inner `xs.[i]` a different index — rewriting it to the outer
-            // element would silently change behavior. Every binder goes
-            // through a Named pattern, so one scan covers all of them.
-            let rebinds =
-                index.Pats
-                |> Array.exists (fun (_, p) ->
-                    Range.rangeContainsRange body.Range p.Range
-                    && (match p with
-                        | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = i.idText || id.idText = collRoot
-                        | _ -> false))
-
-            // ...nor may the body take the ADDRESS of the element: `let
-            // sprite = &sprites[index]` wants an inref into the array, and a
-            // `for sprite in sprites` element is a copy, so every
-            // `&sprite.Field` after it reads "ByRefKinds.InOut does not match
-            // ByRefKinds.In" (Nu's Renderer2d)
-            let addressTaken =
-                index.Exprs
-                |> Array.exists (fun (_, e) ->
-                    match e with
-                    | SynExpr.AddressOf(expr = inner) ->
-                        inBody e.Range
-                        && indexedUses
-                           |> Array.exists (fun (useRange, _) -> Range.equals useRange (stripParens inner).Range)
-                    | _ -> false)
-
-            let disqualified = mutates || rebinds || addressTaken
-
-            if onlyIndexes && not disqualified then
-                let loopText = textOfRange source expr.Range
-
-                // names bound by anything on the path to the loop — a
-                // parameter, an outer loop, a let, a lambda, a match arm.
-                // Mibo's Spatial2DTests had `for x in 0 .. 4 do` around the
-                // loop, and the `x` chosen then shadowed it.
-                let enclosingNames =
-                    path
-                    |> List.collect (fun node ->
-                        match node with
-                        | SyntaxNode.SynBinding(SynBinding(headPat = p)) -> patNames p
-                        | SyntaxNode.SynMatchClause(SynMatchClause(pat = p)) -> patNames p
-                        | SyntaxNode.SynExpr e ->
+                    // every `<xs>.[i]` / `<xs>[i]` in the body: its whole range and
+                    // the range of the index ident inside it
+                    let indexedUses =
+                        index.Exprs
+                        |> Array.choose (fun (_, e) ->
                             match e with
-                            | LetOrUseE lou ->
-                                lou.Bindings |> List.collect (fun (SynBinding(headPat = p)) -> patNames p)
-                            | SynExpr.ForEach(pat = p) -> patNames p
-                            | SynExpr.For(ident = id) -> [ id.idText ]
-                            | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.collect patNames
-                            | _ -> []
-                        | _ -> [])
-                    |> Set.ofList
+                            | SynExpr.DotIndexedGet(objectExpr = o; indexArgs = idx) when
+                                inBody e.Range && sameColl o && isIndexIdent idx
+                                ->
+                                Some(e.Range, (stripParens idx).Range)
+                            | SynExpr.App(
+                                flag = ExprAtomicFlag.Atomic
+                                funcExpr = o
+                                argExpr = SynExpr.ArrayOrListComputed(expr = idx)) when
+                                inBody e.Range && sameColl o && isIndexIdent idx
+                                ->
+                                Some(e.Range, (stripParens idx).Range)
+                            | _ -> None)
 
-                // `let mChar = path.[i]` as the body's first statement and
-                // the index's ONLY use is the element already named: the
-                // loop variable takes that name and the alias line goes
-                // (Giraffe's FormatExpressions kept `for item in path do
-                // let mChar = item`). The binder must be a plain name — no
-                // type, no mutable, no attribute — that nothing around the
-                // loop already binds, and the rest of the body must start
-                // on its own line at the let's column with only whitespace
-                // in between, so dropping the let's span leaves the body in
-                // place.
-                let alias =
-                    match body with
-                    | LetOrUseE lou when not ((lou.IsUse || lou.IsBang) || lou.IsRecursive) ->
-                        match lou.Bindings, indexedUses with
-                        | [ SynBinding(
-                                attributes = []
-                                isMutable = false
-                                headPat = SynPat.Named(ident = SynIdent(ident = name); isThisVal = false)
-                                returnInfo = None
-                                expr = rhs) ],
-                          [| useRange, _ |] when
-                            indexMentions.Length = 1
-                            && Range.equals useRange (stripParens rhs).Range
-                            && name.idText <> i.idText
-                            && name.idText <> collRoot
-                            && not (enclosingNames.Contains name.idText)
-                            && lou.Body.Range.StartLine > rhs.Range.EndLine
-                            && lou.Body.Range.StartColumn = lou.Range.StartColumn
-                            && System.String.IsNullOrWhiteSpace(
-                                textOfRange source (Range.mkRange lou.Range.FileName rhs.Range.End lou.Body.Range.Start)
-                            )
-                            ->
-                            Some(name.idText, Range.mkRange lou.Range.FileName lou.Range.Start lou.Body.Range.Start)
-                        | _ -> None
-                    | _ -> None
+                    let indexIdentRanges = indexedUses |> Array.map snd
 
-                let headerRange =
-                    Range.mkRange expr.Range.FileName expr.Range.Start enumExpr.Range.End
+                    // every mention of the index variable in the body
+                    let indexMentions =
+                        index.Exprs
+                        |> Array.choose (fun (_, e) ->
+                            match e with
+                            | SynExpr.Ident id when id.idText = i.idText && inBody id.idRange -> Some id.idRange
+                            | _ -> None)
 
-                let headerEdit element =
-                    headerRange, textOfRange source headerRange, $"for {element} in {collText}"
+                    let onlyIndexes =
+                        indexMentions.Length > 0
+                        && indexMentions
+                           |> Array.forall (fun m -> indexIdentRanges |> Array.exists (fun r -> Range.equals r m))
 
-                match alias with
-                | Some(element, aliasRange) ->
-                    suggestions.Add
-                        {
-                            Range = expr.Range
-                            CollectionText = collText
-                            Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ]
-                        }
-                | None ->
-                    // the element is `item`, or `item2`, `item3`... when a
-                    // name is already taken: mentioned inside the loop, or
-                    // bound by anything on the path to it
-                    let taken (name: string) =
-                        enclosingNames.Contains name || Regex.IsMatch(loopText, identifierPattern name)
+                    // nothing may write an element or assign the collection or the
+                    // index inside the body
+                    let mutates =
+                        index.Exprs
+                        |> Array.exists (fun (_, e) ->
+                            inBody e.Range
+                            && (match e with
+                                | SynExpr.DotIndexedSet(objectExpr = o) -> sameColl o
+                                // the F#6 spelling of the same element write
+                                | SynExpr.Set(targetExpr = t) ->
+                                    (match stripParens t with
+                                     | SynExpr.App(
+                                         flag = ExprAtomicFlag.Atomic
+                                         funcExpr = o
+                                         argExpr = SynExpr.ArrayOrListComputed _) -> sameColl o
+                                     | _ -> false)
+                                | SynExpr.LongIdentSet(SynLongIdent(id = first :: _), _, _) ->
+                                    first.idText = collRoot || first.idText = i.idText
+                                | _ -> false))
 
-                    let element =
-                        Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
-                        |> Seq.find (taken >> not)
+                    // ...and nothing may REBIND either name: a nested `for i in`,
+                    // a lambda, a let, or a match pattern shadowing `i` makes the
+                    // inner `xs.[i]` a different index — rewriting it to the outer
+                    // element would silently change behavior. Every binder goes
+                    // through a Named pattern, so one scan covers all of them.
+                    let rebinds =
+                        index.Pats
+                        |> Array.exists (fun (_, p) ->
+                            Range.rangeContainsRange body.Range p.Range
+                            && (match p with
+                                | SynPat.Named(ident = SynIdent(ident = id)) ->
+                                    id.idText = i.idText || id.idText = collRoot
+                                | _ -> false))
 
-                    let useEdits =
-                        indexedUses
-                        |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
-                        |> Array.toList
+                    // ...nor may the body take the ADDRESS of the element: `let
+                    // sprite = &sprites[index]` wants an inref into the array, and a
+                    // `for sprite in sprites` element is a copy, so every
+                    // `&sprite.Field` after it reads "ByRefKinds.InOut does not match
+                    // ByRefKinds.In" (Nu's Renderer2d)
+                    let addressTaken =
+                        index.Exprs
+                        |> Array.exists (fun (_, e) ->
+                            match e with
+                            | SynExpr.AddressOf(expr = inner) ->
+                                inBody e.Range
+                                && indexedUses
+                                   |> Array.exists (fun (useRange, _) ->
+                                       Range.equals useRange (stripParens inner).Range)
+                            | _ -> false)
 
-                    suggestions.Add
-                        {
-                            Range = expr.Range
-                            CollectionText = collText
-                            Edits = headerEdit element :: useEdits
-                        }
-        | _ -> ()
+                    let disqualified = mutates || rebinds || addressTaken
 
-    List.ofSeq suggestions
+                    if onlyIndexes && not disqualified then
+                        let loopText = textOfRange source expr.Range
+
+                        // names bound by anything on the path to the loop — a
+                        // parameter, an outer loop, a let, a lambda, a match arm.
+                        // Mibo's Spatial2DTests had `for x in 0 .. 4 do` around the
+                        // loop, and the `x` chosen then shadowed it.
+                        let enclosingNames =
+                            path
+                            |> List.collect (fun node ->
+                                match node with
+                                | SyntaxNode.SynBinding(SynBinding(headPat = p)) -> patNames p
+                                | SyntaxNode.SynMatchClause(SynMatchClause(pat = p)) -> patNames p
+                                | SyntaxNode.SynExpr e ->
+                                    match e with
+                                    | LetOrUseE lou ->
+                                        lou.Bindings |> List.collect (fun (SynBinding(headPat = p)) -> patNames p)
+                                    | SynExpr.ForEach(pat = p) -> patNames p
+                                    | SynExpr.For(ident = id) -> [ id.idText ]
+                                    | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.collect patNames
+                                    | _ -> []
+                                | _ -> [])
+                            |> Set.ofList
+
+                        // `let mChar = path.[i]` as the body's first statement and
+                        // the index's ONLY use is the element already named: the
+                        // loop variable takes that name and the alias line goes
+                        // (Giraffe's FormatExpressions kept `for item in path do
+                        // let mChar = item`). The binder must be a plain name — no
+                        // type, no mutable, no attribute — that nothing around the
+                        // loop already binds, and the rest of the body must start
+                        // on its own line at the let's column with only whitespace
+                        // in between, so dropping the let's span leaves the body in
+                        // place.
+                        let alias =
+                            match body with
+                            | LetOrUseE lou when not ((lou.IsUse || lou.IsBang) || lou.IsRecursive) ->
+                                match lou.Bindings, indexedUses with
+                                | [ SynBinding(
+                                        attributes = []
+                                        isMutable = false
+                                        headPat = SynPat.Named(ident = SynIdent(ident = name); isThisVal = false)
+                                        returnInfo = None
+                                        expr = rhs) ],
+                                  [| useRange, _ |] when
+                                    indexMentions.Length = 1
+                                    && Range.equals useRange (stripParens rhs).Range
+                                    && name.idText <> i.idText
+                                    && name.idText <> collRoot
+                                    && not (enclosingNames.Contains name.idText)
+                                    && lou.Body.Range.StartLine > rhs.Range.EndLine
+                                    && lou.Body.Range.StartColumn = lou.Range.StartColumn
+                                    && System.String.IsNullOrWhiteSpace(
+                                        textOfRange
+                                            source
+                                            (Range.mkRange lou.Range.FileName rhs.Range.End lou.Body.Range.Start)
+                                    )
+                                    ->
+                                    Some(
+                                        name.idText,
+                                        Range.mkRange lou.Range.FileName lou.Range.Start lou.Body.Range.Start
+                                    )
+                                | _ -> None
+                            | _ -> None
+
+                        let headerRange =
+                            Range.mkRange expr.Range.FileName expr.Range.Start enumExpr.Range.End
+
+                        let headerEdit element =
+                            headerRange, textOfRange source headerRange, $"for {element} in {collText}"
+
+                        match alias with
+                        | Some(element, aliasRange) ->
+                            {
+                                Range = expr.Range
+                                CollectionText = collText
+                                Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ]
+                            }
+                        | None ->
+                            // the element is `item`, or `item2`, `item3`... when a
+                            // name is already taken: mentioned inside the loop, or
+                            // bound by anything on the path to it
+                            let taken (name: string) =
+                                enclosingNames.Contains name || Regex.IsMatch(loopText, identifierPattern name)
+
+                            let element =
+                                Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
+                                |> Seq.find (taken >> not)
+
+                            let useEdits =
+                                indexedUses
+                                |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
+                                |> Array.toList
+
+                            {
+                                Range = expr.Range
+                                CollectionText = collText
+                                Edits = headerEdit element :: useEdits
+                            }
+                | _ -> ()
+        ]
+
+    suggestions

@@ -311,7 +311,7 @@ OPTIONS
                         what CI turns into inline annotations), .html (a
                         self-contained page) or .csv. Pairs with --dry-run
   --parse-only          no MSBuild, no reference resolution: sources come
-                        straight from the fsproj and only the 55 of 113
+                        straight from the fsproj and only the 56 of 116
                         analyzers that never consult the typechecker run.
                         NOT a substitute for a real run: what survives is
                         skewed the wrong way — roughly a quarter of the
@@ -934,13 +934,9 @@ let private compileItemsOf (project: string) =
 /// configuration's branch; the other is not in the parse tree at all, and
 /// a call-site migration rewrites the definition for both while reaching
 /// the call sites of one. Rare (7 of the 34 repositories swept), and the
-/// extra build below is a cheap price for knowing.
-let private configurationConditional =
-    Text.RegularExpressions.Regex(
-        @"^\s*#if\b.*\b(DEBUG|RELEASE|TRACE)\b",
-        Text.RegularExpressions.RegexOptions.Multiline
-    )
-
+/// extra build below is a cheap price for knowing. Read from the parser's
+/// directive trivia (Text.hasConfigurationConditional), so a `#if DEBUG`
+/// quoted in a comment or a string is not one.
 let private configurationConditionals =
     System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
 
@@ -950,38 +946,56 @@ let private configurationConditionals =
 let private hasConfigurationConditionals (project: string) =
     configurationConditionals.GetOrAdd(
         Path.GetFullPath project,
-        fun p ->
-            compileItemsOf p
-            |> Seq.exists (fun file ->
-                try
-                    configurationConditional.IsMatch(File.ReadAllText file)
-                with _ -> // unreadable: assume the worst and build both; fsharpanalyzer: ignore-line FR0055
-                    true)
+        fun p -> compileItemsOf p |> Seq.exists Text.hasConfigurationConditional
     )
 
+/// A build configuration: the two the `#if DEBUG` / `RELEASE` conditionals
+/// tell apart. Its text is what MSBuild is handed and what the pass labels
+/// say.
+[<RequireQualifiedAccess>]
+type private BuildConfiguration =
+    | Debug
+    | Release
+
+    override this.ToString() =
+        match this with
+        | BuildConfiguration.Debug -> "Debug"
+        | BuildConfiguration.Release -> "Release"
+
+    /// The one the conditionals switch to.
+    member this.Other =
+        match this with
+        | BuildConfiguration.Debug -> BuildConfiguration.Release
+        | BuildConfiguration.Release -> BuildConfiguration.Debug
+
+    /// MSBuild's answer; anything but Release reads as Debug, the default.
+    static member Parse(text: string) =
+        if String.Equals(text.Trim(), "Release", StringComparison.OrdinalIgnoreCase) then
+            BuildConfiguration.Release
+        else
+            BuildConfiguration.Debug
+
 /// The build configuration the CURRENT compilation is analysed under:
-/// "" for the project's default, or the other one during the extra pass a
+/// None for the project's default, or the other one during the extra pass a
 /// project with configuration conditionals gets (see executeRun), where
 /// the `#if !DEBUG` branches are the parse tree. Process-wide like the
 /// FSREF_* flags: one compilation runs at a time.
-let mutable private analysisConfiguration = ""
+let mutable private analysisConfiguration: BuildConfiguration option = None
 
 let private configurationArg () =
-    if analysisConfiguration = "" then
-        ""
-    else
-        $" -p:Configuration={analysisConfiguration}"
+    match analysisConfiguration with
+    | None -> ""
+    | Some configuration -> $" -p:Configuration={configuration}"
 
 let private configurationSuffix () =
-    if analysisConfiguration = "" then
-        ""
-    else
-        $"+{analysisConfiguration}"
+    match analysisConfiguration with
+    | None -> ""
+    | Some configuration -> $"+{configuration}"
 
 /// The configuration the project builds by default (Debug unless it says
 /// otherwise), so the verification can build the OTHER one.
 let private defaultConfigurations =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    System.Collections.Concurrent.ConcurrentDictionary<string, BuildConfiguration>(StringComparer.OrdinalIgnoreCase)
 
 let private defaultConfiguration (project: string) =
     defaultConfigurations.GetOrAdd(
@@ -993,9 +1007,9 @@ let private defaultConfiguration (project: string) =
             let answer = stdout.Trim()
 
             if exitCode = 0 && answer <> "" && not (answer.Contains '\n') then
-                answer
+                BuildConfiguration.Parse answer
             else
-                "Debug"
+                BuildConfiguration.Debug
     )
 
 /// A PropertyGroup carrying a Condition — usually `'$(TargetFramework)'
@@ -2104,143 +2118,144 @@ let private applyEditGroups
     (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
     : int * AppliedFile list =
     let mutable applied = 0
-    let appliedFiles = ResizeArray<AppliedFile>()
 
-    for kv in editsByFile do
-        let file = kv.Key
-        let text = File.ReadAllText file
+    let appliedFiles: AppliedFile list =
+        [
+            for kv in editsByFile do
+                let file = kv.Key
+                let text = File.ReadAllText file
 
-        // bottom-up, so earlier splices never shift later ranges
-        let edits =
-            kv.Value
-            |> Seq.sortByDescending (fun (_, _, f) -> f.FromRange.StartLine, f.FromRange.StartColumn)
-            |> List.ofSeq
+                // bottom-up, so earlier splices never shift later ranges
+                let edits =
+                    kv.Value
+                    |> Seq.sortByDescending (fun (_, _, f) -> f.FromRange.StartLine, f.FromRange.StartColumn)
+                    |> List.ofSeq
 
-        let groupEdits =
-            kv.Value
-            |> Seq.groupBy (fun (g, _, _) -> g)
-            |> Map.ofSeq
-            |> Map.map (fun _ es -> List.ofSeq es)
+                let groupEdits =
+                    kv.Value
+                    |> Seq.groupBy (fun (g, _, _) -> g)
+                    |> Map.ofSeq
+                    |> Map.map (fun _ es -> List.ofSeq es)
 
-        let mutable current = text
-        let mutable appliedRanges: Range list = []
-        let mutable appliedHere: (int * string * Fix) list = []
-        let groupDecisions = System.Collections.Generic.Dictionary<int, bool>()
+                let mutable current = text
+                let mutable appliedRanges: Range list = []
+                let mutable appliedHere: (int * string * Fix) list = []
+                let groupDecisions = System.Collections.Generic.Dictionary<int, bool>()
 
-        let overlaps (r: Range) =
-            appliedRanges
-            |> List.exists (fun a ->
-                Range.rangeContainsPos a r.Start
-                || Range.rangeContainsPos a r.End
-                || Range.rangeContainsRange r a)
+                let overlaps (r: Range) =
+                    appliedRanges
+                    |> List.exists (fun a ->
+                        Range.rangeContainsPos a r.Start
+                        || Range.rangeContainsPos a r.End
+                        || Range.rangeContainsRange r a)
 
-        // can this edit be spliced into `current` exactly as promised?
-        // (start/end computed against original coordinates, which stay
-        // valid above every already-applied splice in the bottom-up sweep)
-        let viable (f: Fix) =
-            let lines = current.Split '\n'
+                // can this edit be spliced into `current` exactly as promised?
+                // (start/end computed against original coordinates, which stay
+                // valid above every already-applied splice in the bottom-up sweep)
+                let viable (f: Fix) =
+                    let lines = current.Split '\n'
 
-            if
-                f.FromRange.StartLine - 1 > lines.Length
-                || f.FromRange.EndLine - 1 > lines.Length
-            then
-                None
-            else
-                let startIndex =
-                    (lines
-                     |> Seq.take (f.FromRange.StartLine - 1)
-                     |> Seq.sumBy (fun l -> l.Length + 1))
-                    + f.FromRange.StartColumn
+                    if
+                        f.FromRange.StartLine - 1 > lines.Length
+                        || f.FromRange.EndLine - 1 > lines.Length
+                    then
+                        None
+                    else
+                        let startIndex =
+                            (lines
+                             |> Seq.take (f.FromRange.StartLine - 1)
+                             |> Seq.sumBy (fun l -> l.Length + 1))
+                            + f.FromRange.StartColumn
 
-                let endIndex =
-                    (lines |> Seq.take (f.FromRange.EndLine - 1) |> Seq.sumBy (fun l -> l.Length + 1))
-                    + f.FromRange.EndColumn
+                        let endIndex =
+                            (lines |> Seq.take (f.FromRange.EndLine - 1) |> Seq.sumBy (fun l -> l.Length + 1))
+                            + f.FromRange.EndColumn
 
-                if
-                    startIndex <= current.Length
-                    && endIndex <= current.Length
-                    && current.Substring(startIndex, endIndex - startIndex).Replace("\r", "") =
-                        f.FromText.Replace("\r", "")
-                then
-                    Some(startIndex, endIndex)
-                else
-                    None
-
-        // decide a whole group the moment its bottom-most edit is reached:
-        // every member must be unsuppressed, non-overlapping and viable, or
-        // none of them applies. A self-identical edit is tolerated inside a
-        // group (it changes nothing either way) but sinks a group of one.
-        let decideGroup (groupId: int) =
-            let members = groupEdits.[groupId]
-
-            let ok =
-                members
-                |> List.forall (fun (_, code, f) ->
-                    not (suppressed.Contains(fixKey code file f))
-                    && not (putBackFiles.Contains(Path.GetFullPath file))
-                    && not (overlaps f.FromRange)
-                    && (f.ToText.Replace("\r", "") = f.FromText.Replace("\r", "") || (viable f).IsSome))
-                && members
-                   |> List.exists (fun (_, _, f) -> f.ToText.Replace("\r", "") <> f.FromText.Replace("\r", ""))
-
-            if ok then
-                // reserve every member's range at once, so no other group
-                // can interleave between this one's edits
-                for _, _, f in members do
-                    appliedRanges <- f.FromRange :: appliedRanges
-            elif members.Length > 1 then
-                let _, code, f = List.head members
-
-                printfn
-                    $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn}): held back (its edits cannot all apply together)"
-
-            groupDecisions.[groupId] <- ok
-            ok
-
-        for groupId, code, f in edits do
-            let accepted =
-                match groupDecisions.TryGetValue groupId with
-                | true, decision -> decision
-                | false, _ -> decideGroup groupId
-
-            let changesSomething = f.ToText.Replace("\r", "") <> f.FromText.Replace("\r", "")
-
-            if accepted && changesSomething then
-                match viable f with
-                | Some(startIndex, endIndex) ->
-                    // splice in the file's own line-ending convention, so
-                    // an LF replacement does not seed a CRLF file with
-                    // mixed endings
-                    let eol = if current.Contains "\r\n" then "\r\n" else "\n"
-                    let toText = f.ToText.Replace("\r\n", "\n").Replace("\n", eol)
-
-                    current <- current.Remove(startIndex, endIndex - startIndex).Insert(startIndex, toText)
-                    appliedHere <- (groupId, code, f) :: appliedHere
-                    applied <- applied + 1
-
-                    // once per file: the first fix line in a linked file says so
-                    let linked =
-                        if linkedFiles.Remove(Path.GetFullPath(file).ToLowerInvariant()) then
-                            " note: linked file"
+                        if
+                            startIndex <= current.Length
+                            && endIndex <= current.Length
+                            && current.Substring(startIndex, endIndex - startIndex).Replace("\r", "") =
+                                f.FromText.Replace("\r", "")
+                        then
+                            Some(startIndex, endIndex)
                         else
-                            ""
+                            None
 
-                    printfn
-                        $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn}){linked}"
-                | None -> ()
+                // decide a whole group the moment its bottom-most edit is reached:
+                // every member must be unsuppressed, non-overlapping and viable, or
+                // none of them applies. A self-identical edit is tolerated inside a
+                // group (it changes nothing either way) but sinks a group of one.
+                let decideGroup (groupId: int) =
+                    let members = groupEdits.[groupId]
 
-        if current <> text && not dryRun then
-            recordExtra file text
-            writeSource file current
+                    let ok =
+                        members
+                        |> List.forall (fun (_, code, f) ->
+                            not (suppressed.Contains(fixKey code file f))
+                            && not (putBackFiles.Contains(Path.GetFullPath file))
+                            && not (overlaps f.FromRange)
+                            && (f.ToText.Replace("\r", "") = f.FromText.Replace("\r", "") || (viable f).IsSome))
+                        && members
+                           |> List.exists (fun (_, _, f) -> f.ToText.Replace("\r", "") <> f.FromText.Replace("\r", ""))
 
-            appliedFiles.Add
-                {
-                    Path = file
-                    Before = text
-                    Fixes = appliedHere
-                }
+                    if ok then
+                        // reserve every member's range at once, so no other group
+                        // can interleave between this one's edits
+                        for _, _, f in members do
+                            appliedRanges <- f.FromRange :: appliedRanges
+                    elif members.Length > 1 then
+                        let _, code, f = List.head members
 
-    applied, List.ofSeq appliedFiles
+                        printfn
+                            $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn}): held back (its edits cannot all apply together)"
+
+                    groupDecisions.[groupId] <- ok
+                    ok
+
+                for groupId, code, f in edits do
+                    let accepted =
+                        match groupDecisions.TryGetValue groupId with
+                        | true, decision -> decision
+                        | false, _ -> decideGroup groupId
+
+                    let changesSomething = f.ToText.Replace("\r", "") <> f.FromText.Replace("\r", "")
+
+                    if accepted && changesSomething then
+                        match viable f with
+                        | Some(startIndex, endIndex) ->
+                            // splice in the file's own line-ending convention, so
+                            // an LF replacement does not seed a CRLF file with
+                            // mixed endings
+                            let eol = if current.Contains "\r\n" then "\r\n" else "\n"
+                            let toText = f.ToText.Replace("\r\n", "\n").Replace("\n", eol)
+
+                            current <- current.Remove(startIndex, endIndex - startIndex).Insert(startIndex, toText)
+                            appliedHere <- (groupId, code, f) :: appliedHere
+                            applied <- applied + 1
+
+                            // once per file: the first fix line in a linked file says so
+                            let linked =
+                                if linkedFiles.Remove(Path.GetFullPath(file).ToLowerInvariant()) then
+                                    " note: linked file"
+                                else
+                                    ""
+
+                            printfn
+                                $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn}){linked}"
+                        | None -> ()
+
+                if current <> text && not dryRun then
+                    recordExtra file text
+                    writeSource file current
+
+                    {
+                        Path = file
+                        Before = text
+                        Fixes = appliedHere
+                    }
+        ]
+
+    applied, appliedFiles
 
 /// One project-wide suggestion, normalized across the API-changing rules:
 /// a code, the symbol it rewrites, and edits that may land in any file.
@@ -3153,7 +3168,7 @@ let private readSibling
             }
 
         let info =
-            match siblingOptionsCache.GetOrAdd(Path.GetFullPath sibling, (fun p -> optionsOf p)) with
+            match siblingOptionsCache.GetOrAdd(Path.GetFullPath sibling, optionsOf) with
             | Error message -> unreadable [ message ]
             | Ok siblingOptions ->
                 let outputFile = outputFileNameOf project
@@ -3678,6 +3693,35 @@ let private runApiPass
             else
                 true
 
+        // FR0157's world: the project's uses beside every sibling's, so an
+        // exported function's call sites are in sight rather than assumed
+        // absent. Built once, and only once a file holds a candidate match:
+        // forcing the siblings is the expensive reading
+        let stringUnionWorld =
+            lazy
+                (let siblingUses =
+                    siblingSites.Value.Read |> Seq.collect (fun info -> info.Uses) |> Array.ofSeq
+
+                 let internalsVisible =
+                     match ProjectSources.internalsVisibleTo projectResults with
+                     | Some friends -> not (friends |> List.forall outside.AssemblyRead)
+                     | None -> ProjectSources.hasInternalsVisibleTo projectResults
+
+                 Analyzers.stringUnionApiWorld
+                     projectResults
+                     options.SourceFiles
+                     siblingUses
+                     (fun name -> fileLookup name |> Option.map (fun c -> c.ParseTree, c.Source))
+                     // an executable's public declarations have no caller elsewhere
+                     // by construction, and a `publicApi: false` says the same
+                     (outside.PublicRead()
+                      || Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
+                      // a script is the ultimate leaf: nothing links to it
+                      || options.SourceFiles |> Array.exists Visibility.isScriptFile
+                      || (options.SourceFiles
+                          |> Array.exists (fun f -> Configuration.publicSurfaceSetting f = Some false)))
+                     internalsVisible)
+
         for file in reshapable do
             let ctx = fileContexts.[Path.GetFullPath file]
 
@@ -3707,6 +3751,17 @@ let private runApiPass
                                 Code = "FR0091"
                                 FunctionName = s.FunctionName
                                 Edits = s.Edits
+                            }
+
+                if wanted file "FR0157" "StringUnion" && StringUnion.hasCandidates ctx.ParseTree then
+                    for s in
+                        StringUnion.find stringUnionWorld.Value ctx.ParseTree ctx.Source
+                        |> List.filter (fun s -> not (inUnreadShared file) && s.Reshaped |> List.forall notTemplated) do
+                        suggestions.Add
+                            {
+                                Code = "FR0157"
+                                FunctionName = s.Name
+                                Edits = s.Edits |> List.map (fun e -> e.Range, e.Original, e.Replacement)
                             }
             | FSharpCheckFileAnswer.Aborted -> ()
 
@@ -3886,18 +3941,9 @@ let private runApiPass
                         if
                             project.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
                             && File.Exists project
-                            && touched
-                               |> List.exists (fun cf ->
-                                   try
-                                       configurationConditional.IsMatch(File.ReadAllText cf.Path)
-                                   with _ -> // fsharpanalyzer: ignore-line FR0055
-                                       true)
+                            && touched |> List.exists (fun cf -> Text.hasConfigurationConditional cf.Path)
                         then
-                            let other =
-                                if defaultConfiguration project = "Release" then
-                                    "Debug"
-                                else
-                                    "Release"
+                            let other = (defaultConfiguration project).Other
 
                             let exitCode, stdout, stderr =
                                 runForProject
@@ -5076,7 +5122,10 @@ let private runPass
                         SourceText = sourceText
                         ParseFileResults = parseResults
                         CheckFileResults = checkResults
-                        TypedTree = checkResults.ImplementationFile
+                        // the typed tree is not kept (keepAssemblyContents = false): no rule of
+                        // ours reads it, and keeping it held every project's typed trees - 6.3 GB
+                        // peak on Fuuga against 0.7 without
+                        TypedTree = None
                         CheckProjectResults = projectResults
                         ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
                         // `// fsharpanalyzer: ignore-line FR0031` and friends
@@ -5124,7 +5173,10 @@ let private runPass
                             SourceText = sourceText
                             ParseFileResults = parseResults
                             CheckFileResults = Some checkResults
-                            TypedTree = checkResults.ImplementationFile
+                            // the typed tree is not kept (keepAssemblyContents = false): no rule of
+                            // ours reads it, and keeping it held every project's typed trees - 6.3 GB
+                            // peak on Fuuga against 0.7 without
+                            TypedTree = None
                             CheckProjectResults = Some projectResults
                             ProjectOptions = context.ProjectOptions
                             AnalyzerIgnoreRanges = context.AnalyzerIgnoreRanges
@@ -5913,7 +5965,7 @@ let internal absolutizeArgs (projectDir: string) (args: string array) =
     |> Array.map (fun arg ->
         let lower = arg.ToLowerInvariant()
 
-        match single |> List.tryFind (fun flag -> lower.StartsWith flag) with
+        match single |> List.tryFind lower.StartsWith with
         | Some flag -> arg.Substring(0, flag.Length) + rebase (arg.Substring flag.Length)
         | None ->
             if lower.StartsWith "--resource:" || lower.StartsWith "--linkresource:" then
@@ -6071,11 +6123,7 @@ let private buildAllFrameworks (project: string) =
     | Ok() when hasConfigurationConditionals project ->
         // the configuration the analysis did not see: its `#if` branches
         // hold code no rule read, and a migration's call sites among them
-        let other =
-            if defaultConfiguration project = "Release" then
-                "Debug"
-            else
-                "Release"
+        let other = (defaultConfiguration project).Other
 
         printfn $"  (the sources branch on the build configuration: building {other} too)"
         build $" -c {other}"
@@ -6725,7 +6773,7 @@ let private checkerForFramework (runChecker: FSharpChecker) (index: int) =
     else
         lock frameworkCheckers (fun () ->
             while frameworkCheckers.Count < index do
-                frameworkCheckers.Add(FSharpChecker.Create(keepAssemblyContents = true))
+                frameworkCheckers.Add(FSharpChecker.Create(keepAssemblyContents = false))
 
             frameworkCheckers.[index - 1])
 
@@ -6835,10 +6883,10 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
     // which framework this pass is for, when the project has several
     let frameworkLabel =
         match opts.Framework, analysisConfiguration with
-        | "", "" -> ""
-        | tfm, "" -> $" [{tfm}]"
-        | "", cfg -> $" [{cfg}]"
-        | tfm, cfg -> $" [{tfm} {cfg}]"
+        | "", None -> ""
+        | tfm, None -> $" [{tfm}]"
+        | "", Some cfg -> $" [{cfg}]"
+        | tfm, Some cfg -> $" [{tfm} {cfg}]"
 
     let label =
         match target with
@@ -6899,7 +6947,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
         printfn $"{analyzers.Length} analyzers, {options.SourceFiles.Length} files"
 
-        if analysisConfiguration <> "" then
+        if analysisConfiguration.IsSome then
             let defines =
                 options.OtherOptions
                 |> Array.filter (fun o -> o.StartsWith "--define:")
@@ -8050,16 +8098,12 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         let otherConfigurationPass (checker: FSharpChecker) (target: Target) =
             match target with
             | Target.Project(project, _) when not opts.ParseOnly && hasConfigurationConditionals project ->
-                let other =
-                    if defaultConfiguration project = "Release" then
-                        "Debug"
-                    else
-                        "Release"
+                let other = (defaultConfiguration project).Other
 
                 printfn
                     $"{Path.GetFileName project}: its sources branch on the build configuration — analysing the {other} branches too"
 
-                analysisConfiguration <- other
+                analysisConfiguration <- Some other
 
                 try
                     let narrowest = frameworksOf target |> List.tryHead |> Option.defaultValue ""
@@ -8074,7 +8118,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
                     0
                 finally
-                    analysisConfiguration <- ""
+                    analysisConfiguration <- None
             | _ -> 0
 
         let runOneConfiguration (checker: FSharpChecker) target =
@@ -8193,11 +8237,23 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                             runOne target
                         with :? TimeoutException as t ->
                             eprintfn $"  ({t.Message}; this compilation was skipped)"
-                            checkerRef.Value <- FSharpChecker.Create(keepAssemblyContents = true)
+                            checkerRef.Value <- FSharpChecker.Create(keepAssemblyContents = false)
                             1
 
                     if targets.Length > 1 then
                         writeReportNow ()
+
+                    // FSREF_MEMORY=1: the process's working set and the managed
+                    // heap after each compilation, to tell a per-project plateau
+                    // from growth across the run
+                    if Environment.GetEnvironmentVariable "FSREF_MEMORY" = "1" then
+                        let working = Diagnostics.Process.GetCurrentProcess().WorkingSet64 / 1048576L
+                        let heap = GC.GetTotalMemory false / 1048576L
+
+                        eprintfn
+                            $"  (memory after {(match target with
+                                                | Target.Project(p, _) -> Path.GetFileName p
+                                                | Target.Script s -> Path.GetFileName s)}: working set {working} MB, managed heap {heap} MB)"
 
                     code)
                 |> List.fold max 0
@@ -8414,7 +8470,7 @@ let private runMcp () =
     let protocolOut = Console.Out
     Console.SetOut Console.Error
 
-    let checker = FSharpChecker.Create(keepAssemblyContents = true)
+    let checker = FSharpChecker.Create(keepAssemblyContents = false)
 
     let respond (idJson: string) (resultJson: string) =
         protocolOut.WriteLine($"{{\"jsonrpc\":\"2.0\",\"id\":{idJson},\"result\":{resultJson}}}")
@@ -8771,7 +8827,7 @@ let main argv =
             // flavors share nearly all of them — a fresh checker per
             // compilation was paying that parse twenty times over.
             // (Analyzers may read the typed tree, hence assembly contents.)
-            let checker = FSharpChecker.Create(keepAssemblyContents = true)
+            let checker = FSharpChecker.Create(keepAssemblyContents = false)
             let code = executeRun checker opts
 
             if opts.Json then

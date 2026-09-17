@@ -256,10 +256,13 @@ let find
                     // open inserted at the declaration's own line would wedge
                     // itself between the doc and what it documents
                     let aboveDoc (line: int) =
-                        let mutable top = line
+                        let rec retreatTop top =
+                            if top > 1 && source.GetLineString(top - 2).TrimStart().StartsWith "///" then
+                                retreatTop (top - 1)
+                            else
+                                top
 
-                        while top > 1 && source.GetLineString(top - 2).TrimStart().StartsWith "///" do
-                            top <- top - 1
+                        let top = retreatTop line
 
                         top
 

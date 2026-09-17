@@ -80,7 +80,6 @@ type private Required =
 /// not stub (an event, an indexer) is involved.
 let private requiredMembers (entity: FSharpEntity) : (string * Required list) option =
     try
-        let methods = ResizeArray<Required>()
 
         let properties =
             System.Collections.Generic.Dictionary<string, bool * bool * FSharpType option>()
@@ -93,35 +92,39 @@ let private requiredMembers (entity: FSharpEntity) : (string * Required list) op
             with _ -> // a type FCS cannot name: the empty stub falls back to defaultof; fsharpanalyzer: ignore-line FR0055
                 None
 
-        for m in entity.MembersFunctionsAndValues do
-            if m.IsDispatchSlot && not bail then
-                if m.IsEventAddMethod || m.IsEventRemoveMethod || m.IsEvent then
-                    bail <- true
-                elif m.IsPropertyGetterMethod || m.IsPropertySetterMethod then
-                    let name = m.LogicalName.Substring 4
+        let methods: Required list =
+            [
+                for m in entity.MembersFunctionsAndValues do
+                    if m.IsDispatchSlot && not bail then
+                        if m.IsEventAddMethod || m.IsEventRemoveMethod || m.IsEvent then
+                            bail <- true
+                        elif m.IsPropertyGetterMethod || m.IsPropertySetterMethod then
+                            let name = m.LogicalName.Substring 4
 
-                    let hasParams =
-                        m.CurriedParameterGroups |> Seq.sumBy Seq.length > (if m.IsPropertySetterMethod then 1 else 0)
+                            let hasParams =
+                                m.CurriedParameterGroups |> Seq.sumBy Seq.length >
+                                    (if m.IsPropertySetterMethod then 1 else 0)
 
-                    if hasParams then
-                        bail <- true // an indexer
-                    else
-                        let g, s, t =
-                            match properties.TryGetValue name with
-                            | true, (g, s, t) -> g, s, t
-                            | false, _ -> false, false, None
+                            if hasParams then
+                                bail <- true // an indexer
+                            else
+                                let g, s, t =
+                                    match properties.TryGetValue name with
+                                    | true, (g, s, t) -> g, s, t
+                                    | false, _ -> false, false, None
 
-                        // the getter's return type is the property's type
-                        let t = if m.IsPropertyGetterMethod then returnType m else t
+                                // the getter's return type is the property's type
+                                let t = if m.IsPropertyGetterMethod then returnType m else t
 
-                        properties.[name] <- (g || m.IsPropertyGetterMethod, s || m.IsPropertySetterMethod, t)
-                elif m.IsProperty then
-                    () // covered by the accessor entries
-                else
-                    let names =
-                        m.CurriedParameterGroups |> Seq.collect id |> Seq.mapi paramName |> List.ofSeq
+                                properties.[name] <- (g || m.IsPropertyGetterMethod, s || m.IsPropertySetterMethod, t)
+                        elif m.IsProperty then
+                            () // covered by the accessor entries
+                        else
+                            let names =
+                                m.CurriedParameterGroups |> Seq.collect id |> Seq.mapi paramName |> List.ofSeq
 
-                    methods.Add(Method(m.DisplayName, names, returnType m))
+                            Method(m.DisplayName, names, returnType m)
+            ]
 
         if bail then
             None
@@ -133,7 +136,7 @@ let private requiredMembers (entity: FSharpEntity) : (string * Required list) op
                         Property(kv.Key, g, s, t)
                 ]
 
-            Some(entity.DisplayName, List.ofSeq methods @ props)
+            Some(entity.DisplayName, methods @ props)
     with OptionModule.FcsSymbolFailure ->
         None
 
