@@ -286,6 +286,8 @@ Every rule is one of four kinds, shown in the last column of
 | `idiom` | The same behaviour written the way F# writes it. Worth doing, and worth agreeing on first — it is a matter of house style as much as anything | 54 |
 | `cosmetic` | The punctuation and spelling of code. Real cleanups, and nobody's idea of a welcome pull request from a stranger | 17 |
 
+Every version's notes are in [CHANGELOG.md](CHANGELOG.md); the NuGet packages carry the last six.
+
 Thirteen rules carry a **priority** flag on top of their category — the
 likely defects and security holes too costly to hold back: FR0020,
 FR0028, FR0032, FR0046, FR0047, FR0048, FR0061, FR0063, FR0065, FR0066,
