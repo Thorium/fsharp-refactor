@@ -110,28 +110,30 @@ let rec private spineLoop (count: int) (e: SynExpr) =
 /// Pattern scan of one match clause: Some/None head-ident edits, or None
 /// when the clause uses a disqualifying shape.
 let private clauseEdits (source: ISourceText) (pat: SynPat) : (range * string * string) list option =
-    let edits = ResizeArray()
     let mutable ok = true
     let mutable pending = [ pat ]
 
-    while not pending.IsEmpty && ok do
-        match pending with
-        | [] -> ()
-        | p :: rest ->
-            pending <- rest
+    let edits =
+        [
+            while not pending.IsEmpty && ok do
+                match pending with
+                | [] -> ()
+                | p :: rest ->
+                    pending <- rest
 
-            match p with
-            | SynPat.Wild _ -> ()
-            | SynPat.Paren(inner, _) -> pending <- inner :: pending
-            | SynPat.Or(lhsPat = l; rhsPat = r) -> pending <- l :: r :: pending
-            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ caseId ])) when
-                caseId.idText = "Some" || caseId.idText = "None"
-                ->
-                let replacement = if caseId.idText = "Some" then "ValueSome" else "ValueNone"
-                edits.Add(caseId.idRange, textOfRange source caseId.idRange, replacement)
-            | _ -> ok <- false
+                    match p with
+                    | SynPat.Wild _ -> ()
+                    | SynPat.Paren(inner, _) -> pending <- inner :: pending
+                    | SynPat.Or(lhsPat = l; rhsPat = r) -> pending <- l :: r :: pending
+                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ caseId ])) when
+                        caseId.idText = "Some" || caseId.idText = "None"
+                        ->
+                        let replacement = if caseId.idText = "Some" then "ValueSome" else "ValueNone"
+                        (caseId.idRange, textOfRange source caseId.idRange, replacement)
+                    | _ -> ok <- false
+        ]
 
-    if ok then Some(List.ofSeq edits) else None
+    if ok then Some edits else None
 
 /// Find private option-returning functions whose whole use graph can move
 /// to ValueOption. Requires typed check results.

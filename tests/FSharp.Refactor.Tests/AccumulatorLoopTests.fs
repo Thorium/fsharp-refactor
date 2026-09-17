@@ -274,3 +274,12 @@ let ``a loop that also assigns an outer mutable is still a list expression`` () 
         "let f (xs: int list) =\n    let ys = ResizeArray<int>()\n    let mutable total = 0\n    for x in xs do\n        ys.Add(x * 2)\n        total <- total + x\n    List.ofSeq ys, total"
         "let f (xs: int list) =\n    let mutable total = 0\n    let ys: int list =\n        [\n            for x in xs do\n                x * 2\n                total <- total + x\n        ]\n    ys, total"
     |> ignore
+
+[<Fact>]
+let ``a drain wrapped in an application's own parentheses keeps a pair`` () =
+    // `Some(List.ofSeq acc)`: dropping the parentheses would glue the name
+    // to the function - `Someacc` (the tool's own StructOption.fs)
+    assertRewrite
+        "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add(x * 2)\n    Some(List.ofSeq acc)"
+        "let f (xs: int list) =\n    let acc: int list =\n        [\n            for x in xs do\n                x * 2\n        ]\n    Some(acc)"
+    |> ignore

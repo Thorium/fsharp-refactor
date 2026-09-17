@@ -237,7 +237,7 @@ let ``call sites in a later file are rewritten with the definition`` () =
         let patchedB = applyEdits sourceB inB
         Assert.Equal("module B\n\nlet x = A.describe A.Region.Eu + A.describe A.Region.Uk\n", patchedB)
         let errors = recheck patchedA patchedB
-        Assert.True(Array.isEmpty errors, $"errors: %A{errors}\n{patchedA}\n{patchedB}")
+        Assert.True(Array.isEmpty errors, $"errors: %A{errors}\n%s{patchedA}\n%s{patchedB}")
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -355,3 +355,16 @@ let ``a typed %s hole in an interpolated string becomes %O`` () =
         "let f (mode: string) =\n    let line = $\"mode: %s{mode}!\"\n    match mode with\n    | \"on\" -> line\n    | \"off\" -> \"\"\n    | _ -> \"?\"\n\nlet x = f \"on\" + f \"off\""
         "[<RequireQualifiedAccess>]\ntype Mode =\n    | On\n    | Off\n\n    override this.ToString() =\n        match this with\n        | Mode.On -> \"on\"\n        | Mode.Off -> \"off\"\n\nlet f (mode: Mode) =\n    let line = $\"mode: %O{mode}!\"\n    match mode with\n    | Mode.On -> line\n    | Mode.Off -> \"\"\n\nlet x = f Mode.On + f Mode.Off"
     |> ignore
+
+[<Fact>]
+let ``two fields of the same name in one file get distinct union names`` () =
+    // both records have a `Kind` field over their own literal sets: the
+    // second union carries its record's name rather than duplicating `Kind`
+    // (Fuuga's generate-honesty-data.fsx, a duplicate definition rolled back)
+    let names =
+        findIn
+            "type Item = { Kind: string; Size: int }\ntype Job = { Kind: string; Id: int }\n\nlet items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ]\nlet jobs = [ { Kind = \"build\"; Id = 1 }; { Kind = \"test\"; Id = 2 } ]\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n\nlet cost (j: Job) =\n    match j.Kind with\n    | \"build\" -> 10\n    | \"test\" -> 1\n    | _ -> failwith \"?\""
+        |> List.map (fun s -> s.Name)
+        |> List.sort
+
+    Assert.Equal<string list>([ "JobKind"; "Kind" ], names)

@@ -340,10 +340,11 @@ let private applicationOf (path: SyntaxNode list) (useRange: range) =
             | SynExpr.TypeApp(expr = inner) -> before inner n
             | _ -> n
 
-        Some(f, whole app rest, before f 0)
+        ValueSome(f, whole app rest, before f 0)
     | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = IdentName "op_PipeRight"; argExpr = lhs)) :: SyntaxNode.SynExpr(SynExpr.App(
-        isInfix = false; argExpr = f) as app) :: rest when sameSpan lhs.Range useRange -> Some(f, whole app rest, -1)
-    | _ -> None
+        isInfix = false; argExpr = f) as app) :: rest when sameSpan lhs.Range useRange ->
+        ValueSome(f, whole app rest, -1)
+    | _ -> ValueNone
 
 /// The FUNCTION an application's head resolves to: `String.concat ", " acc`
 /// applies `String.concat ", "`, whose own head names the function. A
@@ -360,15 +361,15 @@ let private headFunction (check: FSharpCheckFileResults) (source: ISourceText) (
     match ident f |> Option.bind (symbolAt check source) with
     | Some u ->
         match u.Symbol with
-        | :? FSharpMemberOrFunctionOrValue as v when not v.IsMember -> Some v
-        | _ -> None
-    | None -> None
+        | :? FSharpMemberOrFunctionOrValue as v when not v.IsMember -> ValueSome v
+        | _ -> ValueNone
+    | None -> ValueNone
 
 /// Does the function's parameter at this position take a `seq<_>`? The one
 /// question that makes a list or an array as welcome as the ResizeArray.
 let private seqParameter (check: FSharpCheckFileResults) (source: ISourceText) (f: SynExpr) (position: int) : bool =
     match headFunction check source f with
-    | Some v ->
+    | ValueSome v ->
         (try
             let groups = v.CurriedParameterGroups
 
@@ -382,7 +383,7 @@ let private seqParameter (check: FSharpCheckFileResults) (source: ISourceText) (
                 entityName t = "System.Collections.Generic.IEnumerable")
          with _ -> // an unreadable signature is no seq parameter; fsharpanalyzer: ignore-line FR0055
              false)
-    | None -> false
+    | ValueNone -> false
 
 let private coreListConversions = set [ "List.ofSeq"; "Seq.toList" ]
 let private coreArrayConversions = set [ "Array.ofSeq"; "Seq.toArray" ]
@@ -391,8 +392,8 @@ let private coreArrayConversions = set [ "Array.ofSeq"; "Seq.toArray" ]
 /// that happens to spell `ofSeq`?
 let private coreConversion (check: FSharpCheckFileResults) (source: ISourceText) (f: SynExpr) =
     match headFunction check source f with
-    | Some v -> (OptionModule.fullNameOf v).StartsWith "Microsoft.FSharp.Collections."
-    | None -> false
+    | ValueSome v -> (OptionModule.fullNameOf v).StartsWith "Microsoft.FSharp.Collections."
+    | ValueNone -> false
 
 let private functionText (f: SynExpr) =
     match f with
@@ -403,6 +404,7 @@ let private functionText (f: SynExpr) =
 /// Classify a read of the accumulator after its loops. `node` is the
 /// expression the use is: the bare identifier, or the `acc.Member` path it
 /// heads. None: a use the rewrite cannot keep — the rule stands down.
+[<TailCall>]
 let rec private classifyDrain
     (check: FSharpCheckFileResults)
     (source: ISourceText)
@@ -437,7 +439,7 @@ let rec private classifyDrain
         | SyntaxNode.SynExpr(SynExpr.InferredUpcast(expr = e)) :: _ when sameSpan e.Range useRange -> Some AsSeq
         | _ ->
             match applicationOf path useRange with
-            | Some(f, whole, position) ->
+            | ValueSome(f, whole, position) ->
                 let name = functionText f
 
                 if coreListConversions.Contains name && coreConversion check source f then
@@ -448,7 +450,7 @@ let rec private classifyDrain
                     Some AsSeq
                 else
                     None
-            | None -> None
+            | ValueNone -> None
 
 /// The yield that stands in for `acc.Add arg`, placed where the call stood:
 /// the argument, its outer parentheses dropped where the bare expression
@@ -736,12 +738,26 @@ let private suggestionFor
                                 Replacement = replacement
                             }
 
+                        // a drain whose wrapping parentheses were an application's
+                        // own - `Some(List.ofSeq acc)`, `f(Seq.toList acc)` - keeps a
+                        // pair, or the name would glue to the function: `Someacc`
+                        let drainName (r: range) =
+                            let line = source.GetLineString(r.StartLine - 1)
+
+                            let glued =
+                                r.StartColumn > 0
+                                && (textOfRange source r).StartsWith "("
+                                && (let c = line.[r.StartColumn - 1]
+                                    Char.IsLetterOrDigit c || c = '_' || c = '\'' || c = '`')
+
+                            if glued then $"({acc.idText})" else acc.idText
+
                         let drainEdits =
                             drains
                             |> List.choose (fun d ->
                                 match d with
-                                | ToList r when not wantsArray -> Some(edit r acc.idText)
-                                | ToArray r when wantsArray -> Some(edit r acc.idText)
+                                | ToList r when not wantsArray -> Some(edit r (drainName r))
+                                | ToArray r when wantsArray -> Some(edit r (drainName r))
                                 | Count r when wantsArray -> Some(edit r "Length")
                                 | _ -> None)
 
@@ -773,7 +789,7 @@ let findWith
         [
             for _, expr in index.Exprs do
                 match expr with
-                | LetOrUseE lou when not lou.IsRecursive && not lou.IsBang && not lou.IsUse ->
+                | LetOrUseE lou when not (lou.IsRecursive || lou.IsBang || lou.IsUse) ->
                     match lou.Bindings with
                     | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = acc)); expr = construction) as binding ] when
                         isEmptyConstruction construction

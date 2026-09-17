@@ -947,8 +947,8 @@ let commentsWithText (parseTree: ParsedInput) (source: ISourceText) =
         | ParsedInput.SigFile(ParsedSigFileInput(trivia = trivia)) -> trivia.CodeComments
         |> List.map (fun c ->
             match c with
-            | FSharp.Compiler.SyntaxTrivia.CommentTrivia.LineComment r
-            | FSharp.Compiler.SyntaxTrivia.CommentTrivia.BlockComment r -> r)
+            | CommentTrivia.LineComment r
+            | CommentTrivia.BlockComment r -> r)
 
     ranges |> List.map (fun r -> r, textOfRange source r)
 

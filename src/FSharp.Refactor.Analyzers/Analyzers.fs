@@ -2404,7 +2404,7 @@ let stringUnionApiWorld
         FileOrder =
             (fun path ->
                 sourceFiles
-                |> Seq.tryFindIndex (fun f -> sameFile f path)
+                |> Array.tryFindIndex (fun f -> sameFile f path)
                 |> Option.defaultValue Int32.MaxValue)
         ScopeOpen = publicRead
         TypeNames =

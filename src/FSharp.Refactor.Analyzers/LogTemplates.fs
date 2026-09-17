@@ -85,34 +85,36 @@ let rec private literalChain (e: SynExpr) : string option =
 
 /// Placeholder names of a message template, `{{`-escapes skipped.
 let internal placeholdersOf (template: string) =
-    let names = ResizeArray<string>()
     let mutable i = 0
 
-    while i < template.Length do
-        if i + 1 < template.Length && template.[i] = '{' && template.[i + 1] = '{' then
-            i <- i + 2
-        elif template.[i] = '{' then
-            let close = template.IndexOf('}', i + 1)
+    let names: string list =
+        [
+            while i < template.Length do
+                if i + 1 < template.Length && template.[i] = '{' && template.[i + 1] = '{' then
+                    i <- i + 2
+                elif template.[i] = '{' then
+                    let close = template.IndexOf('}', i + 1)
 
-            if close > i then
-                let raw = template.Substring(i + 1, close - i - 1)
-                let name = raw.TrimStart('@', '$')
+                    if close > i then
+                        let raw = template.Substring(i + 1, close - i - 1)
+                        let name = raw.TrimStart('@', '$')
 
-                let name =
-                    match name.IndexOfAny [| ':'; ',' |] with
-                    | -1 -> name
-                    | cut -> name.Substring(0, cut)
+                        let name =
+                            match name.IndexOfAny [| ':'; ',' |] with
+                            | -1 -> name
+                            | cut -> name.Substring(0, cut)
 
-                if name.Length > 0 then
-                    names.Add name
+                        if name.Length > 0 then
+                            name
 
-                i <- close + 1
-            else
-                i <- template.Length
-        else
-            i <- i + 1
+                        i <- close + 1
+                    else
+                        i <- template.Length
+                else
+                    i <- i + 1
+        ]
 
-    List.ofSeq names
+    names
 
 [<return: Struct>]
 let private (|CallIdent|_|) (e: SynExpr) =

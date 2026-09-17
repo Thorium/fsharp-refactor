@@ -1,6 +1,10 @@
 # Changelog
 
-The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last 6 versions; this file keeps every one.
+The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
+
+## 0.8.21
+
+Three defects from the 0.8.20 sweep over thirty-five repositories. The api pass no longer puts cross-project edits back on a false alarm: FCS cannot hand a sibling in-memory assembly data for a project whose typecheck creates generated provided types (a JsonProvider sample), so the sibling silently bound to the dll on disk, built before the edits, and every migrated call site failed against the old signature (CarmelNet's tests); a failed in-memory check is now confirmed by a real build of the sibling before anything is put back, and the referenced project is rebuilt so the next pass reads the sibling against the edits. FR0156 keeps a pair of parentheses where the drain's were an application's own - `Some(List.ofSeq acc)` had become `Someacc`. FR0157 never gives two unions in one file the same name: two records with a `domain` field each got a `Domain`; a field's second choice now carries its record's name (`JobKind`) before the `Kind` suffix.
 
 ## 0.8.20
 

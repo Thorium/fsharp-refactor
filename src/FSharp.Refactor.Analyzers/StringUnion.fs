@@ -478,6 +478,7 @@ let rec private exits (e: SynExpr) : SynExpr list =
 /// value on — parentheses, the branches of an if or a match, the last of a
 /// sequence, a let's body, a try — to the first that consumes it. Returns
 /// the remaining ancestors and the node that reached them.
+[<TailCall>]
 let rec private passesUpTo (path: SyntaxNode list) (child: SynExpr) : SyntaxNode list * SynExpr =
     let branchOf (p: SynExpr) =
         match p with
@@ -509,6 +510,7 @@ let rec private passesUpTo (path: SyntaxNode list) (child: SynExpr) : SyntaxNode
 
 /// The head identifier of an application and how many arguments the
 /// application already supplies: `String.concat ", " acc` is `concat`, 2.
+[<TailCall>]
 let rec private applicationHead (f: SynExpr) (n: int) : (Ident * int) option =
     match f with
     | SynExpr.App(isInfix = false; funcExpr = inner) -> applicationHead inner (n + 1)
@@ -599,7 +601,7 @@ let private quote (text: string) =
 type private Source =
     /// A string literal: its text, its range (to rewrite), and the constant
     /// binding it came through, if any (file, ident).
-    | Literal of string * range * (string * Ident) option
+    | Literal of text: string * r: range * via: (string * Ident) option
     | FromSlot of Slot
     /// `None` / `ValueNone`.
     | Nothing
@@ -608,16 +610,16 @@ type private Source =
 /// A use of a slot's value.
 type private Sink =
     /// `match slot with` — in this file, this match.
-    | Consumer of string * SynExpr
+    | Consumer of file: string * m: SynExpr
     /// `slot = "lit"`: the literal to rewrite, with its text.
-    | Compare of string * range * string
+    | Compare of file: string * r: range * text: string
     | ToSlot of Slot
     /// `$"{slot}"`, `string slot`, `slot.ToString()`: fine as they are.
     | Print
     /// A print that needs one edit to keep working: a `%s` hole becoming
     /// `%O`, an operand of `+` becoming `string operand`. The file, the
     /// range and the text.
-    | Rewrite of string * range * string
+    | Rewrite of file: string * r: range * text: string
     | OpenSink of string
 
 /// The constant a module-level `let name = "..."` binds, by name.
@@ -655,14 +657,14 @@ let private constantIsLiteral (index: AstIndex.Index) (constIdent: Ident) =
 type private Arm =
     /// A literal pattern: the text, the pattern's range, the constant it
     /// came through if any, whether a `when` guards it.
-    | LiteralArm of string * range * (string * Ident) option * bool
+    | LiteralArm of text: string * r: range * via: (string * Ident) option * guarded: bool
     /// `| name ->` spelling a module-level constant: the shadowing bug.
-    | ShadowArm of string * range * (string * Ident) * string
+    | ShadowArm of text: string * r: range * via: (string * Ident) * name: string
     /// `| _ ->`, `| name ->`: the clause, and the name's symbol if bound.
     /// `| _ ->`, `| name ->`, `| Some _ ->`, `| Error _ ->`: the clause, the
     /// name's symbol if bound, and whether it covers the WHOLE slot (a bare
     /// wildcard) or only its string-carrying case.
-    | CatchAll of SynMatchClause * FSharpSymbol option * bool
+    | CatchAll of clause: SynMatchClause * bound: FSharpSymbol option * whole: bool
     /// `| None ->` and the like: nothing to do.
     | Inert
     | OpenArm of string
@@ -1128,7 +1130,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                 // character - no escapes, no @ or triple quotes - places it
                 let spelledPlainly =
                     match this.FileOf file with
-                    | Some(_, fs) -> textOfRange fs formatRange = "\"" + format + "\""
+                    | Some(_, fs) -> textOfRange fs formatRange = $"\"{format}\""
                     | None -> false
 
                 if index < holes.Length && isSingleLine formatRange && spelledPlainly then
@@ -1739,6 +1741,7 @@ let private closure (analysis: Analysis) (start: Slot) : Component =
 
 /// The `string` type node inside an annotation: `string`, `string option`,
 /// `option<string>`, `voption<string>`.
+[<TailCall>]
 let rec private stringTypeIn (t: SynType) : SynType option =
     match t with
     | SynType.LongIdent(SynLongIdent(id = [ id ])) when id.idText = "string" -> Some t
@@ -1828,6 +1831,11 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
     // components already reported from this file: a second match on the
     // same slots says nothing new
     let reported = ResizeArray<Slot list>()
+
+    // union names this file's earlier suggestions introduce: two records with a
+    // `domain` field each got a `Domain` (Fuuga's generate-honesty-data.fsx),
+    // a duplicate definition the build check rolled back
+    let introduced = HashSet<string>()
 
     let candidates =
         [
@@ -2119,9 +2127,23 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                         // names: the union's, and one case per literal
                         let baseName = pascal subjectName.Value
 
+                        // a field's second choice carries its record's name
+                        let ownerPrefixed =
+                            match start.Symbol with
+                            | :? FSharpField as f ->
+                                try
+                                    f.DeclaringEntity |> Option.map (fun e -> e.DisplayName + baseName)
+                                with _ -> // fsharpanalyzer: ignore-line FR0055
+                                    None
+                            | _ -> None
+
                         let unionName =
-                            [ baseName; baseName + "Kind" ]
-                            |> List.tryFind (fun n -> not (world.TypeNames.Contains n) && n <> "")
+                            [ Some baseName; ownerPrefixed; Some(baseName + "Kind") ]
+                            |> List.choose id
+                            |> List.tryFind (fun n ->
+                                not (world.TypeNames.Contains n) && not (introduced.Contains n) && n <> "")
+
+                        unionName |> Option.iter (introduced.Add >> ignore)
 
                         let caseNames =
                             distinct
@@ -2546,11 +2568,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
 
                                     // on lines of its own after the binding, or appended to a
                                     // last line without a line break
-                                    let wrapper =
-                                        if a.End.Column = 0 then
-                                            "\n" + body + "\n"
-                                        else
-                                            "\n\n" + body
+                                    let wrapper = if a.End.Column = 0 then $"\n{body}\n" else "\n\n" + body
 
                                     edits.Add
                                         {
@@ -2570,7 +2588,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                     else
                                         ResizeArray(edits |> Seq.filter (fun e -> ownFile e.Range.FileName))
 
-                                if not annotationsOk || not catchAllsOk || not liveNamesOk then
+                                if not (annotationsOk && catchAllsOk && liveNamesOk) then
                                     None
                                 else
                                     // one edit per range

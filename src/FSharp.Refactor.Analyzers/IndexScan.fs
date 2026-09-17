@@ -91,7 +91,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     [
         for _, expr in index.Exprs do
             match expr with
-            | LetOrUseE lou when not lou.IsRecursive && not lou.IsBang && not lou.IsUse ->
+            | LetOrUseE lou when not (lou.IsRecursive || lou.IsBang || lou.IsUse) ->
                 match lou.Bindings, lou.Body with
                 | [ SynBinding(
                         isMutable = true

@@ -3901,6 +3901,7 @@ let private runApiPass
             else
                 checker.InvalidateConfiguration options
 
+
                 let groupsIn (files: AppliedFile list) =
                     files |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g))
 
@@ -3965,7 +3966,48 @@ let private runApiPass
                         else
                             None
 
-                    if not (Array.isEmpty errors) then
+                    // FCS checked the sibling against this project IN MEMORY - unless
+                    // it could not: a project whose typecheck creates generated
+                    // provided types (a JsonProvider sample, a SQL provider)
+                    // yields no in-memory assembly data, and FCS binds the
+                    // sibling to the dll on disk instead, built BEFORE this
+                    // round's edits, so every migrated call site fails against
+                    // the old signature (CarmelNet's tests against FSharp.Data).
+                    // A failed check is therefore confirmed by a real build of
+                    // the sibling, which builds this project first; only a
+                    // build that fails blames the edits
+                    let confirmedByBuild () =
+                        let project = compilation.ProjectFileName
+
+                        if
+                            not (Array.isEmpty errors)
+                            && project.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
+                            && File.Exists project
+                        then
+                            let exitCode, stdout, stderr =
+                                runForProject project processTimeout "dotnet" $"build \"{project}\" --nologo -v q"
+
+                            if exitCode = 0 then
+                                Out.dim
+                                    $"  ({name}: the in-memory typecheck reported errors but the project builds with the edits; the check bound to a stale assembly - a type provider's, most likely)"
+
+                                // the next pass reads the sibling the same way, so
+                                // the assembly it binds to must carry this pass's
+                                // edits: every framework's, the sibling's arguments
+                                // may name the one this compilation analyses
+                                let own = Path.GetFullPath options.ProjectFileName
+
+                                if own.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase) && File.Exists own then
+                                    runForProject own processTimeout "dotnet" $"build \"{own}\" --nologo -v q"
+                                    |> ignore
+
+                                false
+                            else
+                                true
+                        else
+                            not (Array.isEmpty errors)
+
+                    if confirmedByBuild () then
                         let blamed = blamed ()
 
                         Out.skip
@@ -3973,6 +4015,7 @@ let private runApiPass
 
                         for d in errors |> Array.truncate 2 do
                             Out.dim $"    {Path.GetFileName d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}"
+
 
                         blamed
                     else
