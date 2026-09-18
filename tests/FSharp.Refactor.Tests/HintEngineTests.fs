@@ -66,8 +66,83 @@ let ``null inequality becomes not isNull`` () =
     assertSingleSuggestion "module Test\nlet f (s: string) = s <> null" "not (isNull s)"
 
 [<Fact>]
-let ``map-map fusion composes the mappers`` () =
-    assertSingleSuggestion "module Test\nlet f g h xs = List.map g (List.map h xs)" "List.map (h >> g) xs"
+let ``map-map fusion composes two provably pure mappers`` () =
+    // FSharp.Core functions, union cases and lambdas over them: calling
+    // either has no effect, so interleaving the calls changes nothing
+    assertSingleSuggestion
+        "module Test\nlet f (xs: (int * string) list) = List.map string (List.map fst xs)"
+        "List.map (fst >> string) xs"
+
+    assertSingleSuggestion
+        "module Test\nlet f (xs: int[]) = Array.map (fun x -> x + 1) (Array.map abs xs)"
+        "Array.map (abs >> (fun x -> x + 1)) xs"
+
+    assertSingleSuggestion
+        "module Test\ntype K = A of int\nlet f (xs: int seq) = Seq.map A (Seq.map (fun (x: int) -> x * 2) xs)"
+        "Seq.map ((fun (x: int) -> x * 2) >> A) xs"
+
+[<Fact>]
+let ``map-map fusion stands down unless both mappers are provably effect-free`` () =
+    // `List.map g (List.map h xs)` runs every h before the first g; the
+    // fused `List.map (h >> g) xs` interleaves them, so a mapper that may
+    // have an effect - an opaque user function, a lambda that prints,
+    // assigns or sequences statements, a .NET method - keeps the two sweeps
+    assertNoSuggestion "module Test\nlet f g h xs = List.map g (List.map h xs)"
+
+    assertNoSuggestion
+        "module Test\nlet f (g: int -> int) (xs: int list) = Array.map string (Array.map g (Array.ofList xs))"
+
+    assertNoSuggestion
+        "module Test\nlet f (xs: int list) = xs |> List.map (fun x -> printfn \"a\"; x) |> List.map (fun x -> printfn \"b\"; x)"
+
+    assertNoSuggestion
+        "module Test\nlet mutable n = 0\nlet f (xs: int list) = List.map string (List.map (fun x -> n <- n + 1; x) xs)"
+
+    assertNoSuggestion
+        "module Test\nlet f (xs: string list) = Seq.map string (Seq.map (fun (s: string) -> System.Console.WriteLine s; s.Length) xs)"
+
+    assertNoSuggestion
+        "module Test\nlet f (xs: string list) = List.map string (List.map (fun (s: string) -> System.IO.File.ReadAllText s) xs)"
+
+[<Fact>]
+let ``map-map fusion stands down when a composed lambda looks a bare parameter up`` () =
+    // `fst >> (fun s -> s.Length)` is checked before the list it maps, so
+    // `s` has no type at the lookup (FS0072) where `List.map (fun s ->
+    // s.Length)` alone inferred it; an annotated parameter composes fine
+    assertNoSuggestion
+        "module Test\nlet f (pairs: (string * int) list) = List.map (fun s -> s.Length) (List.map fst pairs)"
+
+    assertSingleSuggestion
+        "module Test\nlet f (pairs: (string * int) list) = List.map (fun (s: string) -> s.Length) (List.map fst pairs)"
+        "List.map (fst >> (fun (s: string) -> s.Length)) pairs"
+
+[<Fact>]
+let ``map-map fusion stands down on a throwing or active-pattern mapper`` () =
+    // a mapper that raises by design: fused, the second sweep's throw can
+    // fire before the first sweep has finished
+    assertNoSuggestion
+        "module Test\nlet f (strs: string list) = List.map (fun (x: int) -> if x < 0 then failwith \"neg\" else x) (List.map int strs)"
+
+    // an active pattern runs its own body, which no expression of the
+    // lambda names
+    assertNoSuggestion
+        "module Test\nlet (|Logged|) (x: int) = printfn \"%d\" x; x\nlet f (xs: int list) = List.map (fun x -> match x with Logged v -> v + 1) (List.map (fun x -> match x with Logged v -> v * 2) xs)"
+
+    // a reference-cell write and an in-place array sort are effects
+    assertNoSuggestion
+        "module Test\nlet last = ref 0\nlet f (xs: int list) = List.map string (List.map (fun x -> last := x; x) xs)"
+
+    assertNoSuggestion
+        "module Test\nlet f (xs: int[] list) = List.map Array.length (List.map (fun (a: int[]) -> Array.sortInPlace a; a) xs)"
+
+[<Fact>]
+let ``map-map fusion needs the typed tree`` () =
+    // without a clean typed check no mapper is provably pure
+    let source =
+        "module Test\nlet f (xs: (int * string) list) = List.map string (List.map fst xs)"
+
+    let tree, sourceText, _ = parseAndCheck source
+    Assert.Empty(HintEngine.find [] tree sourceText None)
 
 [<Fact>]
 let ``concat of map becomes collect`` () =
@@ -251,15 +326,15 @@ let ``metavariables inside array literals substitute correctly`` () =
 let ``match nested inside surrounding calls still rewrites precisely`` () =
     // fusion target sits inside a larger expression with intermediate steps
     assertSingleSuggestion
-        "module Test\nlet f (g: int -> int) xs = Set.ofList (List.map string (List.map g xs))"
-        "List.map (g >> string) xs"
+        "module Test\nlet f (xs: int list) = Set.ofList (List.map string (List.map abs xs))"
+        "List.map (abs >> string) xs"
 
 [<Fact>]
 let ``pipelined form of an application rule is normalized and matched`` () =
     // `lhs |> rhs` unifies with application-shaped rules as `rhs lhs`
     assertSingleSuggestion
-        "module Test\nlet f (g: int -> int) xs = xs |> List.map g |> List.map string"
-        "xs |> List.map (g >> string)"
+        "module Test\nlet f (xs: int list) = xs |> List.map abs |> List.map string"
+        "xs |> List.map (abs >> string)"
 
 [<Fact>]
 let ``pipe normalization also simplifies inner pipeline stages`` () =

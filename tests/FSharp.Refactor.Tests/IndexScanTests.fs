@@ -4,10 +4,9 @@ open Xunit
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 
-// parse-only rule, but the script harness spares the tests a module header
 let private findIn (source: string) =
-    let tree, sourceText, _ = parseAndCheck source
-    IndexScan.find tree sourceText
+    let tree, sourceText, checkResults = parseAndCheck source
+    IndexScan.find tree sourceText checkResults
 
 let private assertRewrite (source: string) (expected: string) =
     match findIn source with
@@ -61,4 +60,12 @@ let ``a step that reads the index is not a step`` () =
     Assert.Empty(
         findIn
             "let f (lines: string[]) =\n    let mutable line = 0\n    while line < lines.Length && lines.[line] = \"\" do\n        line <- line + line\n    line"
+    )
+
+[<Fact>]
+let ``a condition reading a Span parameter cannot move into the local function`` () =
+    // the `let rec` would capture the ReadOnlySpan: FS0406
+    Assert.Empty(
+        findIn
+            "module T\nopen System\nlet skipBlanks (s: ReadOnlySpan<char>) =\n    let mutable i = 0\n    while i < s.Length && s.[i] = ' ' do\n        i <- i + 1\n    i"
     )

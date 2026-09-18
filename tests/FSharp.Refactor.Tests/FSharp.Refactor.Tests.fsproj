@@ -82,10 +82,15 @@
     <Compile Include="AuditUseBindingTests.fs" />
     <Compile Include="AuditInfraTests.fs" />
     <Compile Include="AuditPatternTests.fs" />
+    <Compile Include="AuditSemanticBTests.fs" />
+    <Compile Include="AuditGuardsBTests.fs" />
     <Compile Include="AuditToolTests.fs" />
+    <Compile Include="AuditCompileBreakTests.fs" />
     <Compile Include="AuditUseBinding2Tests.fs" />
     <Compile Include="AuditExprTreeTests.fs" />
     <Compile Include="AuditRewriteTests.fs" />
+    <Compile Include="AuditSemanticATests.fs" />
+    <Compile Include="AuditGuardsATests.fs" />
     <Compile Include="AuditGateTests.fs" />
     <Compile Include="AuditDriverTests.fs" />
     <Compile Include="AlignmentHazardTests.fs" />

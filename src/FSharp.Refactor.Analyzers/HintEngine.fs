@@ -79,6 +79,11 @@ type Hint =
             /// Metavariables that must bind pure atoms because the right side
             /// drops or duplicates them.
             PureOnlyVars: Set<string>
+            /// Metavariables the right side COMPOSES (`g >> f`) where the
+            /// left side applied them in two sweeps (`List.map f (List.map
+            /// g x)`): the fused form interleaves the calls, so both must
+            /// bind functions whose calls provably have no effect.
+            PureFunctionVars: Set<string>
             /// Metavariables the left side compares against a bool LITERAL.
             /// `x = true` type-checks with x : obj too (the literal subsumes
             /// to obj), so dropping the comparison demands typed proof that
@@ -332,6 +337,33 @@ let parseRule (rule: string) : Hint option =
                         rhsCounts.TryFind v
                         |> Option.forall (fun n -> n > (lhsVars |> List.filter (fun (n', _) -> n' = v) |> List.length)))
 
+                // the operands of a `>>` / `<<` on the right side: the left
+                // side ran them as two whole sweeps, the composition runs
+                // them alternately, so both need to be effect-free functions
+                let pureFunctions =
+                    let acc = HashSet<string>()
+
+                    let rec walk (e: SynExpr) =
+                        match e with
+                        | SynExpr.App(
+                            funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = a); argExpr = b) when
+                            op.idText = "op_ComposeRight" || op.idText = "op_ComposeLeft"
+                            ->
+                            for side in [ a; b ] do
+                                match stripParens side with
+                                | MetaVar v -> acc.Add v |> ignore
+                                | other -> walk other
+                        | SynExpr.App(funcExpr = f; argExpr = a) ->
+                            walk f
+                            walk a
+                        | SynExpr.Paren(expr = inner) -> walk inner
+                        | SynExpr.Tuple(exprs = es)
+                        | SynExpr.ArrayOrList(exprs = es) -> List.iter walk es
+                        | _ -> ()
+
+                    walk rhs
+                    Set.ofSeq acc
+
                 let spans =
                     rhsVars
                     |> List.map (fun (v, r) -> v, r.StartColumn - ParsePrefix.Length, r.EndColumn - ParsePrefix.Length)
@@ -450,6 +482,7 @@ let parseRule (rule: string) : Hint option =
                         RhsVarSpans = spans
                         RhsBoolOperandSpans = boolOperandSpans
                         PureOnlyVars = pureOnly
+                        PureFunctionVars = pureFunctions
                         BoolTypedVars = boolTyped
                         NotFloatVars = notFloat
                         RhsNames = collectNames rhs |> List.distinct
@@ -483,6 +516,12 @@ let defaultRules =
         "compare x y >= 0 ===> x >= y"
         "List.head (List.sort x) ===> List.min x"
         "List.head (List.sortBy f x) ===> List.minBy f x"
+        // map-of-map fusion, as FSharpLint spells it - but guarded:
+        // `List.map f (List.map g x)` runs EVERY g before the first f, and
+        // `List.map (g >> f) x` interleaves them, so the composed
+        // metavariables must bind provably effect-free functions
+        // (PureFunctionVars, proven by isPureFunction), or a printfn in
+        // each mapper would change order
         "List.map f (List.map g x) ===> List.map (g >> f) x"
         "Array.map f (Array.map g x) ===> Array.map (g >> f) x"
         "Seq.map f (Seq.map g x) ===> Seq.map (g >> f) x"
@@ -656,6 +695,18 @@ let private nameResolvesToCore (check: FSharpCheckFileResults) (source: ISourceT
                 | None -> false
             with _ -> // a scope FCS cannot answer for is one the hint does not rewrite; fsharpanalyzer: ignore-line FR0055
                 false
+
+/// Does the matched expression sit inside a computation expression's body
+/// (`builder { ... }`, which parses as `App(builder, ComputationExpr)`)?
+/// The untyped path's stand-in for `nameResolvesToCore`: a builder's
+/// custom operation is the one thing a bare FSharp.Core name can be
+/// mistaken for by shape, and it can only occur there.
+let private insideComputationExpr (path: SyntaxNode list) =
+    path
+    |> List.exists (fun node ->
+        match node with
+        | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) -> true
+        | _ -> false)
 
 /// Is the expression provably of type bool — syntactically boolean (a
 /// comparison, a logical operator, `not`, a literal), or a name or call
@@ -932,6 +983,214 @@ let private shadowingNames (parseTree: ParsedInput) (check: FSharpCheckFileResul
 
     names
 
+/// Names of FSharp.Core whose CALL is an effect: `callsOnlyCore` waves
+/// every FSharp.Core function through, and these are the ones it must not.
+let private effectfulCoreNames =
+    set
+        [
+            "printf"
+            "printfn"
+            "eprintf"
+            "eprintfn"
+            "fprintf"
+            "fprintfn"
+            "kprintf"
+            "kfprintf"
+            "bprintf"
+            "stdout"
+            "stderr"
+            "stdin"
+            "incr"
+            "decr"
+            "lock"
+            "exit"
+            "iter"
+            "iteri"
+            "iter2"
+            "iteri2"
+            "Async"
+            "Event"
+            "Observable"
+            "Task"
+            "Console"
+            // a mapper that raises by design: fused, a throw in the second
+            // sweep fires before the first sweep has finished, so a
+            // DIFFERENT exception can escape when both mappers may throw
+            "raise"
+            "reraise"
+            "failwith"
+            "failwithf"
+            "invalidArg"
+            "invalidOp"
+            "nullArg"
+            // a reference cell write and a lazy force are effects too
+            "op_ColonEquals"
+            "force"
+            "Force"
+        ]
+
+/// The in-place operations of the Array module: `Array.set`, `Array.fill`
+/// and the sorts write through the array they are handed.
+let private inPlaceArrayOps =
+    set [ "set"; "fill"; "blit"; "sortInPlace"; "sortInPlaceBy"; "sortInPlaceWith" ]
+
+/// Are the CALLS of this function provably effect-free? A composition
+/// `g >> f` in a hint's right side interleaves calls the left side ran in
+/// two whole sweeps, so it preserves behaviour only when neither mapper
+/// does anything but compute. The expression (a bare name, a partial
+/// application, a lambda) may resolve to FSharp.Core functions, System.
+/// String members, union cases and record fields only (`OptionModule.
+/// callsOnlyCore`: a user function is opaque and stands the hint down),
+/// may name none of the effectful core (the printf family, iter, incr,
+/// lock, Async...), may read no property declared outside FSharp.Core and
+/// the BCL (a user getter runs its body) nor `Lazy.Value` (which forces
+/// the thunk), may hold no interpolated string with a hole (formatted by a
+/// ToString the type chooses), and may hold no statement sequence,
+/// assignment, loop, handler, constructor or object expression. FSharpLint
+/// fuses the two maps unconditionally; this is the guard that keeps the
+/// rule and drops the reordering.
+let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText) (index: AstIndex.Index) (e: SynExpr) =
+    let r = e.Range
+
+    let effectful (ids: Ident list) =
+        ids |> List.exists (fun id -> effectfulCoreNames.Contains id.idText)
+        || (match ids with
+            | [ m; op ] -> m.idText = "Array" && inPlaceArrayOps.Contains op.idText
+            | _ -> false)
+
+    // a property read is a CALL the shape hides: `callsOnlyCore` waves a
+    // getter through as "not a function", but a user's getter runs its
+    // body (a log line, a counter) and `Lazy.Value` forces the thunk — both
+    // observable when the fused composition reorders them. A getter of
+    // FSharp.Core or the BCL other than Lazy's (`s.Length`, `t.Item1`) is
+    // a read
+    let foreignProperty (ids: Ident list) =
+        match List.tryLast ids with
+        | None -> false
+        | Some id ->
+            let idr = id.idRange
+
+            try
+                match
+                    check.GetSymbolUseAtLocation(
+                        idr.EndLine,
+                        idr.EndColumn,
+                        source.GetLineString(idr.EndLine - 1),
+                        [ id.idText ]
+                    )
+                with
+                | Some u ->
+                    match u.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as v when v.IsProperty || v.IsPropertyGetterMethod ->
+                        let owner = OptionModule.enclosingFullName v
+                        let full = OptionModule.fullNameOf v
+
+                        owner.StartsWith "System.Lazy"
+                        || full.Contains "LazyExtensions"
+                        // an extension property's owner is the BCL type it
+                        // extends; its getter is the user's
+                        || v.IsExtensionMember
+                        || not (owner.StartsWith "System." || owner.StartsWith "Microsoft.FSharp.")
+                    | _ -> false
+                | None -> false
+            with _ -> // unresolved is unproven, and the hint stands down; fsharpanalyzer: ignore-line FR0055
+                true
+
+    // a lambda whose UNANNOTATED parameter is dot-accessed: inside the
+    // composition the lambda is checked before the collection it will be
+    // applied to, so `fst >> (fun s -> s.Length)` is FS0072 ("lookup on an
+    // object of indeterminate type") where `List.map (fun s -> s.Length)`
+    // alone inferred `s` from the list. An annotated parameter is fine
+    let lookupOnBareParameter =
+        match e with
+        | SynExpr.Lambda(parsedData = Some(parameters, body)) ->
+            let bare =
+                parameters
+                |> List.choose (fun p ->
+                    match p with
+                    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                    | _ -> None)
+                |> Set.ofList
+
+            not bare.IsEmpty
+            && index.Exprs
+               |> Array.exists (fun (_, sub) ->
+                   Range.rangeContainsRange body.Range sub.Range
+                   && (match sub with
+                       | SynExpr.DotGet(expr = SynExpr.Ident id)
+                       | SynExpr.DotIndexedGet(objectExpr = SynExpr.Ident id) -> bare.Contains id.idText
+                       | _ -> false))
+        | _ -> false
+
+    // an active pattern matched inside the mapper runs its own body, which
+    // no expression of the lambda names: `Logged v` printing as it binds
+    let matchesActivePattern =
+        index.Pats
+        |> Array.exists (fun (_, p) ->
+            Range.rangeContainsRange r p.Range
+            && (match p with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    let id = List.last ids
+                    let idr = id.idRange
+
+                    match
+                        check.GetSymbolUseAtLocation(
+                            idr.EndLine,
+                            idr.EndColumn,
+                            source.GetLineString(idr.EndLine - 1),
+                            [ id.idText ]
+                        )
+                    with
+                    | Some u -> u.Symbol :? FSharpActivePatternCase
+                    | None -> false
+                | _ -> false))
+
+    let shapeOk =
+        index.Exprs
+        |> Array.forall (fun (_, sub) ->
+            not (Range.rangeContainsRange r sub.Range)
+            || (match sub with
+                | SynExpr.Sequential _
+                | SynExpr.Set _
+                | SynExpr.LongIdentSet _
+                | SynExpr.DotSet _
+                | SynExpr.DotIndexedSet _
+                | SynExpr.NamedIndexedPropertySet _
+                | SynExpr.DotNamedIndexedPropertySet _
+                | SynExpr.While _
+                | SynExpr.For _
+                | SynExpr.ForEach _
+                | SynExpr.TryWith _
+                | SynExpr.TryFinally _
+                | SynExpr.Do _
+                | SynExpr.DoBang _
+                | SynExpr.ComputationExpr _
+                | SynExpr.YieldOrReturn _
+                | SynExpr.YieldOrReturnFrom _
+                | SynExpr.Assert _
+                | SynExpr.Lazy _
+                | SynExpr.AddressOf _
+                | SynExpr.New _
+                | SynExpr.ObjExpr _ -> false
+                // a hole is formatted by ITS type's ToString — a user
+                // override, run once per element in a different order
+                | SynExpr.InterpolatedString(contents = parts) ->
+                    parts
+                    |> List.forall (fun part ->
+                        match part with
+                        | SynInterpolatedStringPart.FillExpr _ -> false
+                        | _ -> true)
+                | SynExpr.Ident id -> not (effectfulCoreNames.Contains id.idText)
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) ->
+                    not (effectful ids) && not (foreignProperty ids)
+                | _ -> true))
+
+    shapeOk
+    && not lookupOnBareParameter
+    && not matchesActivePattern
+    && OptionModule.callsOnlyCore check source index r
+
 let find
     (extraRules: string list)
     (parseTree: ParsedInput)
@@ -939,6 +1198,7 @@ let find
     (check: FSharpCheckFileResults option)
     : Suggestion list =
     let typedCheck = check |> Option.filter (OptionModule.hasErrors >> not)
+    let fileIndex = lazy (AstIndex.ofTree parseTree)
 
     // the names the right sides introduce must still be FSharp.Core's at
     // the site; computed once, when the first rule matches
@@ -1028,15 +1288,41 @@ let find
                     && hint.RhsNames |> List.exists shadowing.Value.Contains
 
                 // a built-in rule's left side spelling a name that is not
-                // FSharp.Core's at the site matched something else by shape
+                // FSharp.Core's at the site matched something else by shape.
+                // With a clean typed check the names prove themselves; without
+                // one (a parse-only caller, a file with any error) the one
+                // shape that has actually matched something else is a
+                // computation expression's CUSTOM OPERATION — a builder's `id`
+                // matched `id x ===> x` on a file with one unrelated type error
+                // and lost its keyword — and a custom operation exists only
+                // inside a `builder { }` body. There the hint stands down;
+                // outside one the shape fires as it always has (a shadowing
+                // `let id x = ...` is the typed gate's to catch, and the
+                // untyped path never had it)
                 let lhsForeign =
                     match typedCheck with
                     | Some c when hint.CoreNames ->
                         hint.LhsNames |> List.exists (nameResolvesToCore c source expr >> not)
+                    | None when hint.CoreNames -> insideComputationExpr path
                     | _ -> false
+
+                // both operands of a composed right side must be functions
+                // whose calls have no effect; without a clean typed check
+                // nothing proves it, and the hint stands down
+                let pureFunctionsOk =
+                    hint.PureFunctionVars.IsEmpty
+                    || (match typedCheck with
+                        | Some c ->
+                            hint.PureFunctionVars
+                            |> Set.forall (fun v ->
+                                match bindings.TryGetValue v with
+                                | true, bound -> isPureFunction c source fileIndex.Value (stripParens bound)
+                                | false, _ -> false)
+                        | None -> false)
 
                 if
                     pureOk
+                    && pureFunctionsOk
                     && boolTypedOk
                     && not movesOverloadedMethodGroup
                     && not namedArgumentPosition

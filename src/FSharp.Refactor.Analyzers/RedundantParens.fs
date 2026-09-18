@@ -137,6 +137,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     // reason — `f(x)?y` bare would bind the argument to `?`
                     let projected =
                         match path with
+                        // this application is itself the FUNCTION of the
+                        // enclosing one and the next argument TOUCHES the
+                        // closing paren: the F# 6 indexer `List.sort(xs)[0]`
+                        // (an atomic App over `ArrayOrListComputed`) and the
+                        // further argument of `add(s)(2)`. Bare, `xs[0]` and
+                        // `s(2)` bind to the argument first — FS0193. A
+                        // spaced continuation, `List.map(id) [ 1; 2 ]`, is
+                        // the same application either way
+                        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = f; argExpr = next)) :: _ when
+                            Range.equals f.Range expr.Range
+                            && Position.posEq next.Range.Start argExpr.Range.End
+                            ->
+                            true
                         | SyntaxNode.SynExpr(SynExpr.DotGet _) :: _
                         | SyntaxNode.SynExpr(SynExpr.DotIndexedGet _) :: _
                         | SyntaxNode.SynExpr(SynExpr.Dynamic _) :: _ -> true

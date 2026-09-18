@@ -432,3 +432,45 @@ let ``a record reached through a field and a curried serializer call stands down
         findIn
             "type Item = { Kind: string; Size: int }\ntype Wrapper = { Items: Item list }\n\nlet wrapper = { Items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ] }\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n\nlet serialize (options: System.Text.Json.JsonSerializerOptions) (value: Item list) = System.Text.Json.JsonSerializer.Serialize(value, options)\nlet json = serialize (System.Text.Json.JsonSerializerOptions()) wrapper.Items"
     )
+
+[<Fact>]
+let ``a guarded catch-all is not dead: the rule stands down`` () =
+    // `| v when v.Length = 4` takes "POST" before its own arm does; deleting
+    // it as a dead catch-all would turn `route "POST"` from "four" into "write"
+    Assert.Empty(
+        findIn
+            "module T\nlet route (verb: string) =\n    match verb with\n    | v when v.Length = 4 -> \"four\"\n    | \"GET\" -> \"read\"\n    | \"POST\" -> \"write\"\n    | _ -> failwith \"unsupported\"\nlet a = route \"GET\"\nlet b = route \"POST\""
+    )
+
+    Assert.Empty(
+        findIn
+            "module T\nlet debug = true\nlet route (verb: string) =\n    match verb with\n    | _ when debug -> \"trace\"\n    | \"GET\" -> \"read\"\n    | \"POST\" -> \"write\"\n    | _ -> failwith \"unsupported\"\nlet a = route \"GET\"\nlet b = route \"POST\""
+    )
+
+[<Fact>]
+let ``an unguarded null arm is dead like the wildcard and goes with it`` () =
+    // every source is a literal, so null never arrives: the arm is deleted
+    // as a catch-all (a union has no null arm to keep, FS0043)
+    assertRewrite
+        "module T\nlet describe (region: string) =\n    match region with\n    | null -> \"none\"\n    | \"eu\" -> \"Europe\"\n    | \"uk\" -> \"Britain\"\n    | _ -> failwith \"?\"\nlet a = describe \"eu\"\nlet b = describe \"uk\""
+        "module T\n[<RequireQualifiedAccess>]\ntype Region =\n    | Eu\n    | Uk\n\n    override this.ToString() =\n        match this with\n        | Region.Eu -> \"eu\"\n        | Region.Uk -> \"uk\"\n\nlet describe (region: Region) =\n    match region with\n    | Region.Eu -> \"Europe\"\n    | Region.Uk -> \"Britain\"\nlet a = describe Region.Eu\nlet b = describe Region.Uk"
+    |> ignore
+
+[<Fact>]
+let ``a guarded null arm stays open and the rule stands down`` () =
+    Assert.Empty(
+        findIn
+            "module T\nlet debug = true\nlet describe (region: string) =\n    match region with\n    | null when debug -> \"none\"\n    | \"eu\" -> \"Europe\"\n    | \"uk\" -> \"Britain\"\n    | _ -> failwith \"?\"\nlet a = describe \"eu\"\nlet b = describe \"uk\""
+    )
+
+[<Fact>]
+let ``a constant is resolved by its declaration, not by its name`` () =
+    // `Overrides.kind` is "dir"; the file's own `kind` is "file". Read by
+    // name, both were "file" and `weight Overrides.kind` became the File case
+    // name. Both constants name their case `Kind`, so the cases fall back to
+    // the texts; the nested module's constant is not in reach by its bare
+    // name where the union sits, so its ToString arm keeps the literal
+    assertRewrite
+        "module T\nlet kind = \"file\"\nmodule Overrides =\n    let kind = \"dir\"\nlet weight (kind: string) =\n    match kind with\n    | \"file\" -> 1\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\nlet a = weight Overrides.kind\nlet b = weight kind"
+        "module T\nlet kind = \"file\"\nmodule Overrides =\n    let kind = \"dir\"\n[<RequireQualifiedAccess>]\ntype Kind =\n    | ``File``\n    | ``Dir``\n\n    override this.ToString() =\n        match this with\n        | Kind.``File`` -> kind\n        | Kind.``Dir`` -> \"dir\"\n\nlet weight (kind: Kind) =\n    match kind with\n    | Kind.``File`` -> 1\n    | Kind.``Dir`` -> 0\nlet a = weight Kind.``Dir``\nlet b = weight Kind.``File``"
+    |> ignore

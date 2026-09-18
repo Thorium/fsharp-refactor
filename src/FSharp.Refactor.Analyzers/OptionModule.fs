@@ -217,11 +217,14 @@ let private rewrite
 
 /// Would code moved from `bodyRange` into a fabricated lambda capture a
 /// MUTABLE LOCAL (an expression-level `let mutable`) or a byref parameter
-/// declared outside it? A match arm may write `total <- total + v` freely;
-/// the closure these rules manufacture around the same code was error
-/// FS0407 on every F# before 10, and byref capture still is. Shared by the
-/// rules that wrap a branch body in `fun ... ->` (Option/Result wrappers,
-/// OptionMatch, AddRange).
+/// declared outside it? A byref cannot be captured at all (FS0407). A
+/// mutable local CAN be since F# 4.0 — the compiler turns it into a ref
+/// cell silently — so the closure these rules manufacture would compile;
+/// the rules still refuse it, since a `total <- total + v` written as a
+/// plain assignment now allocates and dereferences a cell behind the
+/// author's back, and the guard errs on the side of leaving the match.
+/// Shared by the rules that wrap a branch body in `fun ... ->`
+/// (Option/Result wrappers, OptionMatch, AddRange).
 let capturesMutableLocal (index: AstIndex.Index) (bodyRange: range) : bool =
     let mutableNames =
         index.Exprs
@@ -265,8 +268,124 @@ let capturesMutableLocal (index: AstIndex.Index) (bodyRange: range) : bool =
                names.Contains first.idText && Range.rangeContainsRange bodyRange e.Range
            | _ -> false)
 
+/// Does the arm body at `bodyRange` mention a function bound by a `let
+/// rec` (or its `and`) that encloses it on `path`? In arm position that
+/// call is a TAIL call the compiler turns into a jump; moved into the
+/// lambda `Option.map`/`bind`/`iter` fabricate it runs inside a closure the
+/// mapper invokes, and a loop that ran in constant stack grows it per
+/// iteration:
+///
+///     let rec loop xs acc =
+///         match List.tryHead xs with
+///         | Some v -> loop (List.tail xs) (acc + v)     // tail call
+///         | None -> acc
+///
+/// A mention counts whether applied or passed on — a value spelling of
+/// the name goes somewhere this scan cannot follow.
+///
+/// A member is recursive without a `rec`: `member this.Walk xs acc` calling
+/// `this.Walk (List.tail xs) (acc + v)` in an arm is the same tail call, so
+/// an enclosing member's own name reached through its self identifier
+/// (`this.Walk`, `self.Walk`) counts too, and so does the QUALIFIED
+/// spelling — a static member calling itself as `Walker.Walk ...` through
+/// the enclosing type's name, or a module's `let rec loop` called as
+/// `M.loop` through the enclosing module's.
+let private mentionsRecursiveBinder (index: AstIndex.Index) (path: SyntaxNode list) (bodyRange: range) =
+    let recursiveNames =
+        path
+        |> List.collect (fun node ->
+            let bindings =
+                match node with
+                | SyntaxNode.SynModule(SynModuleDecl.Let(isRecursive = true; bindings = bindings)) -> bindings
+                | SyntaxNode.SynExpr(LetOrUseE lou) when lou.IsRecursive -> lou.Bindings
+                | SyntaxNode.SynMemberDefn(SynMemberDefn.LetBindings(isRecursive = true; bindings = bindings)) ->
+                    bindings
+                | _ -> []
+
+            bindings
+            |> List.choose (fun (SynBinding(headPat = p)) ->
+                match p with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> Some id.idText
+                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                | _ -> None))
+        |> Set.ofList
+
+    // (self identifier, member name) of every member enclosing the body
+    let selfMembers =
+        path
+        |> List.choose (fun node ->
+            let binding =
+                match node with
+                | SyntaxNode.SynMemberDefn(SynMemberDefn.Member(memberDefn = b)) -> Some b
+                | SyntaxNode.SynBinding b -> Some b
+                | _ -> None
+
+            match binding with
+            | Some(SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ self; name ])))) ->
+                Some(self.idText, name.idText)
+            | _ -> None)
+        |> Set.ofList
+
+    let selfCall (s: Ident) (n: Ident) =
+        selfMembers
+        |> Set.exists (fun (self, name) ->
+            n.idText = name && (s.idText = self || s.idText = "this" || s.idText = "self"))
+
+    // the names of every member enclosing the body, static ones included
+    // (`static member Walk` has no self identifier: its head is `[Walk]`)
+    let memberNames =
+        path
+        |> List.choose (fun node ->
+            match node with
+            | SyntaxNode.SynMemberDefn(SynMemberDefn.Member(
+                memberDefn = SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = ids))))) when
+                not ids.IsEmpty
+                ->
+                Some (List.last ids).idText
+            | _ -> None)
+        |> Set.ofList
+
+    // the names of the types and modules enclosing the body: `Walker` in
+    // `Walker.Walk`, `M` in `M.loop`
+    let enclosingNames =
+        path
+        |> List.choose (fun node ->
+            match node with
+            | SyntaxNode.SynTypeDefn(SynTypeDefn(typeInfo = SynComponentInfo(longId = ids)))
+            | SyntaxNode.SynModule(SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids)))
+            | SyntaxNode.SynModuleOrNamespace(SynModuleOrNamespace(longId = ids)) when not ids.IsEmpty ->
+                Some (List.last ids).idText
+            | _ -> None)
+        |> Set.ofList
+
+    // `Walker.Walk`, `M.loop`: the enclosing type or module qualifying an
+    // enclosing member's or recursive binding's own name
+    let qualifiedCall (t: Ident) (n: Ident) =
+        enclosingNames.Contains t.idText
+        && (memberNames.Contains n.idText || recursiveNames.Contains n.idText)
+
+    (not recursiveNames.IsEmpty || not selfMembers.IsEmpty || not memberNames.IsEmpty)
+    && index.Exprs
+       |> Array.exists (fun (_, e) ->
+           match e with
+           | SynExpr.Ident id ->
+               recursiveNames.Contains id.idText
+               && Range.rangeContainsRange bodyRange id.idRange
+           | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) ->
+               recursiveNames.Contains id.idText
+               && Range.rangeContainsRange bodyRange id.idRange
+           | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ s; n ])) ->
+               (selfCall s n || qualifiedCall s n)
+               && Range.rangeContainsRange bodyRange n.idRange
+           | SynExpr.DotGet(expr = SynExpr.Ident s; longDotId = SynLongIdent(id = [ n ])) ->
+               (selfCall s n || qualifiedCall s n)
+               && Range.rangeContainsRange bodyRange n.idRange
+           | _ -> false)
+
 let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText) : Candidate list =
     let candidates = ResizeArray<Candidate>()
+    // one index per file, not one per candidate match
+    let index = AstIndex.ofTree parseTree
 
     let (|SomePat|_|) = somePat cfg
     let (|NonePat|_|) = nonePat cfg
@@ -298,8 +417,10 @@ let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source
                         && isSingleLine noneBody.Range
                         && isPlainBody someBody
                         && isPlainBody noneBody
-                        && not (capturesMutableLocal (AstIndex.ofTree parseTree) someBody.Range)
-                        && not (capturesMutableLocal (AstIndex.ofTree parseTree) noneBody.Range)
+                        && not (capturesMutableLocal index someBody.Range)
+                        && not (capturesMutableLocal index noneBody.Range)
+                        && not (mentionsRecursiveBinder index path someBody.Range)
+                        && not (mentionsRecursiveBinder index path noneBody.Range)
                         && not (implicitYieldPosition path)
                         ->
                         match rewrite cfg source scrutinee boundVar someBody noneBody with
@@ -415,6 +536,300 @@ let resolvesToCoreOperator (check: FSharpCheckFileResults) (source: ISourceText)
             || fullName.StartsWith "Microsoft.FSharp.Core.Printf"
         | _ -> false
     | None -> false
+
+/// The symbol an identifier resolves to at its own position, or None.
+let symbolOfIdent (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) : FSharpSymbol option =
+    let r = id.idRange
+    let lineText = source.GetLineString(r.EndLine - 1)
+
+    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+    |> Option.map (fun u -> u.Symbol)
+
+/// Names of FSharp.Core whose CALL is an effect: `callsOnlyCore` waves
+/// FSharp.Core's functions through as pure, and these are the ones it
+/// must not — the printf family and the standard streams, the reference
+/// cell and in-place array writers, `iter` and its twins (a lambda run
+/// for its effect), `lock`, `exit`, the async and mailbox starters,
+/// event triggers, a lazy force, and the raisers (a fused or short-
+/// circuited raiser fires in a different order than the code it replaces).
+/// A path is effectful when ANY of its identifiers is listed: `Async.Start`
+/// through `Async`, `Array.set` through `set`, `evt.Trigger` through
+/// `Trigger`.
+let effectfulCoreNames =
+    set
+        [
+            "printf"
+            "printfn"
+            "eprintf"
+            "eprintfn"
+            "fprintf"
+            "fprintfn"
+            "kprintf"
+            "kfprintf"
+            "bprintf"
+            "stdout"
+            "stderr"
+            "stdin"
+            "incr"
+            "decr"
+            "lock"
+            "exit"
+            "iter"
+            "iteri"
+            "iter2"
+            "iteri2"
+            "Async"
+            "Event"
+            "Observable"
+            "Task"
+            "Console"
+            "MailboxProcessor"
+            "Start"
+            "StartImmediate"
+            "StartAsTask"
+            "StartChild"
+            "RunSynchronously"
+            "Post"
+            "PostAndReply"
+            "PostAndAsyncReply"
+            "PostAndTryAsyncReply"
+            "Receive"
+            "TryReceive"
+            "Trigger"
+            "raise"
+            "reraise"
+            "failwith"
+            "failwithf"
+            "invalidArg"
+            "invalidOp"
+            "nullArg"
+            // a reference cell write and a lazy force are effects too
+            "op_ColonEquals"
+            "force"
+            "Force"
+            // the in-place operations of the Array module: `Array.set`,
+            // `Array.fill` and the sorts write through the array they are handed
+            "set"
+            "fill"
+            "blit"
+            "sortInPlace"
+            "sortInPlaceBy"
+            "sortInPlaceWith"
+        ]
+
+/// The PARTIAL functions of FSharp.Core's collection and option modules:
+/// total in their spelling, a throw on some input (an empty list, a short
+/// list, a missing key, `None`). `callsOnlyCore` waves FSharp.Core through
+/// as pure, and a throw is the one effect a pure-looking function has: a
+/// fused or short-circuited caller fires it in a different order, or not
+/// at all, where the code it replaces threw. Checked against the LAST
+/// identifier of a path (`List.head`, `Map.find`, `Option.get`), and not
+/// against `Operators.min`/`max`, which are total.
+let partialCoreNames =
+    set
+        [
+            "head"
+            "tail"
+            "last"
+            "item"
+            "nth"
+            "exactlyOne"
+            "reduce"
+            "reduceBack"
+            "find"
+            "findBack"
+            "findIndex"
+            "findIndexBack"
+            "pick"
+            "get"
+            "min"
+            "max"
+            "minBy"
+            "maxBy"
+            "minElement"
+            "maxElement"
+            "average"
+            "averageBy"
+            "skip"
+            "take"
+            "splitAt"
+            "windowed"
+            "chunkBySize"
+            "splitInto"
+            "zip"
+            "zip3"
+            "map2"
+            "map3"
+            "mapi2"
+            "iter2"
+            "iteri2"
+            "fold2"
+            "foldBack2"
+            "forall2"
+            "exists2"
+            "sub"
+            "removeAt"
+            "removeManyAt"
+            "insertAt"
+            "insertManyAt"
+            "updateAt"
+            "permute"
+            "transpose"
+        ]
+
+/// The `let` binding this file declares `value` with — module-level, a
+/// class's `let`, or a local `let` / `let rec` inside an expression — as
+/// its head identifier and its body, found by the symbol's
+/// DeclarationLocation. The head may carry a type annotation (`let
+/// isValid: string -> bool = fun ...`). None for a member, a parameter, a
+/// pattern-bound name, a declaration in another file, or a `let mutable`:
+/// a mutable holding a function (`let mutable validator = fun ...`) may
+/// be reassigned, so its initial body says nothing about what a later
+/// call runs.
+let bindingDeclaredAt (index: AstIndex.Index) (value: FSharpMemberOrFunctionOrValue) : (Ident * SynExpr) option =
+    // FCS raises a plain Exception ("DeclarationLocation property not
+    // available") for a method of another assembly
+    let location =
+        try
+            Some value.DeclarationLocation
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            None
+
+    match location with
+    | None -> None
+    | Some loc ->
+        let headOf (SynBinding(isMutable = isMut; headPat = p; expr = body)) =
+            if isMut then
+                None
+            else
+                match p with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]))
+                | SynPat.Named(ident = SynIdent(ident = id))
+                | SynPat.Typed(pat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])))
+                | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))) -> Some(id, body)
+                | _ -> None
+
+        let sitsAt (id: Ident, _) =
+            let r = id.idRange
+
+            r.StartLine = loc.StartLine
+            && r.StartColumn = loc.StartColumn
+            && System.String.Equals(r.FileName, loc.FileName, System.StringComparison.OrdinalIgnoreCase)
+
+        let rec ofMembers (members: SynMemberDefns) =
+            members
+            |> List.collect (fun m ->
+                match m with
+                | SynMemberDefn.LetBindings(bindings = bs) -> bs
+                | SynMemberDefn.Interface(members = Some ms) -> ofMembers ms
+                | _ -> [])
+
+        let fromDecls =
+            index.Decls
+            |> Seq.collect (fun (_, d) ->
+                match d with
+                | SynModuleDecl.Let(bindings = bs) -> Seq.ofList bs
+                | SynModuleDecl.Types(typeDefns = defns) ->
+                    defns
+                    |> Seq.collect (fun (SynTypeDefn(typeRepr = repr; members = extra)) ->
+                        match repr with
+                        | SynTypeDefnRepr.ObjectModel(members = ms) -> ofMembers ms @ ofMembers extra
+                        | _ -> ofMembers extra)
+                | _ -> Seq.empty)
+
+        let fromExprs =
+            index.Exprs
+            |> Seq.collect (fun (_, e) ->
+                match e with
+                | LetOrUseE lou -> Seq.ofList lou.Bindings
+                | _ -> Seq.empty)
+
+        Seq.append fromDecls fromExprs |> Seq.choose headOf |> Seq.tryFind sitsAt
+
+/// Does the code in this range CALL only what provably does nothing but
+/// compute? Every identifier in the range that names a FUNCTION (typed)
+/// must belong to FSharp.Core (and not be one of `effectfulCoreNames`) or
+/// to System.String (immutable receiver, pure members), or satisfy the
+/// caller's `userFunction` test — FR0107 accepts a function this file
+/// declares whose own body passes; a user method, a constructor, any
+/// other .NET method fails. Plain values, property reads, union cases and
+/// fields of non-function type are not calls and pass; a field or
+/// record slot holding a FUNCTION is a call (`r.Validate f`), and so is
+/// an active pattern. An extension member fails whatever type it
+/// extends: `type System.String with member s.Shout() = ...` has
+/// System.String for its apparent owner and a user body. A partial core
+/// function (`List.head`, `Option.get`: `partialCoreNames`) fails too,
+/// since its throw is an effect the caller would reorder. Naming a
+/// function without applying it counts too: `List.exists validate xs`
+/// hands the effect to a core function. An identifier that does not
+/// resolve fails: the caller is about to move or drop a call and cannot
+/// afford to guess. FR0107 asks it of a flag loop's predicate before
+/// `exists` runs it fewer times; FR0012 asks it of two mappers before
+/// `g >> f` interleaves their calls.
+let callsOnlyCoreWith
+    (userFunction: FSharpMemberOrFunctionOrValue -> bool)
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (index: AstIndex.Index)
+    (r: range)
+    =
+    let pureIdent (ids: Ident list) =
+        match symbolOfIdent check source (List.last ids) with
+        | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+            (try
+                let fullName = fullNameOf value
+                let enclosing = enclosingFullName value
+
+                if value.IsExtensionMember then
+                    // the owner is the extended type, the body a user's
+                    false
+                elif fullName.StartsWith "Microsoft.FSharp." then
+                    not (ids |> List.exists (fun id -> effectfulCoreNames.Contains id.idText))
+                    // `List.min` throws on an empty list where `Operators.min`
+                    // over two values cannot
+                    && not (
+                        partialCoreNames.Contains (List.last ids).idText
+                        && not (fullName.StartsWith "Microsoft.FSharp.Core.Operators.")
+                    )
+                elif enclosing = "System.Lazy`1" then
+                    // `.Value` and `.Force()` run the thunk
+                    false
+                elif not value.FullType.IsFunctionType then
+                    true
+                elif enclosing = "System.String" then
+                    true
+                elif value.IsMember || value.IsConstructor then
+                    false
+                else
+                    userFunction value
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 false)
+        | Some(:? FSharpUnionCase) -> true
+        | Some(:? FSharpField as field) ->
+            (try
+                not (stripAbbreviations field.FieldType).IsFunctionType
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 false)
+        // an active pattern case is a call; anything else unresolved or
+        // unknown fails
+        | _ -> false
+
+    index.Exprs
+    |> Array.forall (fun (_, e) ->
+        not (Range.rangeContainsRange r e.Range)
+        || (match e with
+            | SynExpr.Ident id -> pureIdent [ id ]
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> pureIdent ids
+            // a constructor or an object expression runs arbitrary code
+            | SynExpr.New _
+            | SynExpr.ObjExpr _ -> false
+            | _ -> true))
+
+/// `callsOnlyCoreWith` where every user function fails: FSharp.Core and
+/// System.String only.
+let callsOnlyCore (check: FSharpCheckFileResults) (source: ISourceText) (index: AstIndex.Index) (r: range) =
+    callsOnlyCoreWith (fun _ -> false) check source index r
 
 /// True when the file's typed results contain any error diagnostics.
 let hasErrors (check: FSharpCheckFileResults) =
@@ -764,12 +1179,26 @@ let private byRefLikeUses (check: FSharpCheckFileResults) =
                 |> Seq.choose (fun u ->
                     match u.Symbol with
                     | :? FSharpMemberOrFunctionOrValue as v ->
+                        // a failure here must stay with THIS use: escaping to the
+                        // handler below would empty the whole file's list, and the
+                        // guard would let every Span of the file through. The
+                        // `Item` indexer of a ReadOnlySpan (an inref property) has
+                        // no DeclarationLocation and raises a plain exception for
+                        // it, so a byref-like use whose declaration cannot be
+                        // placed is recorded with none, which callers read as
+                        // declared outside
                         try
                             if isByRefLike v.FullType then
-                                Some(u.Range, Some v.DeclarationLocation)
+                                let declared =
+                                    try
+                                        Some v.DeclarationLocation
+                                    with _ -> // fsharpanalyzer: ignore-line FR0055
+                                        None
+
+                                Some(u.Range, declared)
                             else
                                 None
-                        with FcsSymbolFailure ->
+                        with _ -> // fsharpanalyzer: ignore-line FR0055
                             Some(u.Range, None)
                     | _ -> None)
                 |> Array.ofSeq

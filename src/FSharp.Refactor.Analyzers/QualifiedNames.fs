@@ -1006,6 +1006,17 @@ let find
                     match t with
                     | SynType.LongIdent(SynLongIdent(id = [ id ])) -> yield id
                     | _ -> ()
+                // a bare name the file MATCHES on: `| Active ->` resolves to
+                // whichever union case of that name the nearest open brings,
+                // and an `open Lib` exporting an `Active` of its own rebinds
+                // the arm — the same trap as a value, on the pattern side.
+                // A Named pattern binds a fresh local and resolves to one,
+                // which resolvesOutsideTo reads as no clash
+                for _, p in index.Pats do
+                    match p with
+                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> yield id
+                    | SynPat.Named(ident = SynIdent(ident = id)) -> yield id
+                    | _ -> ()
             ]
 
         // the methods the file calls with a parenthesised tuple — `x.M (a, b)`

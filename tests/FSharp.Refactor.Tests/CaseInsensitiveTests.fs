@@ -168,9 +168,9 @@ let ``comparing two expressions stays advice`` () =
     | suggestions -> Assert.True(suggestions |> List.forall (fun s -> s.Replacement |> Option.isNone))
 
 [<Fact>]
-let ``a lowered StartsWith against an ASCII literal gets the comparison-overload fix`` () =
+let ``an invariant-lowered StartsWith against an ASCII literal gets the comparison-overload fix`` () =
     let source =
-        "module Test\nopen System\nlet f (path: string) = path.ToLower().StartsWith \"file:\""
+        "module Test\nopen System\nlet f (path: string) = path.ToLowerInvariant().StartsWith \"file:\""
 
     match caseIn source with
     | [ s ] ->
@@ -178,6 +178,67 @@ let ``a lowered StartsWith against an ASCII literal gets the comparison-overload
         let patched = applyEdit source s.Range s.Replacement.Value
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``a culture-lowered StartsWith gets the ordinal fix and the culture alternative`` () =
+    // the plain `ToLower()` differs from OrdinalIgnoreCase on the Turkish
+    // dotless i alone; the idiomatic ordinal spelling is the fix, with the
+    // InvariantCulture spelling as the editor's alternative
+    let source =
+        "module Test\nopen System\nlet f (path: string) = path.ToLower().StartsWith \"file:\""
+
+    match caseIn source with
+    | [ s ] ->
+        Assert.Equal(CaseInsensitive.CaseKind.MethodCall "StartsWith", s.Kind)
+        Assert.Equal(Some "path.StartsWith(\"file:\", StringComparison.OrdinalIgnoreCase)", s.Replacement)
+
+        Assert.Equal(
+            Some "path.StartsWith(\"file:\", StringComparison.InvariantCultureIgnoreCase)",
+            s.CultureReplacement
+        )
+
+        let patched = applyEdit source s.Range s.Replacement.Value
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``a lowered call that names its StringComparison keeps that choice`` () =
+    // the author chose the comparison; the fix drops the lowering and
+    // spells the IgnoreCase counterpart of THAT choice, and offers no
+    // alternative since the choice is made
+    for comparison, expected in
+        [
+            "Ordinal", "OrdinalIgnoreCase"
+            "CurrentCulture", "CurrentCultureIgnoreCase"
+            "OrdinalIgnoreCase", "OrdinalIgnoreCase"
+        ] do
+        let source =
+            $"module Test\nopen System\nlet f (path: string) = path.ToLower().StartsWith(\"file:\", StringComparison.{comparison})"
+
+        match caseIn source with
+        | [ s ] ->
+            Assert.Equal(Some $"path.StartsWith(\"file:\", StringComparison.{expected})", s.Replacement)
+            Assert.Equal(None, s.CultureReplacement)
+            let patched = applyEdit source s.Range s.Replacement.Value
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected one suggestion for %s, got %A" comparison other
+
+[<Fact>]
+let ``a lowering and a named comparison of different families stay advice`` () =
+    // an invariant lowering under a CurrentCulture comparison (or the
+    // reverse) is two deliberate choices no single comparison keeps: under
+    // tr-TR `"FILE:".ToLowerInvariant().StartsWith("file:", CurrentCulture)`
+    // is true and `StartsWith("file:", CurrentCultureIgnoreCase)` is false
+    for source in
+        [
+            "module Test\nopen System\nlet f (path: string) = path.ToLowerInvariant().StartsWith(\"file:\", StringComparison.CurrentCulture)"
+            "module Test\nopen System\nlet f (path: string) = path.ToLower().StartsWith(\"file:\", StringComparison.InvariantCulture)"
+        ] do
+        match caseIn source with
+        | [ s ] ->
+            Assert.Equal(None, s.Replacement)
+            Assert.Equal(None, s.CultureReplacement)
+        | other -> failwithf "Expected one fix-less note for %s, got %A" source other
 
 [<Fact>]
 let ``the parenthesized argument spelling fixes the same way, qualified without open System`` () =
@@ -226,9 +287,9 @@ let ``a non-literal method argument stays advice`` () =
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
-let ``a lowered IndexOf against an agreeing literal gets the fix`` () =
+let ``an invariant-lowered IndexOf against an agreeing literal gets the fix`` () =
     let source =
-        "module Test\nopen System\nlet f (email: string) = email.ToLower().IndexOf \"@example.\""
+        "module Test\nopen System\nlet f (email: string) = email.ToLowerInvariant().IndexOf \"@example.\""
 
     match caseIn source with
     | [ s ] ->

@@ -767,9 +767,54 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                             // 3. a narrower catch for file IO — for a body that IS the IO call: a
                             // multi-line body mentioning a Path beside native calls (Kasino's
-                            // SDL icon) throws more than IOException
+                            // SDL icon) throws more than IOException.
+                            //
+                            // And the typed tree has to agree that every CALL on the line is
+                            // System.IO's (or FSharp.Core's): the text smell alone offered the
+                            // narrowing for `Some (Path.GetFileName d, Checkpoint.loadMetadata p)`
+                            // (Fuuga), where the user function parses JSON and threw a
+                            // JsonException the narrowed handler let escape - and for probes
+                            // over assembly loading and FileInfo (SQLProvider) and font lookup
+                            // (Kasino) that were put back by hand. A user function, a method of
+                            // any other type, a constructor: no narrowing; without a typed
+                            // check, none either
+                            let callsOnlyIo =
+                                match check with
+                                | None -> false
+                                | Some c ->
+                                    let ioIdent (id: Ident) =
+                                        let r = id.idRange
+                                        let lineText = source.GetLineString(r.EndLine - 1)
+
+                                        match
+                                            c.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+                                        with
+                                        | Some symbolUse ->
+                                            match symbolUse.Symbol with
+                                            | :? FSharpMemberOrFunctionOrValue as value ->
+                                                (try
+                                                    not value.FullType.IsFunctionType
+                                                    || (OptionModule.fullNameOf value).StartsWith "Microsoft.FSharp."
+                                                    || (OptionModule.enclosingFullName value).StartsWith "System.IO."
+                                                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                                     false)
+                                            | _ -> true
+                                        | None -> false
+
+                                    index.Exprs
+                                    |> Array.forall (fun (_, e) ->
+                                        not (Range.rangeContainsRange tryBody.Range e.Range)
+                                        || (match e with
+                                            | SynExpr.Ident id -> ioIdent id
+                                            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                                            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                                ioIdent (List.last ids)
+                                            | SynExpr.New _
+                                            | SynExpr.ObjExpr _ -> false
+                                            | _ -> true))
+
                             let narrower =
-                                if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range then
+                                if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range && callsOnlyIo then
                                     let narrowed =
                                         match binderOf pat with
                                         | ValueSome name ->

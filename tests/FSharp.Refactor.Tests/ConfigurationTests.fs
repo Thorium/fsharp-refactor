@@ -71,6 +71,49 @@ let ``unknown keys and non-boolean values are ignored`` () =
     Assert.False(Configuration.isEnabledIn rules "FR0003" "Composition")
 
 [<Fact>]
+let ``an analyzer named like a run-level key still switches its rule off at the root`` () =
+    // FR0012's analyzer is `Hints`; the run-level `hints` is an object.
+    // The boolean was dropped as reserved and the rule stayed on
+    let rules = Configuration.parse """{ "Hints": false }"""
+    Assert.False(Configuration.isEnabledIn rules "FR0012" "Hints")
+
+    let inRules = Configuration.parse """{ "rules": { "hints": false } }"""
+    Assert.False(Configuration.isEnabledIn inRules "FR0012" "Hints")
+
+[<Fact>]
+let ``the run-level hints object is still no rule`` () =
+    let json = """{ "hints": { "add": ["x"] }, "FR0001": false }"""
+    let rules = Configuration.parse json
+    Assert.True(Configuration.isEnabledIn rules "FR0012" "Hints")
+    Assert.False(Configuration.isEnabledIn rules "FR0001" "MatchToIf")
+    Assert.Equal<string list>([ "x" ], Configuration.parseHints json)
+
+[<Fact>]
+let ``the boolean run-level keys never become rules`` () =
+    let rules =
+        Configuration.parse """{ "apiChanges": true, "publicApi": false, "FR0001": false }"""
+
+    Assert.False(rules.ContainsKey "apichanges")
+    Assert.False(rules.ContainsKey "publicapi")
+    Assert.False(Configuration.isEnabledIn rules "FR0001" "MatchToIf")
+
+[<Fact>]
+let ``the strings true false on and off switch a rule`` () =
+    // `"FR0004": "off"` is what a hand-written config says; read as "not
+    // a boolean, ignored" it left the rule ON in silence
+    let rules =
+        Configuration.parse
+            """{ "rules": { "FR0001": "false", "FR0004": "OFF", "FR0005": { "enabled": "off" }, "FR0099": "on", "FR0002": "True", "FR0003": "nope" } }"""
+
+    Assert.False(Configuration.isEnabledIn rules "FR0001" "MatchToIf")
+    Assert.False(Configuration.isEnabledIn rules "FR0004" "ConversionMove")
+    Assert.False(Configuration.isEnabledIn rules "FR0005" "CeStrip")
+    Assert.True(Configuration.isEnabledIn rules "FR0099" "TrailingSemicolon")
+    Assert.True(Configuration.isEnabledIn rules "FR0002" "OptionModule")
+    // anything else is still no boolean
+    Assert.True(Configuration.isEnabledIn rules "FR0003" "Composition")
+
+[<Fact>]
 let ``config file is discovered upward from the analyzed file`` () =
     let root =
         Path.Combine(Path.GetTempPath(), "fsref-cfg-" + Guid.NewGuid().ToString "N")

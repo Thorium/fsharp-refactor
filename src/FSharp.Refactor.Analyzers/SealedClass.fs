@@ -182,6 +182,11 @@ let private judgeUse (readLine: string -> int -> string option) (u: FSharpSymbol
                     Some Neutral
             elif before.EndsWith "inherit" then
                 Some Veto
+            elif before.EndsWith "#" then
+                // `#Node` — a flexible type, "Node or any subtype"; on a
+                // sealed class FS0064 says the annotation is less generic
+                // than written, an error under TreatWarningsAsErrors
+                Some Veto
             elif Text.RegularExpressions.Regex.IsMatch(before, @"['^]\w+\s*:>$") then
                 Some Veto // 'T :> Node, ^T :> Node
             elif before.EndsWith ":?" || before.EndsWith ":?>" then

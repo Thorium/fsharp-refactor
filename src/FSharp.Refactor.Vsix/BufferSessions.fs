@@ -46,21 +46,41 @@ type BufferSession(buffer: ITextBuffer, filePath: string) =
                 | Some projectDir -> projectDir.FullName
                 | None -> Path.GetDirectoryName filePath
 
+    /// The sidecar this buffer's didOpen went to. A sidecar that died and
+    /// was restarted knows nothing of the document: the next change is
+    /// sent to it as a fresh didOpen, not a didChange it cannot place.
+    let mutable openedIn: int option = None
+
+    let sendOpen () =
+        match FsacClient.sessionId () with
+        | Some id ->
+            openedIn <- Some id
+            version <- 1
+            FsacClient.notifyOpened filePath (buffer.CurrentSnapshot.GetText())
+        | None -> ()
+
     let sendChange () =
-        version <- version + 1
-        FsacClient.notifyChanged filePath version (buffer.CurrentSnapshot.GetText())
+        match FsacClient.sessionId () with
+        | Some id when openedIn = Some id ->
+            version <- version + 1
+            FsacClient.notifyChanged filePath version (buffer.CurrentSnapshot.GetText())
+        | Some _ -> sendOpen ()
+        // no live sidecar: the next buffer to open starts one, and this
+        // buffer re-opens itself there on its next change
+        | None -> ()
 
     do
         // OFF the UI thread: this constructor runs inside tagger creation,
         // and the first session spawns a process and waits for its LSP
         // initialize — synchronously that froze Visual Studio for the
         // whole handshake (the responsiveness banner fired at 8s, live)
-        let openText = buffer.CurrentSnapshot.GetText()
-
         System.Threading.Tasks.Task.Run(fun () ->
-            match FsacClient.ensure rootDir with
-            | Some _ -> FsacClient.notifyOpened filePath openText
-            | None -> ())
+            try
+                match FsacClient.ensure rootDir with
+                | Some _ -> sendOpen ()
+                | None -> ()
+            with ex ->
+                FsacClient.clientTrace $"didOpen {filePath} FAILED: {ex.GetType().Name}: {ex.Message}")
         |> ignore
 
         buffer.Changed.Add(fun _ ->
@@ -69,7 +89,25 @@ type BufferSession(buffer: ITextBuffer, filePath: string) =
             | Some t -> t.Dispose()
             | None -> ()
 
-            pendingTimer <- Some(new Timer((fun _ -> sendChange ()), null, 500, Timeout.Infinite)))
+            pendingTimer <-
+                Some(
+                    new Timer(
+                        (fun _ ->
+                            // a timer thread: an exception here has no
+                            // handler above it and ends Visual Studio —
+                            // writing to the pipe of an exited sidecar did
+                            // exactly that. The client guards its own sends;
+                            // this is the last line of defence
+                            try
+                                sendChange ()
+                            with ex ->
+                                FsacClient.clientTrace
+                                    $"didChange {filePath} FAILED: {ex.GetType().Name}: {ex.Message}"),
+                        null,
+                        500,
+                        Timeout.Infinite
+                    )
+                ))
 
     member _.FilePath = filePath
 

@@ -79,6 +79,12 @@ type Destination =
     /// may still be running when the scope exits, on a receiver `use`
     /// would have disposed
     | InFlight of memberName: string
+    /// a CancellationTokenSource whose token (or the source itself) is
+    /// handed as an argument to a call this rule cannot see finish — a
+    /// user function, or a BCL/FSharp.Core operation whose result is not
+    /// awaited in the scope — so work cancelled through it may outlive the
+    /// scope, where disposing the source would abort it
+    | TokenHanded of callee: string
     /// the binding sits in a computation expression whose builder defines
     /// no `Using`, so `use` cannot bind it there (FS0708)
     | NoBuilderUsing
@@ -116,7 +122,9 @@ let describeEscape (s: Suggestion) =
     | Some Destination.SelfActive ->
         "it does work of its own after the scope returns (a timer, a watcher, a listener, an event it raises, a callback it was built with), which 'use' would stop"
     | Some(Destination.InFlight m) ->
-        $"the result of its '%s{m}' call is dropped rather than awaited, so that work may still be running when the scope exits, and 'use' would dispose it underneath"
+        $"the result of its '%s{m}' call is dropped or handed on rather than awaited, so that work may still be running when the scope exits, and 'use' would dispose it underneath"
+    | Some(Destination.TokenHanded callee) ->
+        $"its token is handed to '%s{callee}', which may start work that outlives this scope (a background Async.Start, a stored task), and disposing the source under it would cancel or fault that work"
     | Some Destination.NoBuilderUsing ->
         "it sits in a computation expression whose builder defines no 'Using', so 'use' cannot bind it there"
     | Some Destination.Unknown
@@ -1080,7 +1088,7 @@ let private discardedPending
             // where the value at `r` goes: dropped, or handed on still pending
             let rec dropped (started: bool) (r: range) (path: SyntaxNode list) =
                 match path with
-                | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr)) :: rest ->
+                | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr) | SynExpr.Tuple(range = pr)) :: rest ->
                     dropped started pr rest
                 // a bare statement: only a running task is work in flight
                 | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a)) :: _ -> started && a.Range = r
@@ -1103,16 +1111,268 @@ let private discardedPending
                 // still pending, whatever happens next
                 | "Async.AwaitTask"
                 | "Async.Ignore"
-                | "Async.Catch" -> dropped started outer rest
+                | "Async.Catch"
+                | "Async.Parallel"
+                | "Async.Sequential" -> dropped started outer rest
                 | "Async.StartAsTask"
-                | "Async.StartChild" -> dropped true outer rest
-                | _ -> false
+                | "Async.StartChild"
+                | "Task.WhenAll"
+                | "Task.WhenAny" -> dropped true outer rest
+                // run to completion here: the work is over before the
+                // scope ends
+                | "Async.RunSynchronously"
+                | "Task.WaitAll" -> false
+                // handed on as an ARGUMENT to anything else — a collection
+                // (`tasks.Add(client.GetStringAsync u)` then `Task.WhenAll
+                // tasks` as the result), a constructor, a function this
+                // rule cannot read — the work is in flight past this scope
+                // and `use` would dispose the receiver under it; the
+                // aliased spelling (`let t = client.GetStringAsync u` then
+                // `tasks.Add t`) already stands down the same way
+                | _ -> true
 
             match application path e.Range with
             | Some(r, rest) when dropped started r rest -> Some last.idText
             | _ -> None
         | ValueNone -> None
     | _ -> None
+
+let private cancellationSource = set [ "System.Threading.CancellationTokenSource" ]
+
+/// Is the callee a member or function of FSharp.Core or the BCL — one
+/// whose behaviour with a token is known: it observes it while it runs,
+/// and starts nothing of its own once its result is awaited?
+let private bclOrCore (check: FSharpCheckFileResults) (source: ISourceText) (callee: Ident) =
+    match symbolAt check source callee with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        let full = OptionModule.fullNameOf value
+        let owner = OptionModule.enclosingFullName value
+
+        // an extension member's owner is the BCL type it extends; its
+        // body, and what it does with the token, is the user's
+        not value.IsExtensionMember
+        && (full.StartsWith "Microsoft.FSharp."
+            || full.StartsWith "System."
+            || owner.StartsWith "Microsoft.FSharp."
+            || owner.StartsWith "System.")
+    | _ -> false
+
+/// FSharp.Core starters that return unit: the token goes to work that
+/// runs on after the call has returned.
+let private unitStarters =
+    set [ "Async.Start"; "Async.StartImmediate"; "Async.StartWithContinuations" ]
+
+/// The synchronous BCL and FSharp.Core members that are done with a token
+/// when they return: the blocking waits. Every other synchronous callee
+/// may store it — `tokens.Add ct`, `CancellationTokenSource.
+/// CreateLinkedTokenSource ct` (the linked source registers on it) — and
+/// so hands it on.
+let private syncFinishers =
+    set
+        [
+            "RunSynchronously"
+            "WaitAll"
+            "WaitAny"
+            "Wait"
+            "Take"
+            "TryTake"
+            "SignalAndWait"
+            "ThrowIfCancellationRequested"
+        ]
+
+/// A CancellationTokenSource binder whose `.Token` (or the source itself,
+/// or a local bound to its token) goes anywhere the scope does not see
+/// finish. welendus: `let token = new CancellationTokenSource()` ...
+/// `match! Loans.requestNewLoan ... token.Token false with` —
+/// `requestNewLoan` hands the token to `Async.Start(work, token)` for a
+/// background search that outlives the scope, and a `use` disposed the
+/// source under it. The scope KEEPS the token in exactly these positions:
+/// an argument of a BCL or FSharp.Core operation whose pending result
+/// (`Task.Delay(ms, ct)`, `client.GetAsync(url, ct)`) is awaited on the
+/// statement spine (`let!`, `do!`, `match!`, `return!`, `.Wait()`,
+/// `.Result`, `.GetAwaiter().GetResult()`, `Async.RunSynchronously`,
+/// `Task.WaitAll`); an argument of a synchronous blocking wait
+/// (`syncFinishers`); and the right side of the local alias binding whose
+/// uses this scan follows in turn. Every other position hands it on: a
+/// user function (opaque), a starter (`Async.Start`), an unawaited pending
+/// call, a synchronous BCL call that may store it (`tokens.Add`,
+/// `CreateLinkedTokenSource`), a constructor argument (`new Worker(cts.
+/// Token)`: the worker's timer dies with the source), a record field, a
+/// property set (`w.Token <- cts.Token`), a tuple or option built from
+/// it, a return, and anything this scan cannot name. The name of what
+/// took it when the token is handed on; None when the scope keeps it.
+let private tokenHandedOn
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (binder: Ident)
+    (name: string)
+    (aliases: Set<string>)
+    (mentions: (SyntaxNode list * SynExpr)[])
+    =
+    if not (typeIsA cancellationSource Set.empty check source binder) then
+        None
+    else
+        // the identifier the application's function position names, under
+        // a curried chain, parens and type arguments; a receiver call's
+        // member (`client.GetAsync(url, ct)` is `DotGet` when the receiver
+        // is itself an expression)
+        let rec calleeIdent (f: SynExpr) =
+            match f with
+            | SynExpr.App(isInfix = false; funcExpr = g) -> calleeIdent g
+            | SynExpr.Paren(expr = inner)
+            | SynExpr.TypeApp(expr = inner) -> calleeIdent inner
+            | SynExpr.Ident id -> Some id
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+            | _ -> None
+
+        // the whole curried application above `outer`: `f a b ct d` is
+        // App(App(App(App(f, a), b), ct), d), and the token's App is the
+        // function of the ones after it
+        let rec whole (outer: range) (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; range = r)) :: rest when f.Range = outer ->
+                whole r rest
+            | _ -> outer, path
+
+        // the application the mention is an argument of: through parens,
+        // a tuple, an annotation and a named argument `cancellationToken =
+        // ct`; a pipe `ct |> f` counts too
+        let rec argumentOf (inner: range) (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynExpr(SynExpr.Paren(range = r) | SynExpr.Tuple(range = r) | SynExpr.Typed(range = r)) :: rest ->
+                argumentOf r rest
+            | SyntaxNode.SynExpr(SynExpr.App(
+                isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = op); range = r)) :: rest when
+                operatorName op = "op_Equality"
+                ->
+                argumentOf r rest
+            | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op; argExpr = a)) :: SyntaxNode.SynExpr(SynExpr.App(
+                isInfix = false; argExpr = callee; range = outer)) :: rest when
+                operatorName op = "op_PipeRight" && a.Range = inner
+                ->
+                Some(callee, outer, rest)
+            | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a; range = outer)) :: rest when
+                Range.rangeContainsRange a.Range inner
+                ->
+                let outer, rest = whole outer rest
+                Some(f, outer, rest)
+            | _ -> None
+
+        // is the value at `r` finished on the statement spine before the
+        // scope goes on?
+        let rec awaited (r: range) (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr)) :: rest -> awaited pr rest
+            | SyntaxNode.SynBinding(SynBinding(expr = rhs)) :: SyntaxNode.SynExpr(LetOrUseE lou) :: _ when lou.IsBang ->
+                rhs.Range = r
+            | SyntaxNode.SynExpr(LetOrUseE lou) :: _ when lou.IsBang ->
+                lou.Bindings |> List.exists (fun (SynBinding(expr = rhs)) -> rhs.Range = r)
+            | SyntaxNode.SynExpr(SynExpr.DoBang(expr = e)) :: _
+            | SyntaxNode.SynExpr(SynExpr.YieldOrReturnFrom(expr = e)) :: _
+            | SyntaxNode.SynExpr(SynExpr.MatchBang(expr = e)) :: _ -> e.Range = r
+            // `.Wait()`, `.Result`, `.GetAwaiter().GetResult()` on it
+            | SyntaxNode.SynExpr(SynExpr.DotGet(expr = receiver; longDotId = SynLongIdent(id = ids)) as dg) :: rest when
+                receiver.Range = r && not ids.IsEmpty
+                ->
+                match (List.last ids).idText with
+                | "Wait"
+                | "Result"
+                | "GetResult" -> true
+                | "GetAwaiter" -> awaited dg.Range rest
+                | _ -> false
+            | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; range = outer)) :: rest when f.Range = r ->
+                awaited outer rest
+            | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op; argExpr = a)) :: SyntaxNode.SynExpr(SynExpr.App(
+                isInfix = false; argExpr = callee; range = outer)) :: rest when
+                operatorName op = "op_PipeRight" && a.Range = r
+                ->
+                finishes (shortName callee) outer rest
+            | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a; range = outer)) :: rest when
+                Range.rangeContainsRange a.Range r
+                ->
+                finishes (shortName f) outer rest
+            | _ -> false
+
+        and finishes (consumerName: string) (outer: range) (rest: SyntaxNode list) =
+            match consumerName with
+            | "Async.RunSynchronously"
+            | "Task.WaitAll" -> true
+            // still pending: whatever wraps it must be awaited in turn
+            | "Async.AwaitTask"
+            | "Async.Ignore"
+            | "Async.Catch" -> awaited outer rest
+            | _ -> false
+
+        // the right side of `let ct = cts.Token`, where every name the
+        // pattern binds is an alias this scan follows: the token has not
+        // left the scope yet
+        let rec aliasBinding (inner: range) (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynExpr(SynExpr.Paren(range = r) | SynExpr.Typed(range = r)) :: rest -> aliasBinding r rest
+            | SyntaxNode.SynBinding(SynBinding(headPat = p; expr = rhs)) :: SyntaxNode.SynExpr(LetOrUseE _) :: _ ->
+                rhs.Range = inner
+                && (let bound = patBoundNames p in not bound.IsEmpty && bound |> List.forall aliases.Contains)
+            | _ -> false
+
+        // what a token that is no call's argument went into, for the
+        // message: the type a constructor builds, the field or property
+        // it is stored in, or the local it is bound to
+        let rec positionName (path: SyntaxNode list) =
+            match path with
+            | SyntaxNode.SynExpr(SynExpr.Paren _ | SynExpr.Tuple _ | SynExpr.Typed _) :: rest -> positionName rest
+            | SyntaxNode.SynExpr(SynExpr.New(targetType = t)) :: _ ->
+                match t with
+                | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> (List.last ids).idText
+                | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
+                    (List.last ids).idText
+                | _ -> "a constructor this rule cannot name"
+            | SyntaxNode.SynExpr(SynExpr.Record _) :: _
+            | SyntaxNode.SynExpr(SynExpr.AnonRecd _) :: _ -> "a record"
+            | SyntaxNode.SynExpr(SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _)) :: _ when not ids.IsEmpty ->
+                (List.last ids).idText
+            | SyntaxNode.SynExpr(SynExpr.DotSet(longDotId = SynLongIdent(id = ids))) :: _ when not ids.IsEmpty ->
+                (List.last ids).idText
+            | SyntaxNode.SynBinding(SynBinding(headPat = p)) :: _ ->
+                match patBoundNames p with
+                | [ local ] -> $"the local '%s{local}'"
+                | _ -> "a binding this rule cannot follow"
+            | _ -> "a position this rule cannot name"
+
+        mentions
+        |> Array.tryPick (fun (path, e) ->
+            let isToken =
+                match e with
+                | SynExpr.Ident id -> id.idText = name || aliases.Contains id.idText
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ root; t ])) ->
+                    root.idText = name && t.idText = "Token"
+                | _ -> false
+
+            if not isToken then
+                None
+            else
+                match argumentOf e.Range path with
+                | None ->
+                    if aliasBinding e.Range path then
+                        None
+                    else
+                        Some(positionName path)
+                | Some(f, outer, rest) ->
+                    match calleeIdent f with
+                    | None -> Some "a call this rule cannot name"
+                    | Some callee ->
+                        if not (bclOrCore check source callee) then
+                            Some callee.idText
+                        elif unitStarters.Contains(shortName f) then
+                            Some callee.idText
+                        else
+                            match pendingKind check source callee with
+                            | ValueSome _ -> if awaited outer rest then None else Some callee.idText
+                            | ValueNone ->
+                                if syncFinishers.Contains callee.idText then
+                                    None
+                                else
+                                    Some callee.idText)
 
 /// Find leaked local disposables. Requires typed check results for the
 /// IDisposable gate.
@@ -1557,6 +1817,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 binderMentions
                                 |> Array.tryPick (fun (path, e) -> discardedPending check source path e)
 
+                            // a CancellationTokenSource whose token is handed
+                            // to a call the scope does not see finish: the
+                            // work it cancels may outlive the scope, and
+                            // `use` would dispose the source under it
+                            // (welendus: `requestNewLoan ... token.Token`,
+                            // which Async.Starts a background search)
+                            let tokenHanded = tokenHandedOn check source binder name aliases mentions
+
                             // `use` inside a computation expression binds to
                             // the builder's Using: `query { }` and a hand-written
                             // builder without one make it an FS0708
@@ -1609,6 +1877,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     && not inResult
                                     && not selfActive
                                     && inFlight.IsNone
+                                    && tokenHanded.IsNone
                                     && builderSupportsUse
 
                                 {
@@ -1624,6 +1893,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             Some Destination.SelfActive
                                         elif inFlight.IsSome then
                                             Some(Destination.InFlight inFlight.Value)
+                                        elif tokenHanded.IsSome then
+                                            Some(Destination.TokenHanded tokenHanded.Value)
                                         elif inResult then
                                             Some Destination.ReadInResult
                                         else

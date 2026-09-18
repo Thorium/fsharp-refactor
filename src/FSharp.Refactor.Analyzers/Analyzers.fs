@@ -171,29 +171,37 @@ let private leafCompilations =
 /// a leaf compilation (or an explicit `publicApi: false`) says its public
 /// declarations have no callers elsewhere.
 let private leafScopeOpen (fileName: string) (options: AnalyzerProjectOptions) =
-    match Configuration.publicSurfaceSetting fileName with
-    | Some declared -> declared
-    | None ->
-        let leaf =
-            leafCompilations.GetOrAdd(
-                options.ProjectFileName,
-                fun _ -> Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
-            )
+    // a consumer the apply tool found and cannot build (a C# test project
+    // of an executable) disproves "nothing links to it", whatever the
+    // config or the leaf heuristic say
+    not (Visibility.publicSurfaceHeld ())
+    && (match Configuration.publicSurfaceSetting fileName with
+        | Some declared -> declared
+        | None ->
+            let leaf =
+                leafCompilations.GetOrAdd(
+                    options.ProjectFileName,
+                    fun _ -> Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
+                )
 
-        Visibility.isApplication fileName leaf
+            Visibility.isApplication fileName leaf)
 
 let private shapeScopeOpen (fileName: string) (options: AnalyzerProjectOptions) =
-    Visibility.apiChangesAllowed ()
-    || match Configuration.publicSurfaceSetting fileName with
-       | Some declared -> declared
-       | None ->
-           let leaf =
-               leafCompilations.GetOrAdd(
-                   options.ProjectFileName,
-                   fun _ -> Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
-               )
+    // a consumer the apply tool found and cannot build closes the gate
+    // over every other answer: "nothing outside links to it" is exactly
+    // what that consumer disproves, config and leaf heuristic included
+    not (Visibility.publicSurfaceHeld ())
+    && (Visibility.apiChangesAllowed ()
+        || match Configuration.publicSurfaceSetting fileName with
+           | Some declared -> declared
+           | None ->
+               let leaf =
+                   leafCompilations.GetOrAdd(
+                       options.ProjectFileName,
+                       fun _ -> Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
+                   )
 
-           Visibility.isApplication fileName leaf
+               Visibility.isApplication fileName leaf)
 
 /// The extra question for the two gated rules whose in-place rewrite
 /// changes a BINDING'S TYPE rather than a type's representation —
@@ -2476,8 +2484,10 @@ let stringUnionCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0157" "StringUnion" (fun () ->
         // under --api-changes the apply tool's api pass runs the rule with the
         // sibling projects' call sites in sight, which this pass has not got:
-        // its findings would be the same set minus the exported ones
-        if Visibility.apiChangesAllowed () then
+        // its findings would be the same set minus the exported ones. The raw
+        // flag, not apiChangesAllowed: a held public surface closes the
+        // latter, and the api pass still owns the rule on such a run
+        if (Scope.scope ()).ApiChanges then
             []
         else
 
@@ -2495,8 +2505,8 @@ let stringUnionCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0158 IndexScan ----
 
-let private indexScanMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    IndexScan.find parseTree source
+let private indexScanMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    IndexScan.find parseTree source checkResults
     |> List.map (fun s ->
         hint
             "FR0158"
@@ -2507,13 +2517,13 @@ let private indexScanMessages (parseTree: ParsedInput) (source: ISourceText) : M
 [<EditorAnalyzer("IndexScan", "Turn a while loop that walks an index into a tail-recursive function", HelpBase)>]
 let indexScanEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0158" "IndexScan" (fun () ->
-        indexScanMessages ctx.ParseFileResults.ParseTree ctx.SourceText
+        whenChecked ctx (indexScanMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
         |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("IndexScan", "Turn a while loop that walks an index into a tail-recursive function", HelpBase)>]
 let indexScanCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0158" "IndexScan" (fun () ->
-        indexScanMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        indexScanMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0031 StringConcat ----
 
@@ -5691,8 +5701,12 @@ let interpToStringCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0101 IndexedLoop ----
 
-let private indexedLoopMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    IndexedLoop.find parseTree source
+let private indexedLoopMessages
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (gate: IndexedLoop.SourceGate)
+    : Message list =
+    IndexedLoop.findWith parseTree source gate
     |> List.map (fun s ->
         hint
             "FR0101"
@@ -5701,15 +5715,29 @@ let private indexedLoopMessages (parseTree: ParsedInput) (source: ISourceText) :
             (s.Edits
              |> List.map (fun (r, original, replacement) -> fix r original replacement)))
 
+/// Fable's Rust target has no string enumerator, so in a Fable project a
+/// loop over a string keeps its index; the typed tree tells the strings.
+let private indexedLoopGate (options: AnalyzerProjectOptions) (check: FSharpCheckFileResults option) =
+    if referencesAssembly "Fable.Core" options then
+        IndexedLoop.SourceGate.NoStrings check
+    else
+        IndexedLoop.SourceGate.Any
+
 [<EditorAnalyzer("IndexedLoop", "Index-based loops that only ever index the bound collection", HelpBase)>]
 let indexedLoopEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0101" "IndexedLoop" (fun () ->
-        indexedLoopMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        indexedLoopMessages
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            (indexedLoopGate ctx.ProjectOptions ctx.CheckFileResults))
 
 [<CliAnalyzer("IndexedLoop", "Index-based loops that only ever index the bound collection", HelpBase)>]
 let indexedLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0101" "IndexedLoop" (fun () ->
-        indexedLoopMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        indexedLoopMessages
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            (indexedLoopGate ctx.ProjectOptions (Some ctx.CheckFileResults)))
 
 // ---- FR0102 ListIndexing ----
 

@@ -186,10 +186,77 @@ type Session =
         Proc: Process
         Rpc: JsonRpc
         mutable Initialized: bool
+        /// Tells one sidecar from the one that replaced it: a buffer whose
+        /// didOpen went to a sidecar that has since died re-opens on the
+        /// next one instead of sending a didChange it cannot place.
+        Id: int
     }
 
 let mutable private session: Session option = None
 let private startLock = obj ()
+let mutable private lastSessionId = 0
+
+/// Gone, or unreadable — a process whose state cannot be asked for is not
+/// one to write to either.
+let private hasExited (s: Session) =
+    try
+        s.Proc.HasExited
+    with _ -> // fsharpanalyzer: ignore-line FR0055
+        true
+
+/// Forget THAT session — a newer one already in its place stays — so the
+/// next `ensure` starts a fresh sidecar. Before this the dead session was
+/// kept and every send went on writing to its pipe.
+let private dropSession (s: Session) (reason: string) =
+    lock startLock (fun () ->
+        match session with
+        | Some current when obj.ReferenceEquals(current, s) ->
+            trace $"fsac session #{s.Id} dropped: {reason}"
+            session <- None
+        | _ -> ())
+
+/// The session that is still running, dropping one that has exited.
+let private live () : Session option =
+    match session with
+    | Some s when not (hasExited s) -> Some s
+    | Some s ->
+        dropSession s "process has exited"
+        None
+    | None -> None
+
+/// One exchange with the live sidecar, or `fallback` when there is none.
+/// Nothing thrown leaves this function: the callers sit on timer threads
+/// and inside MEF calls, where an unhandled exception ENDS Visual Studio
+/// — the IOException from writing to an exited sidecar's pipe did just
+/// that. A broken pipe, or any failure once the process is gone, drops
+/// the session so the next `ensure` restarts it.
+let private trySend (what: string) (fallback: 'a) (f: Session -> 'a) : 'a =
+    match live () with
+    | None -> fallback
+    | Some s ->
+        try
+            f s
+        with ex ->
+            trace $"{what} FAILED: {ex.GetType().Name}: {ex.Message}"
+
+            let rec pipeBroken (e: exn) =
+                match e with
+                | :? IOException
+                | :? ObjectDisposedException
+                | :? OperationCanceledException -> true
+                | :? AggregateException as ae -> ae.InnerExceptions |> Seq.exists pipeBroken
+                | _ -> false
+
+            if pipeBroken ex then
+                dropSession s "pipe broken"
+            elif hasExited s then
+                dropSession s "process exited during the exchange"
+
+            fallback
+
+/// The live sidecar's id, for buffers to tell a restart by; None while
+/// there is none running.
+let sessionId () : int option = live () |> Option.map (fun s -> s.Id)
 
 let private startSession (rootDir: string) : Session option =
     match findFsac () with
@@ -292,12 +359,27 @@ let private startSession (rootDir: string) : Session option =
             rpc.Notify("workspace/didChangeConfiguration", settings)
             trace $"fsac started for {rootDir}"
 
-            Some
+            // under startLock, as every caller of startSession is
+            lastSessionId <- lastSessionId + 1
+
+            let s =
                 {
                     Proc = proc
                     Rpc = rpc
                     Initialized = true
+                    Id = lastSessionId
                 }
+
+            // a sidecar that dies is forgotten the moment it does, so no
+            // send reaches its pipe; the sends check HasExited as well, for
+            // the window before the event fires
+            try
+                proc.EnableRaisingEvents <- true
+                proc.Exited.Add(fun _ -> dropSession s "process exited")
+            with ex -> // the HasExited checks still stand; fsharpanalyzer: ignore-line FR0055
+                trace $"fsac exit watch not registered: {ex.Message}"
+
+            Some s
         with ex ->
             trace $"fsac initialize failed: {ex.Message}"
 
@@ -312,7 +394,7 @@ let private startSession (rootDir: string) : Session option =
 let ensure (rootDir: string) : Session option =
     lock startLock (fun () ->
         match session with
-        | Some s when not s.Proc.HasExited -> Some s
+        | Some s when not (hasExited s) -> Some s
         | _ ->
             session <- startSession rootDir
             session)
@@ -320,8 +402,7 @@ let ensure (rootDir: string) : Session option =
 let notifyOpened (path: string) (text: string) =
     trace $"didOpen {path} ({text.Length} chars), session={session.IsSome}"
 
-    match session with
-    | Some s ->
+    trySend "didOpen" () (fun s ->
         s.Rpc.Notify(
             "textDocument/didOpen",
             JObject(
@@ -339,12 +420,10 @@ let notifyOpened (path: string) (text: string) =
                     )
                 ]
             )
-        )
-    | None -> ()
+        ))
 
 let notifyChanged (path: string) (version: int) (text: string) =
-    match session with
-    | Some s ->
+    trySend "didChange" () (fun s ->
         s.Rpc.Notify(
             "textDocument/didChange",
             JObject(
@@ -356,16 +435,15 @@ let notifyChanged (path: string) (version: int) (text: string) =
                     JProperty("contentChanges", JArray(JObject([ JProperty("text", text) ])))
                 ]
             )
-        )
-    | None -> ()
+        ))
 
 /// The code actions the sidecar offers for the given FR diagnostics at a
 /// position. Returns (title, list of (startLine, startCol, endLine,
 /// endCol, newText)) per action — enough to apply against the buffer.
 let codeActions (path: string) (diags: Diag list) : (string * (int * int * int * int * string) list) list =
-    match session with
-    | None -> []
-    | Some s ->
+    // a request the listener cancelled (the sidecar exited mid-wait) throws
+    // out of Wait; trySend turns that into an empty answer and a restart
+    trySend "codeAction" [] (fun s ->
         let range (d: Diag) =
             JObject(
                 [
@@ -444,4 +522,4 @@ let codeActions (path: string) (diags: Diag list) : (string * (int * int * int *
                             if not edits.IsEmpty then
                                 title, edits
                     ]
-                | _ -> []
+                | _ -> [])

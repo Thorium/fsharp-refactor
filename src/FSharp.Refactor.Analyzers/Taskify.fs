@@ -352,7 +352,44 @@ let find
 
                                 let rec walkTails (e: SynExpr) =
                                     match e with
-                                    | SynExpr.Paren(expr = inner) -> walkTails inner
+                                    | SynExpr.Paren(expr = inner) ->
+                                        // a parenthesised tail is ONE value:
+                                        // `return ` goes before the opening
+                                        // parenthesis. Descending into it put
+                                        // the keyword inside — `(r, 1)` became
+                                        // `(return r, 1)`, FS0792 — so the
+                                        // parentheses stay and the tail is
+                                        // returned whole; a blocking drain
+                                        // wrapped in them is still `return!`ed
+                                        let rec unwrap (x: SynExpr) =
+                                            match x with
+                                            | SynExpr.Paren(expr = i) -> unwrap i
+                                            | _ -> x
+
+                                        match siteAt (unwrap inner).Range with
+                                        | Some site ->
+                                            let recv = textOfRange source site.Receiver.Value
+                                            coveredSites.Add(keyOf site.Range) |> ignore
+                                            bindEdits.Add(e.Range, textOfRange source e.Range, $"return! {recv}")
+                                        | None when
+                                            sitesInBody
+                                            |> List.exists (fun s -> Range.rangeContainsRange inner.Range s.Range)
+                                            ->
+                                            // a blocking site INSIDE the
+                                            // parentheses — `(let r = t.Result
+                                            // in r + 1)` — is not covered by the
+                                            // `return (` in front of them, and
+                                            // the let-RHS pass would spell
+                                            // `return (let! r = t in ...)`,
+                                            // which does not parse: the body
+                                            // stands down
+                                            convertible <- false
+                                        | None ->
+                                            // a match, if or let inside the
+                                            // parentheses is returned as the
+                                            // value it is
+                                            let at = Range.mkRange e.Range.FileName e.Range.Start e.Range.Start
+                                            bindEdits.Add(at, "", "return ")
                                     | SynExpr.Match(clauses = cs) ->
                                         cs |> List.iter (fun (SynMatchClause(resultExpr = r)) -> walkTails r)
                                     | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some e2) ->

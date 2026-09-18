@@ -10,7 +10,9 @@
 ///    the same expression evaluated with the same bindings in the same
 ///    order, so the rewrite is behavior-preserving; `sum`/`sumBy`
 ///    specializations fire when the combine is FSharp.Core's `+` over a
-///    zero initializer. The module matches the source's RESOLVED kind:
+///    zero initializer on a FLOATING accumulator (sum adds checked; an
+///    integer loop that wraps would throw). The module matches the
+///    source's RESOLVED kind:
 ///    measured, `List.sum`/`Array.sum` run level with the mutable loop
 ///    while `Seq.sum` is ~50% slower on a list — which is why this is an
 ///    IDIOM rule (same shape, nicer spelling), not a performance one.
@@ -68,8 +70,40 @@ let private lambdaPatText (source: ISourceText) (pat: SynPat) =
 let private isZeroLike (e: SynExpr) =
     match e with
     | SynExpr.Const(SynConst.Int32 0, _)
-    | SynExpr.Const(SynConst.Double 0.0, _) -> true
+    | SynExpr.Const(SynConst.Double 0.0, _)
+    | SynExpr.Const(SynConst.Single 0.0f, _) -> true
+    | SynExpr.Const(SynConst.Decimal d, _) -> d = 0M
     | _ -> false
+
+/// The accumulator types on which `sum`/`sumBy` compute what the loop
+/// computed. FSharp.Core's sum adds with `Checked.(+)`: an INTEGER loop
+/// wraps where the rewrite throws OverflowException (`h <- h + x.
+/// GetHashCode()` is the everyday hash combiner, and it overflows by
+/// design), so integers keep the general fold — the same reason
+/// HintEngine refuses `fold (+) 0 ===> sum`. Floating addition has no
+/// checked variant, and decimal addition is checked in both spellings.
+let private floatingTypes =
+    set [ "System.Double"; "System.Single"; "System.Decimal" ]
+
+let private isFloatingAccumulator (check: FSharpCheckFileResults) (source: ISourceText) (acc: Ident) =
+    let r = acc.idRange
+    let lineText = source.GetLineString(r.EndLine - 1)
+
+    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ acc.idText ]) with
+    | Some symbolUse ->
+        match symbolUse.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as value ->
+            (try
+                let t = OptionModule.stripAbbreviations value.FullType
+
+                t.HasTypeDefinition
+                && (match t.TypeDefinition.TryFullName with
+                    | Some name -> floatingTypes.Contains name
+                    | None -> false)
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 false)
+        | _ -> false
+    | None -> false
 
 // does any expression inside `r` mention `name`?
 let private mentionsIn (index: AstIndex.Index) (name: string) (r: range) =
@@ -237,7 +271,9 @@ let find
 
                             let replacementBody =
                                 match rhs with
-                                // acc + e with FSharp.Core's (+) over zero
+                                // acc + e with FSharp.Core's (+) over zero, on a
+                                // floating accumulator: sum adds CHECKED, so an
+                                // integer accumulator falls through to the fold
                                 | SynExpr.App(
                                     funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = SynExpr.Ident lhsId)
                                     argExpr = e) when
@@ -245,6 +281,7 @@ let find
                                     && lhsId.idText = acc.idText
                                     && isZeroLike init
                                     && not (mentionsIn index acc.idText e.Range)
+                                    && isFloatingAccumulator check source acc
                                     && OptionModule.resolvesToCoreOperator check source op
                                     ->
                                     match stripParens e with
@@ -492,6 +529,45 @@ let private effectFreeIn (index: AstIndex.Index) (r: range) =
             | SynExpr.Ident id -> id.idText <> "ignore"
             | _ -> true))
 
+/// Does the predicate CALL only what provably does nothing but compute?
+/// `effectFreeIn` reads the predicate's own text; a call is where the
+/// effects hide — `if validate f then bad <- true` with a `validate` that
+/// logs, and `exists` stops logging at the first hit. So every identifier
+/// in the range that names a FUNCTION (typed) must belong to FSharp.Core
+/// (none of its effectful names: the printf family, iter, lock, Async...)
+/// or to System.String (immutable receiver, pure members), or be a
+/// function THIS FILE declares whose own body passes the same test —
+/// `if isValid x then found <- true` with `let isValid (x: string) =
+/// x.Length > 3` above it is an exists question. The body test recurses
+/// through such callees three declarations deep and takes a function
+/// already under test (recursion) as pure for that reference. A callee
+/// declared elsewhere, a user method, a constructor, an object expression,
+/// any other .NET method stands the rule down. Plain values, property
+/// reads, union cases and fields of non-function type are not calls and
+/// pass. Naming a function without applying it counts too: `List.exists
+/// validate f.Parts` hands the effect to a core function.
+let private callsOnlyPure (check: FSharpCheckFileResults) (source: ISourceText) (index: AstIndex.Index) (r: range) =
+    let rec pureRange (depth: int) (visited: Set<int * int>) (r: range) =
+        // shared with FR0012's map fusion, which asks the same of two
+        // mappers; FR0107 alone follows a same-file declaration
+        OptionModule.callsOnlyCoreWith
+            (fun value ->
+                depth < 3
+                && (match OptionModule.bindingDeclaredAt index value with
+                    | Some(head, body) ->
+                        let key = head.idRange.StartLine, head.idRange.StartColumn
+
+                        visited.Contains key
+                        || (effectFreeIn index body.Range
+                            && pureRange (depth + 1) (visited.Add key) body.Range)
+                    | None -> false))
+            check
+            source
+            index
+            r
+
+    pureRange 0 Set.empty r
+
 /// Mutable boolean flag set inside a loop → exists/forall (FR0107, fix):
 ///
 ///     let mutable found = false          let found =
@@ -501,7 +577,8 @@ let private effectFreeIn (index: AstIndex.Index) (r: range) =
 /// The `true`-initialized dual becomes `forall` with the predicate
 /// negated. Gates: the loop body is EXACTLY the one `if`, no `else`; the
 /// assigned literal is the initializer's opposite; the predicate never
-/// mentions the flag, passes `effectFreeIn`, and fits one line; nothing
+/// mentions the flag, passes `effectFreeIn` and `callsOnlyPure` (no user
+/// function runs fewer times), and fits one line; nothing
 /// reassigns the flag after the loop; and the source resolves to a real
 /// List/Array/Seq the same way FR0050's fold does. `exists`/`forall`
 /// short-circuit, so the rewrite does the same or less work — never more.
@@ -543,6 +620,7 @@ let findFlagLoops (parseTree: ParsedInput) (source: ISourceText) (check: FSharpC
                                         && isSingleLine letPat.Range
                                         && effectFreeIn index rhs.Range
                                         && not (mentionsIn index flag.idText rhs.Range)
+                                        && callsOnlyPure check source index rhs.Range
                                     | _ -> false)
                                 ->
                                 match innerLet.Bindings with
@@ -568,6 +646,9 @@ let findFlagLoops (parseTree: ParsedInput) (source: ISourceText) (check: FSharpC
                                 && isSingleLine src.Range
                                 && not (mentionsIn index flag.idText cond.Range)
                                 && effectFreeIn index cond.Range
+                                // exists/forall stop early: a user function in
+                                // the predicate would run fewer times
+                                && callsOnlyPure check source index cond.Range
                                 // the flag must not be re-assigned in the continuation
                                 && not (
                                     Regex.IsMatch(

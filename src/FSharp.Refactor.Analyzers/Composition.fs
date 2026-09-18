@@ -16,11 +16,18 @@
 ///     composition lands on must stay within 100 columns; stages that are
 ///     not plain applications are parenthesized in the output
 ///
-/// Known caveat: a stage that is a partial application (`x |> h y`) is
-/// evaluated per invocation in the lambda but once at construction in the
-/// composition; for the overwhelmingly common pure partial applications
-/// (`List.map f`) this is unobservable, but a function that runs effects
-/// before returning its closure would run them fewer times.
+///   - every stage is a plain function reference or a partial application
+///     whose arguments are ATOMS — literals, immutable identifiers (typed:
+///     no `let mutable`, no property such as `DateTime.Now`), tuples of
+///     those, lambda literals. The composition evaluates a stage's
+///     arguments once at construction where the lambda evaluated them per
+///     call: `fun x -> x |> addN (compute ()) |> string` ran `compute ()`
+///     for every element, `addN (compute ()) >> string` runs it once
+///
+/// Known caveat: a partial application of a function that runs effects
+/// before returning its closure (`x |> h y` with an effectful `h`) still
+/// runs them once instead of per invocation; for the overwhelmingly common
+/// pure partial applications (`List.map f`) this is unobservable.
 module FSharp.Refactor.Composition
 
 open System.Text.RegularExpressions
@@ -155,6 +162,76 @@ let private isMemberStage (check: FSharpCheckFileResults) (source: ISourceText) 
         | None -> false
     | None -> false
 
+/// Is every argument the stage carries an ATOM — a value the composition
+/// may evaluate once at construction where the lambda evaluated it on
+/// every call — and its head a plain function reference?
+///
+/// `fun x -> x |> addN (compute ()) |> string` became `addN (compute ())
+/// >> string`: `compute ()` ran per element before, once after. So a stage
+/// argument may be a literal, a lambda literal, a tuple of atoms, or an
+/// identifier that resolves (typed) to something whose value cannot differ
+/// between reads — an immutable value or function, a union case, a field.
+/// A `let mutable` reads differently later; a property (`DateTime.Now`)
+/// runs a getter; an application runs anything; a `.Value` dereferences.
+/// The head must be an identifier (or a parenthesised operator, `(+) 1`),
+/// a lambda, or a member access on an atom; an unresolved head or argument
+/// is refused.
+let private stageIsPure (check: FSharpCheckFileResults) (source: ISourceText) (stage: SynExpr) =
+    let immutable (id: Ident) =
+        let r = id.idRange
+        let lineText = source.GetLineString(r.EndLine - 1)
+
+        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+        | Some symbolUse ->
+            match symbolUse.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as value ->
+                (try
+                    not value.IsMutable && not value.IsMember
+                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                     false)
+            | :? FSharpUnionCase -> true
+            // `cfg.N` with `{ mutable N: int }` reads differently later too
+            | :? FSharpField as field ->
+                (try
+                    not field.IsMutable
+                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                     false)
+            // a namespace, module or type on the path: `String.length`
+            | :? FSharpEntity -> true
+            | _ -> false
+        | None -> false
+
+    // every identifier of a path, not only its last: `cfg.N` with a
+    // `let mutable cfg` is the mutable read
+    let immutablePath (ids: Ident list) = ids |> List.forall immutable
+
+    let rec isAtom (e: SynExpr) =
+        match e with
+        | SynExpr.Const _
+        | SynExpr.Lambda _
+        | SynExpr.MatchLambda _ -> true
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.Typed(expr = inner) -> isAtom inner
+        | SynExpr.Tuple(exprs = exprs) -> exprs |> List.forall isAtom
+        | SynExpr.Ident id -> immutable id
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> immutablePath ids
+        | _ -> false
+
+    let rec headAndArgs (e: SynExpr) =
+        match e with
+        | SynExpr.App(isInfix = false; funcExpr = funcExpr; argExpr = argExpr) -> isAtom argExpr && headAndArgs funcExpr
+        | SynExpr.TypeApp(expr = inner)
+        | SynExpr.Paren(expr = inner) -> headAndArgs inner
+        | SynExpr.Ident id -> immutable id
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> immutablePath ids
+        // `(expr).Method`: the receiver is evaluated once too
+        | SynExpr.DotGet(expr = receiver) -> isAtom receiver
+        | SynExpr.Lambda _
+        | SynExpr.MatchLambda _ -> true
+        | _ -> false
+
+    headAndArgs stage
+
 /// Find all parenthesized lambdas that are pipelines or nested applications of
 /// their parameter and can be rewritten as `f >> g` compositions.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
@@ -284,6 +361,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 && stages
                                    |> List.forall (fun s ->
                                        not (mentionsParam param.idText (textOfRange source s.Range)))
+                                // a stage's arguments run once in the
+                                // composition, per call in the lambda: only
+                                // atoms may ride along
+                                && stages |> List.forall (stageIsPure check source)
                                 ->
                                 let replacement = stages |> List.map (stageText source) |> String.concat " >> "
 

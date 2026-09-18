@@ -15,7 +15,18 @@
 /// everything else stays advice, because lower-then-compare,
 /// OrdinalIgnoreCase and CultureIgnoreCase can differ on edge cases
 /// (Turkish dotless i, ß) and there the comparison type is the author's
-/// deliberate choice.
+/// deliberate choice. The fix spells OrdinalIgnoreCase for every lowering
+/// (the KELVIN/LONG S measurement below is for the invariant casing; for
+/// the current-culture `ToLower()` the Turkish dotless i is the one
+/// difference, `"FILE".ToLower()` being "fıle" under tr-TR, and the
+/// idiomatic ordinal spelling is taken over a CurrentCultureIgnoreCase
+/// nobody writes), with InvariantCultureIgnoreCase as the editor's
+/// alternative. A lowered call that already names a StringComparison
+/// keeps the author's choice: `x.ToLower().StartsWith("a",
+/// StringComparison.Ordinal)` becomes `x.StartsWith("a",
+/// StringComparison.OrdinalIgnoreCase)`, CurrentCulture its
+/// CurrentCultureIgnoreCase, and one already ignoring case simply loses
+/// the redundant lowering.
 ///
 /// The lowering method is typed-gated to System.String; the Contains
 /// rewrite additionally requires the StringComparison overload to exist in
@@ -62,6 +73,16 @@ type Suggestion =
 
 let private loweringMethods =
     set [ "ToLower"; "ToUpper"; "ToLowerInvariant"; "ToUpperInvariant" ]
+
+/// The case-insensitive counterpart of a StringComparison the lowered call
+/// already named: `x.ToLower().StartsWith("a", StringComparison.Ordinal)`
+/// keeps its ordinal choice and drops the lowering. One that already
+/// ignores case keeps its spelling - the lowering was redundant.
+let private ignoreCaseOf (comparison: string) =
+    if comparison.EndsWith "IgnoreCase" then
+        comparison
+    else
+        comparison + "IgnoreCase"
 
 let private comparisonMethods =
     set [ "Contains"; "StartsWith"; "EndsWith"; "IndexOf"; "LastIndexOf" ]
@@ -130,6 +151,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // was just lowered. Rewriting it to OrdinalIgnoreCase would make it
         // start matching, which is a silent behavior change even if it is
         // probably the intended one; mismatched-case literals stay advice.
+        //
         let literalAgreesWithLowering (loweringName: string) (e: SynExpr) =
             match e with
             | SynExpr.Const(SynConst.String(text = text), _) ->
@@ -226,10 +248,33 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         expr = (LoweredCall lowering as loweredExpr); longDotId = SynLongIdent(id = [ methodId ]))
                     argExpr = arg) when comparisonMethods.Contains methodId.idText ->
                     if resolvesToStringMethod check source lowering then
-                        let literalArg =
+                        // the literal alone, or the literal beside a StringComparison
+                        // the author already chose: that choice is respected (its
+                        // IgnoreCase counterpart), and the lowering goes
+                        // ...when the comparison's family matches the lowering's: an
+                        // invariant lowering under a CurrentCulture comparison (or a
+                        // culture lowering under InvariantCulture) is two deliberate
+                        // choices this rewrite cannot keep both of - under tr-TR
+                        // `"FILE:".ToLowerInvariant().StartsWith("file:", CurrentCulture)`
+                        // is true and `StartsWith("file:", CurrentCultureIgnoreCase)`
+                        // is false - so that pairing stays advice
+                        let literalArg, explicitComparison =
                             match stripParens arg with
-                            | SynExpr.Const(SynConst.String _, _) as lit -> Some lit
-                            | _ -> None
+                            | SynExpr.Const(SynConst.String _, _) as lit -> Some lit, None
+                            | SynExpr.Tuple(
+                                exprs = [ SynExpr.Const(SynConst.String _, _) as lit
+                                          SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ]) when
+                                ids.Length >= 2 && ids.[ids.Length - 2].idText = "StringComparison"
+                                ->
+                                let comparison = (List.last ids).idText
+                                let invariantLowering = lowering.idText.EndsWith "Invariant"
+
+                                let crossed =
+                                    (invariantLowering && comparison.StartsWith "CurrentCulture")
+                                    || (not invariantLowering && comparison.StartsWith "InvariantCulture")
+
+                                if crossed then None, None else Some lit, Some comparison
+                            | _ -> None, None
 
                         let replacementWith (comparison: string) =
                             match literalArg with
@@ -251,8 +296,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             Range = expr.Range
                             Kind = CaseKind.MethodCall methodId.idText
                             LoweringName = lowering.idText
-                            Replacement = replacementWith "OrdinalIgnoreCase"
-                            CultureReplacement = replacementWith "InvariantCultureIgnoreCase"
+                            Replacement =
+                                replacementWith (
+                                    explicitComparison
+                                    |> Option.map ignoreCaseOf
+                                    |> Option.defaultValue "OrdinalIgnoreCase"
+                                )
+                            // an author who named the comparison has made the
+                            // choice; only the default gets the alternative
+                            CultureReplacement =
+                                match explicitComparison with
+                                | None -> replacementWith "InvariantCultureIgnoreCase"
+                                | Some _ -> None
                         }
                 | _ -> ()
         ]

@@ -645,20 +645,36 @@ type private Sink =
     | Rewrite of file: string * r: range * text: string
     | OpenSink of string
 
-/// The constant a module-level `let name = "..."` binds, by name.
-let private constantIn (index: AstIndex.Index) (name: string) : (string * Ident) option =
+/// The module-level `let name = "..."` bindings of a file, nested modules
+/// included: the text and the identifier of each.
+let private constants (index: AstIndex.Index) : (string * Ident) list =
     index.Decls
-    |> Array.tryPick (fun (_, d) ->
+    |> Array.toList
+    |> List.collect (fun (_, d) ->
         match d with
         | SynModuleDecl.Let(bindings = bindings) ->
             bindings
-            |> List.tryPick (fun b ->
+            |> List.choose (fun b ->
                 match b with
                 | SynBinding(
                     headPat = SynPat.Named(ident = SynIdent(ident = id))
-                    expr = SynExpr.Const(SynConst.String(text = text), _)) when id.idText = name -> Some(text, id)
+                    expr = SynExpr.Const(SynConst.String(text = text), _)) -> Some(text, id)
                 | _ -> None)
-        | _ -> None)
+        | _ -> [])
+
+/// The constant a symbol declared at this location binds: the binding whose
+/// head identifier sits at the declaration, never one that merely shares its
+/// name (a nested module's `let kind = "dir"` beside the file's own
+/// `let kind = "file"` resolved to the wrong text by name).
+let private constantAt (index: AstIndex.Index) (declaration: range) : (string * Ident) option =
+    constants index
+    |> List.tryFind (fun (_, id) -> Range.rangeContainsRange id.idRange declaration)
+
+/// The module-level constants spelling a name: the shadowing bug's
+/// candidates, where FCS resolves the pattern to a fresh local and only the
+/// name says which constant the author meant.
+let private constantsNamed (index: AstIndex.Index) (name: string) : (string * Ident) list =
+    constants index |> List.filter (fun (_, id) -> id.idText = name)
 
 /// Does the module-level constant carry `[<Literal>]`?
 let private constantIsLiteral (index: AstIndex.Index) (constIdent: Ident) =
@@ -793,9 +809,12 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     then
                         let declFile = v.DeclarationLocation.FileName
 
+                        // by position, not by name: the file may hold another
+                        // `let <name> = "..."` in a nested module; a declaration
+                        // the index does not hold at that spot is no constant
                         match this.FileOf declFile with
                         | Some(declIndex, _) ->
-                            constantIn declIndex id.idText
+                            constantAt declIndex v.DeclarationLocation
                             |> Option.map (fun (text, constIdent) -> text, (declFile, constIdent))
                         | None -> None
                     else
@@ -1607,12 +1626,48 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
             let guarded = guard.IsSome
             let later = i < clauses.Length - 1
 
+            // a guarded catch-all is no catch-all the proof can remove: what
+            // its guard turns away the arms below still meet, and what it
+            // lets through never reaches them, so deleting it as dead would
+            // change the answer (`| v when v.Length = 4 -> ...` above `| "POST"`)
+            let catchAll (bound: FSharpSymbol option) (whole: bool) =
+                if guarded then
+                    [ OpenArm "a guarded catch-all" ]
+                else
+                    [ CatchAll(clause, bound, whole) ]
+
             let rec read (p: SynPat) : Arm list =
                 match p with
                 | SynPat.Const(SynConst.String(text = text), r) -> [ LiteralArm(text, r, None, guarded) ]
-                | SynPat.Or(lhsPat = a; rhsPat = b) -> read a @ read b
+                | SynPat.Or(lhsPat = a; rhsPat = b) ->
+                    // `| null | "" ->`: a catch-all beside a literal in ONE
+                    // clause. Read as [CatchAll; LiteralArm ""] the proof
+                    // deleted the clause as dead while its literal half was
+                    // edited too - two edits over one arm, and a case with
+                    // no arm left at runtime - so a catch-all half of an
+                    // or-pattern with a literal stays open and the rule
+                    // stands down. A plain `| null ->` clause is still the
+                    // dead catch-all below
+                    let arms = read a @ read b
+
+                    let holdsLiteral =
+                        arms
+                        |> List.exists (fun arm ->
+                            match arm with
+                            | LiteralArm _
+                            | ShadowArm _ -> true
+                            | _ -> false)
+
+                    if holdsLiteral then
+                        arms
+                        |> List.map (fun arm ->
+                            match arm with
+                            | CatchAll _ -> OpenArm "a null or wildcard beside a literal in one or-pattern"
+                            | other -> other)
+                    else
+                        arms
                 | SynPat.Paren(pat = inner) -> read inner
-                | SynPat.Wild _ -> [ CatchAll(clause, None, true) ]
+                | SynPat.Wild _ -> catchAll None true
                 | SynPat.Named(ident = SynIdent(ident = id)) ->
                     match world.SymbolAt file id with
                     | Some u ->
@@ -1628,27 +1683,30 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                                 [ LiteralArm(text, p.Range, Some(v.DeclarationLocation.FileName, id), guarded) ]
                             | _ -> [ OpenArm "a non-string literal pattern" ]
                         | _ ->
-                            // a fresh variable: the shadowing bug when a
+                            // a fresh variable: the shadowing bug when ONE
                             // module-level constant of the name exists and
-                            // arms follow, a catch-all otherwise
-                            let constant =
+                            // arms follow, a catch-all otherwise; two constants
+                            // of the name (a nested module's beside the file's)
+                            // leave no way to say which the author meant
+                            let candidates =
                                 match this.FileOf file with
-                                | Some(fi, _) -> constantIn fi id.idText
-                                | None -> None
+                                | Some(fi, _) -> constantsNamed fi id.idText
+                                | None -> []
 
                             // FCS resolves the pattern to the fresh local either way;
                             // the binding's own attributes say whether the name was
                             // a [<Literal>] constant pattern all along
-                            match constant with
-                            | Some(text, constIdent) when
+                            match candidates with
+                            | [ text, constIdent ] when
                                 (match this.FileOf file with
                                  | Some(fi, _) -> constantIsLiteral fi constIdent
                                  | None -> false)
                                 ->
                                 [ LiteralArm(text, p.Range, Some(file, constIdent), guarded) ]
-                            | Some(text, constIdent) when later && not guarded ->
+                            | [ text, constIdent ] when later && not guarded ->
                                 [ ShadowArm(text, p.Range, (file, constIdent), id.idText) ]
-                            | _ -> [ CatchAll(clause, Some u.Symbol, true) ]
+                            | _ :: _ :: _ -> [ OpenArm $"a pattern '{id.idText}' more than one constant spells" ]
+                            | _ -> catchAll (Some u.Symbol) true
                     | None -> [ OpenArm "a pattern that does not resolve" ]
                 | SynPat.LongIdent(longDotId = SynLongIdent(id = [ ctor ]); argPats = SynArgPats.Pats args) when
                     this.IsCoreCase(file, ctor)
@@ -1658,10 +1716,10 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     | [ _ ] when this.IsOkCase(file, ctor) -> [ Inert ] // the value, not the error
                     | [ inner ] ->
                         match inner with
-                        | SynPat.Wild _ -> [ CatchAll(clause, None, false) ]
+                        | SynPat.Wild _ -> catchAll None false
                         | SynPat.Named(ident = SynIdent(ident = id)) ->
                             match world.SymbolAt file id with
-                            | Some u -> [ CatchAll(clause, Some u.Symbol, false) ]
+                            | Some u -> catchAll (Some u.Symbol) false
                             | None -> [ OpenArm "a pattern that does not resolve" ]
                         | _ -> read inner
                     | _ -> [ OpenArm "a pattern the rule does not read" ]
@@ -1671,7 +1729,13 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     match this.ConstantOf(file, last) with
                     | Some(text, via) -> [ LiteralArm(text, p.Range, Some via, guarded) ]
                     | None -> [ OpenArm $"a pattern '{identText ids}'" ]
-                | SynPat.Null _ -> [ Inert ]
+                // `| null ->`: the component's proof shows every source a
+                // literal, so null never arrives and the arm is as dead as a
+                // trailing wildcard — it goes with the other catch-alls. A
+                // union has no null arm to keep (FS0043), so a LIVE one (the
+                // literals not all covered, or a guard) stands the rule down
+                // where a wildcard would stay: see `liveNamesOk`
+                | SynPat.Null _ -> catchAll None true
                 | _ -> [ OpenArm "a pattern the rule does not read" ]
 
             read p)
@@ -2412,7 +2476,9 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                     | None -> []
 
                                 // the constants that keep their name in the union's
-                                // ToString: module-level, in the union's file, above it
+                                // ToString: module-level, in the union's file and its
+                                // module, above it — a nested module's constant of the
+                                // same bare name would resolve to the outer one there
                                 let constantText (text: string) =
                                     allLiterals
                                     |> List.tryPick (fun (t, via) ->
@@ -2425,6 +2491,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                 StringComparison.OrdinalIgnoreCase
                                             )
                                             && id.idRange.EndLine < line
+                                            && modulePathOf (pathOf unionFile id.idRange) = unionModule
                                             ->
                                             Some id.idText
                                         | _ -> None)
@@ -2688,18 +2755,31 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                 // every use of its name must be one the union
                                 // serves without an edit; a dead one goes with its
                                 // clause, uses and all
+                                let rec nullPattern (p: SynPat) =
+                                    match p with
+                                    | SynPat.Null _ -> true
+                                    | SynPat.Paren(pat = inner) -> nullPattern inner
+                                    | _ -> false
+
                                 let liveNamesOk =
                                     c.CatchAlls
-                                    |> List.forall (fun (file, m, _, bound, whole) ->
-                                        dead file m whole
-                                        || (match bound |> Option.bind slotOf with
+                                    |> List.forall (fun (file, m, clause, bound, whole) ->
+                                        let (SynMatchClause(pat = p)) = clause
+
+                                        let liveIsFine =
+                                            match bound |> Option.bind slotOf with
                                             | Some slot ->
                                                 analysis.Sinks slot
                                                 |> List.forall (fun s ->
                                                     match s with
                                                     | Print -> true
                                                     | _ -> false)
-                                            | None -> bound.IsNone))
+                                            | None -> bound.IsNone
+
+                                        dead file m whole
+                                        // a `| null ->` arm the proof leaves live has no
+                                        // spelling on the union
+                                        || (not (nullPattern p) && liveIsFine))
 
                                 // the adapters: the twin, the wrapper, the callers that move
                                 for a in adapters.Value do

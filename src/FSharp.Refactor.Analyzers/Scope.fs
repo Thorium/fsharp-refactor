@@ -34,6 +34,16 @@ type AnalysisScope =
         /// no constant to guard with: a capability fix has nowhere safe to
         /// live and keeps its advice without the edit.
         GuardUnavailable: bool
+        /// A project of another language (C#, VB) in the workspace
+        /// references this one and cannot be built here, so no check of
+        /// this run can see what it links to: the public surface keeps
+        /// its shape whatever `ApiChanges` says. FSharp.Azure.Quantum's C#
+        /// project cast to a union's nested case class; the union went
+        /// `[<Struct>]` under --api-changes, the F# project's build
+        /// passed, and the C# one stopped compiling. The apply tool
+        /// builds such a consumer as part of its verification where it
+        /// can, and sets this — saying why — where it cannot.
+        PublicSurfaceHeld: bool
     }
 
 /// What an editor sees, and what a run starts from.
@@ -43,6 +53,7 @@ let editor =
         ForcedCodes = Set.empty
         DualTfmConstant = ValueNone
         GuardUnavailable = false
+        PublicSurfaceHeld = false
     }
 
 let mutable private current = editor

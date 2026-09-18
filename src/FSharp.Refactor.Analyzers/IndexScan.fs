@@ -26,10 +26,14 @@
 ///     multi-line literal; nothing but blank lines stands between the
 ///     `let` and the `while`
 ///   - the function's name (`advanceV` / `retreatV`) is not in use
+///   - the loop reads no byref-like value (typed): a `ReadOnlySpan<char>`
+///     parameter the condition indexes cannot be captured by the local
+///     function (FS0406)
 module FSharp.Refactor.IndexScan
 
 open System
 open System.Text.RegularExpressions
+open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
@@ -71,8 +75,11 @@ let private (|Step|_|) (name: string) (body: SynExpr) =
         ValueSome((if op = "op_Addition" then "+" else "-"), step)
     | _ -> ValueNone
 
-/// Find index-scan loops. Parse-only.
-let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+/// Find index-scan loops. The shape is read from the syntax; the typed
+/// results answer whether the loop reads a byref-like value, which the
+/// local function it becomes could not capture, and a file with type
+/// errors, whose symbols may be missing, gets nothing.
+let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     let index = AstIndex.ofTree parseTree
     let text = source.GetSubTextString(0, source.Length)
 
@@ -89,7 +96,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             | _ -> None)
 
     [
-        for _, expr in index.Exprs do
+        for _, expr in (if OptionModule.hasErrors check then [||] else index.Exprs) do
             match expr with
             | LetOrUseE lou when not (lou.IsRecursive || lou.IsBang || lou.IsUse) ->
                 match lou.Bindings, lou.Body with
@@ -131,6 +138,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             && not (Regex.IsMatch(text, identifierPattern name))
                             && not (spansDirective source whole)
                             && Range.rangeContainsRange lou.Range rest.Range
+                            // the condition and the step move into the local
+                            // function, which cannot capture a Span (FS0406)
+                            && not (OptionModule.readsByRefLike check index source loop.Range)
                         then
                             let column = whole.StartColumn
                             let pad n = String(' ', n)

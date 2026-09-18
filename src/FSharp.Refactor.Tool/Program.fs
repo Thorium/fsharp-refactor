@@ -530,6 +530,12 @@ let private parseArgs (argv: string[]) =
         (List.ofArray argv)
     |> Result.map applyCategories
 
+/// The stderr line runProcessIn writes for a child stopped at its time cap
+/// begins with this, so that a classifier (stoppedAtTimeCap) tests for the
+/// cap itself and not for the prose after it.
+[<Literal>]
+let internal TimeCapMark = "[stopped at the time cap]"
+
 /// No child process gets to hang the tool.
 ///
 /// Three ways that happens, and all three have. Draining one pipe to
@@ -609,7 +615,9 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
 
             let minutes = timeout.TotalMinutes
 
-            -1, "", $"'{fileName} {arguments}' had not finished after {minutes} minutes, so it was stopped."
+            -1,
+            "",
+            $"{TimeCapMark} '{fileName} {arguments}' had not finished after {minutes} minutes, so it was stopped."
 
 /// Long enough for a real build of a large project, short enough that a
 /// stuck one is reported rather than waited on forever. FSREF_BUILD_MINUTES
@@ -1098,10 +1106,20 @@ let private preparedRoots =
 /// that resolves its runtime through DOTNET_ROOT alone, and exits with the
 /// host's framework-missing code (0x80008096, "fsc.exe exited with code
 /// -2147450730") when the runtime lives only in that directory. The
-/// repository's own build script sets the variable; so does this, once per
-/// directory, for every process started from here.
-let private privateSdks =
-    System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+/// repository's own build script sets the variable; so does this, for every
+/// process started from here — and undoes it again for the next checkout
+/// that has none. Both variables are process-wide: set once for the F#
+/// compiler's `.dotnet` and never restored, they made every later checkout
+/// of a workspace sweep build with THAT SDK, whatever its own global.json
+/// asked for, and a second private SDK was prepended in front of the first
+/// rather than in its place.
+let private sdkEnvironmentLock = obj ()
+
+/// DOTNET_ROOT and PATH as this process was started with, read the first
+/// time a private SDK is put in front of them: what a checkout without one
+/// gets back.
+let private originalSdkEnvironment =
+    lazy (Environment.GetEnvironmentVariable "DOTNET_ROOT", Environment.GetEnvironmentVariable "PATH")
 
 let private ensurePrivateSdk (projectPath: string) =
     let rec findGlobalJson (dir: DirectoryInfo) =
@@ -1145,39 +1163,49 @@ let private ensurePrivateSdk (projectPath: string) =
         | :? IOException
         | :? UnauthorizedAccessException -> None
 
-    match
-        findGlobalJson (DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath projectPath)))
-        |> Option.bind dotnetDirOf
-    with
-    | Some dir ->
-        privateSdks.GetOrAdd(
-            dir,
-            fun _ ->
+    let sameDirectory (a: string) (b: string) =
+        not (String.IsNullOrEmpty a)
+        && not (String.IsNullOrEmpty b)
+        && (try
+                String.Equals(
+                    Path.GetFullPath(a).TrimEnd(Path.DirectorySeparatorChar),
+                    Path.GetFullPath(b).TrimEnd(Path.DirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase
+                )
+            with _ -> // a DOTNET_ROOT that is no path is not this directory; fsharpanalyzer: ignore-line FR0055
+                false)
+
+    lock sdkEnvironmentLock (fun () ->
+        match
+            findGlobalJson (DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath projectPath)))
+            |> Option.bind dotnetDirOf
+        with
+        | Some dir ->
+            let current = Environment.GetEnvironmentVariable "DOTNET_ROOT"
+
+            if not (sameDirectory current dir) then
+                // the originals are read before the first change, and a
+                // second private SDK REPLACES the first on PATH rather than
+                // queueing behind it
+                let _, originalPath = originalSdkEnvironment.Force()
+                Environment.SetEnvironmentVariable("DOTNET_ROOT", dir)
+                Environment.SetEnvironmentVariable("PATH", dir + string Path.PathSeparator + originalPath)
+
+                printfn
+                    $"  global.json points at the repository's own .NET in {dir}: builds run with it on DOTNET_ROOT"
+        | None ->
+            // no private SDK here: the variables go back to what the process
+            // started with — only if this run changed them, so a DOTNET_ROOT
+            // the person set is left alone
+            if originalSdkEnvironment.IsValueCreated then
+                let originalRoot, originalPath = originalSdkEnvironment.Force()
                 let current = Environment.GetEnvironmentVariable "DOTNET_ROOT"
 
-                let already =
-                    not (String.IsNullOrEmpty current)
-                    && String.Equals(
-                        Path.GetFullPath(current).TrimEnd(Path.DirectorySeparatorChar),
-                        dir.TrimEnd(Path.DirectorySeparatorChar),
-                        StringComparison.OrdinalIgnoreCase
-                    )
+                if current <> originalRoot then
+                    Environment.SetEnvironmentVariable("DOTNET_ROOT", originalRoot)
+                    Environment.SetEnvironmentVariable("PATH", originalPath)
 
-                if not already then
-                    Environment.SetEnvironmentVariable("DOTNET_ROOT", dir)
-
-                    Environment.SetEnvironmentVariable(
-                        "PATH",
-                        dir + string Path.PathSeparator + Environment.GetEnvironmentVariable "PATH"
-                    )
-
-                    printfn
-                        $"  global.json points at the repository's own .NET in {dir}: builds run with it on DOTNET_ROOT"
-
-                true
-        )
-        |> ignore
-    | None -> ()
+                    printfn "  (no private .NET here: builds run with the .NET this process started with again)")
 
 let private ensureRestorable (projectPath: string) =
     let rec findRoot (dir: DirectoryInfo) =
@@ -1906,17 +1934,55 @@ let private checkTimeout =
     // typecheck as long: FSharpPlus's test project compiles in 23 minutes
     max asked processTimeout
 
+/// `work`, given up after `timeout` with a TimeoutException carrying
+/// `describe ()` — the computation itself left running.
+///
+/// Not `Async.RunSynchronously(_, timeout)`: that overload cancels the
+/// computation and then waits, with no timeout of its own, for it to
+/// notice — measured, a 6 s `Thread.Sleep` inside the async came back
+/// after 6 s against a 500 ms timeout. A type provider sitting in a
+/// database connection never observes cancellation, so the DuckDbTest.fsx
+/// wait this exists to end went on exactly as before. Started as a Task
+/// instead, and the wait alone is bounded; the task finishes, or does not,
+/// on its own thread. `WaitAny` rather than `Wait` so a failure is not
+/// wrapped in an AggregateException on the way out: `GetResult` rethrows
+/// the original.
+///
+/// Left running is not left alone: the task is started under a token that
+/// is cancelled on the way out, and not waited for. A typecheck that does
+/// observe cancellation (FCS checks the token between files) then stops
+/// and lets go of the checker it was rooting — an abandoned check kept the
+/// old checker, and everything it had cached, alive for the rest of the
+/// run. One that never observes it runs on exactly as before.
+let internal awaitWithin (timeout: TimeSpan) (describe: unit -> string) (work: Async<'T>) : 'T =
+    let cts = new Threading.CancellationTokenSource()
+    let task = Async.StartAsTask(work, cancellationToken = cts.Token)
+
+    // the source lives as long as the work holding its token: disposed at
+    // return while an abandoned check still runs, the check's next
+    // registration on the token would throw - the shape FR0075 now refuses
+    // (welendus's loan search under a `use`d source) - so the work disposes
+    // it on its own completion, however it ends
+    task.ContinueWith(
+        (fun (_: Threading.Tasks.Task) -> cts.Dispose()),
+        Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously
+    )
+    |> ignore
+
+    if Threading.Tasks.Task.WaitAny([| (task :> Threading.Tasks.Task) |], timeout) < 0 then
+        cts.Cancel()
+        raise (TimeoutException(describe ()))
+    else
+        task.GetAwaiter().GetResult()
+
 /// `ParseAndCheckProject`, abandoned after `checkTimeout`: a
 /// TimeoutException naming the compilation, for the caller to report.
 let internal checkWithin (checker: FSharpChecker) (options: FSharpProjectOptions) =
-    try
-        Async.RunSynchronously(checker.ParseAndCheckProject options, timeout = int checkTimeout.TotalMilliseconds)
-    with :? TimeoutException ->
-        raise (
-            TimeoutException(
-                $"the typecheck of {Path.GetFileName options.ProjectFileName} had not finished after {checkTimeout.TotalMinutes:N0} minutes (FSREF_CHECK_MINUTES raises the limit)"
-            )
-        )
+    awaitWithin
+        checkTimeout
+        (fun () ->
+            $"the typecheck of {Path.GetFileName options.ProjectFileName} had not finished after {checkTimeout.TotalMinutes:N0} minutes (FSREF_CHECK_MINUTES raises the limit)")
+        (checker.ParseAndCheckProject options)
 
 let internal checkProject (checker: FSharpChecker) (options: FSharpProjectOptions) =
     let projectDir =
@@ -1948,6 +2014,14 @@ let internal checkProject (checker: FSharpChecker) (options: FSharpProjectOption
             try
                 checkWithin checker options
             finally
+                // Restored on the timeout path too, when the check is still
+                // RUNNING (see awaitWithin): from here on it runs under
+                // whatever directory the process has, and the next check
+                // under this lock changes that under it again. Its result
+                // goes to nobody, so a key file it then fails to open costs
+                // nothing; the residual risk is FCS's own — a relative path
+                // it resolves late, on a thread this cannot reach — and is
+                // noted rather than fixed.
                 if switched then
                     Environment.CurrentDirectory <- previous)
 
@@ -2811,12 +2885,28 @@ let rec private applyEditGroupsCheckingScripts
             ]
             |> Set.ofList
 
+    // the siblings' recheck runs AFTER the edits are on disk: a typecheck
+    // given up on there (checkWithin) would otherwise leave them, unread by
+    // anything, for the per-target handler to skip past — so they go back
+    // first, and the exception goes on to skip the target
+    let brokenOutside () =
+        try
+            brokenElsewhere changed
+        with :? TimeoutException ->
+            for cf in changed do
+                writeSource cf.Path cf.Before
+
+            eprintfn
+                $"  (the recheck of the projects reading this one was given up on, so the {changed.Length} file(s) this round edited were put back unverified)"
+
+            reraise ()
+
     let brokenGroups =
         Set.unionMany
             [
                 brokenScriptGroups
                 halfAppliedGroups
-                (if dryRun then Set.empty else brokenElsewhere changed)
+                (if dryRun then Set.empty else brokenOutside ())
             ]
 
     if Set.isEmpty brokenGroups then
@@ -2888,24 +2978,34 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
             StringComparer.OrdinalIgnoreCase
         )
 
+    // the directories the walk could not read (and the reparse points it
+    // does not follow): scripts there, if any, are invisible to this probe
+    let unwalked = ResizeArray<string>()
+
     let scripts =
         match searchRoot with
         | None -> [||]
         | Some dir ->
-            try
-                // `ignorePaths` is honoured here DELIBERATELY, and it is not an
-                // oversight that it narrows this safety probe: a path the
-                // repository has told the tool to ignore is external code, and
-                // external code does not get a vote on how this repository's
-                // declarations are shaped. Scripts outside the target tree are
-                // invisible for the same reason - the search cannot be the
-                // whole disk - so the guarantee is scoped to the code this run
-                // is actually responsible for, which is the honest scope.
-                Directory.EnumerateFiles(dir, "*.fsx", SearchOption.AllDirectories)
-                |> Seq.filter (fun f -> not ((isBuildOutput f) || (Configuration.isIgnoredPath f)))
-                |> Seq.toArray
-            with _ -> // an unreadable tree contributes no call sites; fsharpanalyzer: ignore-line FR0055
-                [||]
+            // `ignorePaths` is honoured here DELIBERATELY, and it is not an
+            // oversight that it narrows this safety probe: a path the
+            // repository has told the tool to ignore is external code, and
+            // external code does not get a vote on how this repository's
+            // declarations are shaped. Scripts outside the target tree are
+            // invisible for the same reason - the search cannot be the
+            // whole disk - so the guarantee is scoped to the code this run
+            // is actually responsible for, which is the honest scope.
+            //
+            // Walked a directory at a time, not by
+            // `Directory.EnumerateFiles(_, _, AllDirectories)`: that gives
+            // up the whole enumeration at the first directory it cannot
+            // open, and the `with _ -> [||]` that caught it here made ONE
+            // dead symlink (Fable's, under its Beam build output) drop every
+            // script of the repository — and with them this guard, silently.
+            // A directory the walk had to skip is recorded instead, and
+            // answered for below.
+            FileWalk.filesNoting "*.fsx" dir unwalked.Add
+            |> Seq.filter (fun f -> not ((isBuildOutput f) || (Configuration.isIgnoredPath f)))
+            |> Seq.toArray
 
     // `#r "../bin/Debug/net8.0/Lib.dll"`, in any spelling of the path: a
     // textual probe, since the script is not typechecked for this — its
@@ -2936,6 +3036,24 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
 
     let unverifiable =
         System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+    // a directory this walk could not read may hold a script that #loads
+    // any file of this project, and its calls cannot be read: the same
+    // restraint as for a script that does not typecheck, over every file,
+    // since nothing says which. An unreadable tree used to contribute "no
+    // call sites", which is the one answer this probe must never give.
+    if unwalked.Count > 0 then
+        let named =
+            if unwalked.Count > 1 then
+                unwalked.[0] + ", ..."
+            else
+                unwalked.[0]
+
+        Out.skip
+            $"  ({unwalked.Count} director(ies) under the target could not be searched for scripts ({named}): a script there could #load any file of this project, so none gets a cross-file signature migration (FR0049/FR0069/FR0090/FR0091/FR0093); every other rule still runs)"
+
+        for f in options.SourceFiles do
+            unverifiable.Add(Path.GetFullPath f) |> ignore
 
     for script in scripts do
         let info = readScript checker script
@@ -3715,7 +3833,8 @@ let private runApiPass
                      // an executable's public declarations have no caller elsewhere
                      // by construction, and a `publicApi: false` says the same
                      (outside.PublicRead()
-                      || Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions
+                      || (not (Visibility.publicSurfaceHeld ())
+                          && Visibility.compilationIsLeaf options.SourceFiles options.OtherOptions)
                       // a script is the ultimate leaf: nothing links to it
                       || options.SourceFiles |> Array.exists Visibility.isScriptFile
                       || (options.SourceFiles
@@ -4314,6 +4433,13 @@ let internal exitReasons = ResizeArray<string>()
 /// compilations and still signed off with a cheerful finding count. A
 /// silent gap in coverage reads exactly like clean code.
 let mutable internal runBuildFailures = 0
+
+/// Rule invocations this run abandoned because the rule threw. Caught per
+/// file so one rule's bug costs its findings in that file and not the run
+/// — but a silently skipped rule looks exactly like a clean file, so each
+/// is counted here, named among the exit reasons, and the run exits
+/// non-zero for it.
+let mutable internal runAnalyzerFailures = 0
 
 let private fileSweepKey (definesKeyStr: string) (path: string) =
     if isDirectiveFree path then "" else definesKeyStr
@@ -5181,6 +5307,26 @@ let private runPass
                 let timings = ResizeArray<string * int64>()
                 let collected = ResizeArray<Message>()
 
+                // an analyzer that throws must not take the run down, but
+                // say so: a silently skipped rule looks like a clean file.
+                // `Invoke` only BUILDS the rule's Async — the body runs at
+                // `return! work`, and the deep-stack worker rethrows its
+                // exception as the original type, so only a catch-all here
+                // sees it: with the two named cases alone, one rule's
+                // KeyNotFoundException ended a whole workspace sweep.
+                let analyzerFailed (kind: string) (m: MethodInfo) (ex: exn) =
+                    System.Threading.Interlocked.Increment(&runAnalyzerFailures) |> ignore
+                    eprintfn $"  ({kind} {m.Name} failed on {file}: {ex.GetType().Name}: {ex.Message})"
+
+                    // one reason per rule and compilation: the tail of the
+                    // run names the rule, the lines above name the files
+                    let reason =
+                        $"{Path.GetFileName options.ProjectFileName}: {kind} {m.Name} threw {ex.GetType().Name}, so its findings in the file(s) named above are unknown"
+
+                    lock exitReasons (fun () ->
+                        if not (exitReasons.Contains reason) then
+                            exitReasons.Add reason)
+
                 // bound each analyzer's Async rather than blocking on it:
                 // with several files in flight, an Async.RunSynchronously
                 // here would tie up a thread-pool thread per job (our own
@@ -5194,14 +5340,15 @@ let private runPass
                                 let work = m.Invoke(null, [| box context |]) :?> Async<Message list>
                                 return! work
                             with
-                            // an analyzer that throws must not take the run
-                            // down, but say so: a silently skipped rule looks
-                            // like a clean file
-                            | :? TargetInvocationException as ex ->
-                                eprintfn $"  (analyzer {m.Name} failed: {ex.InnerException.Message})"
+                            | :? TargetInvocationException as ex when not (isNull ex.InnerException) ->
+                                analyzerFailed "analyzer" m ex.InnerException
                                 return []
                             | :? InvalidCastException as ex ->
                                 eprintfn $"  (analyzer {m.Name} has an unexpected signature: {ex.Message})"
+                                analyzerFailed "analyzer" m ex
+                                return []
+                            | ex ->
+                                analyzerFailed "analyzer" m ex
                                 return []
                         }
 
@@ -5232,11 +5379,15 @@ let private runPass
                                     let work = m.Invoke(null, [| box editorContext |]) :?> Async<Message list>
                                     return! work
                                 with
-                                | :? TargetInvocationException as ex ->
-                                    eprintfn $"  (editor analyzer {m.Name} failed: {ex.InnerException.Message})"
+                                | :? TargetInvocationException as ex when not (isNull ex.InnerException) ->
+                                    analyzerFailed "editor analyzer" m ex.InnerException
                                     return []
                                 | :? InvalidCastException as ex ->
                                     eprintfn $"  (editor analyzer {m.Name} has an unexpected signature: {ex.Message})"
+                                    analyzerFailed "editor analyzer" m ex
+                                    return []
+                                | ex ->
+                                    analyzerFailed "editor analyzer" m ex
                                     return []
                             }
 
@@ -6133,6 +6284,60 @@ let private frameworksOf (target: Target) =
     | Target.Script _ -> []
     | Target.Project(project, _) -> targetFrameworksOf project
 
+/// The lines a failed build is judged by: every distinct line naming an
+/// error — or, when it reported none, the tail of what it did say. A build
+/// stopped at the time cap (runProcessIn's `TimeCapMark` line), one whose
+/// `dotnet` could not start, or one that crashed has no error line at
+/// all, and keeping only those left `[||]`: an empty list that the
+/// baseline comparison read as "no compiler error introduced" and so as
+/// pre-existing breakage, fixes kept. The tail keeps the reason on record,
+/// and `stoppedAtTimeCap` finds the cap among it.
+let internal buildFailureLines (stdout: string) (stderr: string) =
+    let lines =
+        (stdout + stderr).Split '\n'
+        |> Array.map (fun l -> l.Trim())
+        |> Array.filter (fun l -> l <> "")
+
+    let errors = lines |> Array.filter (fun l -> l.Contains "error") |> Array.distinct
+
+    if Array.isEmpty errors then
+        lines |> Array.skip (max 0 (lines.Length - 5)) |> Array.distinct
+    else
+        errors
+
+/// A compiler's error line: F#'s `error FS1234`, or — from a referencing
+/// C# or VB project built with the verification — `error CS0426`,
+/// `error BC30002`. Tooling (MSB*, NETSDK*, NU*) is deliberately not one.
+let private compilerErrorRegex =
+    Text.RegularExpressions.Regex(@"error (?:FS|CS|BC)\d+", Text.RegularExpressions.RegexOptions.Compiled)
+
+/// Did a failed build say anything about the CODE? Only a compiler error
+/// can be this run's doing — see judgeAgainstBaseline: a source edit
+/// cannot make an assets file lose a framework or a package fail to
+/// resolve, so the baseline comparison weighs these lines alone.
+let internal hasCompilerErrors (errors: string array) =
+    errors |> Array.exists compilerErrorRegex.IsMatch
+
+/// Was this build stopped at the time cap? The one failure that is not a
+/// failed build at all: it compiled none of what it was asked to, so it
+/// can neither clear the fixes nor blame them, and a baseline compared
+/// against it compares nothing (see judgeAgainstBaseline). Tested by the
+/// marker runProcessIn writes, not by the prose around it.
+let internal stoppedAtTimeCap (errors: string array) =
+    errors
+    |> Array.exists (fun e -> e.StartsWith(TimeCapMark, StringComparison.Ordinal))
+
+/// One `dotnet build` of a project — of any language — run from its own
+/// directory, its failure as the lines the baseline comparison judges by.
+let private buildOnce (project: string) (arguments: string) =
+    let exitCode, stdout, stderr =
+        runForProject project processTimeout "dotnet" $"build \"{project}\" --nologo -v q{arguments}"
+
+    if exitCode = 0 then
+        Ok()
+    else
+        Error(buildFailureLines stdout stderr)
+
 /// Build every framework, so a fix that suits the one we analyzed but not
 /// the others cannot pass as success.
 /// Every distinct error the build reported, not just the first few. The
@@ -6148,19 +6353,7 @@ let private buildAllFrameworks (project: string) =
     // a path given relative to the caller's directory must become absolute
     let project = Path.GetFullPath project
 
-    let build (arguments: string) =
-        let exitCode, stdout, stderr =
-            runForProject project processTimeout "dotnet" $"build \"{project}\" --nologo -v q{arguments}"
-
-        if exitCode = 0 then
-            Ok()
-        else
-            Error(
-                (stdout + stderr).Split '\n'
-                |> Array.filter (fun l -> l.Contains "error")
-                |> Array.map (fun l -> l.Trim())
-                |> Array.distinct
-            )
+    let build (arguments: string) = buildOnce project arguments
 
     match build "" with
     | Ok() when hasConfigurationConditionals project ->
@@ -6172,6 +6365,83 @@ let private buildAllFrameworks (project: string) =
         build $" -c {other}"
     | result -> result
 
+/// Per project and run: the consumers of another language that build here
+/// and the ones that do not (see consumersOf). Asked by every framework
+/// pass over the project and again at its verification, and the probe is
+/// a build.
+let private consumerProjects =
+    System.Collections.Concurrent.ConcurrentDictionary<string, string list * string list>(
+        StringComparer.OrdinalIgnoreCase
+    )
+
+/// The C# and VB projects that reference `project` — those of its solution,
+/// or of the directory the run was pointed at (Workspace.workspaceOf), with
+/// a `ProjectReference` to it, directly or through another — split into
+/// the ones the verification can BUILD and the ones it cannot.
+///
+/// The verification build of an F# project compiles F#. A C# project in
+/// the same solution casting to a union's nested case class consumes the
+/// public surface through a compile no F# check ever runs: FR0016 made
+/// FSharp.Azure.Quantum's union a struct under --api-changes, the F#
+/// project built, the C# one stopped compiling — and the tool, seeing
+/// success, re-applied the change after the user had reverted it by hand.
+/// So a consumer that builds as the tree stands joins the verification
+/// build, where its failure with the fixes and not without them puts them
+/// back like an F# framework's would. One that does not build as it
+/// stands — no SDK for its framework, broken before this run — can verify
+/// nothing, and the project's public surface is held for it instead
+/// (Scope.PublicSurfaceHeld), said out loud. Not probed when nothing will
+/// be written (`probe` is off on a dry run): every consumer then counts
+/// as buildable, and the verification that would build it never runs.
+let private consumersOf (probe: bool) (root: string) (project: string) : string list * string list =
+    consumerProjects.GetOrAdd(
+        Path.GetFullPath project,
+        fun full ->
+            let foreign =
+                match Workspace.workspaceOf root full with
+                | None -> []
+                | Some workspace ->
+                    // resolved paths only: a by-name or unresolvable reference
+                    // would make one csproj the consumer of every project in a
+                    // whole-tree run, probed once per project
+                    Workspace.resolvedReferencersOf workspace full
+                    |> List.filter (Workspace.isFSharpProject >> not)
+
+            let names (projects: string list) =
+                projects |> List.map Path.GetFileName |> String.concat ", "
+
+            let verb (projects: string list) =
+                if projects.Length = 1 then "references" else "reference"
+
+            if foreign.IsEmpty then
+                [], []
+            elif not probe then
+                Out.dim
+                    $"  ({names foreign} {verb foreign} this project, and would be built with it to verify the fixes of a run that writes)"
+
+                foreign, []
+            else
+                let buildable, held =
+                    foreign
+                    |> List.partition (fun consumer ->
+                        match buildOnce consumer "" with
+                        | Ok() -> true
+                        | Error lines ->
+                            Out.skip
+                                $"  ({Path.GetFileName consumer} references this project and does not build here, so it cannot verify this run's fixes; public declarations keep their shape)"
+
+                            for line in lines |> Array.truncate 3 do
+                                Out.dim $"    {line}"
+
+                            false)
+
+                if not buildable.IsEmpty then
+                    printfn
+                        $"  ({names buildable} {verb buildable} this project: built with it to verify this run's fixes, since a public shape it links to can change under it)"
+
+                buildable, held
+    )
+
 /// An error line with its position taken out, so the same pre-existing
 /// error reads the same after a fix above it has moved the line it sits
 /// on. Comparing SETS of these, rather than counts, is what separates "the
@@ -6182,7 +6452,7 @@ let private errorSignature (line: string) =
 
 /// What a failed all-frameworks build says about this run's fixes, once
 /// the build is known to fail WITHOUT them too.
-type private Blame =
+type internal Blame =
     /// Every error was there before the fixes: theirs, not ours.
     | PreExisting
     /// The build fails differently from one run to the next, so an error
@@ -6190,6 +6460,11 @@ type private Blame =
     | Unverifiable
     /// Errors that appear with the fixes and never without them.
     | Introduced of Set<string>
+    /// A build in the comparison was stopped at the time cap: it compiled
+    /// nothing, so nothing it said is about the code, and the fixes are
+    /// neither cleared nor blamed — they are unverified, and an unverified
+    /// fix does not stay.
+    | NotVerified
 
 /// Judge a build that fails with this run's fixes AND without them.
 ///
@@ -6203,32 +6478,61 @@ type private Blame =
 /// run.
 ///
 /// Among compiler errors, one seen with the fixes and not in the first
-/// baseline gets a second baseline build: a build that is already broken
-/// is often broken DIFFERENTLY from run to run, and where the two baselines
-/// disagree the failure is not evidence of anything.
-let private judgeAgainstBaseline (withFixes: string array) (project: string) (firstBaseline: string array) =
+/// baseline gets a second baseline build (`rebuild`): a build that is
+/// already broken is often broken DIFFERENTLY from run to run, and where
+/// the two baselines disagree the failure is not evidence of anything.
+///
+/// But a build stopped at the time cap is not "no compiler error
+/// introduced". A verification build that ran into the 15-minute cap came
+/// back as `Error [||]`, the difference of two empty sets was empty, and
+/// every fix was written back as "pre-existing breakage" — the build had
+/// never compiled a line of them. Either side stopped at the cap, or a
+/// second baseline stopped there, is NotVerified, whatever the other says.
+///
+/// The cap ALONE, though. A build that fails on its tooling with the fixes
+/// and without them — a post-compile `Exec` target (MSB3073), packing in
+/// Release (NU5xxx), a targeting pack that is not installed (NETSDK1045,
+/// MSB3644) — did compile the code and said nothing against it: that is
+/// pre-existing breakage, fixes kept, as it always was. Reading every
+/// failure without a compiler error as the cap restored whole snapshots on
+/// repositories that could then never keep a fix.
+let internal judgeAgainstBaseline
+    (rebuild: unit -> Result<unit, string array>)
+    (withFixes: string array)
+    (firstBaseline: string array)
+    =
     let compilerErrors (errors: string array) =
         errors
-        |> Array.filter (fun e -> Text.RegularExpressions.Regex.IsMatch(e, @"error FS\d+"))
+        |> Array.filter compilerErrorRegex.IsMatch
         |> Array.map errorSignature
         |> Set.ofArray
 
-    let introduced =
-        Set.difference (compilerErrors withFixes) (compilerErrors firstBaseline)
-
-    if introduced.IsEmpty then
-        PreExisting
+    if stoppedAtTimeCap withFixes || stoppedAtTimeCap firstBaseline then
+        NotVerified
     else
-        match buildAllFrameworks project with
-        | Ok() -> Unverifiable
-        | Error secondBaseline when compilerErrors secondBaseline <> compilerErrors firstBaseline -> Unverifiable
-        | Error secondBaseline ->
-            let remaining = Set.difference introduced (compilerErrors secondBaseline)
+        let introduced =
+            Set.difference (compilerErrors withFixes) (compilerErrors firstBaseline)
 
-            if remaining.IsEmpty then
-                PreExisting
-            else
-                Introduced remaining
+        if introduced.IsEmpty then
+            PreExisting
+        else
+            match rebuild () with
+            // the first baseline failed on tooling alone (a file in use right
+            // after a build, a restore hiccup) and the rebuild passes: the code
+            // without the fixes compiles, so every compiler error the build
+            // with them reported is theirs - "the two baselines disagree" is
+            // not the case, both say the same about the code
+            | Ok() when not (hasCompilerErrors firstBaseline) -> Introduced introduced
+            | Ok() -> Unverifiable
+            | Error secondBaseline when stoppedAtTimeCap secondBaseline -> NotVerified
+            | Error secondBaseline when compilerErrors secondBaseline <> compilerErrors firstBaseline -> Unverifiable
+            | Error secondBaseline ->
+                let remaining = Set.difference introduced (compilerErrors secondBaseline)
+
+                if remaining.IsEmpty then
+                    PreExisting
+                else
+                    Introduced remaining
 
 /// The source files as they stand, so one framework's pass can be undone
 /// if it turns out to have broken another's. Starts the record of files
@@ -6401,7 +6705,7 @@ let private fixesNearErrors (cf: AppliedFile) (errorLines: Set<int>) : (int * st
 
     cf.Fixes |> List.filter (fun (g, _, _) -> culpritGroups.Contains g)
 
-let internal verifyPass
+let private verifyPassChecked
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
     (baselineErrors: int)
@@ -6792,6 +7096,34 @@ let internal verifyPass
 
             false
 
+/// Verify one pass's edits against the project check, rolling back what
+/// broke it (verifyPassChecked) — and when the check itself is given up
+/// on (checkWithin's TimeoutException), roll back ALL of them first. The
+/// pass has written its files by now; the exception used to pass straight
+/// through to the per-target handler, which printed "skipped" and moved on
+/// with every unverified edit left on disk. The texts each file had before
+/// the pass are in hand, so they go back, and the exception goes on: the
+/// target is still skipped, on a tree the run has not altered.
+let internal verifyPass
+    (checker: FSharpChecker)
+    (options: FSharpProjectOptions)
+    (baselineErrors: int)
+    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (changedFiles: AppliedFile list)
+    : bool =
+    try
+        verifyPassChecked checker options baselineErrors suppressed changedFiles
+    with :? TimeoutException ->
+        for cf in changedFiles do
+            writeSource cf.Path cf.Before
+
+        checker.InvalidateConfiguration options
+
+        eprintfn
+            $"  (the typecheck verifying this pass was given up on, so its {changedFiles.Length} changed file(s) were put back unverified)"
+
+        reraise ()
+
 /// One checker per framework of a multi-targeted project, beyond the
 /// run's own for the first.
 ///
@@ -7026,6 +7358,21 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             else
                 opts
 
+        // the C# and VB projects referencing this one: no F# check sees
+        // what they link to, so they are built with the verification — or,
+        // where they cannot be built, the public surface is held for them.
+        // The probe build that decides "buildable" is paid only where a
+        // public shape can change at all, under --api-changes (a test
+        // project's own included): a run that keeps the public surface
+        // cannot break a consumer's compile, and its consumers are built
+        // with the verification without a probe. Nothing to hold or build
+        // on a parse-only run, which writes nothing
+        let buildableConsumers, heldConsumers =
+            match target with
+            | Target.Project(project, _) when not opts.ParseOnly ->
+                consumersOf (not opts.DryRun && opts.ApiChanges) opts.Target project
+            | _ -> [], []
+
         // cross-file (API-changing) rule variants gate on this: they
         // stay silent in editors and in default runs. Set per compilation
         // either way: a test project turns it on for itself alone, and the
@@ -7039,6 +7386,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             { Scope.scope () with
                 ApiChanges = opts.ApiChanges
                 ForcedCodes = opts.ExplicitCodes |> Option.defaultValue Set.empty
+                PublicSurfaceHeld = not heldConsumers.IsEmpty
             }
 
         // Not worth skipping on a dry run: measured, the cost simply
@@ -7512,23 +7860,119 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 // The check above only covers the framework we analysed. A
                 // multi-targeted project has others, and a fix valid for one
                 // can fail on another, so build the lot before claiming
-                // success.
+                // success. A project of another language referencing this
+                // one is in the same position — its compile of this
+                // project's public surface is one no F# check ran — and is
+                // built alongside (consumersOf).
                 elif
                     not opts.ParseOnly
                     && (isMultiTargeted target
+                        || not buildableConsumers.IsEmpty
                         || (match target with
                             | Target.Project(project, _) -> hasConfigurationConditionals project
                             | Target.Script _ -> false))
                 then
                     match target with
                     | Target.Project(project, _) ->
-                        printfn "verifying every target framework and configuration..."
+                        let ownBuildNeeded = isMultiTargeted target || hasConfigurationConditionals project
 
-                        match buildAllFrameworks project with
+                        let consumerNames =
+                            buildableConsumers |> List.map Path.GetFileName |> String.concat ", "
+
+                        /// what the verification covers, for the lines below
+                        let verified =
+                            match ownBuildNeeded, buildableConsumers.IsEmpty with
+                            | true, true -> "every target framework"
+                            | true, false -> "every target framework and referencing project"
+                            | false, _ -> "every referencing project"
+
+                        /// what a failure names: the framework, or the
+                        /// referencing project, this run did not analyse
+                        let subject =
+                            match ownBuildNeeded, buildableConsumers.IsEmpty with
+                            | true, true -> "a target framework"
+                            | true, false -> "a target framework or referencing project"
+                            | false, _ -> "a referencing project"
+
+                        let subjectCap = string (Char.ToUpperInvariant subject.[0]) + subject.Substring 1
+
+                        if buildableConsumers.IsEmpty then
+                            printfn "verifying every target framework and configuration..."
+                        elif ownBuildNeeded then
+                            printfn
+                                $"verifying every target framework and configuration, and the referencing {consumerNames}..."
+                        else
+                            printfn $"verifying the referencing {consumerNames}..."
+
+                        /// the verification build: this project's every
+                        /// framework and configuration, where it has more than
+                        /// the one analysed, then each consumer that could be
+                        /// built — the first failure is the verdict
+                        let verificationBuild () =
+                            let own = if ownBuildNeeded then buildAllFrameworks project else Ok()
+
+                            match own with
+                            | Error _ -> own
+                            | Ok() ->
+                                buildableConsumers
+                                |> List.fold
+                                    (fun result consumer ->
+                                        match result with
+                                        | Ok() -> buildOnce consumer ""
+                                        | refused -> refused)
+                                    (Ok())
+
+                        // a verification switch: a failure that needs the
+                        // fixes in place to be studied (the F# compiler's
+                        // FSharp.Core failing only with the compiler
+                        // project's fixes applied) is kept, not undone
+                        let keepOnFailure = Environment.GetEnvironmentVariable "FSREF_KEEP_ON_FAILURE" = "1"
+
+                        let tail (lines: string array) =
+                            lines |> Array.truncate 5 |> String.concat "\n"
+
+                        /// the build was stopped at the time cap, so it said
+                        /// nothing about the code: the fixes are unverified,
+                        /// and go back (or stay, under the switch)
+                        let notVerified (lines: string array) (putBack: unit -> int) =
+                            if keepOnFailure then
+                                eprintfn
+                                    "FSREF_KEEP_ON_FAILURE: a verification build was stopped at the time cap, so it could not verify this run's fixes; kept for inspection:"
+
+                                eprintfn $"{tail lines}"
+
+                                failed
+                                    "FSREF_KEEP_ON_FAILURE: a verification build was stopped at the time cap and could not verify this run's fixes; they were kept for inspection"
+                            else
+                                let restored = putBack ()
+
+                                eprintfn
+                                    $"A verification build was stopped at the time cap before it had compiled this run's fixes, so they are unverified; the {restored} file(s) it changed were put back. FSREF_BUILD_MINUTES raises the cap (now {processTimeout.TotalMinutes:N0})."
+
+                                eprintfn $"{tail lines}"
+
+                                failed
+                                    $"a verification build was stopped at the time cap, so this run's fixes could not be verified; its {restored} changed file(s) were put back"
+
+                        match verificationBuild () with
                         | Ok() ->
-                            printfn "done; every target framework still builds"
+                            printfn $"done; {verified} still builds"
                             markSwept options
                             0
+                        // Not a failed build to be judged, a build that never
+                        // judged: with the fixes in place it was stopped at
+                        // the time cap, so it compiled nothing this run
+                        // wrote. The baseline comparison below cannot help —
+                        // a baseline that times out too reads as "no new
+                        // error" — and was how a timed-out build kept every
+                        // fix as pre-existing breakage. The cap ALONE, though:
+                        // a build that fails on its tooling (an `Exec` target,
+                        // packing, a missing targeting pack) is judged against
+                        // the baseline like any other failure, and a
+                        // repository broken that way before this run keeps
+                        // its fixes as it always did.
+                        | Error output when stoppedAtTimeCap output ->
+                            notVerified output (fun () -> restoreSnapshot snapshot)
                         | Error output ->
                             // This pass changed code the other frameworks
                             // also compile — shared code, outside any #if —
@@ -7567,18 +8011,12 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 eprintfn $"{report output}"
 
                                 failed
-                                    "a target framework fails to build with and without this run's fixes; the fixes were kept, the build needs attention"
+                                    $"{subject} fails to build with and without this run's fixes; the fixes were kept, the build needs attention"
 
-                            // a verification switch: a failure that needs the
-                            // fixes in place to be studied (the F# compiler's
-                            // FSharp.Core failing only with the compiler
-                            // project's fixes applied) is kept, not undone
-                            let keepOnFailure = Environment.GetEnvironmentVariable "FSREF_KEEP_ON_FAILURE" = "1"
-
-                            match buildAllFrameworks project with
+                            match verificationBuild () with
                             | Error _ when keepOnFailure ->
                                 keepFixes
-                                    "FSREF_KEEP_ON_FAILURE: a target framework fails with this run's fixes (and without them); kept for inspection:"
+                                    $"FSREF_KEEP_ON_FAILURE: {subject} fails with this run's fixes (and without them); kept for inspection:"
                             // Still broken without the fixes — but "still
                             // broken" is not "not our fault". Comparing the
                             // errors themselves separates the two: one that
@@ -7586,21 +8024,26 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                             // putting the files back would hand over a
                             // project broken in ways this run caused.
                             | Error withoutFixes ->
-                                match judgeAgainstBaseline output project withoutFixes with
+                                match judgeAgainstBaseline verificationBuild output withoutFixes with
                                 | PreExisting ->
                                     keepFixes
-                                        "A target framework fails to build, but it fails WITHOUT this run's fixes too — pre-existing breakage, fixes kept:"
+                                        $"{subjectCap} fails to build, but it fails WITHOUT this run's fixes too — pre-existing breakage, fixes kept:"
                                 | Unverifiable ->
                                     keepFixes
-                                        "A target framework fails to build, and fails DIFFERENTLY from one build to the next without this run's fixes — this build cannot verify them; fixes kept (each passed the typecheck of the framework analysed), review the diff:"
+                                        $"{subjectCap} fails to build, and fails DIFFERENTLY from one build to the next without this run's fixes — this build cannot verify them; fixes kept (each passed the typecheck of the framework analysed), review the diff:"
+                                // the baseline build (or the second) was
+                                // stopped at the cap and said nothing about
+                                // the code; the files are already back, and
+                                // stay back
+                                | NotVerified -> notVerified withoutFixes (fun () -> restored)
                                 | Introduced introduced ->
                                     eprintfn
-                                        $"A target framework was ALREADY broken, but applying broke it further ({introduced.Count} error(s) seen only with this run's fixes), so the {restored} file(s) it changed were put back:"
+                                        $"{subjectCap} was ALREADY broken, but applying broke it further ({introduced.Count} error(s) seen only with this run's fixes), so the {restored} file(s) it changed were put back:"
 
                                     eprintfn $"{report (Array.ofSeq introduced)}"
 
                                     failed
-                                        $"applying broke an already-failing target framework further ({introduced.Count} new error(s)); its {restored} changed file(s) were put back"
+                                        $"applying broke an already-failing build ({subject}) further ({introduced.Count} new error(s)); its {restored} changed file(s) were put back"
                             | Ok() ->
                                 // the baseline builds — so the failure is
                                 // ours, or a build that only fails
@@ -7612,21 +8055,27 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 for path, text in currentTexts do
                                     writeSource path text
 
-                                match buildAllFrameworks project with
+                                match verificationBuild () with
                                 | Ok() ->
                                     printfn
-                                        "done; every target framework still builds (the first verification build failed and the second passed — a build that only fails sometimes)"
+                                        $"done; {verified} still builds (the first verification build failed and the second passed — a build that only fails sometimes)"
 
                                     markSwept options
                                     0
                                 | Error again when keepOnFailure ->
                                     eprintfn
-                                        "FSREF_KEEP_ON_FAILURE: a target framework fails with this run's fixes and builds without them; the fixes are kept for inspection:"
+                                        $"FSREF_KEEP_ON_FAILURE: {subject} fails with this run's fixes and builds without them; the fixes are kept for inspection:"
 
                                     eprintfn $"{report again}"
 
                                     failed
-                                        "FSREF_KEEP_ON_FAILURE: a target framework fails to build with this run's fixes; they were kept for inspection"
+                                        $"FSREF_KEEP_ON_FAILURE: {subject} fails to build with this run's fixes; they were kept for inspection"
+                                // the baseline built and the rebuild with the
+                                // fixes was stopped at the cap: no bisection
+                                // over builds that cannot finish — the fixes
+                                // are unverified and go back whole
+                                | Error again when stoppedAtTimeCap again ->
+                                    notVerified again (fun () -> restoreSnapshot snapshot)
                                 | Error again ->
                                     // ONE file's fixes can be the whole trouble — the
                                     // F# compiler's sformat.fs is also a source of
@@ -7678,7 +8127,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                                  else
                                                      Map.find path fixedText)
 
-                                        match buildAllFrameworks project with
+                                        match verificationBuild () with
                                         | Ok() -> true
                                         | Error _ -> false
 
@@ -7753,7 +8202,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                             compiledElsewhere.Contains(Path.GetFullPath(path).ToLowerInvariant()))
 
                                     printfn
-                                        $"  bisecting the {changed.Length} changed file(s) for the ones the other framework refuses (a build per step)..."
+                                        $"  bisecting the {changed.Length} changed file(s) for the ones the refusing build ({subject}) rejects (a build per step)..."
 
                                     // (found, already confirmed by a passing build)
                                     let found, confirmed =
@@ -7770,7 +8219,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                         && (confirmed || (builds < maxBuilds && passesReverting (set found)))
                                     then
                                         eprintfn
-                                            $"Applying broke a target framework this run did not analyze; the fixes in {found.Length} file(s) were put back and the other {changed.Length - found.Length} kept:"
+                                            $"Applying broke {subject} this run did not analyze; the fixes in {found.Length} file(s) were put back and the other {changed.Length - found.Length} kept:"
 
                                         for path in found do
                                             putBackFiles.Add(Path.GetFullPath path) |> ignore
@@ -7824,32 +8273,32 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                             if alsoOwn.IsEmpty then
                                                 false
                                             else
-                                                match buildAllFrameworks project with
+                                                match verificationBuild () with
                                                 | Ok() -> false
                                                 | Error _ ->
                                                     restoreSnapshot snapshot |> ignore
 
                                                     eprintfn
-                                                        $"With those put back too a target framework still fails, so the {changedTotal} file(s) this run changed were all put back."
+                                                        $"With those put back too {subject} still fails, so the {changedTotal} file(s) this run changed were all put back."
 
                                                     true
 
                                         if allBack then
                                             failed
-                                                $"all {changedTotal} changed file(s) put back: a target framework this run did not analyze fails with its fixes"
+                                                $"all {changedTotal} changed file(s) put back: {subject} this run did not analyze fails with its fixes"
                                         else
                                             failed
-                                                $"the fixes in {found.Length + alsoOwn.Length} of {changedTotal} changed file(s) put back: a target framework this run did not analyze refused them"
+                                                $"the fixes in {found.Length + alsoOwn.Length} of {changedTotal} changed file(s) put back: {subject} this run did not analyze refused them"
                                     else
                                         restoreSnapshot snapshot |> ignore
 
                                         eprintfn
-                                            $"Applying broke a target framework this run did not analyze, so the {changedTotal} file(s) it changed were put back:"
+                                            $"Applying broke {subject} this run did not analyze, so the {changedTotal} file(s) it changed were put back:"
 
                                         eprintfn $"{report again}"
 
                                         failed
-                                            $"all {changedTotal} changed file(s) put back: a target framework this run did not analyze fails with its fixes"
+                                            $"all {changedTotal} changed file(s) put back: {subject} this run did not analyze fails with its fixes"
                     | Target.Script _ ->
                         printfn "done; project still checks clean"
                         markSwept options
@@ -8102,12 +8551,15 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         siblingOptionsCache.Clear()
         siblingCheckCache.Clear()
         referencingCheckCache.Clear()
+        // whether a consumer builds was answered for the last run's tree
+        consumerProjects.Clear()
         // the corpus harness runs main in-process; a leaked count would
         // report the previous run's held-back findings as this one's
         Analyzers.heldByScope.Clear()
         directiveFreeCache.Clear()
         runTotalApplied <- 0
         runBuildFailures <- 0
+        runAnalyzerFailures <- 0
         lock exitReasons exitReasons.Clear
         runCompilations <- 0
         honorAllSuppressions <- opts.HonorSuppressions
@@ -8221,7 +8673,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
                     frameworksInTurn <- frameworks
 
-                    let results =
+                    try
                         frameworks
                         |> List.mapi (fun index tfm ->
                             // no constant to guard with, and this pass sees a
@@ -8240,20 +8692,24 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                                 }
 
                             runTarget (checkerForFramework checker index) { opts with Framework = tfm } true target)
+                        |> List.fold max 0
+                    finally
+                        // both are this project's rounds' business only: a
+                        // leaked no-guard flag once dropped the capability fixes
+                        // of every later target in the run, single-target net8.0
+                        // projects included. In a `finally`, because a
+                        // typecheck given up on (checkWithin) leaves this loop
+                        // by exception: the next target's Scope.set carries
+                        // both flags over, and that is the same regression
+                        // through a different door.
+                        Scope.set
+                            { Scope.scope () with
+                                DualTfmConstant = ValueNone
+                                GuardUnavailable = false
+                            }
 
-                    // both are this project's rounds' business only: a
-                    // leaked no-guard flag once dropped the capability fixes
-                    // of every later target in the run, single-target net8.0
-                    // projects included
-                    Scope.set
-                        { Scope.scope () with
-                            DualTfmConstant = ValueNone
-                            GuardUnavailable = false
-                        }
-
-                    frameworksInTurn <- []
-                    releaseFrameworkCheckers ()
-                    results |> List.fold max 0
+                        frameworksInTurn <- []
+                        releaseFrameworkCheckers ()
             | _ -> runTarget checker opts several target
 
         let runOne target =
@@ -8300,6 +8756,11 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
                     code)
                 |> List.fold max 0
+
+            // a rule that threw was skipped for that file, and the file's
+            // tally is short by whatever it would have found: not a clean
+            // run, whatever the counts below say
+            let exitCode = if runAnalyzerFailures > 0 then max exitCode 1 else exitCode
 
             match opts.Report with
             | Some reportPath ->
@@ -8366,6 +8827,10 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
                 Out.bad
                     $"  WARNING: {runBuildFailures} of {runCompilations} compilation(s) could not be analysed — they do not build, so {scope}. Fix the build (a missing `dotnet tool restore`/`paket restore` is the usual cause), or use --parse-only for the syntactic rules."
+
+            if runAnalyzerFailures > 0 then
+                Out.bad
+                    $"  WARNING: {runAnalyzerFailures} rule invocation(s) threw and were skipped (the `(analyzer ... failed on ...)` lines above name them) — those files were not fully analysed, and a fix of the failing rule was neither offered nor applied there. Please report the exception."
 
             // the last line before a non-zero exit says which compilations
             // caused it and why — the paragraphs that did are pages up

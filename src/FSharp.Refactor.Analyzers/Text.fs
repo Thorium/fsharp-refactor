@@ -1028,6 +1028,17 @@ let rec private patNamesLoop (acc: string list) (pending: SynPat list) =
             | SynPat.LongIdent(longDotId = SynLongIdent(id = [ head ]); argPats = SynArgPats.Pats ps) ->
                 head.idText :: acc, ps @ rest
             | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> acc, ps @ rest
+            // the four forms patBoundNames knows and this loop did not: a
+            // `{ Id = id }` record pattern, a `(id, _) :: _` cons, an
+            // optional `?id` and the named fields of `Case(Field = p)`. A
+            // scope check that missed them (FR0095's shadowedAt) took a
+            // match arm's `id` for FSharp.Core's
+            | SynPat.Record(fieldPats = fields) ->
+                acc, (fields |> List.map (fun (f: NamePatPairField) -> f.Pattern)) @ rest
+            | SynPat.ListCons(lhsPat = lhs; rhsPat = rhs) -> acc, lhs :: rhs :: rest
+            | SynPat.OptionalVal(ident = id) -> id.idText :: acc, rest
+            | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs(pats = ps)) ->
+                acc, (ps |> List.map (fun (fieldPat: NamePatPairField) -> fieldPat.Pattern)) @ rest
             | _ -> acc, rest
 
         patNamesLoop acc next

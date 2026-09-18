@@ -283,3 +283,54 @@ let ``a drain wrapped in an application's own parentheses keeps a pair`` () =
         "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add(x * 2)\n    Some(List.ofSeq acc)"
         "let f (xs: int list) =\n    let acc: int list =\n        [\n            for x in xs do\n                x * 2\n        ]\n    Some(acc)"
     |> ignore
+
+[<Fact>]
+let ``a discarded non-unit statement in the loop would become a yield`` () =
+    // `d.TryAdd(x, x)` returns a bool the loop discards; in the list
+    // expression it is an implicit yield, and the list doubles in length
+    Assert.Empty(
+        findIn
+            "module T\nopen System.Collections.Generic\nlet f (xs: int list) (d: Dictionary<int,int>) =\n    let acc = ResizeArray<bool>()\n    for x in xs do\n        d.TryAdd(x, x)\n        acc.Add(x > 0)\n    List.ofSeq acc"
+    )
+
+[<Fact>]
+let ``a discarded non-unit value in a branch of the loop would become a yield`` () =
+    Assert.Empty(
+        findIn
+            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        if x > 0 then\n            x.ToString()\n            acc.Add x\n    List.ofSeq acc"
+    )
+
+[<Fact>]
+let ``unit statements beside the Add still move`` () =
+    // a printf, a method returning void, an indexed set and an assignment
+    // are unit: none of them yields
+    assertRewrite
+        "module T\nopen System.Collections.Generic\nlet f (xs: int list) (d: Dictionary<int,int>) =\n    let acc = ResizeArray<bool>()\n    let mutable n = 0\n    for x in xs do\n        printfn \"%d\" x\n        System.Console.WriteLine x\n        d.[x] <- x\n        n <- n + 1\n        acc.Add(x > 0)\n    List.ofSeq acc"
+        "module T\nopen System.Collections.Generic\nlet f (xs: int list) (d: Dictionary<int,int>) =\n    let mutable n = 0\n    let acc: bool list =\n        [\n            for x in xs do\n                printfn \"%d\" x\n                System.Console.WriteLine x\n                d.[x] <- x\n                n <- n + 1\n                x > 0\n        ]\n    acc"
+    |> ignore
+
+[<Fact>]
+let ``a loop over a Span cannot move into the list expression`` () =
+    // the list expression may not capture the ReadOnlySpan: FS0406
+    Assert.Empty(
+        findIn
+            "module T\nlet chars (s: System.ReadOnlySpan<char>) =\n    let acc = ResizeArray<char>()\n    for c in s do\n        acc.Add c\n    List.ofSeq acc"
+    )
+
+[<Fact>]
+let ``a loop indexing a Span cannot move into the list expression either`` () =
+    // the indexer is an inref property FCS cannot place a declaration for:
+    // that must not empty the file's byref-like uses and let the Span through
+    Assert.Empty(
+        findIn
+            "module T\nlet upper (s: System.ReadOnlySpan<char>) =\n    let acc = ResizeArray<char>()\n    for i in 0 .. s.Length - 1 do\n        acc.Add(System.Char.ToUpperInvariant s.[i])\n    List.ofSeq acc"
+    )
+
+[<Fact>]
+let ``a delegate element type converted the lambda where a yield does not`` () =
+    // `acc.Add(fun () -> ...)` made an Action of the lambda through the
+    // method call; a yield of the lambda into an `Action list` is FS0002
+    Assert.Empty(
+        findIn
+            "module T\nopen System\nlet f (xs: int list) =\n    let acc = ResizeArray<Action>()\n    for x in xs do\n        acc.Add(fun () -> printfn \"%d\" x)\n    List.ofSeq acc"
+    )

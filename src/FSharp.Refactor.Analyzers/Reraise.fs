@@ -10,8 +10,11 @@
 /// stack trace — back to the one the code meant to keep.
 ///
 /// Safety rules:
-///   - the raised identifier is bound by the handler's own pattern and is
-///     not rebound in between
+///   - the raised identifier is bound by the handler's own pattern TO THE
+///     WHOLE caught exception — `ex`, `:? T as ex`, `Case _ as ex` — and
+///     is not rebound in between. A name bound inside a case's fields
+///     (`ParseFailed(_, inner) -> raise inner`) is the payload, and
+///     `reraise ()` would rethrow the wrapper instead
 ///   - the raise site is lexically in the handler: not inside a lambda,
 ///     local function, object expression, `lazy`, comprehension,
 ///     computation expression, quotation or nested try (where `reraise`
@@ -27,6 +30,25 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
+
+/// The names a handler pattern binds to the WHOLE caught exception: a bare
+/// binder, either side of an `as` (`:? T as ex`, `ex as Case _`), through
+/// parentheses and annotations. A name bound inside a union or exception
+/// case's fields (`ParseFailed(_, inner)`) is the case's payload — raising
+/// it rethrows the inner exception, `reraise ()` would rethrow the
+/// wrapper — so those bind nothing here. Both sides of an or-pattern
+/// must bind the name for it to count.
+let rec private wholeExceptionBinders (p: SynPat) : string list =
+    match p with
+    | SynPat.Named(ident = SynIdent(ident = id)) -> [ id.idText ]
+    | SynPat.As(lhsPat = lhs; rhsPat = rhs) -> wholeExceptionBinders lhs @ wholeExceptionBinders rhs
+    | SynPat.Paren(pat = inner)
+    | SynPat.Typed(pat = inner)
+    | SynPat.Attrib(pat = inner) -> wholeExceptionBinders inner
+    | SynPat.Or(lhsPat = lhs; rhsPat = rhs) ->
+        let right = wholeExceptionBinders rhs
+        wholeExceptionBinders lhs |> List.filter (fun n -> List.contains n right)
+    | _ -> []
 
 type Suggestion =
     {
@@ -205,7 +227,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | None -> ()
                 | SynExpr.TryWith(withCases = clauses) when not (inComputationExpr path) ->
                     for SynMatchClause(pat = pat; resultExpr = handler) in clauses do
-                        let exNames = patBoundNames pat |> Set.ofList
+                        let exNames = wholeExceptionBinders pat |> Set.ofList
 
                         if not exNames.IsEmpty then
                             let opaque = opaqueRangesIn handler.Range

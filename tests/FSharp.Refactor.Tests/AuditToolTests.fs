@@ -355,3 +355,418 @@ let ``a definition the all-frameworks arbiter puts back takes the sibling's rewr
         Assert.True(built, $"the solution should build after the put-back:\n{buildOutput}\n\ntool output:\n{output}")
     finally
         cleanup root
+
+// ---- D6: a verification build that never judged is not "pre-existing" ----
+
+/// What `runProcessIn` hands back for a build stopped at the time cap: no
+/// output, and one stderr line — the marker in front, no "error" in it.
+let private timedOut =
+    Program.TimeCapMark
+    + " 'dotnet build \"Lib.fsproj\" --nologo -v q' had not finished after 15 minutes, so it was stopped."
+
+[<Fact>]
+let ``runProcessIn marks a child stopped at the cap, so the classifier need not read the prose`` () =
+    // a 1 ms cap: no `dotnet --info` starts and finishes inside it
+    let code, out, err =
+        Program.runProcessIn None (TimeSpan.FromMilliseconds 1.) "dotnet" "--info"
+
+    Assert.Equal(-1, code)
+    Assert.Equal("", out)
+    Assert.StartsWith(Program.TimeCapMark, err)
+    Assert.True(Program.stoppedAtTimeCap (Program.buildFailureLines out err))
+
+[<Fact>]
+let ``only the marker says a build was stopped at the cap`` () =
+    Assert.True(Program.stoppedAtTimeCap (Program.buildFailureLines "" timedOut))
+    // the prose alone, quoted by something else, is not the cap
+    Assert.False(Program.stoppedAtTimeCap [| "the build had not finished after 15 minutes, so it was stopped." |])
+    Assert.False(Program.stoppedAtTimeCap [| "error MSB3073: The command \"sign.cmd\" exited with code 1." |])
+    Assert.False(Program.stoppedAtTimeCap [||])
+
+[<Fact>]
+let ``a build failure without an error line keeps its reason instead of an empty list`` () =
+    // the empty list was the defect: `Error [||]` read as "no compiler
+    // error introduced", so a timed-out build kept every fix
+    let lines = Program.buildFailureLines "" timedOut
+    Assert.NotEmpty lines
+    Assert.Contains(timedOut, lines)
+    Assert.False(Program.hasCompilerErrors lines)
+
+[<Fact>]
+let ``only a compiler error line counts as a compiler error`` () =
+    Assert.True(Program.hasCompilerErrors [| @"C:\src\Lib.fs(3,5): error FS0039: The value 'x' is not defined" |])
+    // a referencing C# or VB project's compiler, built with the verification
+    Assert.True(
+        Program.hasCompilerErrors
+            [|
+                @"C:\src\Use.cs(9,40): error CS0426: The type name 'Circle' does not exist in the type 'Shape'"
+            |]
+    )
+
+    Assert.True(
+        Program.hasCompilerErrors [| @"C:\src\Use.vb(9,40): error BC30002: Type 'Shape.Circle' is not defined." |]
+    )
+    // tooling, not code
+    Assert.False(Program.hasCompilerErrors [| "error NETSDK1005: Assets file doesn't have a target for 'net8.0'" |])
+    Assert.False(Program.hasCompilerErrors [| "error MSB4019: The imported project was not found" |])
+    Assert.False(Program.hasCompilerErrors [| "error MSB3073: The command \"sign.cmd\" exited with code 1." |])
+    Assert.False(Program.hasCompilerErrors [||])
+
+[<Fact>]
+let ``a timed-out build with the fixes is not judged pre-existing, and no baseline is rebuilt for it`` () =
+    let rebuilt = ref 0
+
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () ->
+                rebuilt.Value <- rebuilt.Value + 1
+                Ok())
+            (Program.buildFailureLines "" timedOut)
+            [| "Lib.fs(1,1): error FS0001: pre-existing" |]
+
+    Assert.Equal(Program.Blame.NotVerified, verdict)
+    Assert.Equal(0, rebuilt.Value)
+
+[<Fact>]
+let ``a timed-out baseline cannot clear the fixes either`` () =
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () -> Ok())
+            [| "Lib.fs(1,1): error FS0001: with the fixes" |]
+            (Program.buildFailureLines "" timedOut)
+
+    Assert.Equal(Program.Blame.NotVerified, verdict)
+
+[<Fact>]
+let ``a second baseline that times out is not verification`` () =
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () -> Error(Program.buildFailureLines "" timedOut))
+            [| "Lib.fs(1,1): error FS0001: old"; "Lib.fs(9,1): error FS0039: new" |]
+            [| "Lib.fs(1,1): error FS0001: old" |]
+
+    Assert.Equal(Program.Blame.NotVerified, verdict)
+
+[<Fact>]
+let ``the same compiler errors with and without the fixes are pre-existing`` () =
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () -> failwith "no second baseline is needed when nothing was introduced")
+            [| "Lib.fs(4,1): error FS0001: old" |]
+            // the same error, moved by a fix above it
+            [| "Lib.fs(1,1): error FS0001: old" |]
+
+    Assert.Equal(Program.Blame.PreExisting, verdict)
+
+[<Fact>]
+let ``a compiler error seen only with the fixes, twice, is introduced`` () =
+    let baseline = [| "Lib.fs(1,1): error FS0001: old" |]
+
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () -> Error baseline)
+            [| "Lib.fs(1,1): error FS0001: old"; "Lib.fs(9,1): error FS0039: new" |]
+            baseline
+
+    match verdict with
+    | Program.Blame.Introduced errors -> Assert.Equal<Set<string>>(set [ "Lib.fs: error FS0039: new" ], errors)
+    | other -> failwithf "expected Introduced, got %A" other
+
+[<Fact>]
+let ``a tooling failure identical with and without the fixes is pre-existing breakage, not the cap`` () =
+    // a post-compile Exec target that fails in this checkout whatever the
+    // sources say: reading every failure without a compiler error as the
+    // cap restored the whole snapshot before the baseline was even built,
+    // and such a repository could never keep a fix
+    let exec =
+        Program.buildFailureLines
+            "C:\\src\\Lib.fsproj(40,5): error MSB3073: The command \"sign.cmd bin\\Lib.dll\" exited with code 1.\n"
+            ""
+
+    Assert.False(Program.hasCompilerErrors exec)
+    Assert.False(Program.stoppedAtTimeCap exec)
+
+    let rebuilt = ref 0
+
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () ->
+                rebuilt.Value <- rebuilt.Value + 1
+                Error exec)
+            exec
+            exec
+
+    Assert.Equal(Program.Blame.PreExisting, verdict)
+    Assert.Equal(0, rebuilt.Value)
+
+[<Fact>]
+let ``a targeting pack missing with and without the fixes is pre-existing too`` () =
+    let pack =
+        Program.buildFailureLines "" "error NETSDK1045: The current .NET SDK does not support targeting .NET 99.0."
+
+    Assert.Equal(
+        Program.Blame.PreExisting,
+        Program.judgeAgainstBaseline (fun () -> failwith "no second baseline is needed") pack pack
+    )
+
+[<Fact>]
+let ``a consumer's C# error seen only with the fixes, twice, is introduced`` () =
+    // the referencing C# project built with the verification speaks in
+    // CS errors, and they weigh like the F# compiler's
+    let baseline =
+        [|
+            "Consumer/Other.cs(3,10): error CS0103: The name 'x' does not exist in the current context"
+        |]
+
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () -> Error baseline)
+            [|
+                baseline.[0]
+                "Consumer/Use.cs(9,40): error CS0426: The type name 'Circle' does not exist in the type 'Shape'"
+            |]
+            baseline
+
+    match verdict with
+    | Program.Blame.Introduced errors ->
+        Assert.Equal<Set<string>>(
+            set
+                [
+                    "Consumer/Use.cs: error CS0426: The type name 'Circle' does not exist in the type 'Shape'"
+                ],
+            errors
+        )
+    | other -> failwithf "expected Introduced, got %A" other
+
+// ---- D7: a typecheck given up on is given up on NOW ----
+
+[<Fact>]
+let ``awaitWithin gives up at the timeout even when the work never observes cancellation`` () =
+    // `Async.RunSynchronously(_, timeout)` cancels and then waits for the
+    // computation to quiesce, with no timeout of its own: a 6 s sleep came
+    // back after 6 s against a 500 ms timeout. A type provider blocked in a
+    // connection is that sleep.
+    let sw = Stopwatch.StartNew()
+
+    let raised =
+        Assert.Throws<TimeoutException>(fun () ->
+            Program.awaitWithin
+                (TimeSpan.FromMilliseconds 300.)
+                (fun () -> "the typecheck of Slow.fsproj had not finished")
+                (async {
+                    System.Threading.Thread.Sleep 4000
+                    return 1
+                })
+            |> ignore)
+
+    sw.Stop()
+    Assert.Contains("Slow.fsproj", raised.Message)
+    Assert.True(sw.ElapsedMilliseconds < 3000L, $"waited {sw.ElapsedMilliseconds} ms for a 300 ms timeout")
+
+[<Fact>]
+let ``awaitWithin returns the result of work that finishes in time`` () =
+    Assert.Equal(42, Program.awaitWithin (TimeSpan.FromSeconds 10.) (fun () -> "unused") (async { return 42 }))
+
+[<Fact>]
+let ``awaitWithin rethrows the work's own exception, not an AggregateException`` () =
+    Assert.Throws<InvalidOperationException>(fun () ->
+        Program.awaitWithin
+            (TimeSpan.FromSeconds 10.)
+            (fun () -> "unused")
+            (async { return invalidOp "the checker's own failure" })
+        |> ignore)
+    |> ignore
+
+[<Fact>]
+let ``awaitWithin cancels the work it gives up on`` () =
+    // the abandoned typecheck used to run on to completion, rooting the
+    // old checker and everything it had cached; work that observes the
+    // token now stops as soon as the wait is over
+    use observed = new System.Threading.ManualResetEventSlim(false)
+
+    Assert.Throws<TimeoutException>(fun () ->
+        Program.awaitWithin
+            (TimeSpan.FromMilliseconds 200.)
+            (fun () -> "gave up")
+            (async {
+                let! token = Async.CancellationToken
+                token.Register(fun () -> observed.Set()) |> ignore
+                do! Async.Sleep 20000
+                return 1
+            })
+        |> ignore)
+    |> ignore
+
+    Assert.True(observed.Wait(TimeSpan.FromSeconds 5.), "the abandoned work was not cancelled")
+
+// ---- the consumers the F# build check cannot see ----
+
+/// A solution of a single-target F# library exposing a small PUBLIC union
+/// and a C# class library that casts to one of the union's case classes —
+/// FSharp.Azure.Quantum's shape. `[<Struct>]` (FR0016) on the union
+/// compiles in every F# build and removes the nested case class the C#
+/// names. `consumerFramework` lets a test make the consumer unbuildable.
+let private writeConsumerSolution (root: string) (consumerFramework: string) =
+    let write (relative: string) (content: string) =
+        let path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, content)
+
+    write
+        "src/Lib/Lib.fsproj"
+        $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Library.fs\" />\n  </ItemGroup>\n</Project>\n"
+
+    write
+        "src/Lib/Library.fs"
+        "module Lib\n\ntype Shape =\n    | Circle of radius: float\n    | Square of side: float\n\nlet area (shape: Shape) =\n    match shape with\n    | Circle r -> 3.0 * r * r\n    | Square s -> s * s\n"
+
+    write
+        "src/Consumer/Consumer.csproj"
+        $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{consumerFramework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
+
+    write
+        "src/Consumer/Use.cs"
+        "namespace Consumer\n{\n    public static class Use\n    {\n        public static double Radius(Lib.Shape shape) => shape is Lib.Shape.Circle c ? c.radius : 0.0;\n    }\n}\n"
+
+    let entries =
+        [ "Lib", "src\\Lib\\Lib.fsproj"; "Consumer", "src\\Consumer\\Consumer.csproj" ]
+        |> List.map (fun (name, path) ->
+            $"Project(\"{{F2A71F9B-5D33-465A-A702-920D77279786}}\") = \"{name}\", \"{path}\", \"{{{Guid.NewGuid()}}}\"\nEndProject")
+        |> String.concat "\n"
+
+    write "Probe.sln" $"Microsoft Visual Studio Solution File, Format Version 12.00\n{entries}\nGlobal\nEndGlobal\n"
+    Path.Combine(root, "Probe.sln")
+
+[<Fact>]
+let ``a fix that breaks the C# project referencing the library is put back, though every F# check passed`` () : unit =
+    let root = tempRoot "fsref-audit-consumer-"
+
+    try
+        let solution = writeConsumerSolution root framework
+        let dir = Path.GetDirectoryName solution
+
+        let _code, output =
+            runTool [| solution; "--api-changes"; "--codes"; "FR0016"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(dir, "src", "Lib", "Library.fs"))
+
+        // the consumer is named up front, built with the verification, and
+        // its refusal puts the union's fix back
+        Assert.True(
+            output.Contains "Consumer.csproj references this project: built with it",
+            $"expected the consumer to be announced:\n{output}"
+        )
+
+        Assert.True(
+            output.Contains "verifying the referencing Consumer.csproj",
+            $"expected the consumer's build:\n{output}"
+        )
+
+        Assert.True(output.Contains "put back", $"expected the fix to be put back:\n{output}")
+        Assert.DoesNotContain("[<Struct>]", library)
+
+        let built, buildOutput = builds solution
+        Assert.True(built, $"the solution should build after the put-back:\n{buildOutput}\n\ntool output:\n{output}")
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a consumer that cannot be built holds the library's public surface instead`` () : unit =
+    let root = tempRoot "fsref-audit-consumer-held-"
+
+    try
+        // a framework no installed SDK targets: the consumer's build fails
+        // before it compiles anything, so it can verify nothing
+        let solution = writeConsumerSolution root "net99.0"
+        let dir = Path.GetDirectoryName solution
+
+        let _code, output =
+            runTool [| solution; "--api-changes"; "--codes"; "FR0016"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(dir, "src", "Lib", "Library.fs"))
+
+        Assert.True(
+            output.Contains "Consumer.csproj references this project and does not build here",
+            $"expected the unbuildable consumer to be reported:\n{output}"
+        )
+
+        Assert.Contains("public declarations keep their shape", output)
+        // the public union keeps its class representation, --api-changes or not
+        Assert.DoesNotContain("[<Struct>]", library)
+        Assert.DoesNotContain("verifying the referencing", output)
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a held public surface closes the api-changes gate whatever the flag says`` () =
+    Scope.under
+        { Scope.editor with
+            ApiChanges = true
+            PublicSurfaceHeld = true
+        }
+        (fun () -> Assert.False(Visibility.apiChangesAllowed ()))
+
+    Scope.under { Scope.editor with ApiChanges = true } (fun () -> Assert.True(Visibility.apiChangesAllowed ()))
+    Scope.under Scope.editor (fun () -> Assert.False(Visibility.apiChangesAllowed ()))
+
+// ---- FR0130 and a library's public constants ----
+
+[<Fact>]
+let ``FR0130 leaves a library's public constants alone in a plain run and annotates them under --api-changes``
+    ()
+    : unit =
+    // ClearBank.Net's WebhookTypes and CarmelNet's auth_server went
+    // [<Literal>] in a plain sweep — a public const inlines its value into
+    // every consumer — when the api-changes flag was still an environment
+    // variable the test project set and the library then read. The gate
+    // is Scope-scoped now; this pins it through the tool itself
+    let root = tempRoot "fsref-audit-literal-"
+
+    try
+        let project = Path.Combine(root, "Lib", "Lib.fsproj")
+        let library = Path.Combine(root, "Lib", "Library.fs")
+        Directory.CreateDirectory(Path.GetDirectoryName project) |> ignore
+
+        File.WriteAllText(
+            project,
+            $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Library.fs\" />\n  </ItemGroup>\n</Project>\n"
+        )
+
+        File.WriteAllText(
+            library,
+            "module Lib\n\nlet ConnectionName = \"orders\"\n\nlet private Retries = 3\n\nlet describe () = ConnectionName + string Retries\n"
+        )
+
+        let normalised () =
+            File.ReadAllText(library).Replace("\r\n", "\n")
+
+        let code, output = runTool [| project; "--codes"; "FR0130"; "--no-color" |]
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        // the private constant is contained and gains the attribute...
+        Assert.Contains("[<Literal>]\nlet private Retries", normalised ())
+        // ...the public one is the library's API and keeps its getter
+        Assert.DoesNotContain("[<Literal>]\nlet ConnectionName", normalised ())
+
+        let code, output =
+            runTool [| project; "--codes"; "FR0130"; "--api-changes"; "--no-color" |]
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("[<Literal>]\nlet ConnectionName", normalised ())
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a tooling-only baseline and a clean rebuild blame the fixes, not the weather`` () =
+    // the build with the fixes fails on a compiler error (a consumer's CS0426);
+    // the first baseline fails on tooling alone (a file in use right after a
+    // build); the rebuild passes. Both baselines agree the code without the
+    // fixes compiles, so the error is the fixes' - not "the baselines disagree"
+    let verdict =
+        Program.judgeAgainstBaseline
+            (fun () -> Ok())
+            [| "Consumer.cs(614,5): error CS0426: nested type [Consumer.csproj]" |]
+            [| "MSB3027: Could not copy Lib.dll: file in use [Consumer.csproj]" |]
+
+    match verdict with
+    | Program.Blame.Introduced errors -> Assert.Single errors |> ignore
+    | other -> failwithf "Expected Introduced, got %A" other

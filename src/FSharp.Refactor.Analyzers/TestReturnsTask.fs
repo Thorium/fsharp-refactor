@@ -323,6 +323,11 @@ let private statementEdit
         | Some b when b.UnitResult || (isLast && bodyIsUnit) -> Some [ (e.Range, prefixed "do! " b.DoText) ]
         | Some _ when isLast -> None
         | Some b -> Some [ (e.Range, prefixed "let! _ = " b.Awaitable) ]
+        // a final VALUE of a non-unit test is its result — NUnit compares
+        // it with `ExpectedResult` — and `task { ... x + 1 } :> Task` drops
+        // it on the floor (FS0020 only, so it compiles): no bind shape
+        // carries it, and the rewrite stops
+        | None when isLast && not bodyIsUnit -> None
         | None -> Some []
 
 /// Walk the body's statement spine collecting the edits that turn each

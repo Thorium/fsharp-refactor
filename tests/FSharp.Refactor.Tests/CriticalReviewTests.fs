@@ -71,6 +71,8 @@ let ``FR0012: a method call substituted as an argument keeps its parentheses`` (
     // `not (isNull Environment.GetEnvironmentVariable("CI"))`, which is
     // error FS0597 — a high-precedence application still needs parens in
     // argument position
+    // parse-only: outside a computation expression the untyped path fires
+    // as it always did
     let tree, sourceText =
         parse "module Test\nopen System\nlet isCI = Environment.GetEnvironmentVariable(\"CI\") <> null"
 

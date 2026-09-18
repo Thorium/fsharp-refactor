@@ -94,3 +94,29 @@ let ``a file given as the root yields nothing rather than throwing`` () =
     withTree [ "Lonely.fs", "" ] (fun root ->
         let asRoot = Path.Combine(root, "Lonely.fs")
         Assert.Empty(FileWalk.files "*.fs" asRoot))
+
+/// The api pass's script guard reads the walk's gaps: a directory it could
+/// not search may hold a script calling the declaration about to be
+/// reshaped, so "skipped" must be said, not swallowed.
+[<Fact>]
+let ``filesNoting names the directory it could not read`` () =
+    withTree [ "Lonely.fs", "" ] (fun root ->
+        let asRoot = Path.Combine(root, "Lonely.fs")
+        let skipped = ResizeArray<string>()
+        let found = FileWalk.filesNoting "*.fs" asRoot skipped.Add |> List.ofSeq
+        Assert.Empty found
+        Assert.Equal<string list>([ asRoot ], List.ofSeq skipped))
+
+[<Fact>]
+let ``filesNoting reports nothing skipped over a readable tree`` () =
+    withTree [ "Top.fs", ""; "src/Middle.fs", ""; "obj/Pruned.fs", "" ] (fun root ->
+        let skipped = ResizeArray<string>()
+
+        let found =
+            FileWalk.filesNoting "*.fs" root skipped.Add
+            |> Seq.map Path.GetFileName
+            |> Set.ofSeq
+
+        Assert.Equal<Set<string>>(set [ "Top.fs"; "Middle.fs" ], found)
+        // a pruned directory is left out on purpose, not skipped
+        Assert.Empty skipped)

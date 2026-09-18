@@ -310,3 +310,34 @@ let referencersOf (workspace: string list) (project: string) : string list =
         frontier <- next
 
     reached |> List.filter (fun p -> not (samePath p project))
+
+/// `referencersOf` for a decision that COSTS something per match - a build,
+/// a held public surface: only references resolved to a path count, at
+/// every hop. A reference by bare name or one no path resolves (`Include=
+/// "$(Ref)"`) matches every project of a workspace, and a directory run
+/// whose workspace is the whole tree would make one such csproj a consumer
+/// of every F# project in it.
+let resolvedReferencersOf (workspace: string list) (project: string) : string list =
+    let references = workspace |> List.map (fun p -> p, projectReferenceShapesOf p)
+
+    let resolvesTo (reference: ProjectReference) (target: string) =
+        match reference with
+        | Resolved p -> samePath p target
+        | ByName _
+        | Unresolvable -> false
+
+    let mutable reached = [ project ]
+    let mutable frontier = [ project ]
+
+    while not frontier.IsEmpty do
+        let next =
+            references
+            |> List.filter (fun (p, refs) ->
+                not (reached |> List.exists (samePath p))
+                && refs |> List.exists (fun r -> frontier |> List.exists (resolvesTo r)))
+            |> List.map fst
+
+        reached <- reached @ next
+        frontier <- next
+
+    reached |> List.filter (fun p -> not (samePath p project))

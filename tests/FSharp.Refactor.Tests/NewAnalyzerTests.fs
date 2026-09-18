@@ -69,16 +69,27 @@ let private assertRegexHoist (source: string) (expectedPatched: string) =
     | other -> failwithf "Expected exactly one hoist suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
-let ``anchored-start literal becomes StartsWith`` () =
+let ``anchored-start literal becomes an ordinal StartsWith`` () =
+    // the regex compared ordinally; the bare `StartsWith "abc"` overload is
+    // current-culture, so the Ordinal overload is the faithful spelling —
+    // qualified, as the file does not `open System`
     assertRegexFix
         "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"^abc\")"
-        "s.StartsWith \"abc\""
+        "s.StartsWith(\"abc\", System.StringComparison.Ordinal)"
 
 [<Fact>]
-let ``anchored-end literal becomes EndsWith`` () =
+let ``anchored-start literal under open System spells the comparison short`` () =
     assertRegexFix
-        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc$\")"
-        "s.EndsWith \"abc\""
+        "module Test\nopen System\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"^abc\")"
+        "s.StartsWith(\"abc\", StringComparison.Ordinal)"
+
+[<Fact>]
+let ``anchored-end literal keeps the regex`` () =
+    // `$` also matches before a final newline: `Regex.IsMatch("abc\n",
+    // "abc$")` is true where `"abc\n".EndsWith "abc"` is false
+    Assert.Empty(
+        regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc$\")"
+    )
 
 [<Fact>]
 let ``unanchored literal becomes Contains`` () =
@@ -372,7 +383,7 @@ let ``Async.Ignore usage is not flagged`` () =
 let ``a verbatim literal pattern simplifies like a plain one`` () =
     assertRegexFix
         "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, @\"^abc\")"
-        "s.StartsWith \"abc\""
+        "s.StartsWith(\"abc\", System.StringComparison.Ordinal)"
 
 [<Fact>]
 let ``a verbatim pattern hoists out of a loop keeping its own spelling`` () =
@@ -397,7 +408,7 @@ let ``a verbatim pattern hoists out of a loop keeping its own spelling`` () =
 let ``a triple-quoted pattern is seen too`` () =
     assertRegexFix
         "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"\"\"^abc\"\"\")"
-        "s.StartsWith \"abc\""
+        "s.StartsWith(\"abc\", System.StringComparison.Ordinal)"
 
 [<Fact>]
 let ``an ignored async call result is flagged`` () =

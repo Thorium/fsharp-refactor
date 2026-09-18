@@ -24,7 +24,10 @@
 ///   a) leading plain lets hoist ABOVE the builder line (dedented to its
 ///      column). Caveat: a throw in hoisted code now surfaces at the call
 ///      instead of faulting the returned Task — the same trade the advice
-///      always asked for.
+///      always asked for, and one this file can sign off only for callers
+///      it can see: under a public or interface member (or a public
+///      function) a `let` whose right side may throw stays put, and the
+///      hoist takes only the lets ahead of it that cannot.
 ///   b) the non-awaiting tail wraps into a LOCAL function defined inside
 ///      the CE and called as its last statement. A nested function's body
 ///      is not resumable code (this rule itself treats lambdas as opaque),
@@ -42,6 +45,7 @@ module FSharp.Refactor.TaskStateMachine
 
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
@@ -105,22 +109,345 @@ let private hoistable (binding: SynBinding) =
     | SynBinding(attributes = []; isMutable = false; isInline = false) -> true
     | _ -> false
 
+/// Where the callers of a binding are.
+[<RequireQualifiedAccess>]
+type private Reach =
+    /// Callers this file cannot see.
+    | Exposed
+    /// A binding of this name whose callers are all in this file.
+    | Confined of name: string
+    /// No binding holds the value: a module-level `do`.
+    | Local
+
+/// Is the builder the body of a declaration whose CALLERS this file cannot
+/// see: a public (or unmarked) module-level function, a public member, an
+/// interface implementation, an object expression's member? Such a caller
+/// may rely on the Task faulting rather than the call throwing —
+/// SQLProvider's `ISqlProvider.ExecuteSprocCommandAsync` had its first
+/// `let` hoisted and an IndexOutOfRangeException escaped synchronously past
+/// the caller's `Async.Catch`. A local binding, a class-private `let`, a
+/// private or internal function or member, and anything under a private
+/// or internal module or type has its callers in reach — PROVIDED the file
+/// keeps the value to itself: the question is whether the task VALUE
+/// leaves a confined binding, not whether the binding holding the builder
+/// is private. `type Svc() = let run x = task { .. }  member _.Go x = run
+/// x` runs the task for every caller of the public `Go`, so a confined
+/// binding counts as confined only while its name is mentioned in no
+/// exposed binding of the file (a public member or function, an interface
+/// or object-expression member, an auto-property), following a mention in
+/// another confined binding into that binding's own mentions.
+let private exposedBody (index: AstIndex.Index) (path: SyntaxNode list) =
+    let hidden (accessibility: SynAccess option) =
+        match accessibility with
+        | Some(SynAccess.Private _ | SynAccess.Internal _) -> true
+        | _ -> false
+
+    let confined (rest: SyntaxNode list) (accessibilities: SynAccess option list) =
+        Visibility.isConfined rest accessibilities
+        || rest
+           |> List.exists (fun node ->
+               match node with
+               | SyntaxNode.SynTypeDefn(SynTypeDefn(typeInfo = SynComponentInfo(accessibility = acc))) -> hidden acc
+               | _ -> false)
+
+    // the one name a binding's head declares (`run`, `_.Go`, `this.Go`, an
+    // annotated `run: int -> Task<int>`); a destructuring head hands the
+    // value to names this scan cannot follow and counts as exposed
+    let headName (headPat: SynPat) =
+        match headPat with
+        | SynPat.Named(ident = SynIdent(ident = id))
+        | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))) -> Some id.idText
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = ids))
+        | SynPat.Typed(pat = SynPat.LongIdent(longDotId = SynLongIdent(id = ids))) when not ids.IsEmpty ->
+            Some (List.last ids).idText
+        | _ -> None
+
+    let confinedAs (headPat: SynPat) =
+        match headName headPat with
+        | Some name -> Reach.Confined name
+        | None -> Reach.Exposed
+
+    let rec reach (nodes: SyntaxNode list) =
+        match nodes with
+        | SyntaxNode.SynBinding(SynBinding(accessibility = acc; headPat = headPat)) :: rest ->
+            let patAccess =
+                match headPat with
+                | SynPat.LongIdent(accessibility = a) -> a
+                | _ -> None
+
+            match rest with
+            // an object expression's member implements an interface
+            | SyntaxNode.SynExpr(SynExpr.ObjExpr _) :: _ -> Reach.Exposed
+            // a local binding of a larger body
+            | SyntaxNode.SynExpr _ :: _ -> confinedAs headPat
+            | SyntaxNode.SynMemberDefn(SynMemberDefn.Member _) :: SyntaxNode.SynMemberDefn(SynMemberDefn.Interface _) :: _ ->
+                Reach.Exposed
+            // a class's own `let`
+            | SyntaxNode.SynMemberDefn(SynMemberDefn.LetBindings _) :: _ -> confinedAs headPat
+            | _ ->
+                if confined rest [ acc; patAccess ] then
+                    confinedAs headPat
+                else
+                    Reach.Exposed
+        // `member val Runner = run`: no binding of its own, and the value
+        // is a property of the type
+        | SyntaxNode.SynMemberDefn(SynMemberDefn.AutoProperty(ident = id; accessibility = acc)) :: _ ->
+            // the property, or its getter, marked private or internal
+            // keeps the value in the file
+            let readHidden =
+                match acc with
+                | SynValSigAccess.Single a -> hidden a
+                | SynValSigAccess.GetSet(a, g, _) -> hidden a || hidden g
+
+            if readHidden then
+                Reach.Confined id.idText
+            else
+                Reach.Exposed
+        | _ :: rest -> reach rest
+        | [] -> Reach.Local
+
+    // is `name` mentioned inside an exposed binding of the file, directly
+    // or through another confined binding that is?
+    let rec leaks (visited: Set<string>) (name: string) =
+        not (visited.Contains name)
+        && index.Exprs
+           |> Array.exists (fun (mentionPath, e) ->
+               let mentioned =
+                   match e with
+                   | SynExpr.Ident id -> id.idText = name
+                   | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+                       ids |> List.exists (fun id -> id.idText = name)
+                   | _ -> false
+
+               mentioned
+               && (match reach mentionPath with
+                   | Reach.Exposed -> true
+                   | Reach.Confined holder -> leaks (visited.Add name) holder
+                   | Reach.Local -> false))
+
+    match reach path with
+    | Reach.Exposed -> true
+    | Reach.Confined name -> leaks Set.empty name
+    | Reach.Local -> false
+
+/// FSharp.Core and String members that throw on some input over atoms:
+/// the raise family, division, the partial collection functions, the
+/// conversions and parsers, the substring family, and the partial
+/// properties (`opt.Value`, `xs.Head`, `t.Result`, an indexer's `Item`).
+let private mayThrowNames =
+    set
+        [
+            "raise"
+            "reraise"
+            "failwith"
+            "failwithf"
+            "invalidArg"
+            "invalidOp"
+            "nullArg"
+            "op_Division"
+            "op_Modulus"
+            "head"
+            "tail"
+            "last"
+            "item"
+            "nth"
+            "skip"
+            "take"
+            "zip"
+            "find"
+            "findBack"
+            "findIndex"
+            "findIndexBack"
+            "pick"
+            "reduce"
+            "reduceBack"
+            "exactlyOne"
+            "get"
+            "average"
+            "averageBy"
+            "min"
+            "max"
+            "minBy"
+            "maxBy"
+            "Value"
+            "Head"
+            "Item"
+            "Result"
+            "Replace"
+            "PadLeft"
+            "Parse"
+            "int"
+            "int8"
+            "int16"
+            "int32"
+            "int64"
+            "uint8"
+            "uint16"
+            "uint32"
+            "uint64"
+            "byte"
+            "sbyte"
+            "float"
+            "float32"
+            "double"
+            "single"
+            "decimal"
+            "char"
+            "enum"
+            "Substring"
+            "Remove"
+            "Insert"
+            "Chars"
+        ]
+
+/// Infix operators that cannot throw over operands that cannot: the
+/// untyped path's allowance, where nothing can be resolved.
+let private totalInfixOps =
+    set
+        [
+            "op_Addition"
+            "op_Subtraction"
+            "op_Multiply"
+            "op_Equality"
+            "op_Inequality"
+            "op_LessThan"
+            "op_GreaterThan"
+            "op_LessThanOrEqual"
+            "op_GreaterThanOrEqual"
+            "op_BooleanAnd"
+            "op_BooleanOr"
+            "op_ColonColon"
+            "op_Append"
+        ]
+
+/// Can evaluating this right side NOT throw? A literal, a name, a lambda
+/// (its body runs later), a tuple, list or record of such, an if or a
+/// try/with whose arms are such (a catch-all handler swallows the try),
+/// an arithmetic or comparison over such; a dotted path only where the
+/// typed tree resolves its last segment to a record or union field, a
+/// union case, or a plain value (no property, no method) of FSharp.Core
+/// or this file — `record.Field`, `Option.None`, `M.limit` — since
+/// `opt.Value`, `xs.Head`, `t.Result` and any user getter run code that
+/// throws; with the typed tree, an application of FSharp.Core and String
+/// members over such (`OptionModule.callsOnlyCore`) that names none of
+/// the throwing ones, reads no property and indexes nothing. Anything
+/// else — a user call, a constructor, an indexer, a downcast — may throw,
+/// and hoisted out of a public member's `task { }` would turn a faulted
+/// Task into a synchronous throw.
+let private cannotThrow
+    (check: FSharpCheckFileResults option)
+    (source: ISourceText)
+    (index: AstIndex.Index)
+    (rhs: SynExpr)
+    =
+    // a member access whose evaluation cannot throw: the typed tree
+    // resolves the last segment to a field, a union case, or a plain value
+    // of FSharp.Core or this file. A property, a method, an active
+    // pattern, an extension member, another assembly's value and an
+    // unresolved name may throw; without the typed tree nothing is known
+    let memberCannotThrow (ids: Ident list) =
+        match check, List.tryLast ids with
+        | Some c, Some last ->
+            match OptionModule.symbolOfIdent c source last with
+            | Some(:? FSharpField)
+            | Some(:? FSharpUnionCase) -> true
+            | Some(:? FSharpMemberOrFunctionOrValue as v) ->
+                (try
+                    not (
+                        v.IsProperty
+                        || v.IsPropertyGetterMethod
+                        || v.IsMember
+                        || v.IsConstructor
+                        || v.IsActivePattern
+                        || v.IsExtensionMember
+                    )
+                    && ((OptionModule.fullNameOf v).StartsWith "Microsoft.FSharp."
+                        || System.String.Equals(
+                            v.DeclarationLocation.FileName,
+                            rhs.Range.FileName,
+                            System.StringComparison.OrdinalIgnoreCase
+                        ))
+                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                     false)
+            | _ -> false
+        | _ -> false
+
+    let namesMayThrow (r: range) =
+        index.Exprs
+        |> Array.exists (fun (_, e) ->
+            Range.rangeContainsRange r e.Range
+            && (match e with
+                | SynExpr.DotIndexedGet _
+                | SynExpr.New _
+                | SynExpr.Downcast _
+                | SynExpr.InferredDowncast _ -> true
+                | SynExpr.Ident id -> mayThrowNames.Contains id.idText
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> mayThrowNames.Contains id.idText
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+                | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    mayThrowNames.Contains (List.last ids).idText || not (memberCannotThrow ids)
+                | _ -> false))
+
+    let rec go (e: SynExpr) =
+        match e with
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length > 1 ->
+            not (mayThrowNames.Contains (List.last ids).idText) && memberCannotThrow ids
+        | SynExpr.Const _
+        | SynExpr.Ident _
+        | SynExpr.LongIdent _
+        | SynExpr.Null _
+        | SynExpr.Lambda _
+        | SynExpr.MatchLambda _
+        | SynExpr.Quote _ -> true
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.Typed(expr = inner)
+        | SynExpr.Upcast(expr = inner)
+        | SynExpr.InferredUpcast(expr = inner) -> go inner
+        | SynExpr.Tuple(exprs = es)
+        | SynExpr.ArrayOrList(exprs = es) -> es |> List.forall go
+        | SynExpr.Record(copyInfo = None; recordFields = fields) ->
+            fields
+            |> List.forall (fun (SynExprRecordField(expr = v)) -> v |> Option.forall go)
+        | SynExpr.AnonRecd(copyInfo = None; recordFields = fields) -> fields |> List.forall (fun (_, _, v) -> go v)
+        | SynExpr.IfThenElse(ifExpr = c; thenExpr = t; elseExpr = Some el) -> go c && go t && go el
+        | SynExpr.TryWith(withCases = clauses) when not clauses.IsEmpty ->
+            let catchesAll =
+                match List.last clauses with
+                | SynMatchClause(pat = (SynPat.Wild _ | SynPat.Named _); whenExpr = None) -> true
+                | _ -> false
+
+            catchesAll
+            && clauses |> List.forall (fun (SynMatchClause(resultExpr = r)) -> go r)
+        | SynExpr.App(
+            isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName op; argExpr = lhs); argExpr = r) when
+            totalInfixOps.Contains op
+            ->
+            go lhs && go r
+        | SynExpr.App _ ->
+            match check with
+            | Some c -> not (namesMayThrow e.Range) && OptionModule.callsOnlyCore c source index e.Range
+            | None -> false
+        | _ -> false
+
+    go rhs
+
 /// Leading non-bang lets of a CE body: their count, the first binding's
 /// range, and the rest of the body. Stops at the first binding a hoist
-/// could not carry, so the count is exactly what the fix can move.
+/// could not carry (`movable`), so the count is exactly what the fix can
+/// move.
 [<TailCall>]
-let rec private peelPlainLets (count: int) (firstRange: range option) (e: SynExpr) =
+let rec private peelPlainLets (movable: SynBinding -> bool) (count: int) (firstRange: range option) (e: SynExpr) =
     match e with
     | LetOrUseE lou when
         not (lou.IsBang || lou.IsUse || lou.IsRecursive)
-        && lou.Bindings |> List.forall hoistable
+        && lou.Bindings |> List.forall movable
         ->
         let firstRange =
             match firstRange, lou.Bindings with
             | None, binding :: _ -> Some binding.RangeOfBindingWithRhs
             | _ -> firstRange
 
-        peelPlainLets (count + List.length lou.Bindings) firstRange lou.Body
+        peelPlainLets movable (count + List.length lou.Bindings) firstRange lou.Body
     | _ -> count, firstRange, e
 
 /// Only whitespace sits left of the range on its start line.
@@ -707,9 +1034,22 @@ let find
 
                     // a) leading plain lets — the fix hoists their lines above
                     // the builder, dedented to its column. A throw in hoisted
-                    // code surfaces at the call instead of faulting the Task;
-                    // that trade is the advice itself
-                    let letCount, firstLetRange, rest = peelPlainLets 0 None body
+                    // code surfaces at the call instead of faulting the Task:
+                    // inside this file's reach that trade is the advice
+                    // itself, but a caller of a public or interface member
+                    // may be catching the fault (SQLProvider's Async.Catch
+                    // around ExecuteSprocCommandAsync), so there only a right
+                    // side that cannot throw moves, and the peel stops at
+                    // the first that can
+                    let exposed = exposedBody index path
+
+                    let movable (binding: SynBinding) =
+                        hoistable binding
+                        && (not exposed
+                            || (match binding with
+                                | SynBinding(expr = rhs) -> cannotThrow check source index rhs))
+
+                    let letCount, firstLetRange, rest = peelPlainLets movable 0 None body
 
                     match firstLetRange with
                     | Some r when letCount > 0 ->

@@ -24,6 +24,8 @@
 module FSharp.Refactor.IndexedLoop
 
 open System.Text.RegularExpressions
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
@@ -38,29 +40,43 @@ type Suggestion =
         Edits: (range * string * string) list
     }
 
-/// A name or dotted path, as (root ident, joined text).
+/// Which sources `for item in xs` may replace the indexed loop over.
+[<RequireQualifiedAccess>]
+type SourceGate =
+    /// Any enumerable: on .NET a string enumerates its characters.
+    | Any
+    /// A Fable project: a STRING source stays indexed, since Fable's Rust
+    /// target has no string enumerator (SQLProvider.Fable's Query.fs said
+    /// so in a comment and the rule rewrote the loop anyway). The typed
+    /// tree tells a string from a collection; without one every source
+    /// may be a string and the rule stands down.
+    | NoStrings of FSharpCheckFileResults option
+
+/// A name or dotted path, as (root ident, joined text, last ident).
 [<return: Struct>]
 let private (|Path|_|) (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> ValueSome(id, id.idText)
+    | SynExpr.Ident id -> ValueSome(id, id.idText, id)
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
-        ValueSome(List.head ids, identText ids)
+        ValueSome(List.head ids, identText ids, List.last ids)
     | _ -> ValueNone
 
-/// `<xs>.Length` or `Array/List/Seq.length <xs>` — the collection's text.
+/// `<xs>.Length` or `Array/List/Seq.length <xs>` — the collection's text
+/// and the identifier that names it (its last, for the typed tree).
 [<return: Struct>]
 let private (|LengthOfColl|_|) (e: SynExpr) =
     match stripParens e with
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 && (List.last ids).idText = "Length" ->
-        ValueSome(identText (ids |> List.take (ids.Length - 1)))
+        let coll = ids |> List.take (ids.Length - 1)
+        ValueSome(identText coll, List.last coll)
     | SynExpr.App(
         isInfix = false
         funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
-        argExpr = Path(_, collText)) when
+        argExpr = Path(_, collText, collIdent)) when
         (m.idText = "Array" || m.idText = "List" || m.idText = "Seq")
         && f.idText = "length"
         ->
-        ValueSome collText
+        ValueSome(collText, collIdent)
     | _ -> ValueNone
 
 /// `<len> - 1` — the collection whose length is being decremented.
@@ -68,8 +84,8 @@ let private (|LengthOfColl|_|) (e: SynExpr) =
 let private (|LengthMinusOne|_|) (e: SynExpr) =
     match stripParens e with
     | SynExpr.App(
-        funcExpr = SynExpr.App(funcExpr = SingleIdent minus; argExpr = LengthOfColl collText)
-        argExpr = SynExpr.Const(SynConst.Int32 1, _)) when minus.idText = "op_Subtraction" -> ValueSome collText
+        funcExpr = SynExpr.App(funcExpr = SingleIdent minus; argExpr = LengthOfColl coll)
+        argExpr = SynExpr.Const(SynConst.Int32 1, _)) when minus.idText = "op_Subtraction" -> ValueSome coll
     | _ -> ValueNone
 
 /// `0 .. <xs>.Length - 1` — the collection's text. A for-loop's range
@@ -78,17 +94,44 @@ let private (|LengthMinusOne|_|) (e: SynExpr) =
 [<return: Struct>]
 let private (|ZeroToLengthMinusOne|_|) (e: SynExpr) =
     match e with
-    | SynExpr.IndexRange(expr1 = Some(SynExpr.Const(SynConst.Int32 0, _)); expr2 = Some(LengthMinusOne collText)) ->
-        ValueSome collText
+    | SynExpr.IndexRange(expr1 = Some(SynExpr.Const(SynConst.Int32 0, _)); expr2 = Some(LengthMinusOne coll)) ->
+        ValueSome coll
     | SynExpr.App(
         funcExpr = SynExpr.App(funcExpr = SingleIdent range; argExpr = SynExpr.Const(SynConst.Int32 0, _))
-        argExpr = LengthMinusOne collText) when range.idText = "op_Range" -> ValueSome collText
+        argExpr = LengthMinusOne coll) when range.idText = "op_Range" -> ValueSome coll
     | _ -> ValueNone
 
+/// May the collection this identifier names be a string? Proven not when
+/// the typed tree resolves it to a value, property or field whose type is
+/// anything but System.String; unresolved, it may.
+let private mayBeString (check: FSharpCheckFileResults) (source: ISourceText) (collIdent: Ident) =
+    let isString (t: FSharpType) =
+        let t = OptionModule.stripAbbreviations t
+        t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.String"
+
+    match OptionModule.symbolOfIdent check source collIdent with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            isString (resultTypeOf value)
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             true)
+    | Some(:? FSharpField as field) ->
+        (try
+            isString field.FieldType
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             true)
+    | _ -> true
+
 /// Find index-based loops whose index only ever indexes the bound
-/// collection.
-let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+/// collection, over the sources the gate admits.
+let findWith (parseTree: ParsedInput) (source: ISourceText) (gate: SourceGate) : Suggestion list =
     let index = AstIndex.ofTree parseTree
+
+    let admitted (collIdent: Ident) =
+        match gate with
+        | SourceGate.Any -> true
+        | SourceGate.NoStrings(Some check) -> not (mayBeString check source collIdent)
+        | SourceGate.NoStrings None -> false
 
     let suggestions: Suggestion list =
         [
@@ -96,15 +139,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 match expr with
                 | SynExpr.ForEach(
                     pat = SynPat.Named(ident = SynIdent(ident = i))
-                    enumExpr = ZeroToLengthMinusOne collText & enumExpr
-                    bodyExpr = body) when not (spansDirective source expr.Range) ->
+                    enumExpr = ZeroToLengthMinusOne(collText, collIdent) & enumExpr
+                    bodyExpr = body) when not (spansDirective source expr.Range) && admitted collIdent ->
                     let collRoot = collText.Split('.').[0]
 
                     let inBody (r: range) = Range.rangeContainsRange body.Range r
 
                     let sameColl (e: SynExpr) =
                         match e with
-                        | Path(_, text) -> text = collText
+                        | Path(_, text, _) -> text = collText
                         | _ -> false
 
                     let isIndexIdent (e: SynExpr) =
@@ -301,3 +344,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         ]
 
     suggestions
+
+/// Find index-based loops whose index only ever indexes the bound
+/// collection, over any source (.NET).
+let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+    findWith parseTree source SourceGate.Any

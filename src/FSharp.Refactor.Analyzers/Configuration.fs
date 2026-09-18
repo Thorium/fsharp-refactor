@@ -36,8 +36,52 @@ let ConfigFileName = "fsharprefactor.json"
 /// Root keys that configure the RUN, not a rule. Excluded from the rule
 /// map when rule keys sit at the root, so `"apiChanges": true` there can
 /// never be read as a rule named apiChanges.
+///
+/// `hints` is also FR0012's analyzer name, and the README promises every
+/// analyzer name as a key: the run-level `hints` is an OBJECT (`{ "add":
+/// [...] }`), so a `"hints": false` at the root is the rule switch and
+/// passes through. The other reserved keys name no rule; their values are
+/// never a rule entry whatever their shape.
 let private reservedRootKeys =
     set [ "rules"; "hints"; "ignorepaths"; "suppressions"; "publicapi"; "apichanges" ]
+
+let private ruleNamedRootKeys = set [ "hints" ]
+
+/// A JSON boolean, or the strings "true"/"false"/"on"/"off" in any case:
+/// `"FR0012": "off"` is what a hand-written config says, and reading it
+/// as "not a boolean, ignored" left the rule ON in silence.
+let private asBool (value: JsonElement) : bool option =
+    match value.ValueKind with
+    | JsonValueKind.True -> Some true
+    | JsonValueKind.False -> Some false
+    | JsonValueKind.String ->
+        match value.GetString() with
+        | null -> None
+        | s ->
+            match s.Trim().ToLowerInvariant() with
+            | "true"
+            | "on" -> Some true
+            | "false"
+            | "off" -> Some false
+            | _ -> None
+    | _ -> None
+
+/// A root-level property the RUN owns rather than a rule: a reserved key,
+/// unless it is also an analyzer's name and carries a rule's boolean.
+let private isReservedRootKey (property: JsonProperty) =
+    let name = property.Name.ToLowerInvariant()
+
+    // a rule entry is a boolean, or the `{ "enabled": false }` object form
+    // the README promises for every analyzer name
+    let ruleShaped =
+        (asBool property.Value).IsSome
+        || (property.Value.ValueKind = JsonValueKind.Object
+            && (match property.Value.TryGetProperty "enabled" with
+                | true, e -> (asBool e).IsSome
+                | _ -> false))
+
+    reservedRootKeys.Contains name
+    && not (ruleNamedRootKeys.Contains name && ruleShaped)
 
 /// Parse the config text into a rule-key -> enabled map (keys lowercased).
 /// Pure and total: malformed input yields an empty map (fail open).
@@ -55,18 +99,15 @@ let parse (json: string) : Map<string, bool> =
             | _ -> root, true
 
         rulesElement.EnumerateObject()
-        |> Seq.filter (fun property -> not (atRoot && reservedRootKeys.Contains(property.Name.ToLowerInvariant())))
+        |> Seq.filter (fun property -> not (atRoot && isReservedRootKey property))
         |> Seq.choose (fun property ->
             let enabled =
                 match property.Value.ValueKind with
-                | JsonValueKind.True -> Some true
-                | JsonValueKind.False -> Some false
                 | JsonValueKind.Object ->
                     match property.Value.TryGetProperty "enabled" with
-                    | true, e when e.ValueKind = JsonValueKind.True -> Some true
-                    | true, e when e.ValueKind = JsonValueKind.False -> Some false
+                    | true, e -> asBool e
                     | _ -> None
-                | _ -> None
+                | _ -> asBool property.Value
 
             enabled |> Option.map (fun e -> property.Name.ToLowerInvariant(), e))
         |> Map.ofSeq
@@ -321,7 +362,7 @@ let parseParameters (json: string) : Map<string, Map<string, int>> =
             | _ -> root, true
 
         rulesElement.EnumerateObject()
-        |> Seq.filter (fun property -> not (atRoot && reservedRootKeys.Contains(property.Name.ToLowerInvariant())))
+        |> Seq.filter (fun property -> not (atRoot && isReservedRootKey property))
         |> Seq.choose (fun property ->
             if property.Value.ValueKind = JsonValueKind.Object then
                 let knobs =

@@ -138,6 +138,27 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | _ -> ()
             ]
 
+        // the `with` handlers and `finally` blocks of every try: a call
+        // there is CLEANUP — `tx.RollbackAsync()` after a cancelled
+        // `CommitAsync ct`. Handing it the same token makes the rollback
+        // throw OperationCanceledException on the way out instead of
+        // rolling back, so the transaction is left hanging. No token is
+        // ever injected into one (the same exclusion FR0079 applies to its
+        // bridge sites)
+        let cleanupRanges =
+            index.Exprs
+            |> Array.collect (fun (_, e) ->
+                match e with
+                | SynExpr.TryFinally(finallyExpr = f) -> [| f.Range |]
+                | SynExpr.TryWith(withCases = cases) ->
+                    cases
+                    |> List.map (fun (SynMatchClause(resultExpr = result)) -> result.Range)
+                    |> Array.ofList
+                | _ -> [||])
+
+        let inCleanup (callRange: range) =
+            cleanupRanges |> Array.exists (fun z -> Range.rangeContainsRange z callRange)
+
         // the single in-scope token for a call site, if there is exactly one
         let tokenFor (callRange: range) =
             let inScope =
@@ -145,7 +166,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 |> List.filter (fun (_, bindingRange) -> Range.rangeContainsRange bindingRange callRange)
 
             match inScope |> List.map fst |> List.distinct with
-            | [ name ] -> Some name
+            | [ name ] when not (inCleanup callRange) -> Some name
             | _ -> None
 
         [

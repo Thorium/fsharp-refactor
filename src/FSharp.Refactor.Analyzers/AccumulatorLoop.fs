@@ -51,7 +51,12 @@
 ///   - the element type is closed — a value type, a record, a union, a
 ///     tuple, a string, a function or a `[<Sealed>]` class: the `Add`
 ///     method upcast its argument to an interface or base class where a
-///     yield does not
+///     yield does not; a delegate is not closed either, since `Add`
+///     converted a lambda argument to it where a yield does not
+///   - every other statement of the loops is unit (typed): a discarded
+///     non-unit call in statement position would become a yield
+///   - the loops read no byref-like value (a Span): the list expression
+///     may not capture one
 ///   - the loops span no `#if` and no multi-line literal
 module FSharp.Refactor.AccumulatorLoop
 
@@ -182,7 +187,10 @@ let private elementType (check: FSharpCheckFileResults) (source: ISourceText) (a
 /// Can a yield of the element stand in for the `Add`? `Add` takes its
 /// argument through a method call, which upcasts to an interface or a base
 /// class; a yield fixes the list's type at the first element and rejects
-/// the second. Closed types have no subtypes to upcast from.
+/// the second. Closed types have no subtypes to upcast from. A delegate
+/// has none either, but the method call converted a lambda argument to it
+/// (`acc.Add(fun () -> ...)` into a `ResizeArray<Action>`) where a yield
+/// does not (FS0002), so it is not closed here.
 let private closedElementType (t: FSharpType) =
     try
         let t = OptionModule.stripAbbreviations t
@@ -192,21 +200,132 @@ let private closedElementType (t: FSharpType) =
         elif t.HasTypeDefinition then
             let e = t.TypeDefinition
 
-            e.IsValueType
-            || e.IsFSharpRecord
-            || e.IsFSharpUnion
-            || e.IsEnum
-            || e.IsDelegate
-            || e.IsFSharpExceptionDeclaration
-            || (OptionModule.fullNameOf e = "System.String")
-            || e.Attributes
-               |> Seq.exists (fun a ->
-                   a.AttributeType.DisplayName = "SealedAttribute"
-                   || a.AttributeType.DisplayName = "Sealed")
+            not e.IsDelegate
+            && (e.IsValueType
+                || e.IsFSharpRecord
+                || e.IsFSharpUnion
+                || e.IsEnum
+                || e.IsFSharpExceptionDeclaration
+                || (OptionModule.fullNameOf e = "System.String")
+                || e.Attributes
+                   |> Seq.exists (fun a ->
+                       a.AttributeType.DisplayName = "SealedAttribute"
+                       || a.AttributeType.DisplayName = "Sealed"))
         else
             false
     with _ -> // what cannot be read is not closed; fsharpanalyzer: ignore-line FR0055
         false
+
+let private isUnitType (t: FSharpType) =
+    try
+        let t = OptionModule.stripAbbreviations t
+
+        t.HasTypeDefinition
+        && (t.TypeDefinition.TryFullName
+            |> Option.exists (fun n -> n = "Microsoft.FSharp.Core.Unit" || n = "Microsoft.FSharp.Core.unit"))
+    with _ -> // an unreadable type is not known to be unit; fsharpanalyzer: ignore-line FR0055
+        false
+
+/// Is this application (or bare value) in statement position provably
+/// unit? Its head identifier's symbol gives the function's or member's
+/// type, instantiated as this use instantiates it (`printfn "%d" x` is a
+/// `TextWriterFormat<int -> unit> -> int -> unit` here), and one arrow is
+/// peeled per argument applied. Anything the typed tree cannot name, or
+/// names as anything but unit, is not: a discarded `d.TryAdd(x, x)` in the
+/// loop would become a yield of its bool.
+let private applicationIsUnit (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) =
+    let rec head (e: SynExpr) (args: int) =
+        match e with
+        // `a + b` is `App(App(op, a), b)`, the inner one infix: both count
+        | SynExpr.App(funcExpr = f) -> head f (args + 1)
+        | SynExpr.TypeApp(expr = f)
+        | SynExpr.Paren(expr = f) -> head f args
+        | SynExpr.Ident id -> Some(id, args)
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids, args)
+        | _ -> None
+
+    let rec peel (t: FSharpType) (n: int) =
+        if n <= 0 then
+            Some t
+        else
+            let t = OptionModule.stripAbbreviations t
+
+            if t.IsFunctionType && t.GenericArguments.Count = 2 then
+                peel t.GenericArguments.[1] (n - 1)
+            else
+                None
+
+    match head e 0 with
+    | Some(id, args) ->
+        match symbolAt check source id with
+        | Some u ->
+            match u.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as v ->
+                try
+                    // a method's return type stands for its one argument
+                    // group; a property's for none; a function's whole type
+                    // loses one arrow per argument
+                    let declared, arrows =
+                        if v.IsProperty then
+                            Some v.ReturnParameter.Type, args
+                        elif v.IsMember then
+                            (if args >= 1 then Some v.ReturnParameter.Type else None), args - 1
+                        else
+                            Some v.FullType, args
+
+                    declared
+                    |> Option.map (fun t ->
+                        match u.GenericArguments with
+                        | [] -> t
+                        | inst -> t.Instantiate inst)
+                    |> Option.bind (fun t -> peel t arrows)
+                    |> Option.exists isUnitType
+                with _ -> // an unreadable symbol is not known to be unit; fsharpanalyzer: ignore-line FR0055
+                    false
+            | _ -> false
+        | None -> false
+    | None -> false
+
+/// Is every statement of the loop body unit, `acc`'s own `Add` calls
+/// aside? In a list expression every statement-position expression that
+/// is not unit is an implicit yield, where the loop merely discarded it:
+/// the syntax settles an assignment, a nested loop, `()` and the branches
+/// of `if` and `match`, and the typed tree the applications and values.
+let private bodyStatementsAreUnit (check: FSharpCheckFileResults) (source: ISourceText) (acc: Ident) (loop: SynExpr) =
+    let rec unit (e: SynExpr) =
+        match e with
+        | AddCall(recv :: _, _, _) when recv.idText = acc.idText -> true
+        | SynExpr.Sequential(expr1 = a; expr2 = b) -> unit a && unit b
+        | LetOrUseE lou -> unit lou.Body
+        | SynExpr.IfThenElse(thenExpr = t; elseExpr = el) -> unit t && (el |> Option.forall unit)
+        | SynExpr.Match(clauses = clauses) ->
+            clauses |> List.forall (fun (SynMatchClause(resultExpr = body)) -> unit body)
+        | SynExpr.ForEach(bodyExpr = body)
+        | SynExpr.For(doBody = body)
+        | SynExpr.While(doExpr = body)
+        | SynExpr.Do(expr = body)
+        | SynExpr.Paren(expr = body) -> unit body
+        | SynExpr.Const(SynConst.Unit, _)
+        | SynExpr.Set _
+        | SynExpr.LongIdentSet _
+        | SynExpr.DotSet _
+        | SynExpr.DotIndexedSet _
+        | SynExpr.NamedIndexedPropertySet _
+        | SynExpr.DotNamedIndexedPropertySet _
+        | SynExpr.Assert _ -> true
+        | SynExpr.App _
+        | SynExpr.Ident _
+        | SynExpr.LongIdent _
+        | SynExpr.DotGet _
+        | SynExpr.TypeApp _ -> applicationIsUnit check source e
+        | _ -> false
+
+    match loop with
+    | SynExpr.ForEach(bodyExpr = body)
+    | SynExpr.For(doBody = body)
+    | SynExpr.While(doExpr = body) -> unit body
+    | _ -> false
 
 /// Does the Add identifier resolve to List<'T>.Add?
 let private resolvesToListAdd (check: FSharpCheckFileResults) (source: ISourceText) (addIdent: Ident) =
@@ -650,6 +769,14 @@ let private suggestionFor
                 || hostile
                 || not (yields |> List.forall Option.isSome)
                 || spansDirective source region
+                // a discarded non-unit statement would become a yield
+                || not (
+                    feeding
+                    |> List.forall (fun (_, loop) -> bodyStatementsAreUnit check source acc loop)
+                )
+                // a Span read in the loops cannot move into the list
+                // expression (FS0406)
+                || OptionModule.readsByRefLike check index source region
             then
                 None
             else

@@ -20,7 +20,9 @@
 /// throws "Collection was modified". SQLProvider lost 19 tests to exactly
 /// this shape, on a sequence built from the very dictionary its body
 /// assigned into. Nothing downstream can catch it either: the rewrite
-/// compiles, so only a test run ever finds out.
+/// compiles, so only a test run ever finds out. A write spelled as a method
+/// (`rs.Remove x`) and a callback that so much as names the source are
+/// refused the same way (see callbackMayWrite).
 ///
 /// Safety rules: both pipeline stages single-line; the conversion must be a
 /// bare `Module.function`; the operation's head must be exactly the
@@ -289,14 +291,26 @@ let private sourceIsOwned (path: SyntaxNode list) (sourceExpr: SynExpr) =
 /// List.filter (fun e -> ...)` — is the ordinary case, and reading the whole
 /// function for `<-` refused it. So the callback is what is read:
 ///
-///   - a lambda: its own text must not assign, and must not call a LOCAL
-///     function that does (`let killTrooper ti = es[ti] <- ...` is exactly
-///     the closure that can reach the collection; a module-level function
-///     cannot, unless the collection is handed to it, which is the next
-///     case)
-///   - anything else — a named function, a partial application: it must
-///     not be a local that assigns, and must not mention the collection
-///     itself, since `List.iter (register es)` hands it over
+///   - its own text must not assign (`<-`), and must not call a mutating
+///     METHOD on anything: `rs |> Seq.toList |> List.iter (fun x ->
+///     rs.Remove x |> ignore)` writes without a single `<-`, and dropped to
+///     `Seq.iter` it throws "Collection was modified" on the second
+///     element. The method names are the collection-mutation vocabulary
+///     (Add, Remove, Insert, Clear, Push, Enqueue, ...) on ANY receiver,
+///     since an alias of the source is indistinguishable from a stranger
+///   - it must not call a LOCAL function that assigns (`let killTrooper ti
+///     = es[ti] <- ...` is exactly the closure that can reach the
+///     collection; a module-level function cannot, unless the collection
+///     is handed to it, which is the next case)
+///   - it must not mention the collection itself — a lambda as much as a
+///     named function, since `List.iter (register es)` hands it over and
+///     `fun x -> rs.Remove x` reaches for it directly
+let private mutatingMethod =
+    System.Text.RegularExpressions.Regex(
+        @"\.(Add|AddRange|Remove|RemoveAt|RemoveAll|RemoveRange|RemoveWhere|Insert|InsertRange|Clear|Set|Push|Pop|Enqueue|Dequeue|TryAdd|TryRemove|Sort|Reverse|UnionWith|ExceptWith|IntersectWith|SymmetricExceptWith|TrimExcess)\b",
+        System.Text.RegularExpressions.RegexOptions.Compiled
+    )
+
 let private callbackMayWrite (source: ISourceText) (path: SyntaxNode list) (sourceName: string option) (arg: SynExpr) =
     let text = textOfRange source arg.Range
 
@@ -316,11 +330,9 @@ let private callbackMayWrite (source: ISourceText) (path: SyntaxNode list) (sour
             | _ -> [])
 
     mutatesSomething text
+    || mutatingMethod.IsMatch text
     || assigningLocals |> List.exists mentions
-    || (match stripParens arg with
-        | SynExpr.Lambda _
-        | SynExpr.MatchLambda _ -> false
-        | _ -> sourceName |> Option.exists mentions)
+    || sourceName |> Option.exists mentions
 
 /// Is the pipeline's source ALREADY the collection the conversion
 /// produces? Then the conversion is at most a copy, and moving the

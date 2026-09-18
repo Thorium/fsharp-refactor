@@ -38,9 +38,38 @@ let private spanOfEdit (snapshot: ITextSnapshot) ((sl, sc, el, ec, _): Edit) =
     else
         ValueNone
 
+/// An edit pinned to the snapshot it was computed against: its span
+/// there, the text that span held, and the text replacing it.
+type PinnedEdit =
+    {
+        Span: SnapshotSpan
+        OldText: string
+        NewText: string
+    }
+
+/// The edits placed on the snapshot the light bulb was built from — the
+/// text the sidecar's diagnostics describe. The same line and column on
+/// a LATER snapshot is wherever the user's typing has since moved that
+/// text, and applying there rewrote the wrong characters.
+let private pin (snapshot: ITextSnapshot) (edits: Edit list) : PinnedEdit list =
+    edits
+    |> List.choose (fun e ->
+        match spanOfEdit snapshot e with
+        | ValueSome span ->
+            let (_, _, _, _, newText) = e
+            let pinned = SnapshotSpan(snapshot, span)
+
+            Some
+                {
+                    Span = pinned
+                    OldText = pinned.GetText()
+                    NewText = newText
+                }
+        | ValueNone -> None)
+
 /// The preview pane: what each edit removes and what it puts there,
 /// one monospace block per edit, long texts cut at a dozen lines.
-let private previewOf (snapshot: ITextSnapshot) (edits: Edit list) : obj =
+let private previewOf (edits: PinnedEdit list) : obj =
     let clip (text: string) =
         let lines = text.Replace("\r\n", "\n").Split '\n'
 
@@ -63,25 +92,23 @@ let private previewOf (snapshot: ITextSnapshot) (edits: Edit list) : obj =
 
     let panel = StackPanel(Orientation = Orientation.Vertical, Margin = Thickness 4.)
 
-    for edit in edits |> List.sortBy (fun (sl, sc, _, _, _) -> sl, sc) do
-        let (_, _, _, _, newText) = edit
-
-        let oldText =
-            match spanOfEdit snapshot edit with
-            | ValueSome span -> snapshot.GetText span
-            | ValueNone -> ""
-
-        if oldText <> "" then
-            panel.Children.Add(block "- " oldText (SolidColorBrush(Color.FromRgb(180uy, 60uy, 60uy))))
+    for edit in edits |> List.sortBy (fun e -> e.Span.Start.Position) do
+        if edit.OldText <> "" then
+            panel.Children.Add(block "- " edit.OldText (SolidColorBrush(Color.FromRgb(180uy, 60uy, 60uy))))
             |> ignore
 
-        if newText <> "" then
-            panel.Children.Add(block "+ " newText (SolidColorBrush(Color.FromRgb(50uy, 140uy, 60uy))))
+        if edit.NewText <> "" then
+            panel.Children.Add(block "+ " edit.NewText (SolidColorBrush(Color.FromRgb(50uy, 140uy, 60uy))))
             |> ignore
 
     box panel
 
-type FixAction(buffer: ITextBuffer, title: string, edits: Edit list) =
+/// One light-bulb entry. `snapshot` is the buffer as it was when the
+/// actions were built: the edits are pinned to it, and applied only where
+/// the buffer's own edit history says that text now is.
+type FixAction(buffer: ITextBuffer, snapshot: ITextSnapshot, title: string, edits: Edit list) =
+    let pinned = pin snapshot edits
+
     interface ISuggestedAction with
         member _.DisplayText = title
         member _.IconMoniker = Unchecked.defaultof<ImageMoniker>
@@ -92,35 +119,48 @@ type FixAction(buffer: ITextBuffer, title: string, edits: Edit list) =
         member _.GetActionSetsAsync _ =
             Task.FromResult(Seq.empty: IEnumerable<SuggestedActionSet>)
 
-        member _.HasPreview = not edits.IsEmpty
+        member _.HasPreview = not pinned.IsEmpty
 
         member _.GetPreviewAsync _ =
             try
-                Task.FromResult(previewOf buffer.CurrentSnapshot edits)
+                Task.FromResult(previewOf pinned)
             with ex ->
                 FsacClient.clientTrace $"preview '{title}' FAILED: {ex}"
                 Task.FromResult<obj> null
 
         member _.Invoke(_ct) =
+            // nothing thrown leaves Invoke: it is called by the light-bulb
+            // host, where an exception is Visual Studio's to crash on
             try
-                FsacClient.clientTrace $"invoke '{title}' with {List.length edits} edit(s)"
-                let snapshot = buffer.CurrentSnapshot
+                FsacClient.clientTrace $"invoke '{title}' with {List.length pinned} edit(s)"
+                let current = buffer.CurrentSnapshot
 
-                use edit = buffer.CreateEdit()
+                // each span follows the buffer's edit history from the
+                // snapshot it was pinned to; an edit whose text is no
+                // longer what the fix was computed against is stale, and
+                // the whole fix is skipped rather than half-applied
+                let translated =
+                    pinned
+                    |> List.map (fun e -> e.Span.TranslateTo(current, SpanTrackingMode.EdgeExclusive), e)
 
-                // bottom-up, so earlier replacements never shift later spans
-                for e in edits |> List.sortByDescending (fun (sl, sc, _, _, _) -> sl, sc) do
-                    match spanOfEdit snapshot e with
-                    | ValueSome span ->
-                        let (_, _, _, _, newText) = e
-                        edit.Replace(span, newText) |> ignore
-                    | ValueNone -> ()
+                let drifted =
+                    current.Version.VersionNumber <> snapshot.Version.VersionNumber
+                    && translated |> List.exists (fun (span, e) -> span.GetText() <> e.OldText)
 
-                edit.Apply() |> ignore
-                FsacClient.clientTrace $"invoke '{title}' applied"
+                if drifted then
+                    FsacClient.clientTrace
+                        $"invoke '{title}' skipped: the document changed under it (v{snapshot.Version.VersionNumber} -> v{current.Version.VersionNumber})"
+                else
+                    use edit = buffer.CreateEdit()
+
+                    // bottom-up, so earlier replacements never shift later spans
+                    for span, e in translated |> List.sortByDescending (fun (span, _) -> span.Start.Position) do
+                        edit.Replace(span.Span, e.NewText) |> ignore
+
+                    edit.Apply() |> ignore
+                    FsacClient.clientTrace $"invoke '{title}' applied"
             with ex ->
                 FsacClient.clientTrace $"invoke '{title}' FAILED: {ex}"
-                reraise ()
 
         member _.TryGetTelemetryId(telemetryId: byref<Guid>) =
             telemetryId <- Guid.Empty
@@ -180,14 +220,15 @@ type FrActionsSource(buffer: ITextBuffer, filePath: string) =
             | Some span -> span.IntersectsWith range
             | None -> false)
 
-    /// The sidecar round trip: the actions for the diagnostics in a span.
-    let build (diags: Lsp.Diag list) =
+    /// The sidecar round trip: the actions for the diagnostics in a span,
+    /// pinned to the snapshot the span was asked about on.
+    let build (snapshot: ITextSnapshot) (diags: Lsp.Diag list) =
         let raw = FsacClient.codeActions filePath diags
 
         FsacClient.clientTrace $"code actions: {List.length diags} diag(s) -> {List.length raw} action(s)"
 
         disambiguate raw
-        |> List.map (fun (title, edits) -> FixAction(buffer, title, edits) :> ISuggestedAction)
+        |> List.map (fun (title, edits) -> new FixAction(buffer, snapshot, title, edits) :> ISuggestedAction)
 
     let cacheFor (range: SnapshotSpan) =
         lock gate (fun () ->
@@ -220,7 +261,7 @@ type FrActionsSource(buffer: ITextBuffer, filePath: string) =
                 Task.Run(fun () ->
                     let actions =
                         try
-                            build diags
+                            build range.Snapshot diags
                         with ex ->
                             FsacClient.clientTrace $"prefetch FAILED: {ex.Message}"
                             []
@@ -238,7 +279,17 @@ type FrActionsSource(buffer: ITextBuffer, filePath: string) =
                 | [] -> Seq.empty
                 | diags ->
                     FsacClient.clientTrace "code actions: cache miss, fetching on the UI thread"
-                    toSets (build diags)
+
+                    // on the UI thread, inside the light-bulb host: an
+                    // exception here is MEF's, and Visual Studio's, to fail
+                    // on — the bulb shows nothing instead
+                    try
+                        toSets (build range.Snapshot diags)
+                    with ex ->
+                        FsacClient.clientTrace
+                            $"code actions on the UI thread FAILED: {ex.GetType().Name}: {ex.Message}"
+
+                        Seq.empty
 
         member _.TryGetTelemetryId(telemetryId: byref<Guid>) =
             telemetryId <- Guid.Empty

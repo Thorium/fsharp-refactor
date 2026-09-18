@@ -147,38 +147,33 @@ let private (|StringLiteral|_|) (e: SynExpr) =
 let private regexMetaChars =
     set [ '\\'; '.'; '*'; '+'; '?'; '('; ')'; '['; ']'; '{'; '}'; '|'; '^'; '$' ]
 
-/// If the pattern is literal text with at most a leading `^` / trailing `$`,
-/// return the string operation and the literal.
+/// If the pattern is literal text with at most a leading `^`, return the
+/// string operation and the literal.
+///
+/// A trailing `$` is NOT `EndsWith`: the regex anchor also matches before
+/// a final newline (`Regex.IsMatch("abc\n", "abc$")` is true, `"abc\n"
+/// .EndsWith "abc"` false), and `\z`, the strict anchor, is a metacharacter
+/// this reader does not follow — every end-anchored pattern keeps the
+/// engine.
 let private literalPattern (pattern: string) : (string * string) option =
     let anchoredStart = pattern.StartsWith '^'
-    let anchoredEnd = pattern.EndsWith '$' && not (pattern.EndsWith "\\$")
+    let anchoredEnd = pattern.EndsWith '$'
 
-    let core =
-        pattern
-            .Substring((if anchoredStart then 1 else 0))
-            .Substring(
-                0,
-                pattern.Length
-                - (if anchoredStart then 1 else 0)
-                - (if anchoredEnd then 1 else 0)
-            )
+    let core = pattern.Substring((if anchoredStart then 1 else 0))
 
     if
-        core.Length = 0
+        anchoredEnd
+        || core.Length = 0
         || core |> Seq.exists regexMetaChars.Contains
         // the literal is re-emitted verbatim into a string: quotes and
         // control characters would need re-escaping
         || core |> Seq.exists (fun c -> c = '"' || Char.IsControl c)
     then
         None
+    elif anchoredStart then
+        Some("StartsWith", core)
     else
-        match anchoredStart, anchoredEnd with
-        | true, false -> Some("StartsWith", core)
-        | false, true -> Some("EndsWith", core)
-        | false, false -> Some("Contains", core)
-        // fully anchored is an equality test; readers expect `=`, but the
-        // culture-sensitivity question makes that a different rewrite — skip
-        | true, true -> None
+        Some("Contains", core)
 
 /// A pattern that is PURE literal text - no metacharacters at all, anchors
 /// included. `literalPattern` above tolerates a leading `^` / trailing `$`
@@ -345,8 +340,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     | "IsMatch", [ input; StringLiteral pattern ] when isSingleLine input.Range ->
                         match literalPattern pattern with
                         | Some(operation, literal) ->
+                            // the regex compared ordinally; `Contains(string)`
+                            // is ordinal too, but `StartsWith(string)` is
+                            // current-culture and differs on ligatures,
+                            // ignorable characters and Turkish i — the
+                            // Ordinal overload says what the regex did
                             let replacement =
-                                sprintf "%s.%s \"%s\"" (argumentText source input) operation literal
+                                match operation with
+                                | "StartsWith" ->
+                                    let prefix = if opensSystemNamespace source then "" else "System."
+
+                                    sprintf
+                                        "%s.StartsWith(\"%s\", %sStringComparison.Ordinal)"
+                                        (argumentText source input)
+                                        literal
+                                        prefix
+                                | _ -> sprintf "%s.%s \"%s\"" (argumentText source input) operation literal
 
                             suggestions.Add
                                 {

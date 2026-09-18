@@ -99,14 +99,17 @@ let private assertFold (source: string) (expectedReplacement: string) =
 
 [<Fact>]
 let ``sum accumulation becomes Seq sum`` () =
+    // a FLOAT accumulator: List.sum adds checked, so only the floating
+    // types compute what the loop computed (AuditSemanticATests has the
+    // integer shape, which keeps the fold)
     assertFold
-        "let f (xs: int list) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x\n    total * 2"
+        "let f (xs: float list) =\n    let mutable total = 0.0\n    for x in xs do\n        total <- total + x\n    total * 2.0"
         "let total = xs |> List.sum"
 
 [<Fact>]
 let ``projected sum becomes sumBy`` () =
     assertFold
-        "let f (xs: int list) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x * x\n    total"
+        "let f (xs: float list) =\n    let mutable total = 0.0\n    for x in xs do\n        total <- total + x * x\n    total"
         "xs |> List.sumBy (fun x -> x * x)"
 
 [<Fact>]
@@ -187,9 +190,11 @@ let ``a true flag falsified in a loop becomes forall`` () =
 
 [<Fact>]
 let ``a negated predicate in the forall dual loses its not`` () =
+    // a core-operator predicate: a user function (`valid x`) would run
+    // fewer times under forall's short-circuit and keeps the loop
     assertFlagRewrite
-        "let valid (x: int) = x >= 0\nlet f (xs: int list) =\n    let mutable ok = true\n    for x in xs do\n        if not (valid x) then ok <- false\n    ok"
-        "let ok = xs |> List.forall (fun x -> (valid x))"
+        "let f (xs: int list) =\n    let mutable ok = true\n    for x in xs do\n        if not (x >= 0) then ok <- false\n    ok"
+        "let ok = xs |> List.forall (fun x -> (x >= 0))"
 
 [<Fact>]
 let ``a second statement in the loop body keeps the mutable`` () =
@@ -729,7 +734,7 @@ let ``a plain seq source still sums with the Seq module`` () =
     // the module-resolved output names List/Array when it can; a true
     // seq has nothing better than Seq.sum
     assertFold
-        "let f (xs: int seq) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x\n    total"
+        "let f (xs: float seq) =\n    let mutable total = 0.0\n    for x in xs do\n        total <- total + x\n    total"
         "xs |> Seq.sum"
 
 [<Fact>]

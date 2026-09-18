@@ -16,10 +16,19 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 
+/// Has the apply tool found a consumer of this compilation it cannot
+/// build — a C# or VB project referencing it — so that the public surface
+/// must keep its shape? See Scope.PublicSurfaceHeld.
+let publicSurfaceHeld () = (Scope.scope ()).PublicSurfaceHeld
+
 /// True when the apply tool was started with --api-changes, which opts into
 /// rewrites that change the assembly's public surface. Never set in editors,
-/// so the editor channel always sees the narrow, always-safe rules.
-let apiChangesAllowed () = (Scope.scope ()).ApiChanges
+/// so the editor channel always sees the narrow, always-safe rules. Held
+/// back again, flag or no flag, for a compilation with a consumer no
+/// verification of this run can build.
+let apiChangesAllowed () =
+    let scope = Scope.scope ()
+    scope.ApiChanges && not scope.PublicSurfaceHeld
 
 /// Does this modifier hide the declaration from outside the assembly?
 let private isNonPublic (accessibility: SynAccess option) =
