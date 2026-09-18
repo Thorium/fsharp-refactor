@@ -201,7 +201,14 @@ let ``FR0011: a private active pattern gets its struct return whatever a later f
 
 [<Fact>]
 let ``the later files of a compilation are the ones after the analysed file`` () =
-    let files = [ "C:/p/A.fs"; "C:\\p\\B.fs"; "C:/p/C.fs" ]
+    // a backslash separates only on Windows; elsewhere it is a character of the name
+    let b =
+        if OperatingSystem.IsWindows() then
+            "C:\\p\\B.fs"
+        else
+            "C:/p/B.fs"
+
+    let files = [ "C:/p/A.fs"; b; "C:/p/C.fs" ]
     Assert.Equal<string list>([ "C:/p/C.fs" ], Visibility.laterSourceFiles "c:/P/b.FS" files)
     Assert.Empty(Visibility.laterSourceFiles "C:/p/C.fs" files)
     // a file the list does not carry gets every file back: the options and

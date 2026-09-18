@@ -110,6 +110,12 @@ let private build (project: string) =
 [<Fact>]
 let ``absolutizeArgs rebases the path-carrying arguments against the project directory`` () =
     let projectDir = Path.Combine(Path.GetTempPath(), "fsref-proj", "src", "Lib")
+    // an absolute directory is rooted the way the platform roots one
+    let absolute =
+        if OperatingSystem.IsWindows() then
+            "C:\\absolute\\dir"
+        else
+            "/absolute/dir"
 
     let args =
         [|
@@ -117,7 +123,7 @@ let ``absolutizeArgs rebases the path-carrying arguments against the project dir
             "--doc:bin\\Debug\\Lib.xml"
             "-r:..\\..\\packages\\A.dll"
             "--resource:res\\a.txt,Lib.a.txt,public"
-            "--lib:..\\lib;C:\\absolute\\dir"
+            $"--lib:..\\lib;{absolute}"
             "-o:obj\\Debug\\Lib.dll"
             "--target:library"
             "--define:DEBUG"
@@ -142,7 +148,7 @@ let ``absolutizeArgs rebases the path-carrying arguments against the project dir
     // only the file component of a resource, the name and visibility as given
     Assert.Equal($"--resource:{resource},Lib.a.txt,public", rebased.[3])
     // every directory of a --lib list, an absolute one untouched
-    Assert.Equal($"--lib:{lib};C:\\absolute\\dir", rebased.[4])
+    Assert.Equal($"--lib:{lib};{absolute}", rebased.[4])
     Assert.Equal($"-o:{out}", rebased.[5])
     // flags without a path, and the bare source names, pass through
     Assert.Equal("--target:library", rebased.[6])

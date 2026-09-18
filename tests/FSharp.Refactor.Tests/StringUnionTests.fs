@@ -368,3 +368,67 @@ let ``two fields of the same name in one file get distinct union names`` () =
         |> List.sort
 
     Assert.Equal<string list>([ "JobKind"; "Kind" ], names)
+
+[<Fact>]
+let ``a record handed to a serializer with its type inferred stands down`` () =
+    // no type argument names the record, the value does: every field is
+    // read by reflection, and a union field would serialize differently
+    Assert.Empty(
+        findIn
+            "type Item = { Kind: string; Size: int }\n\nlet items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ]\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n\nlet json = System.Text.Json.JsonSerializer.Serialize items"
+    )
+
+[<Fact>]
+let ``a record piped into a serializer stands down`` () =
+    Assert.Empty(
+        findIn
+            "type Item = { Kind: string; Size: int }\n\nlet item = { Kind = \"file\"; Size = 1 }\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n\nlet json = item |> System.Text.Json.JsonSerializer.Serialize"
+    )
+
+[<Fact>]
+let ``a record handed to an ordinary function keeps the union`` () =
+    let found =
+        findIn
+            "type Item = { Kind: string; Size: int }\n\nlet items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ]\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n\nlet total = items |> List.sumBy weight"
+
+    Assert.Equal(1, found.Length)
+
+[<Fact>]
+let ``a union typing only private slots is private`` () =
+    // a public type the rule added would widen a library's API by itself
+    match
+        findIn
+            "module M\n\nlet private describe (mode: string) =\n    match mode with\n    | \"on\" -> 1\n    | \"off\" -> 0\n    | _ -> failwith \"?\"\n\nlet run () = describe \"on\" + describe \"off\""
+    with
+    | [ s ] ->
+        let union =
+            s.Edits
+            |> List.map (fun e -> e.Replacement)
+            |> List.find (fun t -> t.Contains "type ")
+
+        Assert.Contains("type private Mode =", union)
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``a union typing an internal slot is internal`` () =
+    match
+        findIn
+            "module M\n\nlet internal describe (mode: string) =\n    match mode with\n    | \"on\" -> 1\n    | \"off\" -> 0\n    | _ -> failwith \"?\"\n\nlet private run () = describe \"on\" + describe \"off\""
+    with
+    | [ s ] ->
+        let union =
+            s.Edits
+            |> List.map (fun e -> e.Replacement)
+            |> List.find (fun t -> t.Contains "type ")
+
+        Assert.Contains("type internal Mode =", union)
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``a record reached through a field and a curried serializer call stands down`` () =
+    // `Serialize options wrapper.Items`: the record is two arguments in and
+    // behind a field, and every field of it is still read by reflection
+    Assert.Empty(
+        findIn
+            "type Item = { Kind: string; Size: int }\ntype Wrapper = { Items: Item list }\n\nlet wrapper = { Items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ] }\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n\nlet serialize (options: System.Text.Json.JsonSerializerOptions) (value: Item list) = System.Text.Json.JsonSerializer.Serialize(value, options)\nlet json = serialize (System.Text.Json.JsonSerializerOptions()) wrapper.Items"
+    )

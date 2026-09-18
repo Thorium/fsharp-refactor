@@ -394,6 +394,29 @@ let private exported (internalsVisible: bool) (symbol: FSharpSymbol) =
     with _ -> // what cannot be read counts as exported; fsharpanalyzer: ignore-line FR0055
         true
 
+/// How visible a declaration is - 0 private, 1 internal, 2 public - the
+/// declaring entity's visibility capping the member's: a public `let` in a
+/// private module is private to the file.
+let private accessibilityRank (symbol: FSharpSymbol) =
+    try
+        let rank (a: FSharpAccessibility) =
+            if a.IsPrivate then 0
+            elif a.IsInternal then 1
+            else 2
+
+        let entityRank (e: FSharpEntity option) =
+            match e with
+            | Some e -> rank e.Accessibility
+            | None -> 2
+
+        match symbol with
+        | :? FSharpMemberOrFunctionOrValue as v -> min (rank v.Accessibility) (entityRank v.DeclaringEntity)
+        | :? FSharpField as f -> min (rank f.Accessibility) (entityRank f.DeclaringEntity)
+        | :? FSharpEntity as e -> rank e.Accessibility
+        | _ -> 2
+    with _ -> // what cannot be read is taken as public; fsharpanalyzer: ignore-line FR0055
+        2
+
 // ---- syntax around a use --------------------------------------------------
 
 let private sameSpan (a: range) (b: range) = a.Start = b.Start && a.End = b.End
@@ -2014,7 +2037,115 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                          | _ -> true)
                                                     | _ -> false))
 
-                                serializationAttribute || asTypeArgument
+                                // ...and as a VALUE of the type, or a collection of it, handed
+                                // to such a head with the type inferred: `JsonSerializer.Serialize
+                                // items`, `items |> Serialize` - no type argument spells the
+                                // record, yet every field is read by reflection
+                                let asArgument =
+                                    match typeName with
+                                    | None -> true
+                                    | Some _ ->
+                                        let entityName =
+                                            try
+                                                f.DeclaringEntity |> Option.map (fun e -> OptionModule.fullNameOf e)
+                                            with _ -> // fsharpanalyzer: ignore-line FR0055
+                                                None
+
+                                        let rec mentions (t: FSharpType) =
+                                            try
+                                                let t = OptionModule.stripAbbreviations t
+
+                                                (t.HasTypeDefinition
+                                                 && Some(OptionModule.fullNameOf t.TypeDefinition) = entityName)
+                                                || (t.GenericArguments |> Seq.exists mentions)
+                                            with _ -> // fsharpanalyzer: ignore-line FR0055
+                                                true
+
+                                        let reflective (head: string) =
+                                            head.Contains "Serializ"
+                                            || head.Contains "Json"
+                                            || head.Contains "Xml"
+                                            || head.Contains "Bson"
+                                            || head.Contains "Yaml"
+                                            || head.Contains "Convert"
+                                            || head.Contains "Reflect"
+
+                                        let reflectiveHead (e: SynExpr) =
+                                            match e with
+                                            | SynExpr.Ident id -> reflective id.idText
+                                            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+                                                ids |> List.exists (fun id -> reflective id.idText)
+                                            | SynExpr.TypeApp(expr = SynExpr.Ident id) -> reflective id.idText
+                                            | SynExpr.TypeApp(
+                                                expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
+                                                ids |> List.exists (fun id -> reflective id.idText)
+                                            | _ -> false
+
+                                        // the argument's parts: a tuple's elements, a paren's inside
+                                        let rec parts (e: SynExpr) =
+                                            match e with
+                                            | SynExpr.Paren(expr = inner) -> parts inner
+                                            | SynExpr.Tuple(exprs = es) -> es |> List.collect parts
+                                            | _ -> [ e ]
+
+                                        let ofRecordType (file: string) (e: SynExpr) =
+                                            let id =
+                                                match e with
+                                                | SynExpr.Ident id -> Some id
+                                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+                                                    List.tryLast ids
+                                                | _ -> None
+
+                                            // a value's own type, a function's or property's result,
+                                            // a field's type: what the expression IS
+                                            match id |> Option.bind (world.SymbolAt file) with
+                                            | Some u ->
+                                                (match u.Symbol with
+                                                 | :? FSharpMemberOrFunctionOrValue as v ->
+                                                     mentions v.FullType || mentions (Text.resultTypeOf v)
+                                                 | :? FSharpField as fld ->
+                                                     (try
+                                                         mentions fld.FieldType
+                                                      with _ -> // fsharpanalyzer: ignore-line FR0055
+                                                          true)
+                                                 | _ -> false)
+                                            | None -> false
+
+                                        entityName.IsSome
+                                        && world.SourceFiles
+                                           |> List.exists (fun file ->
+                                               match analysis.FileOf file with
+                                               | None -> true
+                                               | Some(fi, _) ->
+                                                   // the head of an application chain and every
+                                                   // argument along it: `Serialize options value`
+                                                   let rec chain (e: SynExpr) (args: SynExpr list) =
+                                                       match e with
+                                                       | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) ->
+                                                           chain f (a :: args)
+                                                       | head -> head, args
+
+                                                   fi.Exprs
+                                                   |> Array.exists (fun (_, e) ->
+                                                       match e with
+                                                       // `x |> Serialize`
+                                                       | SynExpr.App(
+                                                           funcExpr = SynExpr.App(
+                                                               isInfix = true
+                                                               funcExpr = IdentName "op_PipeRight"
+                                                               argExpr = lhs)
+                                                           argExpr = f) when reflectiveHead f ->
+                                                           parts lhs |> List.exists (ofRecordType file)
+                                                       | SynExpr.App(isInfix = false) ->
+                                                           let head, args = chain e []
+
+                                                           reflectiveHead head
+                                                           && args
+                                                              |> List.collect parts
+                                                              |> List.exists (ofRecordType file)
+                                                       | _ -> false))
+
+                                serializationAttribute || asTypeArgument || asArgument
                             | _ -> false)
 
                     let signatureBound =
@@ -2299,12 +2430,43 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                         | _ -> None)
                                     |> Option.defaultValue (quote text)
 
+                                // the union is visible wherever a slot it types is, and no
+                                // wider: a private type in an internal function's signature
+                                // is an error, and a public type on a library that the rule
+                                // added without --api-changes would widen the API by itself.
+                                // Parameters and locals take their owner's visibility; a
+                                // component spread over files is internal at least, since
+                                // `private` is the file's
+                                let unionModifier =
+                                    let ranks =
+                                        c.Slots
+                                        |> List.map (fun s ->
+                                            let owner =
+                                                match s.Symbol with
+                                                | :? FSharpMemberOrFunctionOrValue as v when
+                                                    not v.IsModuleValueOrMember
+                                                    ->
+                                                    analysis.OwnerOf s
+                                                | sym -> sym
+
+                                            accessibilityRank owner)
+
+                                    let widest = if ranks.IsEmpty then 2 else List.max ranks
+
+                                    let files =
+                                        declFiles |> List.map (fun (f, _) -> f.ToLowerInvariant()) |> List.distinct
+
+                                    match (if files.Length > 1 then max widest 1 else widest) with
+                                    | 0 -> "private "
+                                    | 1 -> "internal "
+                                    | _ -> ""
+
                                 let unionText =
                                     String.concat
                                         "\n"
                                         [
                                             $"{pad}[<RequireQualifiedAccess>]"
-                                            $"{pad}type {unionName} ="
+                                            $"{pad}type {unionModifier}{unionName} ="
                                             for text in distinct do
                                                 $"{pad}    | {(caseOf text).Value}"
                                             ""
