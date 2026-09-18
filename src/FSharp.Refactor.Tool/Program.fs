@@ -838,7 +838,8 @@ let private listedFrameworks =
 /// </TargetFrameworks> -->` above the live element, the text match took
 /// the commented one first, and the run asked MSBuild for a net48 pass that
 /// no restore had produced (NETSDK1005).
-let internal projectTextWithoutComments (text: string) = Workspace.projectTextWithoutComments text
+let internal projectTextWithoutComments (text: string) =
+    Workspace.projectTextWithoutComments text
 
 let internal targetFrameworksOf (projectPath: string) : string list =
     listedFrameworks.GetOrAdd(

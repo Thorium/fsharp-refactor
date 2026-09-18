@@ -775,7 +775,9 @@ let ``a tooling-only baseline and a clean rebuild blame the fixes, not the weath
 let ``a framework list commented out of the project file is not one of its frameworks`` () =
     // welendus's WelendusLogic.fsproj: `<!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks> -->`
     // above the live element made the run ask for a net48 pass (NETSDK1005)
-    let dir = Path.Combine(Path.GetTempPath(), "fsref-tfm-" + Guid.NewGuid().ToString("N"))
+    let dir =
+        Path.Combine(Path.GetTempPath(), "fsref-tfm-" + Guid.NewGuid().ToString("N"))
+
     Directory.CreateDirectory dir |> ignore
 
     try
