@@ -83,11 +83,22 @@ type ProjectReference =
     /// Nothing recognisable: may be any project.
     | Unresolvable
 
+/// A project file's text with its XML comments taken out, for every read
+/// that matches the text rather than evaluating it: an element an author
+/// commented away is not one MSBuild sees. welendus's WelendusLogic.fsproj
+/// carries `<!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks>
+/// -->` above the live element; the text match took the commented one
+/// first and the run asked for a net48 pass no restore had produced
+/// (NETSDK1005). A commented-out ProjectReference would likewise have made
+/// a referencer of a project that no longer links.
+let projectTextWithoutComments (text: string) =
+    Regex.Replace(text, @"<!--.*?-->", "", RegexOptions.Singleline)
+
 /// Every reference of a project file, in the shapes above.
 let projectReferenceShapesOf (projectPath: string) : ProjectReference list =
     let text =
         try
-            File.ReadAllText projectPath
+            projectTextWithoutComments (File.ReadAllText projectPath)
         with
         | :? IOException
         | :? UnauthorizedAccessException -> ""

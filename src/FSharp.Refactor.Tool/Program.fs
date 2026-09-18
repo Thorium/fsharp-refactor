@@ -832,13 +832,21 @@ let private tfmRank (tfm: string) =
 let private listedFrameworks =
     System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
 
-let private targetFrameworksOf (projectPath: string) : string list =
+/// A project file's text with its XML comments taken out: a framework list
+/// an author commented away is not one the project builds. welendus's
+/// WelendusLogic.fsproj carries `<!-- <TargetFrameworks>netstandard2.0;net48
+/// </TargetFrameworks> -->` above the live element, the text match took
+/// the commented one first, and the run asked MSBuild for a net48 pass that
+/// no restore had produced (NETSDK1005).
+let internal projectTextWithoutComments (text: string) = Workspace.projectTextWithoutComments text
+
+let internal targetFrameworksOf (projectPath: string) : string list =
     listedFrameworks.GetOrAdd(
         Path.GetFullPath projectPath,
         fun path ->
             let text =
                 try
-                    File.ReadAllText path
+                    projectTextWithoutComments (File.ReadAllText path)
                 with
                 | :? IOException
                 | :? UnauthorizedAccessException -> ""
@@ -1045,7 +1053,7 @@ let private defineConstantsElementRegex =
 let private parseOnlyArgs (projectPath: string) =
     let projectText =
         try
-            File.ReadAllText projectPath
+            projectTextWithoutComments (File.ReadAllText projectPath)
         with
         | :? IOException
         | :? UnauthorizedAccessException -> ""
@@ -1397,7 +1405,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
 
     let projectText =
         try
-            File.ReadAllText projectPath
+            projectTextWithoutComments (File.ReadAllText projectPath)
         with
         | :? IOException
         | :? UnauthorizedAccessException -> ""
@@ -4179,7 +4187,7 @@ let private runApiPass
 /// dual emission at all: nothing is invented.
 let private chooseDualConstant (projectPath: string) (modern: string list) (legacy: string list) : string option =
     try
-        let text = File.ReadAllText projectPath
+        let text = projectTextWithoutComments (File.ReadAllText projectPath)
 
         let tfmsOf (condition: string) =
             let comparisons =
@@ -8392,7 +8400,7 @@ let private orderNarrowestFirst (targets: Target list) =
     else
         let projectRank (path: string) =
             try
-                let text = File.ReadAllText path
+                let text = projectTextWithoutComments (File.ReadAllText path)
 
                 let m =
                     Text.RegularExpressions.Regex.Match(text, "<TargetFrameworks?>([^<]+)</TargetFrameworks?>")

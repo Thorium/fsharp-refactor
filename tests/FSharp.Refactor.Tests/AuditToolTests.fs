@@ -770,3 +770,35 @@ let ``a tooling-only baseline and a clean rebuild blame the fixes, not the weath
     match verdict with
     | Program.Blame.Introduced errors -> Assert.Single errors |> ignore
     | other -> failwithf "Expected Introduced, got %A" other
+
+[<Fact>]
+let ``a framework list commented out of the project file is not one of its frameworks`` () =
+    // welendus's WelendusLogic.fsproj: `<!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks> -->`
+    // above the live element made the run ask for a net48 pass (NETSDK1005)
+    let dir = Path.Combine(Path.GetTempPath(), "fsref-tfm-" + Guid.NewGuid().ToString("N"))
+    Directory.CreateDirectory dir |> ignore
+
+    try
+        let project = Path.Combine(dir, "Lib.fsproj")
+
+        File.WriteAllText(
+            project,
+            String.concat
+                "\n"
+                [
+                    "<Project Sdk=\"Microsoft.NET.Sdk\">"
+                    "  <PropertyGroup>"
+                    "    <!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks> -->"
+                    "    <!--TargetFramework>net48</TargetFramework-->"
+                    "    <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>"
+                    "  </PropertyGroup>"
+                    "</Project>"
+                ]
+        )
+
+        Assert.Equal<string list>([ "netstandard2.0"; "netstandard2.1" ], Program.targetFrameworksOf project)
+    finally
+        try
+            Directory.Delete(dir, true)
+        with _ ->
+            ()
