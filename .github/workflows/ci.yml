@@ -68,8 +68,13 @@ jobs:
       - name: Self-analyze (dogfood)
         shell: bash
         run: |
-          CLI=$(find ~/.nuget/packages/fsharp-analyzers -name FSharp.Analyzers.Cli.dll | sort | tail -1)
-          echo "analyzing with $CLI"
+          # the CLI that matches the SDK the analyzers are built against: a
+          # newer one in the cache refuses them ("built using SDK version
+          # 0.37.2.0. Expect 0.39.2.0 instead") and the run fails
+          SDK=$(grep -oP 'FSharp.Analyzers.SDK" Version="\K[0-9.]+' src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj)
+          CLI=$(find ~/.nuget/packages/fsharp-analyzers/$SDK -name FSharp.Analyzers.Cli.dll | head -1)
+          echo "analyzing with $CLI (SDK $SDK)"
+          test -n "$CLI"
           dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis.sarif
           dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis-apply.sarif
 
