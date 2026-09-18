@@ -212,6 +212,43 @@ let ``an incomplete DU match gains raising arms`` () =
     | other -> failwithf "Expected one missing-case suggestion, got %A" other
 
 [<Fact>]
+let ``inside a computation expression the raising arm rides the siblings' return`` () =
+    // welendus's getLoanOffer: a `match!` in a task whose arms `return` -
+    // a bare `raise` arm is a unit statement there (TaskCode<_, unit>
+    // against TaskCode<_, T>) and the fix was rolled back
+    let source =
+        String.concat
+            "\n"
+            [
+                "module Test"
+                "open System.Threading.Tasks"
+                "type Outcome = Searching | Denied of string | Deal of int"
+                "let describe (t: Task<Outcome>) ="
+                "    task {"
+                "        match! t with"
+                "        | Searching -> return \"searching\""
+                "        | Denied reason ->"
+                "            printfn \"%s\" reason"
+                "            return \"denied\""
+                "    }"
+            ]
+
+    match missingIn source with
+    | [ s ] ->
+        Assert.Contains("| Deal _ -> return raise (System.NotImplementedException())", s.InsertText)
+        let patched = applyInsert source s
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one missing-case suggestion, got %A" other
+
+    // and a plain match keeps the bare raise
+    let plain =
+        "module Test\ntype Outcome = Searching | Denied of string | Deal of int\nlet f (o: Outcome) =\n    match o with\n    | Searching -> \"s\"\n    | Denied _ -> \"d\""
+
+    match missingIn plain with
+    | [ s ] -> Assert.Contains("| Deal _ -> raise (System.NotImplementedException())", s.InsertText)
+    | other -> failwithf "Expected one missing-case suggestion, got %A" other
+
+[<Fact>]
 let ``a wildcard arm completes the match`` () =
     Assert.Empty(
         missingIn

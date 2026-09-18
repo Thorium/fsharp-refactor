@@ -105,6 +105,30 @@ let private unionCasesOf (check: FSharpCheckFileResults) (source: ISourceText) (
 
 /// Find incomplete DU matches with no catch-all. Requires typed check
 /// results for the union lookup.
+/// The keyword the existing arms answer with inside a computation
+/// expression - `return ` or `yield ` (a `return!`/`yield!` arm counts as
+/// the plain form, since `return! raise ...` would want a computation) -
+/// or the empty string for a plain match, whose arms are values.
+let private armKeyword (clauses: SynMatchClause list) =
+    let rec tailOf (e: SynExpr) =
+        match e with
+        | SynExpr.Sequential(expr2 = e2) -> tailOf e2
+        | SynExpr.Paren(expr = inner) -> tailOf inner
+        | LetOrUseE lou -> tailOf lou.Body
+        | SynExpr.IfThenElse(thenExpr = t) -> tailOf t
+        | SynExpr.Match(clauses = SynMatchClause(resultExpr = r) :: _) -> tailOf r
+        | other -> other
+
+    clauses
+    |> List.tryPick (fun (SynMatchClause(resultExpr = r)) ->
+        match tailOf r with
+        | SynExpr.YieldOrReturn(flags = (_, true))
+        | SynExpr.YieldOrReturnFrom(flags = (_, true)) -> Some "return "
+        | SynExpr.YieldOrReturn(flags = (true, _))
+        | SynExpr.YieldOrReturnFrom(flags = (true, _)) -> Some "yield "
+        | _ -> None)
+    |> Option.defaultValue ""
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
         []
@@ -188,6 +212,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 then
                                     let indent = String.replicate barColumn " "
 
+                                    // inside a computation expression the arms
+                                    // are `return`/`yield` statements: a bare
+                                    // `raise` arm is a unit-typed statement there
+                                    // (TaskCode<_, unit> against the siblings'
+                                    // TaskCode<_, T>, welendus's getLoanOffer),
+                                    // so the raise rides the siblings' keyword
+                                    let keyword = armKeyword clauses
+
                                     let insertText =
                                         missing
                                         |> List.map (fun (name, hasFields) ->
@@ -198,7 +230,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                     $"{qualifier}{name}"
 
                                             let prefix = if opensSystemNamespace source then "" else "System."
-                                            $"\n{indent}| {pattern} -> raise ({prefix}NotImplementedException())")
+                                            $"\n{indent}| {pattern} -> {keyword}raise ({prefix}NotImplementedException())")
                                         |> String.concat ""
 
                                     let insertAt =
