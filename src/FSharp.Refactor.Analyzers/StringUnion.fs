@@ -2047,7 +2047,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                     | Some _ ->
                                         let entityName =
                                             try
-                                                f.DeclaringEntity |> Option.map (fun e -> OptionModule.fullNameOf e)
+                                                f.DeclaringEntity |> Option.map OptionModule.fullNameOf
                                             with _ -> // fsharpanalyzer: ignore-line FR0055
                                                 None
 
