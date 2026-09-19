@@ -768,6 +768,7 @@ dotnet fantomas src tests
 dotnet dotnet-fsharplint lint src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj
 dotnet dotnet-fsharplint lint src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj
 dotnet dotnet-fsharplint lint tests/FSharp.Refactor.Tests/FSharp.Refactor.Tests.fsproj
+dotnet dotnet-fsharplint lint tests/FSharp.Refactor.PropertyTests/FSharp.Refactor.PropertyTests.fsproj
 ```
 
 and the analyzers are run against their own source, expecting zero findings.
@@ -781,6 +782,17 @@ dotnet tool run fsharp-analyzers --project src/FSharp.Refactor.Tool/FSharp.Refac
 
 Test inputs are string literals, so formatting tools never touch the
 deliberately-shaped source fragments the tests exercise.
+
+Beside the example-based suite, `tests/FSharp.Refactor.PropertyTests` is an
+FsCheck suite over generated programs: a module of declarations each shaped
+for a parse-only rule, and boolean terms over three integers with an
+interpreter as the oracle. Its properties are the invariants the rules
+promise - a parse-only fix keeps the file parseable, no rule throws on a
+tree the parser recovered from damaged text, applying edits one at a time
+reaches a fixed point, and the boolean rewrites (FR0108/FR0109, the negation
+and De Morgan hints, FR0010, FR0013) keep the function's truth table at
+every step. A coverage test holds the generators to their rules: if a shape
+stops firing the rule it was written for, it says which.
 
 ## Design principles
 

@@ -53,7 +53,8 @@ jobs:
           echo "linting with $LINT"
           for p in src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj \
                    src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj \
-                   tests/FSharp.Refactor.Tests/FSharp.Refactor.Tests.fsproj; do
+                   tests/FSharp.Refactor.Tests/FSharp.Refactor.Tests.fsproj \
+                   tests/FSharp.Refactor.PropertyTests/FSharp.Refactor.PropertyTests.fsproj; do
             dotnet exec --roll-forward LatestMajor "$LINT" lint "$p"
           done
 

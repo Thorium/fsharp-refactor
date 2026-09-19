@@ -21,10 +21,13 @@ param(
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $project = Join-Path $here "FSharp.Refactor.Tests"
+$propertyProject = Join-Path $here "FSharp.Refactor.PropertyTests"
 $slow = "FullyQualifiedName~SiblingProjectsTests"
 
 if (-not $NoBuild) {
     dotnet build $project -c $Configuration --nologo -v q
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    dotnet build $propertyProject -c $Configuration --nologo -v q
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -32,12 +35,15 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $common = @("test", $project, "-c", $Configuration, "--no-build", "--nologo")
 $rest = Start-Process -FilePath dotnet -ArgumentList ($common + @("--filter", "`"FullyQualifiedName!~SiblingProjectsTests`"")) -NoNewWindow -PassThru
 $end2end = Start-Process -FilePath dotnet -ArgumentList ($common + @("--filter", "`"$slow`"")) -NoNewWindow -PassThru
+# the FsCheck suite is a third process: a few seconds, beside the rest
+$properties = Start-Process -FilePath dotnet -ArgumentList @("test", $propertyProject, "-c", $Configuration, "--no-build", "--nologo") -NoNewWindow -PassThru
 $rest.WaitForExit()
 $end2end.WaitForExit()
+$properties.WaitForExit()
 $sw.Stop()
 
 Write-Host ("wall {0:n0} s" -f $sw.Elapsed.TotalSeconds)
-if ($rest.ExitCode -ne 0 -or $end2end.ExitCode -ne 0) {
-    Write-Host "FAILED (rest: $($rest.ExitCode), end-to-end: $($end2end.ExitCode))"
+if ($rest.ExitCode -ne 0 -or $end2end.ExitCode -ne 0 -or $properties.ExitCode -ne 0) {
+    Write-Host "FAILED (rest: $($rest.ExitCode), end-to-end: $($end2end.ExitCode), properties: $($properties.ExitCode))"
     exit 1
 }
