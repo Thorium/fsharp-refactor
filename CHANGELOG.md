@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.26
+
+A property-based suite, `tests/FSharp.Refactor.PropertyTests`, joins the example-based one: FsCheck generates a module of declarations shaped for the parse-only rules, and boolean terms over three integers with an interpreter as the oracle, and the properties are the invariants the rules promise - a parse-only fix keeps the file parseable, no rule throws on a tree the parser recovered from damaged text, applying edits one at a time reaches a fixed point, and the boolean rewrites (FR0108/FR0109, the negation and De Morgan hints, FR0010, FR0013) keep the function's truth table at every step. It found one defect, shared by every rule that replaces a bracketed expression with a bare one: a replacement that begins or ends in an identifier character, put where the brackets were, runs into the token beside it - `match not (a <> b)with` is legal F#, and the hint's `a = b` left `bwith`. FR0012, FR0013, FR0094, FR0097, FR0098, FR0108 and FR0109 now put one space on the side that would glue, and none anywhere else. The FR0012 purity probe reads an interpolated string part by its case rather than a catch-all, so a part the parser adds later cannot pass as literal text.
+
 ## 0.8.25
 
 Every help link names the rule's own section of Rules.md: the SARIF rule metadata and the HTML report link to `Rules.md#fr0103--idiom`, the anchor GitHub gives the `### FR0103 — idiom` heading, where a bare `#fr0103` lands on nothing; a test slugs every heading the way GitHub does and holds the catalog's anchors against them. The Visual Studio extension's package lists a content type for every part again: manifest.json and catalog.json were written after the payload was enumerated, and a part without one made the whole file "not a valid VSIX package" once the FSAC payload's own .json files no longer hid it.
