@@ -12,6 +12,7 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <Description>Applies the FSharp.Refactor analyzers' quick fixes to F# code from the Visual Studio IDE. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.</Description>
   </PropertyGroup>
 
   <ItemGroup>

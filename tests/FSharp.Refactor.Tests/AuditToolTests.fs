@@ -804,3 +804,48 @@ let ``a framework list commented out of the project file is not one of its frame
             Directory.Delete(dir, true)
         with _ ->
             ()
+
+[<Fact>]
+let ``the configuration probe reads a compile item by the name the project spells`` () =
+    // the item set is keyed by lowercased paths for membership; the READ
+    // went through the key too, and on a case-sensitive file system
+    // `library.fs` is not `Library.fs`: the unreadable file was taken to
+    // branch on the configuration, and every project got the Release build
+    let dir =
+        Path.Combine(Path.GetTempPath(), "fsref-cfg-" + Guid.NewGuid().ToString("N"))
+
+    Directory.CreateDirectory dir |> ignore
+
+    try
+        let project = Path.Combine(dir, "Lib.fsproj")
+
+        File.WriteAllText(
+            project,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Library.fs\" />\n    <Compile Include=\"Branching.fs\" />\n  </ItemGroup>\n</Project>\n"
+        )
+
+        File.WriteAllText(Path.Combine(dir, "Library.fs"), "module Lib\n\nlet answer = 42\n")
+        File.WriteAllText(Path.Combine(dir, "Branching.fs"), "module Other\n\nlet flag = 1\n")
+
+        Assert.False(Program.hasConfigurationConditionals project, "no source branches on the configuration")
+
+        // the probe is memoised per project path: a second project tells
+        // the positive case apart from a stale answer
+        let branching = Path.Combine(dir, "Branching.fsproj")
+
+        File.WriteAllText(
+            branching,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Branching.fs\" />\n    <Compile Include=\"Debugging.fs\" />\n  </ItemGroup>\n</Project>\n"
+        )
+
+        File.WriteAllText(
+            Path.Combine(dir, "Debugging.fs"),
+            "module Debugging\n\n#if DEBUG\nlet verbose = true\n#else\nlet verbose = false\n#endif\n"
+        )
+
+        Assert.True(Program.hasConfigurationConditionals branching, "Debugging.fs branches on DEBUG")
+    finally
+        try
+            Directory.Delete(dir, true)
+        with _ ->
+            ()

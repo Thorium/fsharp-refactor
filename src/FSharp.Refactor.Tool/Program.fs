@@ -924,11 +924,16 @@ let private whitespaceRunRegex =
 let private compileItemRegex =
     Text.RegularExpressions.Regex("<Compile\\s+Include=\"([^\"]+)\"", Text.RegularExpressions.RegexOptions.Compiled)
 
-/// The `<Compile>` items of one fsproj, as full paths, lowercased. Read
-/// once per project file; items with a property or a wildcard are the
-/// evaluation's business and are left out, as `registerFileFloors` does.
+/// The `<Compile>` items of one fsproj: the lowercased full path, the
+/// membership key every other path here is compared by, to the path as
+/// the project spells it. The spelled path is the one to READ: a Linux
+/// file system does not find `library.fs` where `Library.fs` is, and a
+/// reader handed the key took every project for one branching on the
+/// build configuration there. Read once per project file; items with a
+/// property or a wildcard are the evaluation's business and are left out,
+/// as `registerFileFloors` does.
 let private compileItemsCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, Set<string>>(StringComparer.OrdinalIgnoreCase)
+    System.Collections.Concurrent.ConcurrentDictionary<string, Map<string, string>>(StringComparer.OrdinalIgnoreCase)
 
 let private compileItemsOf (project: string) =
     compileItemsCache.GetOrAdd(
@@ -940,10 +945,12 @@ let private compileItemsOf (project: string) =
                 compileItemRegex.Matches(File.ReadAllText p)
                 |> Seq.map (fun m -> m.Groups.[1].Value)
                 |> Seq.filter (fun item -> not (item.Contains '$') && not (item.Contains '*'))
-                |> Seq.map (fun item -> Path.GetFullPath(Path.Combine(dir, item.Replace('\\', '/'))).ToLowerInvariant())
-                |> Set.ofSeq
+                |> Seq.map (fun item ->
+                    let full = Path.GetFullPath(Path.Combine(dir, item.Replace('\\', '/')))
+                    full.ToLowerInvariant(), full)
+                |> Map.ofSeq
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                Set.empty
+                Map.empty
     )
 
 /// Do the project's sources branch on the build CONFIGURATION — `#if
@@ -960,10 +967,13 @@ let private configurationConditionals =
 /// Memoised per project for the run: asked at the verification, at the
 /// extra pass and at the sibling check, and no fix writes such a
 /// directive (the capability fixes emit framework ones).
-let private hasConfigurationConditionals (project: string) =
+let internal hasConfigurationConditionals (project: string) =
     configurationConditionals.GetOrAdd(
         Path.GetFullPath project,
-        fun p -> compileItemsOf p |> Seq.exists Text.hasConfigurationConditional
+        fun p ->
+            compileItemsOf p
+            |> Map.toSeq
+            |> Seq.exists (fun (_, spelled) -> Text.hasConfigurationConditional spelled)
     )
 
 /// A build configuration: the two the `#if DEBUG` / `RELEASE` conditionals
@@ -4403,7 +4413,7 @@ let private projectCompiling (file: string) : string option =
                     let here =
                         try
                             Directory.EnumerateFiles(dir, "*.fsproj")
-                            |> Seq.tryFind (fun p -> (compileItemsOf p).Contains key)
+                            |> Seq.tryFind (fun p -> (compileItemsOf p).ContainsKey key)
                         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                             None
 
