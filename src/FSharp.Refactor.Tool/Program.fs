@@ -558,6 +558,12 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
 
     workingDirectory |> Option.iter (fun dir -> psi.WorkingDirectory <- dir)
 
+    // MSBuild keeps its worker nodes alive after the build for the next
+    // one to reuse. A node inherits the pipes below, so the child's exit
+    // does not close them, and the flush wait after it (see there) has no
+    // end. Nodes that end with their build hold nothing of ours.
+    psi.Environment.["MSBUILDDISABLENODEREUSE"] <- "1"
+
     // A child that cannot START is the fourth way: a blocked or missing
     // executable (a paket bootstrapper under application control, `mono`
     // absent, `dotnet` not on the PATH) throws out of Process.Start, and
@@ -601,8 +607,21 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
 
         if p.WaitForExit(int timeout.TotalMilliseconds) then
             // the timed overload can return before the output callbacks have
-            // flushed; the argument-less one waits for them
-            p.WaitForExit()
+            // flushed; the argument-less one waits for them - and for both
+            // pipes to close, which a grandchild that inherited them holds
+            // up for as long as it lives (an MSBuild node kept for reuse:
+            // fifteen minutes, or forever under a test host). The output
+            // is in the builders within milliseconds of the exit, so the
+            // flush gets seconds, never the run.
+            let flushed =
+                System.Threading.Tasks.Task.Run(fun () ->
+                    try
+                        p.WaitForExit()
+                    with
+                    | :? InvalidOperationException
+                    | :? ObjectDisposedException -> ())
+
+            flushed.Wait(TimeSpan.FromSeconds 10.0) |> ignore
             p.ExitCode, outText.ToString(), errText.ToString()
         else
             try

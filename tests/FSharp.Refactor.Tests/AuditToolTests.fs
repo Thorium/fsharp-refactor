@@ -315,6 +315,8 @@ let private builds (solution: string) =
             WorkingDirectory = Path.GetDirectoryName solution
         )
 
+    // a reusable MSBuild node would inherit the pipes and hold ReadToEnd open
+    psi.Environment.["MSBUILDDISABLENODEREUSE"] <- "1"
     use proc = Process.Start psi
     let output = proc.StandardOutput.ReadToEnd() + proc.StandardError.ReadToEnd()
     proc.WaitForExit()
