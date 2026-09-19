@@ -135,6 +135,10 @@ $displayName + '","description":"' + $displayName + '"}]},{"id":"' + $vsixId + '
 # every extension in the payload needs a Default (the FSAC payload brings
 # dozens), and OPC forbids empty-Extension Defaults, so each extensionless
 # file gets an Override part entry instead
+# re-enumerate: manifest.json and catalog.json were written after the payload
+# list above, and a part with no content type makes the whole package "not a
+# valid VSIX package" (only the FSAC payload's own .json files hid this)
+$payloadFiles = Get-ChildItem -LiteralPath $staging -Recurse -File
 $known = @{ "vsixmanifest" = "text/xml"; "json" = "application/json" }
 $extensions = $payloadFiles |
     ForEach-Object { $_.Extension.TrimStart('.').ToLowerInvariant() } |

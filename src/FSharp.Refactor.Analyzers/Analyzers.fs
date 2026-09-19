@@ -13,7 +13,8 @@ open FSharp.Analyzers.SDK
 open System
 
 [<Literal>]
-let private HelpBase = "https://github.com/Thorium/fsharp-refactor"
+let private HelpBase =
+    "https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md"
 
 let private fix (range: range) (original: string) (replacement: string) : Fix =
     {

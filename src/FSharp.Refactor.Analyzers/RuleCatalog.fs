@@ -345,6 +345,23 @@ let describe (code: string) =
     |> Option.filter (fun d -> d <> "")
     |> Option.defaultValue $"{name (categoryOf code)} rule {code}"
 
+/// The rule table on GitHub.
+let RulesUrl = "https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md"
+
+/// The GitHub anchor of a rule's section in Rules.md. Every section heads
+/// `### FRnnnn — category`, and GitHub slugs a heading by lowercasing it,
+/// dropping every character that is neither letter, digit, space nor
+/// hyphen, and turning each space into a hyphen: the em dash vanishes and
+/// the two spaces around it leave a double hyphen, `fr0103--idiom`. A link
+/// to `#fr0103` alone lands on nothing, so the anchor carries the whole
+/// heading.
+let anchor (code: string) =
+    $"{code.ToLowerInvariant()}--{name (categoryOf code)}"
+
+/// Where Rules.md documents the rule — the link a report or an editor hover
+/// can send the reader to.
+let helpUri (code: string) = $"{RulesUrl}#{anchor code}"
+
 /// Every known code in the given categories.
 let codesIn (wanted: Set<Category>) =
     categories

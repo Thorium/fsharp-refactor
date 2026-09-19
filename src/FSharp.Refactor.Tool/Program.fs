@@ -4764,8 +4764,8 @@ let private writeSarifReport (path: string) (target: string) (findings: Reported
                     "name", box code
                     "shortDescription", box (dict [ "text", box description ])
                     "fullDescription", box (dict [ "text", box $"{description} ({category} rule of fsharp-refactor)" ])
-                    "helpUri", box "https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md"
-                    "help", box (dict [ "text", box $"See {code} in Rules.md." ])
+                    "helpUri", box (RuleCatalog.helpUri code)
+                    "help", box (dict [ "text", box $"See {code} in Rules.md: {RuleCatalog.helpUri code}" ])
                     "defaultConfiguration", box (dict [ "level", box (reportLevel code Severity.Hint) ])
                     "properties",
                     box (dict [ "category", box category; "tags", box [ category; "fsharp"; "refactoring" ] ])
@@ -5109,6 +5109,7 @@ let private writeHtmlReport (path: string) (target: string) (findings: ReportedF
         ".filters{display:flex;flex-wrap:wrap;gap:16px;margin:12px 0 4px;color:var(--muted)}.filters label{margin-right:8px;cursor:pointer}"
 
     line ".rule .desc{color:var(--muted);font-weight:normal}"
+    line ".rule a{color:inherit;text-decoration:none}.rule a:hover{text-decoration:underline}"
     line ".finding{border:1px solid var(--line);border-radius:6px;margin:10px 0;overflow:hidden}"
     line ".finding.hidden{display:none}"
 
@@ -5175,7 +5176,7 @@ let private writeHtmlReport (path: string) (target: string) (findings: ReportedF
 
         for code, items in grouped do
             line
-                $"<h2 class=\"rule\" id=\"{code}\">{code} <span class=\"desc\">— {esc (RuleCatalog.describe code)}</span> <span class=\"cat\">({items.Length})</span></h2>"
+                $"<h2 class=\"rule\" id=\"{code}\"><a href=\"{RuleCatalog.helpUri code}\">{code}</a> <span class=\"desc\">— {esc (RuleCatalog.describe code)}</span> <span class=\"cat\">({items.Length})</span></h2>"
 
             for f in items |> List.sortBy (fun f -> f.File, f.StartLine, f.StartColumn) do
                 let level = reportLevel f.Code f.Severity
@@ -5216,7 +5217,7 @@ let private writeHtmlReport (path: string) (target: string) (findings: ReportedF
         line "</script>"
 
     line
-        "<footer>Rules are described in <a href=\"https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md\">Rules.md</a>. The same run written as <code>--report findings.sarif</code> uploads to GitHub code scanning.</footer>"
+        $"<footer>Rules are described in <a href=\"{RuleCatalog.RulesUrl}\">Rules.md</a>. The same run written as <code>--report findings.sarif</code> uploads to GitHub code scanning.</footer>"
 
     line "</body></html>"
     File.WriteAllText(path, sb.ToString(), Text.UTF8Encoding(false))

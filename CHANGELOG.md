@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.25
+
+Every help link names the rule's own section of Rules.md: the SARIF rule metadata and the HTML report link to `Rules.md#fr0103--idiom`, the anchor GitHub gives the `### FR0103 — idiom` heading, where a bare `#fr0103` lands on nothing; a test slugs every heading the way GitHub does and holds the catalog's anchors against them. The Visual Studio extension's package lists a content type for every part again: manifest.json and catalog.json were written after the payload was enumerated, and a part without one made the whole file "not a valid VSIX package" once the FSAC payload's own .json files no longer hid it.
+
 ## 0.8.24
 
 The apply tool's build-configuration probe reads each compile item by the path the project spells. The item set is keyed by lowercased paths for membership, and the probe read the file through the key: on a case-sensitive file system `library.fs` is not `Library.fs`, an unreadable file counts as branching on the configuration, and on Linux every project got the extra Release pass and the extra Release build (the CI's consumer-verification test failed on the wording of a build it did not expect). The probe now reads the spelled path, and a test writes a project whose item's case the file system has to match. The wait on a child build no longer has the run at its mercy: after a `dotnet build` exits, the wait for its output pipes to close gets ten seconds, not forever, and the child runs with MSBuild node reuse off, since a worker node kept for the next build inherits the pipes and held the run - and the test host - for as long as it lived.

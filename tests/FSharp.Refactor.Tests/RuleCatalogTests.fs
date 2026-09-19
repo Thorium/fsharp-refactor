@@ -172,3 +172,34 @@ let ``Rules.md priority column matches the catalog's priority set`` () =
     let extra = Set.difference flagged RuleCatalog.priority
     Assert.True(missing.IsEmpty, $"the catalog marks as priority but Rules.md does not: %A{missing}")
     Assert.True(extra.IsEmpty, $"Rules.md marks as priority but the catalog does not: %A{extra}")
+
+// ---- Rules.md: the section anchors ----
+
+/// GitHub's heading slug: lowercase, every character that is neither a
+/// letter, a digit, a space nor a hyphen dropped, every space a hyphen. An
+/// em dash between two spaces therefore leaves a double hyphen, and the
+/// `### FR0103 — idiom` heading answers to `#fr0103--idiom`, never to
+/// `#fr0103`.
+let private githubSlug (heading: string) =
+    Regex.Replace(heading.ToLowerInvariant(), @"[^\p{L}\p{N} -]", "").Replace(' ', '-')
+
+[<Fact>]
+let ``the help link of every rule lands on its Rules.md section`` () =
+    let headings =
+        Regex.Matches(repoFile "Rules.md", @"^### ((FR\d{4}) .*?)\r?$", RegexOptions.Multiline)
+        |> Seq.map (fun m -> m.Groups.[2].Value, githubSlug m.Groups.[1].Value)
+        |> List.ofSeq
+
+    Assert.NotEmpty headings
+
+    let wrong =
+        headings
+        |> List.filter (fun (code, slug) -> RuleCatalog.anchor code <> slug)
+        |> List.map (fun (code, slug) -> $"{code}: the link says #{RuleCatalog.anchor code}, the heading is #{slug}")
+
+    Assert.True(wrong.IsEmpty, String.concat "\n" wrong)
+
+    Assert.Equal(
+        "https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md#fr0103--idiom",
+        RuleCatalog.helpUri "FR0103"
+    )
