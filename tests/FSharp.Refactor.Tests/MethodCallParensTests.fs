@@ -162,3 +162,15 @@ let ``a call in a shorthand lambda keeps its parens`` () =
     // `_.` body must stay atomic, or the bare argument applies the lambda
     assertNoSuggestion
         "module Test\ntype E() =\n    member x.WithName(n: string) = x\n    member x.WithGroupName(g: string) = x\nlet configure (f: E -> E) (e: E) = f e\nlet r (e: E) = e |> configure _.WithName(\"a\").WithGroupName(\"g\")"
+
+[<Fact>]
+let ``the bare argument gets one space on each side that would glue, and no more`` () =
+    // `s.Trim(c)with` is legal; bare, `c` would run into both neighbours
+    assertPatched
+        "module Test\nlet f (s: string) (c: char) =\n    match s.Trim(c)with\n    | \"\" -> 1\n    | _ -> 2"
+        "module Test\nlet f (s: string) (c: char) =\n    match s.Trim c with\n    | \"\" -> 1\n    | _ -> 2"
+
+    // separated already: nothing added
+    assertPatched
+        "module Test\nlet f (s: string) (c: char) = s.Trim (c)"
+        "module Test\nlet f (s: string) (c: char) = s.Trim c"

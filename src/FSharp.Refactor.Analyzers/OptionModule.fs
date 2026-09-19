@@ -364,7 +364,7 @@ let private mentionsRecursiveBinder (index: AstIndex.Index) (path: SyntaxNode li
         enclosingNames.Contains t.idText
         && (memberNames.Contains n.idText || recursiveNames.Contains n.idText)
 
-    (not recursiveNames.IsEmpty || not selfMembers.IsEmpty || not memberNames.IsEmpty)
+    (not (recursiveNames.IsEmpty && selfMembers.IsEmpty && memberNames.IsEmpty))
     && index.Exprs
        |> Array.exists (fun (_, e) ->
            match e with

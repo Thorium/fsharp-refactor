@@ -41,6 +41,50 @@ let textOfRange (source: ISourceText) (r: range) : string =
         ]
         |> String.concat "\n"
 
+/// An identifier character: what runs into a neighbouring one to make a
+/// single token.
+let private isIdentChar (c: char) =
+    Char.IsLetterOrDigit c || c = '_' || c = '\''
+
+/// A replacement that begins or ends in an identifier character, put
+/// where the text it replaces was delimited by a bracket, can run into
+/// the token beside it: `match not (a <> b)with` is legal, and the hint's
+/// `a = b` leaves `bwith`. One space on the side that would glue, and no
+/// space anywhere else.
+let separated (source: ISourceText) (r: range) (replacement: string) : string =
+    if replacement.Length = 0 then
+        replacement
+    else
+        let startLine = source.GetLineString(r.StartLine - 1)
+        let endLine = source.GetLineString(r.EndLine - 1)
+
+        let glues (neighbour: char option) (edge: char) =
+            match neighbour with
+            | Some c -> isIdentChar c && isIdentChar edge
+            | None -> false
+
+        let before =
+            if r.StartColumn > 0 && r.StartColumn <= startLine.Length then
+                Some startLine.[r.StartColumn - 1]
+            else
+                None
+
+        let after =
+            if r.EndColumn < endLine.Length then
+                Some endLine.[r.EndColumn]
+            else
+                None
+
+        let prefix = if glues before replacement.[0] then " " else ""
+
+        let suffix =
+            if glues after replacement.[replacement.Length - 1] then
+                " "
+            else
+                ""
+
+        prefix + replacement + suffix
+
 let isSingleLine (r: range) = r.StartLine = r.EndLine
 
 /// A dotted identifier path as source text: [a; b] → "a.b".

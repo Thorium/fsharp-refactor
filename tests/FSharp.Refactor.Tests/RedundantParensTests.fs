@@ -141,3 +141,10 @@ let ``a body indented past the argument's start but short of its end is no align
     assertPatched
         "module Test\nlet g (x: int) = x > 0\nlet f (x: int) =\n    if g (x) then\n        1\n    else\n        2"
         "module Test\nlet g (x: int) = x > 0\nlet f (x: int) =\n    if g x then\n        1\n    else\n        2"
+
+[<Fact>]
+let ``the bare argument touching the next token gets one space, and no more`` () =
+    // `not(true)with` is legal; the bare `true` would read `truewith`
+    assertPatched
+        "module Test\nlet f () =\n    match not(true)with\n    | true -> 1\n    | false -> 2"
+        "module Test\nlet f () =\n    match not true with\n    | true -> 1\n    | false -> 2"

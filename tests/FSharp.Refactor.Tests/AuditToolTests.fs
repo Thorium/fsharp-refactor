@@ -556,7 +556,7 @@ let ``awaitWithin gives up at the timeout even when the work never observes canc
                 (TimeSpan.FromMilliseconds 300.)
                 (fun () -> "the typecheck of Slow.fsproj had not finished")
                 (async {
-                    System.Threading.Thread.Sleep 4000
+                    do! Async.Sleep 4000
                     return 1
                 })
             |> ignore)

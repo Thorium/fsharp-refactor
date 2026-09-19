@@ -239,7 +239,7 @@ let private awaits (indent: int) n =
     let pad = String.replicate indent " "
 
     [
-        for i in 1..n -> $"{pad}let! x%d{i} = System.Threading.Tasks.Task.FromResult %d{i}"
+        for i in 1..n -> $"%s{pad}let! x%d{i} = System.Threading.Tasks.Task.FromResult %d{i}"
     ]
     |> String.concat "\n"
 

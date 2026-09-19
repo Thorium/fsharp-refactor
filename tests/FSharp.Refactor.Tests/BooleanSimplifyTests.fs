@@ -97,3 +97,14 @@ let ``a call under an if still drops the literal`` () =
 [<Fact>]
 let ``a comparison bound as a value still drops the literal`` () =
     assertRewrite "module Test\nlet f (x: int) =\n    let v = x > 1 && true\n    v" "x > 1"
+
+[<Fact>]
+let ``the kept operand touching a token beside it gets one space there, and no more`` () =
+    // `if(true) && true then` is legal; the kept `true` would read `iftrue`
+    assertRewrite "module Test\nlet f () = if(true) && true then 1 else 2" " true"
+
+    assertRewrite
+        "module Test\nlet f (x: int) =\n    match(true)&& x <= 0 with\n    | true -> 1\n    | false -> 2"
+        " x <= 0"
+
+    assertRewrite "module Test\nlet f (x: int) = (x <= 0 && true)" "x <= 0"

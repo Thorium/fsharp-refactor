@@ -1179,11 +1179,10 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
                     |> List.forall (fun part ->
                         match part with
                         | SynInterpolatedStringPart.FillExpr _ -> false
-                        | _ -> true)
+                        | SynInterpolatedStringPart.String _ -> true)
                 | SynExpr.Ident id -> not (effectfulCoreNames.Contains id.idText)
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-                | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) ->
-                    not (effectful ids) && not (foreignProperty ids)
+                | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) -> not (effectful ids || foreignProperty ids)
                 | _ -> true))
 
     shapeOk
@@ -1389,7 +1388,7 @@ let find
                         {
                             Range = expr.Range
                             OriginalText = textOfRange source expr.Range
-                            ReplacementText = replacement
+                            ReplacementText = separated source expr.Range replacement
                             Rule = hint.RuleText
                         }
 

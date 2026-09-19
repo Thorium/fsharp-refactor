@@ -77,7 +77,7 @@ let findRedundantParens (parseTree: ParsedInput) (source: ISourceText) : Suggest
                     {
                         Range = synType.Range
                         OriginalText = textOfRange source synType.Range
-                        ReplacementText = textOfRange source inner.Range
+                        ReplacementText = separated source synType.Range (textOfRange source inner.Range)
                     }
                 | _ -> ()
         ]

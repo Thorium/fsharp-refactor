@@ -139,7 +139,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         Range = expr.Range
                         Kind = kind
                         OriginalText = textOfRange source expr.Range
-                        ReplacementText = textOfRange source kept.Range
+                        ReplacementText = separated source expr.Range (textOfRange source kept.Range)
                     }
 
                 match lhs, rhs with

@@ -140,7 +140,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             {
                                 Range = argExpr.Range
                                 OriginalText = textOfRange source argExpr.Range
-                                ReplacementText = replacement
+                                ReplacementText = separated source argExpr.Range replacement
                             }
                 | _ -> ()
         }

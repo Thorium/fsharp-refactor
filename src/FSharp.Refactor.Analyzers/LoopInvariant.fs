@@ -95,6 +95,7 @@ let private hoistableOperators =
         ]
 
 /// A numeric literal other than zero.
+[<TailCall>]
 let rec private nonZeroConst (c: SynConst) =
     match c with
     | SynConst.SByte v -> v <> 0y

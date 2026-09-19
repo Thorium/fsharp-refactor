@@ -11,6 +11,9 @@ type Mutation =
     | InsertAt of i: int * token: string
     | Truncate of int
     | DuplicateLine of int
+    /// The n-th space beside a bracket goes: `f (x) with` is `f (x)with`,
+    /// still legal, and a fix that drops the brackets must not glue tokens.
+    | DeleteSpaceAtBracket of int
 
 /// Fragments that unbalance, re-nest or reinterpret what follows them.
 let private tokens =
@@ -59,6 +62,7 @@ let genMutation: Gen<Mutation> =
             3, Gen.map InsertAt (Gen.zip (Gen.choose (0, 999)) (Gen.elements tokens))
             1, Gen.map Truncate (Gen.choose (0, 999))
             1, Gen.map DuplicateLine (Gen.choose (0, 99))
+            3, Gen.map DeleteSpaceAtBracket (Gen.choose (0, 999))
         ]
 
 /// One to five mutations.
@@ -79,5 +83,20 @@ let apply (source: string) (mutation: Mutation) : string =
             let lines = source.Split '\n'
             let line = lines.[i % lines.Length]
             String.concat "\n" (List.ofArray lines |> List.insertAt (i % lines.Length) line)
+        | DeleteSpaceAtBracket n ->
+            let beside (i: int) =
+                source.[i] = ' '
+                && (i > 0 && (source.[i - 1] = ')' || source.[i - 1] = ']')
+                    || i + 1 < source.Length && (source.[i + 1] = '(' || source.[i + 1] = '['))
+
+            match
+                [|
+                    for i in 0 .. source.Length - 1 do
+                        if beside i then
+                            i
+                |]
+            with
+            | [||] -> source
+            | spaces -> source.Remove(spaces.[n % spaces.Length], 1)
 
 let applyAll (source: string) (mutations: Mutation list) : string = List.fold apply source mutations

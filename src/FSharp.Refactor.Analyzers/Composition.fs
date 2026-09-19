@@ -186,7 +186,7 @@ let private stageIsPure (check: FSharpCheckFileResults) (source: ISourceText) (s
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value ->
                 (try
-                    not value.IsMutable && not value.IsMember
+                    not (value.IsMutable || value.IsMember)
                  with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                      false)
             | :? FSharpUnionCase -> true

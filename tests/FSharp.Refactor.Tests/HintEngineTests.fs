@@ -484,3 +484,14 @@ let ``De Morgan brackets a lambda application and an if`` () =
     assertTypedRewrite
         "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (if a then b else c) && not ((fun z -> z) b)"
         "not ((if a then b else c) || (fun z -> z) b)"
+
+[<Fact>]
+let ``a replacement touching the next token gets one space, and no more`` () =
+    // `)with` is legal; `a = b` in its place would read `bwith`
+    assertSingleSuggestion
+        "module Test\nlet f (a: int) (b: int) =\n    match not (a <> b)with\n    | true -> 1\n    | false -> 2"
+        "a = b "
+    // already separated: nothing added
+    assertSingleSuggestion
+        "module Test\nlet f (a: int) (b: int) =\n    match not (a <> b) with\n    | true -> 1\n    | false -> 2"
+        "a = b"

@@ -27,6 +27,11 @@ let ``a parenthesized named type loses its parens`` () =
     assertPatched parensIn "module Test\nlet f (x: (int)) = x" "module Test\nlet f (x: int) = x"
 
 [<Fact>]
+let ``the bare type touching the next token gets one space, and no more`` () =
+    // `(string)list` is legal; bare, it would read `stringlist`
+    assertPatched parensIn "module Test\nlet xs: (string)list = []" "module Test\nlet xs: string list = []"
+
+[<Fact>]
 let ``a parenthesized type argument loses its parens`` () =
     assertPatched parensIn "module Test\nlet xs: (string) list = []" "module Test\nlet xs: string list = []"
 

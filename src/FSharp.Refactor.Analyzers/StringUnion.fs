@@ -2336,7 +2336,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                             [ Some baseName; ownerPrefixed; Some(baseName + "Kind") ]
                             |> List.choose id
                             |> List.tryFind (fun n ->
-                                not (world.TypeNames.Contains n) && not (introduced.Contains n) && n <> "")
+                                (not (world.TypeNames.Contains n || introduced.Contains n)) && n <> "")
 
                         unionName |> Option.iter (introduced.Add >> ignore)
 

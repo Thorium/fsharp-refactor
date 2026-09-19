@@ -35,6 +35,7 @@ open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
 open FSharp.Analyzers.SDK.ASTCollecting
 open FSharp.Refactor.Text
+open System.Text.RegularExpressions
 
 type Suggestion =
     {
@@ -306,16 +307,16 @@ let private sourceIsOwned (path: SyntaxNode list) (sourceExpr: SynExpr) =
 ///     named function, since `List.iter (register es)` hands it over and
 ///     `fun x -> rs.Remove x` reaches for it directly
 let private mutatingMethod =
-    System.Text.RegularExpressions.Regex(
+    Regex(
         @"\.(Add|AddRange|Remove|RemoveAt|RemoveAll|RemoveRange|RemoveWhere|Insert|InsertRange|Clear|Set|Push|Pop|Enqueue|Dequeue|TryAdd|TryRemove|Sort|Reverse|UnionWith|ExceptWith|IntersectWith|SymmetricExceptWith|TrimExcess)\b",
-        System.Text.RegularExpressions.RegexOptions.Compiled
+        RegexOptions.Compiled
     )
 
 let private callbackMayWrite (source: ISourceText) (path: SyntaxNode list) (sourceName: string option) (arg: SynExpr) =
     let text = textOfRange source arg.Range
 
     let mentions (name: string) =
-        System.Text.RegularExpressions.Regex.IsMatch(text, $@"\b{System.Text.RegularExpressions.Regex.Escape name}\b")
+        Regex.IsMatch(text, $@"\b{Regex.Escape name}\b")
 
     // local bindings on the path whose body assigns: the closures that can
     // reach a collection this function owns
