@@ -3040,6 +3040,59 @@ let ``FR0123: a comment ending the body keeps the paren on its own line`` () =
         | None -> failwith "Expected the lock rewrite"
     | other -> failwithf "Expected one monitor suggestion, got %A" other
 
+let private leaksIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    MonitorLock.findLeaks tree sourceText checkResults
+
+[<Fact>]
+let ``FR0123: a SemaphoreSlim slot taken without a finally is the leak note`` () =
+    let source =
+        "module M =\n    let sem = new System.Threading.SemaphoreSlim(1)\n    let mutable count = 0\n    let bump () =\n        sem.Wait()\n        count <- count + 1\n        sem.Release() |> ignore\n        count"
+
+    match leaksIn source with
+    | [ s ] ->
+        Assert.Equal("sem.Wait()", s.AcquireText)
+        Assert.Equal("sem.Release() |> ignore", s.ReleaseText)
+    | other -> failwithf "Expected one leak note, got %A" other
+
+[<Fact>]
+let ``FR0123: a WaitAsync under do! in a task without a finally is the leak note`` () =
+    let source =
+        "module M =\n    let sem = new System.Threading.SemaphoreSlim(1)\n    let work (t: System.Threading.Tasks.Task<int>) =\n        task {\n            do! sem.WaitAsync()\n            let! v = t\n            sem.Release() |> ignore\n            return v\n        }\n    let work2 (t: System.Threading.Tasks.Task<int>) =\n        async {\n            do! sem.WaitAsync() |> Async.AwaitTask\n            let! v = t |> Async.AwaitTask\n            sem.Release() |> ignore\n            return v\n        }"
+
+    match leaksIn source with
+    | [ a; b ] ->
+        Assert.Equal("sem.WaitAsync()", a.AcquireText)
+        Assert.Equal("sem.WaitAsync()", b.AcquireText)
+    | other -> failwithf "Expected two leak notes, got %A" other
+
+[<Fact>]
+let ``FR0123: a try/finally releasing the receiver after or around the acquire is the guard`` () =
+    let source =
+        "module M =\n    let sem = new System.Threading.SemaphoreSlim(1)\n    let rw = new System.Threading.ReaderWriterLockSlim()\n    let mutable count = 0\n    let after () =\n        sem.Wait()\n        try\n            count <- count + 1\n            count\n        finally\n            sem.Release() |> ignore\n    let around () =\n        try\n            rw.EnterWriteLock()\n            count <- count + 1\n            count\n        finally\n            rw.ExitWriteLock()\n    let disposer () =\n        sem.Wait()\n        use _ = { new System.IDisposable with member _.Dispose() = sem.Release() |> ignore }\n        count <- count + 1\n        count\n    let counted (slots: int) =\n        sem.Wait()\n        let mutable acquired = 0\n        try\n            while acquired < slots do\n                rw.EnterReadLock()\n                acquired <- acquired + 1\n            count\n        finally\n            for _ in 1 .. acquired do rw.ExitReadLock()\n            sem.Release() |> ignore\n    let bound (work: System.Threading.Tasks.Task<int>) =\n        task {\n            do! sem.WaitAsync()\n            let! v =\n                task {\n                    try return! work\n                    finally sem.Release() |> ignore\n                }\n            return v + count\n        }"
+
+    // a `let` before the try, and a `let!` whose body holds the try (Fuuga)
+    Assert.Empty(leaksIn source)
+
+[<Fact>]
+let ``FR0123: an acquire that ends its block is a wrapper and stays quiet`` () =
+    let source =
+        "module M =\n    let rw = new System.Threading.ReaderWriterLockSlim()\n    let enter () = rw.EnterReadLock()\n    let exit () = rw.ExitReadLock()\n    let timed (ms: int) =\n        let taken = rw.TryEnterReadLock ms\n        taken\n    let signal = new System.Threading.ManualResetEvent(false)\n    let mutable count = 0\n    let awaited () =\n        signal.WaitOne() |> ignore\n        count <- count + 1\n        count"
+
+    // an event's WaitOne has nothing to release
+    Assert.Empty(leaksIn source)
+
+[<Fact>]
+let ``FR0123: a ReaderWriterLockSlim and a Mutex leak under their own names`` () =
+    let source =
+        "module M =\n    let rw = new System.Threading.ReaderWriterLockSlim()\n    let mutex = new System.Threading.Mutex()\n    let mutable count = 0\n    let read () =\n        rw.EnterReadLock()\n        let c = count\n        rw.ExitReadLock()\n        c\n    let exclusive () =\n        mutex.WaitOne() |> ignore\n        count <- count + 1\n        mutex.ReleaseMutex()\n        count"
+
+    match leaksIn source with
+    | [ a; b ] ->
+        Assert.Equal("rw.ExitReadLock()", a.ReleaseText)
+        Assert.Equal("mutex.ReleaseMutex()", b.ReleaseText)
+    | other -> failwithf "Expected two leak notes, got %A" other
+
 [<Fact>]
 let ``FR0072: two short hidden cases share the wildcard's line`` () =
     assertExpanded

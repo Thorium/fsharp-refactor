@@ -97,6 +97,7 @@
     <Compile Include="SealedClassTests.fs" />
     <Compile Include="QualifiedNamesScopeTests.fs" />
     <Compile Include="AuditMiscTests.fs" />
+    <Compile Include="HazardRulesTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

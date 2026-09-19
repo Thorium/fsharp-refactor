@@ -240,18 +240,69 @@ let private parseTypes =
             "Boolean"
         ]
 
-/// `T.Parse arg` / `T.Parse(arg)` with one argument.
+/// `T.Parse arg` / `T.Parse(arg)` with one argument, bare or wrapped in
+/// `Some`/`ValueSome`: the type's text, the argument and the wrapper.
 let private parseCall (e: SynExpr) =
+    let bare (e: SynExpr) =
+        match stripParens e with
+        | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
+            ids.Length >= 2
+            && (List.last ids).idText = "Parse"
+            && parseTypes.Contains ids.[ids.Length - 2].idText
+            ->
+            match stripParens arg with
+            | SynExpr.Tuple _ -> None
+            | single -> Some(ids |> List.take (ids.Length - 1) |> identText, single)
+        | _ -> None
+
     match stripParens e with
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
-        ids.Length >= 2
-        && (List.last ids).idText = "Parse"
-        && parseTypes.Contains ids.[ids.Length - 2].idText
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident wrapper; argExpr = inner) when
+        wrapper.idText = "Some" || wrapper.idText = "ValueSome"
         ->
-        match stripParens arg with
-        | SynExpr.Tuple _ -> None
-        | single -> Some(ids |> List.take (ids.Length - 1) |> identText, single)
-    | _ -> None
+        bare inner |> Option.map (fun (t, a) -> t, a, Some wrapper.idText)
+    | _ -> bare e |> Option.map (fun (t, a) -> t, a, None)
+
+/// The TryParse offer for a try whose body is one Parse call: the miss
+/// arm spelled out, as FR0014 spells its TryGetValue one — a bare `_`
+/// hides what a two-case tuple match falls through on. A `Some (T.Parse
+/// a)` body pairs with a `None` fallback; a bare one with a value.
+let private tryParseOffer (source: ISourceText) (expr: SynExpr) (tryBody: SynExpr) (fallback: string) =
+    match parseCall tryBody with
+    | Some(typeName, arg, wrapper) ->
+        let a = textOfRange source arg.Range
+
+        let a =
+            match arg with
+            | SynExpr.Ident _
+            | SynExpr.Const _
+            | SynExpr.LongIdent _ -> a
+            | _ -> $"({a})"
+
+        let arms =
+            match wrapper, fallback with
+            | Some "Some", "None" -> Some("Some v", "None")
+            | Some "ValueSome", "ValueNone" -> Some("ValueSome v", "ValueNone")
+            | None, other when other <> "None" && other <> "ValueNone" -> Some("v", other)
+            | _ -> None
+
+        match arms with
+        | Some(success, failure) ->
+            let pad = String.replicate expr.Range.StartColumn " "
+
+            [
+                {
+                    Label =
+                        $"Fix: {typeName}.TryParse instead of a catch — the parse failing is the expected case, not an exception"
+                    Edits =
+                        [
+                            expr.Range,
+                            textOfRange source expr.Range,
+                            $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| false, _ -> {failure}"
+                        ]
+                }
+            ]
+        | None -> []
+    | None -> []
 
 let private ioSmell =
     Regex(
@@ -728,42 +779,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                             // 2. TryParse, for a one-call Parse body
                             let tryParse =
-                                match fallbackText, parseCall tryBody with
-                                | Some fb, Some(typeName, arg) ->
-                                    let a = textOfRange source arg.Range
-
-                                    let a =
-                                        match arg with
-                                        | SynExpr.Ident _
-                                        | SynExpr.Const _
-                                        | SynExpr.LongIdent _ -> a
-                                        | _ -> $"({a})"
-
-                                    let success, failure =
-                                        match fb with
-                                        | "None" -> "Some v", "None"
-                                        | "ValueNone" -> "ValueSome v", "ValueNone"
-                                        | other -> "v", other
-
-                                    let pad = String.replicate expr.Range.StartColumn " "
-
-                                    [
-                                        {
-                                            Label =
-                                                $"Fix: {typeName}.TryParse instead of a catch — the parse failing is the expected case, not an exception"
-                                            Edits =
-                                                [
-                                                    expr.Range,
-                                                    textOfRange source expr.Range,
-                                                    // the miss arm spelled out, as FR0014
-                                                    // spells its TryGetValue one: a bare
-                                                    // `_` hides what a two-case tuple
-                                                    // match falls through on
-                                                    $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| false, _ -> {failure}"
-                                                ]
-                                        }
-                                    ]
-                                | _ -> []
+                                match fallbackText with
+                                | Some fb -> tryParseOffer source expr tryBody fb
+                                | None -> []
 
                             // 3. a narrower catch for file IO — for a body that IS the IO call: a
                             // multi-line body mentioning a Path beside native calls (Kasino's
@@ -985,6 +1003,132 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 Offers = guard @ tryParse @ narrower @ logging
                             }
                         | None -> ()
+                    | _ -> ()
+            | _ -> ()
+    ]
+
+// ---- the narrow catch that is TryParse ----
+
+/// `try T.Parse s with :? FormatException -> fallback`: the catch names the
+/// parse failure, so it is a decision and no swallow — but the exception
+/// is the expected case's signal, which `T.TryParse` answers without a
+/// throw (a failed parse costs a stack unwind, tens of microseconds each
+/// and far more under a debugger). The editor offers the same TryParse
+/// rewrite the catch-all gets; a sweep notes.
+type ParseSuggestion =
+    {
+        /// The whole try/with.
+        Range: range
+        /// `System.Int32` as the body spells it.
+        TypeName: string
+        /// The handler patterns' text, for the message.
+        PatternText: string
+        Offers: Offer list
+    }
+
+/// The exceptions a Parse throws for a bad input.
+let private parseExceptions =
+    set
+        [
+            "FormatException"
+            "OverflowException"
+            "ArgumentNullException"
+            "ArgumentException"
+        ]
+
+/// The parse types whose Parse can overflow: a `FormatException` catch
+/// around one lets an overflow propagate, and a TryParse rewrite would
+/// swallow it into the fallback.
+let private overflowing =
+    set
+        [
+            "Int32"
+            "Int64"
+            "Int16"
+            "Byte"
+            "UInt32"
+            "UInt64"
+            "Double"
+            "Single"
+            "Decimal"
+        ]
+
+/// The exception types a pattern names: `:? FormatException`, with or
+/// without `as e`, an or-pattern of them; None for anything else.
+let rec private caughtTypes (pat: SynPat) =
+    match pat with
+    | SynPat.IsInst(SynType.LongIdent(SynLongIdent(id = ids)), _) when not ids.IsEmpty ->
+        Some [ (List.last ids).idText ]
+    | SynPat.As(lhsPat = inner)
+    | SynPat.Paren(inner, _) -> caughtTypes inner
+    | SynPat.Or(lhsPat = l; rhsPat = r) ->
+        match caughtTypes l, caughtTypes r with
+        | Some a, Some b -> Some(a @ b)
+        | _ -> None
+    | _ -> None
+
+let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseSuggestion list =
+    let index = AstIndex.ofTree parseTree
+
+    // a test file yields nothing to walk, as for the catch-all
+    let exprs = if isTestFile index source then [||] else index.Exprs
+
+    [
+        for _, expr in exprs do
+            match expr with
+            | SynExpr.TryWith(tryExpr = tryBody; withCases = clauses) when (parseCall tryBody).IsSome ->
+                // every clause a parse-failure catch without a guard, all
+                // answering the same value, and the binder (if any) unread
+                let arms =
+                    clauses
+                    |> List.map (fun (SynMatchClause(pat = pat; whenExpr = guard; resultExpr = result)) ->
+                        match guard, caughtTypes pat with
+                        | None, Some types when types |> List.forall parseExceptions.Contains ->
+                            let r = stripParens result
+
+                            if isValueFallback r then
+                                Some(types, textOfRange source r.Range)
+                            else
+                                None
+                        | _ -> None)
+
+                if arms |> List.forall Option.isSome then
+                    let arms = arms |> List.choose id
+                    let caught = arms |> List.collect fst |> set
+
+                    match arms |> List.map snd |> List.distinct with
+                    | [ fallback ] ->
+                        let typeName =
+                            match parseCall tryBody with
+                            | Some(t, _, _) -> t
+                            | None -> ""
+
+                        let shortName = typeName.Substring(typeName.LastIndexOf '.' + 1)
+
+                        // the rewrite turns every failure TryParse answers false
+                        // to into the fallback: offered only where the catch
+                        // already covered them — an overflow on a numeric type
+                        // above all (CR0166's line); a null argument stays the
+                        // one difference, which the note says
+                        let covered =
+                            caught.Contains "FormatException"
+                            && (not (overflowing.Contains shortName) || caught.Contains "OverflowException")
+
+                        let offers =
+                            if covered then
+                                tryParseOffer source expr tryBody fallback
+                            else
+                                []
+
+                        {
+                            Range = expr.Range
+                            TypeName = typeName
+                            PatternText =
+                                clauses
+                                |> List.map (fun (SynMatchClause(pat = pat)) -> textOfRange source pat.Range)
+                                |> String.concat " | "
+                            Offers = offers
+                        }
                     | _ -> ()
             | _ -> ()
     ]

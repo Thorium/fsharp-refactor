@@ -124,6 +124,12 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\CachedFailure.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DateTimeRules.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\MonitorLock.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\IntDivisionToFloat.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\LostInnerException.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\StructPropertyMutation.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\LazyInit.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\DroppedTimer.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\EnumerationMutation.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LogTemplates.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\UnicodeHygiene.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\SecretLiterals.fs" />

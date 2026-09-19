@@ -43,6 +43,9 @@ type private Lex =
     /// Block comments nest: `(* (* *) *)` is one comment.
     | BlockComment of depth: int
     | String
+    /// F#'s lexer reads a string literal inside a block comment as a
+    /// string, so `(* "*)" *)` is one comment; the depth is the comment's.
+    | StringInComment of depth: int
 
 /// For every line, does its FIRST column sit inside a block comment or a
 /// string literal? Scans the whole text once; `(*)` is the multiplication
@@ -57,6 +60,7 @@ let private lineOpensInsideCommentOrString (source: ISourceText) : bool[] =
         inside.[i] <-
             (match state with
              | Lex.BlockComment _
+             | Lex.StringInComment _
              | Lex.String -> true
              | Lex.Code
              | Lex.LineComment -> false)
@@ -105,6 +109,20 @@ let private lineOpensInsideCommentOrString (source: ISourceText) : bool[] =
                 elif c = '*' && next = ')' then
                     state <- (if depth = 1 then Lex.Code else Lex.BlockComment(depth - 1))
                     j <- j + 2
+                elif c = '\'' && next = '"' && j + 2 < n && line.[j + 2] = '\'' then
+                    // the char literal `'"'` opens no string, in a comment either
+                    j <- j + 3
+                elif c = '"' then
+                    state <- Lex.StringInComment depth
+                    j <- j + 1
+                else
+                    j <- j + 1
+            | Lex.StringInComment depth ->
+                if c = '\\' then
+                    j <- j + 2
+                elif c = '"' then
+                    state <- Lex.BlockComment depth
+                    j <- j + 1
                 else
                     j <- j + 1
             | Lex.String ->

@@ -11,6 +11,8 @@ The tool clarifies the (agent-generated or old) code's intent, reduces non-alpha
 Suggestions are `Hint` severity: they mark an opportunity, not a defect, and
 never gate your build.
 
+This project is the big brother of [CSharp.Refactor](../CSharp.Refactor/README.md).
+
 ---
 
 # Using it
@@ -195,7 +197,7 @@ if applying ever introduces one.
 | `--baseline <sarif>` | The ratchet: findings whose fingerprints appear in this earlier `--report` output are neither reported nor fixed - only what is NEW surfaces. Fingerprints hash the rule code, file name and normalized surrounding source, so they survive line shifts, other edits in the file, and different checkouts. Triage once, ratchet forever. |
 | `--fail-on-findings` | Exit 3 when any finding survives the filters - the hard CI gate. The full exit contract: 0 clean, 1 analysis or apply failure, 2 usage error, 3 findings (only with this flag). |
 | `--notes [on|off|only]` | `--notes` (or `--notes on`) lists fix-less advisory notes inline; `--notes only` is the review pass described next.  By default a run prints its FIXES - the product - and ends with one per-category note count (`41 advisory note(s) held: …`); SARIF (`--report`) and `--format json` always carry the notes in full, which is where CI and agents read them. |
-| `--notes only` | A review pass: every rule runs, only the findings WITHOUT a fix are listed inline, and nothing is written. That is the 37 advisory rules (an em dash in [Rules.md](Rules.md)'s fix column) plus the cases where a fixing rule can only advise. `fsharp-refactor src/Your.fsproj --notes only --report notes.html` writes them as a page. |
+| `--notes only` | A review pass: every rule runs, only the findings WITHOUT a fix are listed inline, and nothing is written. That is the 33 advisory rules (an em dash in [Rules.md](Rules.md)'s fix column) plus the cases where a fixing rule can only advise. `fsharp-refactor src/Your.fsproj --notes only --report notes.html` writes them as a page. |
 | `--format json` | Machine-readable stdout: progress prose moves to stderr and the run's findings leave as one JSON document (code, severity, fixable, position, message, fingerprint, source snippet). The default output stays human-readable. |
 | `--rules` | Print the rule catalog - code, category, enabled-by-default (honors `--format json`). |
 | `--create-config` | Write a `fsharprefactor.json` of this build's defaults - every rule, every run-level key, one comment each - into the current directory, or into `<what>` when that is a directory. It changes nothing until you edit it, and never overwrites an existing config. |
@@ -286,7 +288,7 @@ Every rule is one of four kinds, shown in the last column of
 
 | Kind | | Count |
 |---|---|---|
-| `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 53 |
+| `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 59 |
 | `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 33 |
 | `idiom` | The same behaviour written the way F# writes it. Worth doing, and worth agreeing on first - it is a matter of house style as much as anything | 54 |
 | `cosmetic` | The punctuation and spelling of code. Real cleanups, and nobody's idea of a welcome pull request from a stranger | 17 |
@@ -793,6 +795,22 @@ reaches a fixed point, and the boolean rewrites (FR0108/FR0109, the negation
 and De Morgan hints, FR0010, FR0013) keep the function's truth table at
 every step. A coverage test holds the generators to their rules: if a shape
 stops firing the rule it was written for, it says which.
+
+The typed rules have the same treatment in `Families/`: one file per rule
+family (async, loops, strings, objects, ...) holds the shapes its rules are
+written for, with names, literals and variants drawn at random, and every
+generated module is typechecked as a script ahead of which a stub file
+declares the namespaces some rules gate on (a test framework's attributes, a
+logger). Four properties hold for every family at once: a generated program
+typechecks, each fix applied alone keeps it parseable, all the fixes that do
+not overlap applied together leave a program that still typechecks, and no
+rule throws on a program damaged mid-keystroke. Each shape is checked alone
+against the rule it names - or, for a shape spelled `!FR0162`, against the
+rule it must stay quiet under, the false-positive guard a real repository
+taught - and a last test holds the whole catalog to it:
+every rule has a shape, or a stated reason none can reach it (a rule that
+fixes a compile error, a tab the compiler rejects, the api pass's
+cross-project migrations).
 
 ## Design principles
 

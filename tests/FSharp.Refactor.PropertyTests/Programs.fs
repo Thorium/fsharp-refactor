@@ -46,7 +46,7 @@ type Shape =
     | TypeTestLadder
     /// FR0013: `List.length(xs)`
     | RedundantArgParens
-    /// FR0011/FR0012: `not (a = b)`, De Morgan
+    /// FR0012: `not (a = b)`, De Morgan
     | Negated of BoolExpr
     /// FR0108/FR0109: a boolean term as it comes
     | BoolFn of BoolExpr

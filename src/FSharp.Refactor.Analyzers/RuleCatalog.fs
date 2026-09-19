@@ -264,6 +264,18 @@ let private categories =
         "FR0155",
         Category.Performance,
         "an internal class nothing inherits, stored in arrays or type-tested, gains [<Sealed>]"
+        "FR0159",
+        Category.Correctness,
+        "a float/decimal conversion of an integer division truncates first: float (a / b) → float a / float b"
+        "FR0160",
+        Category.Correctness,
+        "a handler raising a new exception drops the one it caught; the constructor's trailing inner-exception argument"
+        "FR0161", Category.Correctness, "a mutating method on the struct a property returns mutates a copy"
+        "FR0162", Category.Correctness, "check-then-assign on a module-level mutable races; lazy runs the factory once"
+        "FR0163", Category.Correctness, "a System.Threading.Timer constructed and dropped is collected mid-flight"
+        "FR0164",
+        Category.Correctness,
+        "a collection edited inside a for loop over itself throws; the loop walks a snapshot"
         "FR0073",
         Category.Idiom,
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -415,6 +427,9 @@ let advisory =
             "FR0127"
             "FR0141"
             "FR0153"
+            "FR0161"
+            "FR0162"
+            "FR0163"
         ]
 
 /// The rules worth looking at first — a likely defect too costly to hold

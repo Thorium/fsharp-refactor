@@ -2054,6 +2054,18 @@ let ``FR0080 tabs after the block comment closes are still indentation`` () =
     | [ s ] -> Assert.Equal(2, s.Edits.Length)
     | other -> failwithf "Expected exactly one tab note, got %A" other
 
+[<Fact>]
+let ``FR0080 a string literal inside a block comment is lexed as the compiler lexes it`` () =
+    // the compiler reads `"*)"` inside a comment as a string, so the comment
+    // runs on to the real `*)`; the tabbed line between is prose. Found by the
+    // property suite, whose tab shape fired only through this discrepancy.
+    Assert.Empty(tabsIn "(* \"*)\" '\"'\n\tlet tabbed = 1\n*)\nlet v = 1")
+
+    // and the mirror: code after such a comment is code, tabs and all
+    match tabsIn "(* \"*)\" *)\nlet f x =\n\tx + 1" with
+    | [ s ] -> Assert.Equal(1, s.Edits.Length)
+    | other -> failwithf "Expected exactly one tab note, got %A" other
+
 
 // ---- FR0073 MatchBang: blank lines around the removed let! ----
 

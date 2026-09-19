@@ -415,12 +415,12 @@ let private testFrameworkOpens =
             "TUnit"
         ]
 
-/// A test attribute (`[<Test>]`, `[<Fact>]`, `[<TestCase ..>]`,
+/// A test attribute (`[<Test>]`, `[<Fact>]`, `[<TestCase ..>]`, `[<TestCaseSource ..>]`,
 /// `[<Property>]`, `[<TestMethod>]`) or an Expecto `testCase "..."`, for
 /// files that open the framework elsewhere.
 let private testMarker =
     System.Text.RegularExpressions.Regex(
-        @"\[<\s*(Test|Fact|Theory|TestCase|Property|TestMethod)\b|\btest(Case|CaseAsync|Property|Task)\s+""",
+        @"\[<\s*(Test|Fact|Theory|TestCase|TestCaseSource|Property|TestMethod)\b|\btest(Case|CaseAsync|Property|Task)\s+""",
         System.Text.RegularExpressions.RegexOptions.Compiled
     )
 

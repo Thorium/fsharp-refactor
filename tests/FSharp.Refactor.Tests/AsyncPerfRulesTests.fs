@@ -1002,6 +1002,39 @@ let ``an omitted token is appended from the in-scope parameter`` () =
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one token suggestion, got %A" other
 
+let private unobservedLoopsIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    CancellationOverload.findUnobservedLoops tree sourceText checkResults
+
+[<Fact>]
+let ``FR0118: a loop under a token that never reads it is noted once, at the outermost loop`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet pump (ct: CancellationToken) (next: unit -> int option) (handle: int -> Task) = task {\n    let mutable go = true\n    while go do\n        match next () with\n        | Some v ->\n            do! handle v\n            while v > 0 do\n                do! handle (v - 1)\n        | None -> go <- false\n    return 0\n}\nlet items (ct: CancellationToken) (xs: int list) (handle: int -> Task) = task {\n    for x in xs do\n        do! handle x\n    return 0\n}"
+
+    match unobservedLoopsIn source with
+    | [ a; b ] ->
+        Assert.Equal("ct", a.TokenName)
+        Assert.Equal(5, a.Range.StartLine)
+        Assert.Equal(15, b.Range.StartLine)
+    | other -> failwithf "Expected two loop notes, got %A" other
+
+[<Fact>]
+let ``FR0118: a loop that observes the token, sits in async, or has the token fix inside stays quiet`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet checks (ct: CancellationToken) (handle: int -> Task) = task {\n    let mutable i = 0\n    while i < 10 do\n        ct.ThrowIfCancellationRequested()\n        do! handle i\n        i <- i + 1\n    return 0\n}\nlet passes (ct: CancellationToken) (handle: int * CancellationToken -> Task) = task {\n    let mutable i = 0\n    while i < 10 do\n        do! handle (i, ct)\n        i <- i + 1\n    return 0\n}\nlet inAsync (ct: CancellationToken) (handle: int -> Async<unit>) = async {\n    let mutable i = 0\n    while i < 10 do\n        do! handle i\n        i <- i + 1\n    return 0\n}\nlet fixable (ct: CancellationToken) = task {\n    let mutable i = 0\n    while i < 10 do\n        do! Task.Delay(100)\n        i <- i + 1\n    return 0\n}\nlet plainFor (ct: CancellationToken) (xs: int list) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x\n    total"
+
+    Assert.Empty(unobservedLoopsIn source)
+
+[<Fact>]
+let ``FR0118: a synchronous drain and a loop stepping a local built with the token stay quiet`` () =
+    // Fuuga's Server.fs: `while reader.TryRead(&tok)` empties what a channel
+    // already holds, and an async enumerator created with the token observes
+    // it at every MoveNextAsync
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nopen System.Collections.Generic\nlet drain (ct: CancellationToken) (reader: Channels.ChannelReader<int>) (sink: int -> unit) =\n    let mutable tok = 0\n    while reader.TryRead(&tok) do\n        sink tok\nlet stream (ct: CancellationToken) (source: IAsyncEnumerable<int>) (sink: int -> unit) = task {\n    let enumerator = source.GetAsyncEnumerator ct\n    let mutable go = true\n    while go do\n        let! hasNext = enumerator.MoveNextAsync().AsTask()\n        if hasNext then sink enumerator.Current else go <- false\n    return 0\n}\nlet stepped (ct: CancellationToken) = task {\n    let step () = Task.Delay(10, ct)\n    let mutable i = 0\n    while i < 10 do\n        do! step ()\n        i <- i + 1\n    return i\n}"
+
+    Assert.Empty(unobservedLoopsIn source)
+
 [<Fact>]
 let ``CancellationToken None is replaced by the in-scope token`` () =
     let source =
@@ -1517,6 +1550,79 @@ let ``FR0055: a one-call Parse body becomes TryParse`` () =
         Assert.Contains("match System.Int32.TryParse s with\n    | true, v -> v\n    | false, _ -> 0", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two findings, got %A" other
+
+[<Fact>]
+let ``FR0055: a Some-wrapped Parse body pairs with its None fallback`` () =
+    let source =
+        "module Test\nlet parse (s: string) =\n    try Some(System.Int32.Parse s) with _ -> None"
+
+    match swallowedIn source with
+    | [ s ] ->
+        let offer =
+            s.Offers |> List.find (fun o -> o.Label.StartsWith "Fix: System.Int32.TryParse")
+
+        let patched =
+            offer.Edits
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Contains("match System.Int32.TryParse s with\n    | true, v -> Some v\n    | false, _ -> None", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one finding, got %A" other
+
+let private parseControlFlowIn (source: string) =
+    let tree, sourceText, _ = parseAndCheck source
+    SwallowedException.findParseControlFlow tree sourceText
+
+[<Fact>]
+let ``FR0055: a Parse caught narrowly for its own failures is TryParse as control flow`` () =
+    let source =
+        "module Test\nopen System\nlet parse (s: string) =\n    try Int32.Parse s with :? FormatException | :? OverflowException -> 0\nlet parse2 (s: string) =\n    try\n        Some(Decimal.Parse s)\n    with\n    | :? FormatException\n    | :? OverflowException as e -> None\nlet parse3 (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> None"
+
+    match parseControlFlowIn source with
+    | [ a; b; c ] ->
+        Assert.Equal("Int32", a.TypeName)
+        Assert.Equal(":? FormatException | :? OverflowException", a.PatternText)
+
+        for s in [ a; b; c ] do
+            let offer =
+                s.Offers |> List.find (fun o -> o.Label.Contains ".TryParse instead of a catch")
+
+            let patched =
+                offer.Edits
+                |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+        let offer = b.Offers |> List.head
+
+        let patched =
+            offer.Edits
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Contains("match Decimal.TryParse s with\n    | true, v -> Some v\n    | false, _ -> None", patched)
+    | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
+let ``FR0055: a FormatException catch alone around a numeric parse is noted without the offer`` () =
+    // CR0166's line: an overflow propagated here and would fall back after
+    // the rewrite; a type that cannot overflow keeps the offer
+    let source =
+        "module Test\nopen System\nlet numeric (s: string) =\n    try Int32.Parse s with :? FormatException -> 0\nlet exact (s: string) =\n    try Guid.Parse s with :? FormatException -> Guid.Empty\nlet covered (s: string) =\n    try Int32.Parse s with :? FormatException | :? OverflowException -> 0"
+
+    match parseControlFlowIn source with
+    | [ a; b; c ] ->
+        Assert.Empty a.Offers
+        Assert.NotEmpty b.Offers
+        Assert.NotEmpty c.Offers
+    | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
+let ``FR0055: a narrow catch that does more than answer a value, or catches something else, stays quiet`` () =
+    let source =
+        "module Test\nopen System\nlet logged (s: string) (log: string -> unit) =\n    try Int32.Parse s with :? FormatException as e -> log e.Message; 0\nlet io (s: string) =\n    try Int32.Parse s with :? IO.IOException -> 0\nlet mixed (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> Some 0\nlet catchAll (s: string) =\n    try Int32.Parse s with _ -> 0\nlet guarded (s: string) =\n    try Int32.Parse s with :? FormatException when s.Length > 3 -> 0"
+
+    // the catch-all is FR0055's own swallow note, not this shape
+    Assert.Empty(parseControlFlowIn source)
 
 [<Fact>]
 let ``FR0055: a file-IO body gets the narrower catch`` () =

@@ -14,9 +14,24 @@
     <Compile Include="Programs.fs" />
     <Compile Include="Mutation.fs" />
     <Compile Include="RuleSet.fs" />
+    <Compile Include="Typed.fs" />
+    <Compile Include="Shapes.fs" />
+    <Compile Include="Families\Dictionaries.fs" />
+    <Compile Include="Families\Collections.fs" />
+    <Compile Include="Families\Matching.fs" />
+    <Compile Include="Families\Correctness.fs" />
+    <Compile Include="Families\Objects.fs" />
+    <Compile Include="Families\Async.fs" />
+    <Compile Include="Families\Loops.fs" />
+    <Compile Include="Families\Security.fs" />
+    <Compile Include="Families\Branching.fs" />
+    <Compile Include="Families\Strings.fs" />
+    <Compile Include="Families\Declarations.fs" />
+    <Compile Include="Families.fs" />
     <Compile Include="RobustnessTests.fs" />
     <Compile Include="BooleanSemanticsTests.fs" />
     <Compile Include="FixTests.fs" />
+    <Compile Include="TypedTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

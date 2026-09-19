@@ -29,7 +29,7 @@ let private edits (source: string) : RuleSet.Edit list =
             }
         for s in HintEngine.find [] tree sourceText None ->
             {
-                Code = $"FR0011 {s.Rule}"
+                Code = $"FR0012 {s.Rule}"
                 Range = s.Range
                 Replacement = s.ReplacementText
             }

@@ -175,6 +175,12 @@
     <Compile Include="CachedFailure.fs" />
     <Compile Include="DateTimeRules.fs" />
     <Compile Include="MonitorLock.fs" />
+    <Compile Include="IntDivisionToFloat.fs" />
+    <Compile Include="LostInnerException.fs" />
+    <Compile Include="StructPropertyMutation.fs" />
+    <Compile Include="LazyInit.fs" />
+    <Compile Include="DroppedTimer.fs" />
+    <Compile Include="EnumerationMutation.fs" />
     <Compile Include="LogTemplates.fs" />
     <Compile Include="UnicodeHygiene.fs" />
     <Compile Include="SecretLiterals.fs" />

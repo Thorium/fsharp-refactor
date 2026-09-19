@@ -656,8 +656,17 @@ let missingCasesCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0118 CancellationOverload ----
 
 let private cancellationMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    let loops =
+        CancellationOverload.findUnobservedLoops parseTree source checkResults
+        |> List.map (fun (s: CancellationOverload.LoopSuggestion) ->
+            hint
+                "FR0118"
+                $"'{s.TokenName}' is in scope but this loop never observes it — no call in the body takes it and nothing checks it — so cancellation cannot stop the loop; pass it to a call inside, or start the body with `{s.TokenName}.ThrowIfCancellationRequested()`."
+                s.Range
+                [])
+
     CancellationOverload.find parseTree source checkResults
-    |> List.map (fun s ->
+    |> List.map (fun (s: CancellationOverload.Suggestion) ->
         let message =
             match s.Kind with
             | CancellationOverload.TokenGap.Omitted ->
@@ -666,6 +675,7 @@ let private cancellationMessages (parseTree: ParsedInput) (source: ISourceText) 
                 $"CancellationToken.None is passed although '{s.TokenName}' is in scope; the chain is cut here instead of propagated."
 
         hint "FR0118" message s.Range [ fix s.Range s.Original s.Replacement ])
+    |> fun calls -> calls @ loops
 
 [<EditorAnalyzer("CancellationOverload", "Pass the in-scope CancellationToken to calls that take one", HelpBase)>]
 let cancellationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -900,8 +910,20 @@ let dateTimeCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0123 MonitorLock ----
 
 let private monitorLockMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    let leaks =
+        MonitorLock.findLeaks parseTree source checkResults
+        |> List.map (fun (s: MonitorLock.LeakSuggestion) ->
+            hint
+                "FR0123"
+                $"'{s.AcquireText}' takes a slot that nothing releases on the failure path: the first exception in the body that follows leaks it and every later waiter blocks forever; put the body under `try ... finally {s.ReleaseText}`."
+                s.Range
+                [
+                    for r, original, replacement in Option.toList s.Fix do
+                        fix r original replacement
+                ])
+
     MonitorLock.find parseTree source checkResults
-    |> List.map (fun s ->
+    |> List.map (fun (s: MonitorLock.Suggestion) ->
         match s.Fix with
         | Some(r, original, replacement) ->
             hint
@@ -923,6 +945,7 @@ let private monitorLockMessages (parseTree: ParsedInput) (source: ISourceText) c
                 $"Monitor.Enter '{s.LockText}' without a guarding try/finally leaks the lock on the first exception; `lock {s.LockText} (fun () -> ...)` cannot."
                 s.Range
                 [])
+    |> fun monitors -> monitors @ leaks
 
 [<EditorAnalyzer("MonitorLock", "Monitor.Enter/Exit pairs become the lock function", HelpBase)>]
 let monitorLockEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -3532,8 +3555,34 @@ let private swallowedExceptionMessages
     (source: ISourceText)
     (check: FSharpCheckFileResults option)
     : Message list =
+    let offered (offers: SwallowedException.Offer list) (at: range) =
+        [
+            if offerFixes then
+                for offer in offers do
+                    hint
+                        "FR0055"
+                        offer.Label
+                        at
+                        (offer.Edits
+                         |> List.map (fun (r, original, replacement) -> fix r original replacement))
+        ]
+
+    // the narrow catch that is TryParse spelled as control flow
+    let parses =
+        SwallowedException.findParseControlFlow parseTree source
+        |> List.collect (fun s ->
+            hint
+                "FR0055"
+                (if s.Offers.IsEmpty then
+                     $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch covers less than TryParse answers false to (an overflow would propagate here and fall back there), so the rewrite is yours to judge."
+                 else
+                     $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch says which failures are expected, TryParse says it without the cost (a null input, which Parse threw for, then takes the fallback too).")
+                s.Range
+                []
+            :: offered s.Offers s.Range)
+
     SwallowedException.find parseTree source check
-    |> List.collect (fun s ->
+    |> List.collect (fun (s: SwallowedException.Suggestion) ->
         let clause = s.FallbackText |> Option.defaultValue "()"
 
         let message =
@@ -3556,17 +3605,8 @@ let private swallowedExceptionMessages
 
         // each offer is its own message: an editor applies every fix of
         // one message together
-        [
-            hint "FR0055" message s.Range []
-            if offerFixes then
-                for offer in s.Offers do
-                    hint
-                        "FR0055"
-                        offer.Label
-                        s.Range
-                        (offer.Edits
-                         |> List.map (fun (r, original, replacement) -> fix r original replacement))
-        ])
+        hint "FR0055" message s.Range [] :: offered s.Offers s.Range)
+    |> fun swallows -> swallows @ parses
 
 [<EditorAnalyzer("SwallowedException", "Empty catch-all handlers swallow every exception", HelpBase)>]
 let swallowedExceptionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -3915,11 +3955,18 @@ let private securityRulesMessages
                             |> Option.map (fun assignment ->
                                 let original = Text.textOfRange source assignment
 
+                                // a `()` stays where the setting was, and
+                                // FIRST: the setting may be a function's
+                                // whole body, where `let f () =` over a
+                                // bare comment does not parse, and a
+                                // comment before the `()` would move the
+                                // block's offside column to the `()`,
+                                // putting the next statement offside
                                 hint
                                     "FR0065"
                                     "Alternative: comment the whole setting out and let the framework default stand (the OS negotiates the strongest protocol both ends share)."
                                     s.Range
-                                    [ fix assignment original $"(* {original} *)" ])
+                                    [ fix assignment original $"() (* {original} *)" ])
 
                         let swap =
                             hint
@@ -5957,3 +6004,174 @@ let qualifiedNamesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let qualifiedNamesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0147" "QualifiedNames" (fun () ->
         qualifiedNamesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0159 IntDivisionToFloat ----
+
+let private intDivisionMessages
+    (offerFixes: bool)
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    // a literal operand, or a dividend that is a product, may mean the
+    // truncation (Kasino centres on `float (screenW / 2)`, FsLemming maps a
+    // minimap with `float (x * mw / tw)`), so a sweep passes those by unless
+    // asked (`{ "FR0159": { "all": true } }`); the editor shows them too
+    let all =
+        offerFixes
+        || Configuration.parameterBool fileName "FR0159" "IntDivisionToFloat" "all" false
+
+    IntDivisionToFloat.find parseTree source checkResults
+    |> List.choose (fun s ->
+        if s.LikelyMeant && not all then
+            None
+        else
+            // the editor offers the rewrite; a sweep never applies it — an
+            // integer division into a floating target is occasionally meant
+            // (a page count, whole kilobytes), and the C# twin (CR0168)
+            // draws the same line
+            let fixes =
+                if offerFixes then
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+                else
+                    []
+
+            let message =
+                if s.LikelyMeant then
+                    $"'{s.OriginalText}' divides as integers first — the quotient is truncated before `{s.Conversion}` widens it; if the whole-number quotient is the intent (a unit conversion, a pixel centre, a coordinate scaled by a ratio) this is right as it is, otherwise convert the operands, then divide: `{s.ReplacementText}`."
+                else
+                    $"'{s.OriginalText}' divides as integers first — the quotient is truncated before `{s.Conversion}` widens it, and the fraction the conversion was there to keep is gone; convert the operands, then divide: `{s.ReplacementText}`."
+
+            Some(hint "FR0159" message s.Range fixes))
+
+[<EditorAnalyzer("IntDivisionToFloat", "A float conversion of an integer division truncates first", HelpBase)>]
+let intDivisionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0159" "IntDivisionToFloat" (fun () ->
+        whenChecked ctx (intDivisionMessages true ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("IntDivisionToFloat", "A float conversion of an integer division truncates first", HelpBase)>]
+let intDivisionCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0159" "IntDivisionToFloat" (fun () ->
+        intDivisionMessages false ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0160 LostInnerException ----
+
+let private lostInnerMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    LostInnerException.find parseTree source checkResults
+    |> List.map (fun s ->
+        match s.Edits with
+        | [] when LostInnerException.isFailureFunction s.Raised ->
+            hint
+                "FR0160"
+                $"`{s.Raised}` in a handler raises a new exception and drops the one it caught — no InnerException, no original stack trace; `raise (Exception(message, {s.Binder}))` keeps the cause, or the exception type's own (message, inner) constructor."
+                s.Range
+                []
+        | [] ->
+            hint
+                "FR0160"
+                $"'{s.Raised}' is raised in place of the exception the handler caught, which it does not carry — no InnerException, no original stack trace; pass the caught exception as the constructor's last argument."
+                s.Range
+                []
+        | edits ->
+            hint
+                "FR0160"
+                $"'{s.Raised}' is raised in place of the exception the handler caught, which it does not carry — no InnerException, no original stack trace; '{s.Raised}' has a constructor taking it last."
+                s.Range
+                (edits |> List.map (fun (r, original, replacement) -> fix r original replacement)))
+
+[<EditorAnalyzer("LostInnerException",
+                 "A handler raising a new exception keeps the one it caught as the inner",
+                 HelpBase)>]
+let lostInnerEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0160" "LostInnerException" (fun () ->
+        whenChecked ctx (lostInnerMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("LostInnerException", "A handler raising a new exception keeps the one it caught as the inner", HelpBase)>]
+let lostInnerCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0160" "LostInnerException" (fun () ->
+        lostInnerMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0161 StructPropertyMutation ----
+
+let private structPropertyMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    StructPropertyMutation.find parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0161"
+            $"'{s.PropertyText}' is a property returning a struct: `.{s.Method}` mutates the copy the getter handed out and the stored value never changes; copy it to a `let mutable`, mutate that and store it back, or make the type a class."
+            s.Range
+            [])
+
+[<EditorAnalyzer("StructPropertyMutation", "A mutating method on a struct a property returns mutates a copy", HelpBase)>]
+let structPropertyEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0161" "StructPropertyMutation" (fun () ->
+        whenChecked ctx (structPropertyMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("StructPropertyMutation", "A mutating method on a struct a property returns mutates a copy", HelpBase)>]
+let structPropertyCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0161" "StructPropertyMutation" (fun () ->
+        structPropertyMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0162 LazyInit ----
+
+let private lazyInitMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    LazyInit.find parseTree source
+    |> List.map (fun s ->
+        hint
+            "FR0162"
+            $"'{s.Name}' is a shared mutable filled by check-then-assign (line {s.AssignmentRange.StartLine}): two threads that both find it empty both run the factory, and a reader between the two stores can see a half-built value; `let {s.Name} = lazy (...)`, read as `{s.Name}.Value`, runs the factory once and is thread-safe by default."
+            s.Range
+            [])
+
+[<EditorAnalyzer("LazyInit", "Check-then-assign on a shared mutable is a racing Lazy", HelpBase)>]
+let lazyInitEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0162" "LazyInit" (fun () ->
+        lazyInitMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("LazyInit", "Check-then-assign on a shared mutable is a racing Lazy", HelpBase)>]
+let lazyInitCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0162" "LazyInit" (fun () ->
+        lazyInitMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+// ---- FR0163 DroppedTimer ----
+
+let private droppedTimerMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    DroppedTimer.find parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0163"
+            "This System.Threading.Timer is constructed and dropped: nothing references it, so the next garbage collection finalizes it and the callbacks stop — bind it (`use` for the scope it should fire in, a `let` or a field for longer) for as long as it should run."
+            s.Range
+            [])
+
+[<EditorAnalyzer("DroppedTimer", "An unreferenced System.Threading.Timer is collected mid-flight", HelpBase)>]
+let droppedTimerEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0163" "DroppedTimer" (fun () ->
+        whenChecked ctx (droppedTimerMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("DroppedTimer", "An unreferenced System.Threading.Timer is collected mid-flight", HelpBase)>]
+let droppedTimerCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0163" "DroppedTimer" (fun () ->
+        droppedTimerMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0164 EnumerationMutation ----
+
+let private enumerationMutationMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    EnumerationMutation.find parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0164"
+            $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step — and only on the runs that take the branch; walk a snapshot: `for ... in {s.ReplacementText} do`."
+            s.Range
+            [ fix s.Range s.OriginalText s.ReplacementText ])
+
+[<EditorAnalyzer("EnumerationMutation", "A collection edited inside a for loop over itself throws", HelpBase)>]
+let enumerationMutationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0164" "EnumerationMutation" (fun () ->
+        whenChecked ctx (enumerationMutationMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("EnumerationMutation", "A collection edited inside a for loop over itself throws", HelpBase)>]
+let enumerationMutationCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0164" "EnumerationMutation" (fun () ->
+        enumerationMutationMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)

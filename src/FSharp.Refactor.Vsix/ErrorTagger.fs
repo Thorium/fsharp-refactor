@@ -151,5 +151,5 @@ type FrTaggerProvider() =
     interface IViewTaggerProvider with
         member _.CreateTagger<'T when 'T :> ITag>(_view: ITextView, buffer: ITextBuffer) : ITagger<'T> =
             match BufferSessions.ensureFor buffer with
-            | Some session -> FrTagger(buffer, session.FilePath) |> box :?> ITagger<'T>
+            | Some session -> new FrTagger(buffer, session.FilePath) |> box :?> ITagger<'T>
             | None -> null

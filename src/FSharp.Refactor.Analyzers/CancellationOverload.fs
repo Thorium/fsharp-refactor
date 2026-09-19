@@ -16,6 +16,13 @@
 ///     CancellationToken (two tokens make the choice a human call)
 ///   - the call uses .NET tupled shape (`M()`, `M(a)`, `M(a, b)`) — the
 ///     edit appends the token inside the parentheses
+///
+/// The loop note (findUnobservedLoops): a loop awaiting inside, under the
+/// token's binding, that never mentions the token — nor a local built
+/// with it (`let enumerator = source.GetAsyncEnumerator ct`) — cannot be
+/// cancelled. Outside `async { }` only, which observes the token at every
+/// bind by itself; quiet where the fix above already hands the token to a
+/// call in the loop.
 module FSharp.Refactor.CancellationOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -374,3 +381,178 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | None -> ()
                 | _ -> ()
         ]
+
+// ---- the loop that never observes the token ----
+
+/// A loop awaiting inside, in a binding that receives a CancellationToken
+/// and never reads it in the loop: no call in the body takes it, nothing
+/// checks `IsCancellationRequested`, no local built with it is stepped,
+/// so cancellation cannot stop the loop. Outside `async { }`, which
+/// observes the token at every bind by itself; `task { }` does not.
+type LoopSuggestion =
+    {
+        /// The whole loop.
+        Range: range
+        TokenName: string
+    }
+
+let findUnobservedLoops
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    : LoopSuggestion list =
+    if OptionModule.hasErrors check then
+        []
+    else
+        let index = AstIndex.ofTree parseTree
+
+        let tokenParams =
+            [
+                for path, pat in index.Pats do
+                    match pat with
+                    | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id)); targetType = t) when
+                        isCancellationTokenType t
+                        ->
+                        let binding =
+                            path
+                            |> List.tryPick (fun node ->
+                                match node with
+                                | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                                | _ -> None)
+
+                        match binding with
+                        | Some bindingRange -> yield id.idText, bindingRange
+                        | None -> ()
+                    | _ -> ()
+            ]
+
+        // the one token in scope, as `find` reads it
+        let tokenFor (r: range) =
+            match
+                tokenParams
+                |> List.filter (fun (_, bindingRange) -> Range.rangeContainsRange bindingRange r)
+                |> List.map fst
+                |> List.distinct
+            with
+            | [ name ] -> Some name
+            | _ -> None
+
+        // the binding the token belongs to
+        let scopeOf (token: string) (r: range) =
+            tokenParams
+            |> List.tryPick (fun (name, bindingRange) ->
+                if name = token && Range.rangeContainsRange bindingRange r then
+                    Some bindingRange
+                else
+                    None)
+
+        // locals of that binding built WITH the token — `let enumerator =
+        // source.GetAsyncEnumerator ct`, `let reader = open ct` (Fuuga): a
+        // loop stepping one of them observes the token through it
+        let carriers (token: string) (scope: range) =
+            index.Exprs
+            |> Array.collect (fun (_, e) ->
+                match e with
+                | LetOrUseE lou when Range.rangeContainsRange scope e.Range ->
+                    // a value, or a local function whose body reads the
+                    // token (`let step () = task { do! Task.Delay(10, ct) }`)
+                    lou.Bindings
+                    |> List.choose (fun b ->
+                        match b with
+                        | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs)
+                        | SynBinding(
+                            headPat = SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))); expr = rhs)
+                        | SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])); expr = rhs) when
+                            System.Text.RegularExpressions.Regex.IsMatch(
+                                textOfRange source rhs.Range,
+                                identifierPattern token
+                            )
+                            ->
+                            Some id.idText
+                        | _ -> None)
+                    |> Array.ofList
+                | _ -> [||])
+
+        let mentionsAny (names: string seq) (text: string) =
+            names
+            |> Seq.exists (fun n -> System.Text.RegularExpressions.Regex.IsMatch(text, identifierPattern n))
+
+        // a loop that `find` already offers a token inside needs no second
+        // message: the fix makes the loop observe it
+        let offeredInside =
+            find parseTree source check
+            |> List.filter (fun s -> s.Kind = TokenGap.Omitted)
+            |> List.map (fun s -> s.Range)
+
+        let underAsync (path: SyntaxNode list) =
+            path
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.App(
+                    isInfix = false; funcExpr = SynExpr.Ident builder; argExpr = SynExpr.ComputationExpr _)) ->
+                    builder.idText.StartsWith "async"
+                | _ -> false)
+
+        // a loop in a `finally` is cleanup: nothing should throw there, a
+        // cancellation check least of all (as CR0170 draws it)
+        let underFinally (path: SyntaxNode list) (r: range) =
+            path
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.TryFinally(finallyExpr = f)) -> Range.rangeContainsRange f.Range r
+                | _ -> false)
+
+        let bindsInside (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                Range.rangeContainsRange r e.Range
+                && (match e with
+                    | LetOrUseE lou -> lou.IsBang
+                    | SynExpr.DoBang _
+                    | SynExpr.MatchBang _ -> true
+                    | _ -> false))
+
+        let unobserved =
+            [
+                for path, e in index.Exprs do
+                    // an AWAITING loop: one that runs long enough for
+                    // cancellation to matter, and whose binds are where a
+                    // token would be observed. A synchronous `while` draining
+                    // a buffer (`while reader.TryRead(&tok) do`) is bounded
+                    // by what is already there
+                    let loop =
+                        match e with
+                        | SynExpr.While _
+                        | SynExpr.ForEach _
+                        | SynExpr.For _ -> bindsInside e.Range
+                        | _ -> false
+
+                    if loop && not (underAsync path) && not (underFinally path e.Range) then
+                        match tokenFor e.Range with
+                        | Some token ->
+                            let text = textOfRange source e.Range
+
+                            let observed =
+                                System.Text.RegularExpressions.Regex.IsMatch(text, identifierPattern token)
+                                || (match scopeOf token e.Range with
+                                    | Some scope -> mentionsAny (carriers token scope) text
+                                    | None -> false)
+
+                            if
+                                not observed
+                                && not (offeredInside |> List.exists (fun r -> Range.rangeContainsRange e.Range r))
+                            then
+                                { Range = e.Range; TokenName = token }
+                        | None -> ()
+            ]
+
+        // the outermost loop carries the note; a check at its top covers
+        // the loops nested in it
+        unobserved
+        |> List.filter (fun s ->
+            not (
+                unobserved
+                |> List.exists (fun outer ->
+                    not (Range.equals outer.Range s.Range)
+                    && Range.rangeContainsRange outer.Range s.Range)
+            ))

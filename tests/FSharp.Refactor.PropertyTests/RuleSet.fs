@@ -36,7 +36,7 @@ let singleEdits (tree: ParsedInput) (source: ISourceText) : Edit list =
         for s in RaiseFailwith.find tree source -> edit "FR0024" s.Range s.ReplacementText
         for s in AttributeMerge.find AttributeMerge.DefaultMaxAttributes AttributeMerge.DefaultWrapColumn tree source ->
             edit "FR0060" s.Range s.ReplacementText
-        for s in HintEngine.find [] tree source None -> edit "FR0011" s.Range s.ReplacementText
+        for s in HintEngine.find [] tree source None -> edit "FR0012" s.Range s.ReplacementText
         for s in Simplification.find tree source None -> edit "FR0010" s.Range s.ReplacementText
         for s in ConversionMove.find tree source -> edit "FR0004" s.Range s.ReplacementText
         for s in StructDu.find (Visibility.apiChangesAllowed ()) tree source -> edit "FR0016" s.InsertRange s.InsertText
@@ -78,7 +78,7 @@ let targetedCodes =
         "FR0001"
         "FR0004"
         "FR0010"
-        "FR0011"
+        "FR0012"
         "FR0013"
         "FR0024"
         "FR0060"
