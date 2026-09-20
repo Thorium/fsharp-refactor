@@ -41,7 +41,7 @@ If you don't want change public methods / API, drop `--api-changes`:
 fsharp-refactor Your.fsproj
 ```
 
-#### For light bulbs while you type, see [VS Code / Ionide](#vs-code--ionide) and [Visual Studio](#visual-studio-20222026) IDE-plugin instructions below.
+#### For light bulbs while you type, see [VS Code / Ionide](#vs-code--ionide) and [Visual Studio](#visual-studio-2022-2026) IDE-plugin instructions below.
 
 <img width="1136" height="215" alt="image" src="https://github.com/user-attachments/assets/cd4e3ed3-1ca6-40b6-bab4-da590e6d0410" />
 
