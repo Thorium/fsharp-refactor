@@ -335,3 +335,50 @@ let ``FR0123: a binding between the acquire and the release that is read after, 
         // nothing follows the release, so the binding may move
         Assert.True(c.Fix.IsSome, "a binding nothing reads after the release moves under the try")
     | other -> failwithf "Expected three leak notes, got %A" other
+
+// ---- FR0165 DateTimeKindMix ----
+
+let private kindMixesIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    DateTimeKindMix.find tree sourceText checkResults
+
+[<Fact>]
+let ``FR0165: a local clock read compared with a UTC one is noted, directly and through a binding`` () =
+    let source =
+        "module M\nopen System\nlet startedUtc = DateTime.UtcNow\nlet expired () = DateTime.Now > startedUtc\nlet age () = DateTime.UtcNow - DateTime.Today\nlet cmp () = DateTime.Now.CompareTo startedUtc\nlet cmp2 () = DateTime.Compare(startedUtc.AddDays 1.0, DateTime.Today)\nlet local () =\n    let now = DateTime.Now\n    now.Date <= startedUtc"
+
+    match kindMixesIn source with
+    | [ a; b; c; d; e ] ->
+        Assert.Equal(("DateTime.Now", "startedUtc", ">"), (a.LocalText, a.UtcText, a.Operation))
+        Assert.Equal(("DateTime.Today", "DateTime.UtcNow", "-"), (b.LocalText, b.UtcText, b.Operation))
+        Assert.Equal("CompareTo", c.Operation)
+        Assert.Equal(("DateTime.Today", "startedUtc.AddDays 1.0", "Compare"), (d.LocalText, d.UtcText, d.Operation))
+        Assert.Equal(("now.Date", "startedUtc", "<="), (e.LocalText, e.UtcText, e.Operation))
+    | other -> failwithf "Expected five findings, got %A" other
+
+[<Fact>]
+let ``FR0165: an explicit kind, a mutable, a parameter, the offset idiom and one kind on both sides stay quiet`` () =
+    let source =
+        "module M\nopen System\nlet startedUtc = DateTime.UtcNow\nlet explicit () = DateTime.Now.ToUniversalTime() > startedUtc\nlet specified () = DateTime.SpecifyKind(DateTime.Now, DateTimeKind.Utc) > startedUtc\nlet mutable stamp = DateTime.Now\nlet reassigned () =\n    stamp <- DateTime.UtcNow\n    stamp > startedUtc\nlet param (t: DateTime) = t > startedUtc\nlet offset () = DateTime.Now - DateTime.UtcNow\nlet same () = DateTime.UtcNow > startedUtc && DateTime.Now > DateTime.Today\nlet span () = DateTime.Now - TimeSpan.FromHours 1.0 > DateTime.Today\nlet bound = DateTime.Now\nlet bound2 = 1\nlet twice () =\n    let bound = DateTime.UtcNow\n    bound > startedUtc"
+
+    Assert.Empty(kindMixesIn source)
+
+[<Fact>]
+let ``FR0165: a parameter sharing a bound name, and durations computed in either kind, stay quiet`` () =
+    // `now` is a local `let` in one function and a parameter in another: the
+    // parameter is not that `let`; two durations differ by no offset at all
+    let source =
+        "module M\nopen System\nlet startedUtc = DateTime.UtcNow\nlet a () =\n    let now = DateTime.Now\n    now.Year\nlet b (now: DateTime) = now > startedUtc\nlet durations (t: DateTime) (u: DateTime) = DateTime.Now - t > DateTime.UtcNow - u\nlet subtracted (t: DateTime) = DateTime.Now.Subtract t > DateTime.UtcNow.Subtract startedUtc"
+
+    Assert.Empty(kindMixesIn source)
+
+[<Fact>]
+let ``FR0165: a plain TimeSpan taken off a clock read keeps its kind`` () =
+    let source =
+        "module M\nopen System\nlet startedUtc = DateTime.UtcNow\nlet grace = TimeSpan.FromMinutes 5.0\nlet late () = DateTime.Now - grace > startedUtc\nlet late2 () = DateTime.Now.Subtract(TimeSpan.FromHours 1.0) > startedUtc"
+
+    match kindMixesIn source with
+    | [ a; b ] ->
+        Assert.Equal("DateTime.Now - grace", a.LocalText)
+        Assert.Equal("DateTime.Now.Subtract(TimeSpan.FromHours 1.0)", b.LocalText)
+    | other -> failwithf "Expected two findings, got %A" other

@@ -5,7 +5,7 @@
 /// CheckedArithmetic, FR0136 EmptyGuid, FR0121 DateTimeRules, FR0134
 /// DateTimeOffsetMigration, FR0123 MonitorLock (the semaphore leak too),
 /// FR0046 WeakLock, FR0159 IntDivisionToFloat, FR0160 LostInnerException,
-/// FR0162 LazyInit, FR0163 DroppedTimer.
+/// FR0162 LazyInit, FR0163 DroppedTimer, FR0165 DateTimeKindMix.
 ///
 /// FR0120 CatchLogException is typed-gated to entities whose full name
 /// starts with Microsoft.Extensions.Logging, Serilog or Logary, which a
@@ -105,6 +105,16 @@ let private shapes =
                 $"module Cache{i} =\n    let private gate = obj ()\n    let mutable private slot: int option = None\n    let value () =\n        lock gate <| fun () ->\n            {body}"
             else
                 $"module Cache{i} =\n    let private gate = obj ()\n    let mutable private slot: int option = None\n    let value () =\n        lock gate (fun () ->\n            {body})")
+        // FR0165: a local clock read against a UTC one, directly or through a binding
+        withFree "MixedDateTimeKinds" [ "FR0165" ] (Gen.elements [ ">"; "<="; "<>"; "-" ]) (fun op i ->
+            $"module Clock{i} =\n    let startedUtc = DateTime.UtcNow\n    let check{i} () = DateTime.Now {op} startedUtc")
+        // FR0165 must stay quiet: an explicit kind, one kind on both sides,
+        // the machine's-offset idiom
+        withFree "SameDateTimeKinds" [ "!FR0165" ] (Gen.elements [ true; false ]) (fun explicit' i ->
+            if explicit' then
+                $"module Clock{i} =\n    let startedUtc = DateTime.UtcNow\n    let check{i} () = DateTime.Now.ToUniversalTime() > startedUtc\n    let offset{i} () = DateTime.Now - DateTime.UtcNow"
+            else
+                $"module Clock{i} =\n    let started = DateTime.Now\n    let check{i} () = DateTime.Now.Date > started.Date")
         // FR0163: a threading timer dropped into ignore
         withFree "DroppedTimer" [ "FR0163" ] genSmall (fun n i ->
             $"let f{i} (tick: obj -> unit) =\n    new Timer(TimerCallback tick, null, 0, {n + 1}) |> ignore\n    {n}")
@@ -311,5 +321,6 @@ let family: Family =
                     for s in LostInnerException.find c.Tree c.Source c.Check -> "FR0160", s.Range
                     for s in LazyInit.find c.Tree c.Source -> "FR0162", s.Range
                     for s in DroppedTimer.find c.Tree c.Source c.Check -> "FR0163", s.Range
+                    for s in DateTimeKindMix.find c.Tree c.Source c.Check -> "FR0165", s.Range
                 ]
     }

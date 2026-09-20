@@ -276,6 +276,9 @@ let private categories =
         "FR0164",
         Category.Correctness,
         "a collection edited inside a for loop over itself throws; the loop walks a snapshot"
+        "FR0165",
+        Category.Correctness,
+        "a local DateTime compared with or subtracted from a UTC one flips with the timezone"
         "FR0073",
         Category.Idiom,
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -430,6 +433,7 @@ let advisory =
             "FR0161"
             "FR0162"
             "FR0163"
+            "FR0165"
         ]
 
 /// The rules worth looking at first — a likely defect too costly to hold

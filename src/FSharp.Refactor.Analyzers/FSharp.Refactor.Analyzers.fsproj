@@ -181,6 +181,7 @@
     <Compile Include="LazyInit.fs" />
     <Compile Include="DroppedTimer.fs" />
     <Compile Include="EnumerationMutation.fs" />
+    <Compile Include="DateTimeKindMix.fs" />
     <Compile Include="LogTemplates.fs" />
     <Compile Include="UnicodeHygiene.fs" />
     <Compile Include="SecretLiterals.fs" />

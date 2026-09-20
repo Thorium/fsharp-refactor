@@ -288,7 +288,7 @@ Every rule is one of four kinds, shown in the last column of
 
 | Kind | | Count |
 |---|---|---|
-| `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 59 |
+| `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 60 |
 | `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 33 |
 | `idiom` | The same behaviour written the way F# writes it. Worth doing, and worth agreeing on first - it is a matter of house style as much as anything | 54 |
 | `cosmetic` | The punctuation and spelling of code. Real cleanups, and nobody's idea of a welcome pull request from a stranger | 17 |

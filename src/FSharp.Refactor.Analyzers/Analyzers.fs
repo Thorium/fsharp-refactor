@@ -6175,3 +6175,24 @@ let enumerationMutationEditorAnalyzer (ctx: EditorContext) : Async<Message list>
 let enumerationMutationCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0164" "EnumerationMutation" (fun () ->
         enumerationMutationMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0165 DateTimeKindMix ----
+
+let private dateTimeKindMixMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    DateTimeKindMix.find parseTree source checkResults
+    |> List.map (fun (s: DateTimeKindMix.Suggestion) ->
+        hint
+            "FR0165"
+            $"'{s.LocalText}' is local time and '{s.UtcText}' is UTC: the two differ by the machine's UTC offset, so this `{s.Operation}` flips with the timezone and twice a year with daylight saving; use one kind on both sides — `DateTime.UtcNow` throughout, or `.ToUniversalTime()` on the local one."
+            s.Range
+            [])
+
+[<EditorAnalyzer("DateTimeKindMix", "A local DateTime compared with a UTC one", HelpBase)>]
+let dateTimeKindMixEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0165" "DateTimeKindMix" (fun () ->
+        whenChecked ctx (dateTimeKindMixMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("DateTimeKindMix", "A local DateTime compared with a UTC one", HelpBase)>]
+let dateTimeKindMixCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0165" "DateTimeKindMix" (fun () ->
+        dateTimeKindMixMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
