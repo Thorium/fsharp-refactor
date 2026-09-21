@@ -197,8 +197,9 @@ let ``FR0015: a hoisted Match keeps its Success continuation on the call`` () =
 
 [<Fact>]
 let ``FR0015: a hoisted Split keeps its index continuation on the call`` () =
+    // a real pattern: a literal one is FR0015's String.Split rewrite instead
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet g (xs: string list) =\n    xs |> List.map (fun s -> Regex.Split(s, \"p\").[0])"
+        "module Test\nopen System.Text.RegularExpressions\nlet g (xs: string list) =\n    xs |> List.map (fun s -> Regex.Split(s, \"p+\").[0])"
 
     let patched = hoistPatched source
     Assert.Contains("pRegex.Split(s).[0]", patched)

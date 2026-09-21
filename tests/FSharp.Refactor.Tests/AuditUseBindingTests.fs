@@ -58,11 +58,11 @@ type Conn() =
 // ---- A1: a value derived through the binder, bound to a local ----
 
 [<Fact>]
-let ``a task derived from the client and returned through a local refuses the fix`` () =
+let ``a task derived from the reader and returned through a local refuses the fix`` () =
     let s =
         expectNoFix
-            "client"
-            "module Test\nopen System.Net.Http\nlet fetch (url: string) =\n    let client = new HttpClient()\n    let pending = client.GetStringAsync url\n    pending"
+            "reader"
+            "module Test\nopen System.IO\nlet fetch (path: string) =\n    let reader = new StreamReader(path)\n    let pending = reader.ReadToEndAsync()\n    pending"
 
     Assert.Equal(Some UseBinding.Destination.ReadInResult, s.Destination)
 
@@ -307,9 +307,11 @@ let ``a wrapper over a stream this scope opened, a path or a locally built handl
         "w"
         "module Test\nopen System.IO\nlet write (path: string) =\n    let w = new StreamWriter(path, false, System.Text.Encoding.UTF8)\n    w.Write \"x\""
 
+    // a wrapper over a LOCAL resource is the scope's: the stream is adopted
+    // by the reader, and the reader is disposed here
     expectFix
-        "client"
-        "module Test\nopen System.Net.Http\nlet get (url: string) =\n    let handler = new HttpClientHandler()\n    let client = new HttpClient(handler)\n    let s = client.GetStringAsync(url).Result\n    s.Length"
+        "r"
+        "module Test\nopen System.IO\nlet get (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let r = new StreamReader(stream)\n    let s = r.ReadLine()\n    s.Length"
 
 // ---- B4: a computation expression whose builder has no Using ----
 

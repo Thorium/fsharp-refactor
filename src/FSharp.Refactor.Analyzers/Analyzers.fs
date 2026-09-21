@@ -661,9 +661,11 @@ let private cancellationMessages (parseTree: ParsedInput) (source: ISourceText) 
         |> List.map (fun (s: CancellationOverload.LoopSuggestion) ->
             hint
                 "FR0118"
-                $"'{s.TokenName}' is in scope but this loop never observes it — no call in the body takes it and nothing checks it — so cancellation cannot stop the loop; pass it to a call inside, or start the body with `{s.TokenName}.ThrowIfCancellationRequested()`."
+                $"'{s.TokenName}' is in scope but this loop never observes it — no call in the body takes it and nothing checks it — so cancellation cannot stop the loop; pass it to a call inside, or start the body with `{s.TokenName}.ThrowIfCancellationRequested()` (the fix)."
                 s.Range
-                [])
+                (s.Fix
+                 |> Option.map (fun (r, original, replacement) -> fix r original replacement)
+                 |> Option.toList))
 
     CancellationOverload.find parseTree source checkResults
     |> List.map (fun (s: CancellationOverload.Suggestion) ->
@@ -1198,8 +1200,12 @@ let compositionCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0004 ConversionMove ----
 
-let private conversionMoveMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    ConversionMove.find parseTree source
+let private conversionMoveMessages
+    (check: FSharpCheckFileResults option)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
+    ConversionMove.findWith check parseTree source
     |> List.map (fun s ->
         let message =
             if s.Eliminated then
@@ -1212,13 +1218,15 @@ let private conversionMoveMessages (parseTree: ParsedInput) (source: ISourceText
 [<EditorAnalyzer("ConversionMove", "Move or drop List/Seq/Array conversions in pipelines", HelpBase)>]
 let conversionMoveEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0004" "ConversionMove" (fun () ->
-        conversionMoveMessages ctx.ParseFileResults.ParseTree ctx.SourceText
+        // the check results are optional: a short-circuiting consumer over
+        // a source only the typed proof can clear waits for them
+        conversionMoveMessages ctx.CheckFileResults ctx.ParseFileResults.ParseTree ctx.SourceText
         |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("ConversionMove", "Move or drop List/Seq/Array conversions in pipelines", HelpBase)>]
 let conversionMoveCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0004" "ConversionMove" (fun () ->
-        conversionMoveMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        conversionMoveMessages (Some ctx.CheckFileResults) ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0005 CeStrip ----
 
@@ -1681,9 +1689,17 @@ let private regexUsageMessages (parseTree: ParsedInput) (source: ISourceText) : 
             | RegexUsage.RegexSuggestionKind.StringOperation ->
                 "This literal regex pattern is a plain string operation."
             | RegexUsage.RegexSuggestionKind.HoistFromLoop ->
-                "This Regex call re-parses its pattern on every loop iteration; construct one Regex before the loop and reuse it."
+                match s.Repeat with
+                | RegexUsage.Repeat.LoopIteration ->
+                    "This Regex call re-parses its pattern on every loop iteration; construct one Regex before the loop and reuse it."
+                | RegexUsage.Repeat.FunctionCall ->
+                    "This Regex call looks its pattern up in the runtime's cache on every call, and re-parses it once the cache (fifteen patterns) turns over; the fix hoists one Regex instance to a module-level binding built once."
             | RegexUsage.RegexSuggestionKind.HoistConstruction ->
-                "This Regex is constructed - its pattern parsed and compiled - on every loop iteration; the fix hoists the construction to a module-level binding built once."
+                match s.Repeat with
+                | RegexUsage.Repeat.LoopIteration ->
+                    "This Regex is constructed - its pattern parsed and compiled - on every loop iteration; the fix hoists the construction to a module-level binding built once."
+                | RegexUsage.Repeat.FunctionCall ->
+                    "This Regex is constructed - its pattern parsed and compiled - on every call of the enclosing function; the fix hoists the construction to a module-level binding built once."
 
         hint "FR0015" message s.Range (s.Edits |> List.map (fun (r, o, t) -> fix r o t)))
 
@@ -1723,9 +1739,14 @@ let regexValidityCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0016 StructDu ----
 
-let private structDuMessages (scopeOpen: bool) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+let private structDuMessages
+    (check: FSharpCheckFileResults option)
+    (scopeOpen: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
     widened scopeOpen (fun scope ->
-        StructDu.find scope parseTree source
+        StructDu.findWith check scope parseTree source
         |> List.map (fun s ->
             hint
                 "FR0016"
@@ -1740,12 +1761,20 @@ let private structDuMessages (scopeOpen: bool) (parseTree: ParsedInput) (source:
 [<EditorAnalyzer("StructDu", "Mark small discriminated unions with Struct", HelpBase)>]
 let structDuEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0016" "StructDu" (fun () ->
-        structDuMessages (shapeScopeOpen ctx.FileName ctx.ProjectOptions) ctx.ParseFileResults.ParseTree ctx.SourceText)
+        structDuMessages
+            ctx.CheckFileResults
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
 
 [<CliAnalyzer("StructDu", "Mark small discriminated unions with Struct", HelpBase)>]
 let structDuCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0016" "StructDu" (fun () ->
-        structDuMessages (shapeScopeOpen ctx.FileName ctx.ProjectOptions) ctx.ParseFileResults.ParseTree ctx.SourceText)
+        structDuMessages
+            (Some ctx.CheckFileResults)
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
 
 // ---- FR0022 DuFieldNames ----
 
@@ -2822,8 +2851,13 @@ let private loopPerfMessages
                     else
                         []
 
+                // a test building a client per case is not the lifetime
+                // question (CR0110 stands down the same way)
+                let inTestFile = lazy (AstIndex.isTestFile (AstIndex.ofTree parseTree) source)
+
                 constructions
                 |> List.filter (fun s -> not (hoistedByRegexUsage |> List.exists (Range.equals s.Range)))
+                |> List.filter (fun s -> not (s.TypeName = "HttpClient" && inTestFile.Value))
                 |> List.map (fun s ->
                     let message =
                         if s.TypeName = "HttpClient" then
@@ -3567,21 +3601,20 @@ let private swallowedExceptionMessages
                          |> List.map (fun (r, original, replacement) -> fix r original replacement))
         ]
 
-    // the narrow catch that is TryParse spelled as control flow
-    let parses =
-        SwallowedException.findParseControlFlow parseTree source
-        |> List.collect (fun s ->
-            hint
-                "FR0055"
-                (if s.Offers.IsEmpty then
-                     $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch covers less than TryParse answers false to (an overflow would propagate here and fall back there), so the rewrite is yours to judge."
-                 else
-                     $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch says which failures are expected, TryParse says it without the cost (a null input, which Parse threw for, then takes the fallback too).")
-                s.Range
-                []
-            :: offered s.Offers s.Range)
+    // a try whose FR0168 fix removes it — `try T.Parse s with _ -> 0` —
+    // is that rule's: one message, with the rewrite, not a swallow note
+    // beside it
+    let parseSites =
+        if Configuration.isRuleEnabled parseTree.FileName "FR0168" "ParseControlFlow" then
+            SwallowedException.findParseControlFlow parseTree source
+            |> List.filter (fun s -> not s.Offers.IsEmpty)
+            |> List.map (fun s -> s.Range)
+        else
+            []
 
     SwallowedException.find parseTree source check
+    // the swallow's range is its handler clause, inside the try FR0168 reports
+    |> List.filter (fun s -> not (parseSites |> List.exists (fun site -> Range.rangeContainsRange site s.Range)))
     |> List.collect (fun (s: SwallowedException.Suggestion) ->
         let clause = s.FallbackText |> Option.defaultValue "()"
 
@@ -3606,7 +3639,6 @@ let private swallowedExceptionMessages
         // each offer is its own message: an editor applies every fix of
         // one message together
         hint "FR0055" message s.Range [] :: offered s.Offers s.Range)
-    |> fun swallows -> swallows @ parses
 
 [<EditorAnalyzer("SwallowedException", "Empty catch-all handlers swallow every exception", HelpBase)>]
 let swallowedExceptionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -3617,6 +3649,43 @@ let swallowedExceptionEditorAnalyzer (ctx: EditorContext) : Async<Message list> 
 let swallowedExceptionCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0055" "SwallowedException" (fun () ->
         swallowedExceptionMessages false ctx.ParseFileResults.ParseTree ctx.SourceText (Some ctx.CheckFileResults))
+
+// ---- FR0168 ParseControlFlow ----
+
+/// `try T.Parse s with <parse failure or catch-all> -> fallback` is
+/// `match T.TryParse s with | true, v -> v | false, _ -> fallback`: a
+/// failed parse then costs a bool instead of a throw and a stack unwind.
+/// The fix is a sweep's where the catch covers what TryParse answers false
+/// to (a catch-all; FormatException, plus OverflowException on a numeric
+/// type); a narrower catch is a note. CSharp.Refactor's CR0166.
+let private parseControlFlowMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    SwallowedException.findParseControlFlow parseTree source
+    |> List.map (fun s ->
+        let message =
+            if s.Offers.IsEmpty then
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch covers less than TryParse answers false to (an overflow would propagate here and fall back there), so the rewrite is yours to judge."
+            elif s.CatchAll then
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the fix drops the try, and with it the catch-all that swallowed every other failure (a null input, which Parse threw for, takes the fallback either way)."
+            else
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch says which failures are expected, TryParse says it without the cost (a null input, which Parse threw for, then takes the fallback too)."
+
+        hint
+            "FR0168"
+            message
+            s.Range
+            (s.Offers
+             |> List.collect (fun offer -> offer.Edits)
+             |> List.map (fun (r, original, replacement) -> fix r original replacement)))
+
+[<EditorAnalyzer("ParseControlFlow", "A try around T.Parse with a parse-failure catch is T.TryParse", HelpBase)>]
+let parseControlFlowEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0168" "ParseControlFlow" (fun () ->
+        parseControlFlowMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("ParseControlFlow", "A try around T.Parse with a parse-failure catch is T.TryParse", HelpBase)>]
+let parseControlFlowCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0168" "ParseControlFlow" (fun () ->
+        parseControlFlowMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0057 XmlDocParams ----
 
@@ -4781,7 +4850,8 @@ let private structHintsMessages
             // capability fix stands down where it has nowhere safe to live.
             let signatureBound = Text.hasSignatureFile parseTree.FileName
 
-            let voptions, structs, structTuples = StructHints.find scope parseTree source
+            let voptions, structs, structTuples =
+                StructHints.findWith checkOpt scope parseTree source
 
             let voptionMessages =
                 if voptionEnabled then
@@ -5945,8 +6015,9 @@ let private substringSpanMessages (parseTree: ParsedInput) (source: ISourceText)
         hint
             "FR0106"
             (sprintf
-                "This Substring allocates a copy that %s immediately discards — AsSpan parses in place (measured 2.6x, allocation-free). The span overload is present in this compilation."
-                s.ParserName)
+                "This Substring allocates a copy that %s immediately discards — AsSpan %s in place (Parse measured 2.6x, allocation-free; Append 32 B less per call). The span overload is present in this compilation."
+                s.ParserName
+                s.Verb)
             s.Range
             // a capability fix: on a dual-framework run this may emit an
             // #if NET6_0_OR_GREATER / #else pair instead of the plain swap
@@ -6160,11 +6231,21 @@ let droppedTimerCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private enumerationMutationMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
     EnumerationMutation.find parseTree source checkResults
     |> List.map (fun s ->
-        hint
-            "FR0164"
-            $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step — and only on the runs that take the branch; walk a snapshot: `for ... in {s.ReplacementText} do`."
-            s.Range
-            [ fix s.Range s.OriginalText s.ReplacementText ])
+        match s.Filter with
+        | Some(r, original, replacement) ->
+            // the filter shape is the list's own RemoveAll: one pass, no
+            // snapshot (CR0171's first fix)
+            hint
+                "FR0164"
+                $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step — and only on the runs that take the branch; the loop is a filter: `{replacement}`."
+                r
+                [ fix r original replacement ]
+        | None ->
+            hint
+                "FR0164"
+                $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step — and only on the runs that take the branch; walk a snapshot: `for ... in {s.ReplacementText} do`."
+                s.Range
+                [ fix s.Range s.OriginalText s.ReplacementText ])
 
 [<EditorAnalyzer("EnumerationMutation", "A collection edited inside a for loop over itself throws", HelpBase)>]
 let enumerationMutationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -6179,13 +6260,17 @@ let enumerationMutationCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0165 DateTimeKindMix ----
 
 let private dateTimeKindMixMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
-    DateTimeKindMix.find parseTree source checkResults
-    |> List.map (fun (s: DateTimeKindMix.Suggestion) ->
-        hint
-            "FR0165"
-            $"'{s.LocalText}' is local time and '{s.UtcText}' is UTC: the two differ by the machine's UTC offset, so this `{s.Operation}` flips with the timezone and twice a year with daylight saving; use one kind on both sides — `DateTime.UtcNow` throughout, or `.ToUniversalTime()` on the local one."
-            s.Range
-            [])
+    // a test pins its clocks on purpose (CR0169 stands down the same way)
+    if AstIndex.isTestFile (AstIndex.ofTree parseTree) source then
+        []
+    else
+        DateTimeKindMix.find parseTree source checkResults
+        |> List.map (fun (s: DateTimeKindMix.Suggestion) ->
+            hint
+                "FR0165"
+                $"'{s.LocalText}' is local time and '{s.UtcText}' is UTC: the two differ by the machine's UTC offset, so this `{s.Operation}` flips with the timezone and twice a year with daylight saving; use one kind on both sides — `DateTime.UtcNow` throughout, or `.ToUniversalTime()` on the local one."
+                s.Range
+                [])
 
 [<EditorAnalyzer("DateTimeKindMix", "A local DateTime compared with a UTC one", HelpBase)>]
 let dateTimeKindMixEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -6196,3 +6281,167 @@ let dateTimeKindMixEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let dateTimeKindMixCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0165" "DateTimeKindMix" (fun () ->
         dateTimeKindMixMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0166 PrefixCompare ----
+
+let private prefixCompareMessages
+    (offerFixes: bool)
+    (tolerantSlicing: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    PrefixCompare.find tolerantSlicing parseTree source checkResults
+    |> List.map (fun (s: PrefixCompare.Suggestion) ->
+        // a slice, or a Substring under a length guard, is the same answer
+        // on every input and a sweep applies it; a bare Substring throws on
+        // a short string where StartsWith answers false, so only the
+        // editor offers that one (a capability fix either way: the
+        // modern-framework gate is what admitted it)
+        let fixes =
+            if (s.Exact || offerFixes) && not (CapabilityFix.guardUnavailable ()) then
+                [ CapabilityFix.make source s.Range s.OriginalText s.ReplacementText ]
+            else
+                []
+
+        let tail =
+            if s.Exact then
+                ""
+            else
+                " (a string shorter than the literal throws here and answers false there — apply once that cannot happen, or guard with `.Length`)"
+
+        hint
+            "FR0166"
+            $"'{s.OriginalText}' cuts a copy of the string only to compare it — `{s.ReplacementText}` compares in place (measured 4.5 → 1.9 ns, allocation-free; F#'s `=` on strings is ordinal, and so is the {s.Method}){tail}."
+            s.Range
+            fixes)
+
+[<EditorAnalyzer("PrefixCompare",
+                 "A prefix or suffix cut out to compare with a literal is StartsWith/EndsWith",
+                 HelpBase)>]
+let prefixCompareEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0166" "PrefixCompare" (fun () ->
+        // a slice clamps only under FSharp.Core 5+ (FS-1077); under an older
+        // one it throws like a Substring and needs the same guard
+        whenChecked
+            ctx
+            (prefixCompareMessages
+                true
+                (fsharpCoreAtLeast 5 ctx.FileName ctx.ProjectOptions)
+                ctx.ParseFileResults.ParseTree
+                ctx.SourceText))
+
+[<CliAnalyzer("PrefixCompare", "A prefix or suffix cut out to compare with a literal is StartsWith/EndsWith", HelpBase)>]
+let prefixCompareCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0166" "PrefixCompare" (fun () ->
+        prefixCompareMessages
+            false
+            (fsharpCoreAtLeast 5 ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            ctx.CheckFileResults)
+
+// ---- FR0167 CharArrayCopy ----
+
+let private charArrayCopyMessages
+    (offerFixes: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    CharArrayCopy.find parseTree source checkResults
+    |> List.map (fun (s: CharArrayCopy.Suggestion) ->
+        // the `for` throws on a null string on both sides and a sweep
+        // applies it; the String functions treat null as empty where the
+        // copy threw, so only the editor offers those
+        let fixes =
+            if (s.Exact || offerFixes) && not (CapabilityFix.guardUnavailable ()) then
+                [ CapabilityFix.make source s.Range s.OriginalText s.ReplacementText ]
+            else
+                []
+
+        let message =
+            if s.Exact then
+                $"'{s.OriginalText}' copies the whole string into an array the loop reads once — a string is already a sequence of its characters, and `for c in {s.ReplacementText} do` walks it by index without the copy (measured 13.4 → 9.4 ns, 72 → 0 B)."
+            else
+                $"'{s.OriginalText}' copies the whole string into an array that is read once — `{s.ReplacementText}` walks the string itself, by index, without the copy (measured 9.2 → 4.3 ns, 72 → 0 B); a null string throws here and reads as empty there, so apply once that cannot happen."
+
+        hint "FR0167" message s.Range fixes)
+
+[<EditorAnalyzer("CharArrayCopy", "A ToCharArray copy that is only read once", HelpBase)>]
+let charArrayCopyEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0167" "CharArrayCopy" (fun () ->
+        whenChecked ctx (charArrayCopyMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("CharArrayCopy", "A ToCharArray copy that is only read once", HelpBase)>]
+let charArrayCopyCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0167" "CharArrayCopy" (fun () ->
+        charArrayCopyMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0169 SeqEnumeratedTwice ----
+
+let private seqEnumeratedTwiceMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    SeqEnumeratedTwice.find parseTree source checkResults
+    |> List.map (fun (s: SeqEnumeratedTwice.Suggestion) ->
+        hint
+            "FR0169"
+            $"'{s.ParameterName}' is enumerated here and again at line {s.SecondLine}: a seq may be a query or a generator, run again from the start each time — materialise it once (`List.ofSeq`/`Array.ofSeq`) before the first use, or read it in one pass."
+            s.Range
+            [])
+
+[<EditorAnalyzer("SeqEnumeratedTwice", "A seq parameter or local enumerated twice on one path", HelpBase)>]
+let seqEnumeratedTwiceEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0169" "SeqEnumeratedTwice" (fun () ->
+        whenChecked ctx (seqEnumeratedTwiceMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("SeqEnumeratedTwice", "A seq parameter or local enumerated twice on one path", HelpBase)>]
+let seqEnumeratedTwiceCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0169" "SeqEnumeratedTwice" (fun () ->
+        seqEnumeratedTwiceMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0170 DictKeysLoop ----
+
+let private dictKeysLoopMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    DictKeysLoop.find parseTree source checkResults
+    |> List.map (fun (s: DictKeysLoop.Suggestion) ->
+        hint
+            "FR0170"
+            $"This loop walks the keys and looks each one up again (`.[{s.KeyName}]` hashes and probes per iteration) for a value the enumerator already holds; `for KeyValue({s.KeyName}, {s.ValueName}) in ...` reads the pair, and every lookup in the body becomes `{s.ValueName}`."
+            s.Range
+            (s.Edits
+             |> List.map (fun (r, original, replacement) -> fix r original replacement)))
+
+[<EditorAnalyzer("DictKeysLoop", "A loop over a dictionary's keys that looks every key up again", HelpBase)>]
+let dictKeysLoopEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0170" "DictKeysLoop" (fun () ->
+        whenChecked ctx (dictKeysLoopMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("DictKeysLoop", "A loop over a dictionary's keys that looks every key up again", HelpBase)>]
+let dictKeysLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0170" "DictKeysLoop" (fun () ->
+        dictKeysLoopMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0171 ByteStringLiteral ----
+
+let private byteStringLiteralMessages
+    (check: FSharpCheckFileResults option)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
+    ByteStringLiteral.findWith check parseTree source
+    |> List.map (fun (s: ByteStringLiteral.Suggestion) ->
+        hint
+            "FR0171"
+            $"Encoding.{s.EncodingName}.GetBytes runs the encoder over this ASCII literal on every call; `{s.ReplacementText}` is the same bytes as compiled data — no encoder, the same byte[]."
+            s.Range
+            [ fix s.Range s.OriginalText s.ReplacementText ])
+
+[<EditorAnalyzer("ByteStringLiteral", "An ASCII literal encoded to bytes at run time is a byte string literal", HelpBase)>]
+let byteStringLiteralEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0171" "ByteStringLiteral" (fun () ->
+        byteStringLiteralMessages ctx.CheckFileResults ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("ByteStringLiteral", "An ASCII literal encoded to bytes at run time is a byte string literal", HelpBase)>]
+let byteStringLiteralCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0171" "ByteStringLiteral" (fun () ->
+        byteStringLiteralMessages (Some ctx.CheckFileResults) ctx.ParseFileResults.ParseTree ctx.SourceText)

@@ -212,31 +212,69 @@ let private dmlStatement =
 /// `@name`, `:name`, `?`, `$1` — a parameter marker in any dialect.
 let private parameterMarker = Regex(@"@\w|:\w|\?|\$\d", RegexOptions.Compiled)
 
-/// A string expression assembled at runtime: interpolation with holes,
-/// a `+` chain, or a sprintf/String.Format call.
-let private isDynamicString (e: SynExpr) =
+let private (|Addition|_|) (e: SynExpr) =
+    match e with
+    // infix + parses its operator as a one-segment LongIdent, not Ident
+    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Addition"; argExpr = l); argExpr = r) -> Some(l, r)
+    | SynExpr.App(
+        funcExpr = SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])); argExpr = l)
+        argExpr = r) when op.idText = "op_Addition" ->
+        Some(l, r)
+    | _ -> None
+
+/// The curried arguments of an application, innermost first:
+/// `sprintf fmt a b` gives `[sprintf; fmt; a; b]`.
+let rec private appChain (e: SynExpr) =
+    match e with
+    | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) -> appChain f @ [ a ]
+    | other -> [ other ]
+
+/// A string expression assembled from VALUES: interpolation with holes,
+/// a `+` chain, or a sprintf/String.Format call — where at least one hole,
+/// operand or argument is not a compile-time constant. `isConstant` says
+/// what counts as one (a literal, or a name bound immutably to one): a
+/// `SET search_path = "{schema}"` whose schema is a module constant is a
+/// statement the author wrote, not one the caller can bend, and there is
+/// no parameter to move the name into anyway.
+let private isDynamicStringWith (isConstant: SynExpr -> bool) (e: SynExpr) =
+    let value (x: SynExpr) = not (isConstant x)
+
+    let rec operands (x: SynExpr) =
+        match stripParens x with
+        | Addition(l, r) -> operands l @ operands r
+        | other -> [ other ]
+
     match stripParens e with
     | SynExpr.InterpolatedString(contents = parts) ->
         parts
         |> List.exists (fun p ->
             match p with
-            | SynInterpolatedStringPart.FillExpr _ -> true
+            | SynInterpolatedStringPart.FillExpr(expr, _) -> value expr
             | SynInterpolatedStringPart.String _ -> false)
-    // infix + parses its operator as a one-segment LongIdent, not Ident
-    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Addition")) -> true
-    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])))) when
-        op.idText = "op_Addition"
-        ->
-        true
-    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent f)) when f.idText = "sprintf" -> true
-    | SynExpr.App(funcExpr = SingleIdent f) when f.idText = "sprintf" -> true
-    | SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
-        ids.Length >= 2
-        && (List.last ids).idText = "Format"
-        && ids.[ids.Length - 2].idText = "String"
-        ->
-        true
+    | Addition _ as sum -> operands sum |> List.exists value
+    | SynExpr.App(isInfix = false) as app ->
+        match appChain app with
+        | SingleIdent f :: _format :: args when f.idText = "sprintf" -> args |> List.exists value
+        | [ SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); arg ] when
+            ids.Length >= 2
+            && (List.last ids).idText = "Format"
+            && ids.[ids.Length - 2].idText = "String"
+            ->
+            match stripParens arg with
+            | SynExpr.Tuple(exprs = _format :: args) -> args |> List.exists value
+            | _ -> false
+        | _ -> false
     | _ -> false
+
+/// The purely syntactic reading: every hole, operand and argument is a
+/// value, literals apart.
+let private isDynamicString (e: SynExpr) =
+    isDynamicStringWith
+        (fun x ->
+            match stripParens x with
+            | SynExpr.Const _ -> true
+            | _ -> false)
+        e
 
 let private bindsName (name: string) (SynBinding(headPat = p)) =
     match p with
@@ -271,51 +309,86 @@ let find
     // file. A function parameter resolves to nothing — the caller is
     // where the string was built, and the caller's site is the one
     // reported
-    let definitionOf (path: SyntaxNode list) (name: string) =
-        let local =
-            path
-            |> List.tryPick (fun node ->
-                match node with
-                | SyntaxNode.SynExpr(LetOrUseE lou) ->
-                    lou.Bindings
-                    |> List.tryPick (fun b ->
-                        if bindsName name b then
-                            let (SynBinding(expr = rhs)) = b
-                            Some rhs
-                        else
-                            None)
-                | _ -> None)
+    let localBindingOf (path: SyntaxNode list) (name: string) =
+        path
+        |> List.tryPick (fun node ->
+            match node with
+            | SyntaxNode.SynExpr(LetOrUseE lou) -> lou.Bindings |> List.tryFind (bindsName name)
+            | _ -> None)
 
-        match local with
-        | Some rhs -> Some rhs
-        | None ->
-            index.Decls
-            |> Array.tryPick (fun (_, decl) ->
-                match decl with
-                | SynModuleDecl.Let(bindings = bindings) ->
-                    bindings
-                    |> List.tryPick (fun b ->
-                        if bindsName name b then
-                            let (SynBinding(expr = rhs)) = b
-                            Some rhs
-                        else
-                            None)
-                | _ -> None)
+    let moduleBindingOf (name: string) =
+        index.Decls
+        |> Array.tryPick (fun (_, decl) ->
+            match decl with
+            | SynModuleDecl.Let(bindings = bindings) -> bindings |> List.tryFind (bindsName name)
+            | _ -> None)
 
+    let bindingOf (path: SyntaxNode list) (name: string) =
+        match localBindingOf path name with
+        | Some b -> Some b
+        | None -> moduleBindingOf name
+
+    let definitionOf path name =
+        bindingOf path name |> Option.map (fun (SynBinding(expr = rhs)) -> rhs)
+
+    // the text expression one hop resolved, with the path its names are
+    // read in: a module-level definition's names are module-level too,
+    // never the sink's locals
     let resolved (path: SyntaxNode list) (e: SynExpr) =
         match stripParens e with
         | SynExpr.Ident id ->
-            match definitionOf path id.idText with
-            | Some rhs -> stripParens rhs
-            | None -> e
-        | other -> other
+            match localBindingOf path id.idText with
+            | Some(SynBinding(expr = rhs)) -> stripParens rhs, path
+            | None ->
+                match moduleBindingOf id.idText with
+                | Some(SynBinding(expr = rhs)) -> stripParens rhs, []
+                | None -> e, path
+        | other -> other, path
 
-    let dynamicText path e = isDynamicString (resolved path e)
+    // a literal, or a name bound IMMUTABLY to one (a `[<Literal>]` is one
+    // such binding) one hop away; `let mutable schema = "public"` is a
+    // value, because a later `schema <- input` makes it one. A function
+    // parameter resolves to nothing and stays a value
+    let rec literalValue (e: SynExpr) =
+        match stripParens e with
+        | SynExpr.Const(SynConst.Unit, _) -> false
+        | SynExpr.Const _ -> true
+        | SynExpr.Typed(expr = inner) -> literalValue inner
+        | _ -> false
+
+    // a name is a constant only when the file binds it in exactly ONE
+    // pattern — the `let` itself. A parameter, a lambda argument or a
+    // match arm of the same name (`let schema = "app"` at module level and
+    // a `schema` parameter in the sink's function) would otherwise be read
+    // as that `let`, and the hole it fills waved through as text
+    let patternCount =
+        lazy
+            (index.Pats
+             |> Array.choose (fun (_, p) ->
+                 match p with
+                 | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                 | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> Some id.idText
+                 | _ -> None)
+             |> Array.countBy id
+             |> Map.ofArray)
+
+    let constantIn path (e: SynExpr) =
+        match stripParens e with
+        | SynExpr.Ident id ->
+            patternCount.Value.TryFind id.idText = Some 1
+            && (match bindingOf path id.idText with
+                | Some(SynBinding(isMutable = false; expr = rhs)) -> literalValue rhs
+                | _ -> false)
+        | other -> literalValue other
+
+    let dynamicText path e =
+        let text, scope = resolved path e
+        isDynamicStringWith (constantIn scope) text
 
     // a plain-literal DML statement without a single parameter marker
     let unparametrizedText path e =
         match resolved path e with
-        | SynExpr.Const(SynConst.String(text, _, _), _) ->
+        | SynExpr.Const(SynConst.String(text, _, _), _), _ ->
             dmlStatement.IsMatch text && not (parameterMarker.IsMatch text)
         | _ -> false
 

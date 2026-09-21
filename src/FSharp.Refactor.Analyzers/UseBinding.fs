@@ -1571,6 +1571,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                          && not (wrapsForeignResource check source (ownedHere declPath expr.Range rhs.Range) rhs)
                          && not (ObjectDesign.ownsNoResource check source rhs))
                         && ObjectDesign.resolvesToDisposable check source binder
+                        // HttpClient, a request message and its contents, a
+                        // Task, a SemaphoreSlim: no resource the scope owns
+                        // (and a handler mock reads the request back after
+                        // the send)
+                        && not (ObjectDesign.noOwnershipType check source binder)
                         ->
                         let name = binder.idText
                         let body = lou.Body

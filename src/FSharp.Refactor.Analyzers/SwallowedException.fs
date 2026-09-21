@@ -1023,6 +1023,11 @@ type ParseSuggestion =
         TypeName: string
         /// The handler patterns' text, for the message.
         PatternText: string
+        /// The catch is a catch-all: FR0055's swallow, which FR0168's fix
+        /// removes with the try.
+        CatchAll: bool
+        /// The rewrite, where the catch covers what TryParse answers false
+        /// to (a sweep applies it); empty where the catch is narrower (a note).
         Offers: Offer list
     }
 
@@ -1079,22 +1084,35 @@ let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseS
             | SynExpr.TryWith(tryExpr = tryBody; withCases = clauses) when (parseCall tryBody).IsSome ->
                 // every clause a parse-failure catch without a guard, all
                 // answering the same value, and the binder (if any) unread
+                // a catch-all (`_`, an unread binder, `:? Exception`) covers
+                // every parse failure and then some: the same rewrite, with
+                // the try — FR0055's swallow — gone (CR0166 takes `catch
+                // (Exception)` and a bare `catch` the same way)
+                let catchAllUnread (pat: SynPat) (result: SynExpr) =
+                    isCatchAll pat
+                    && (match binderOf pat with
+                        | ValueSome name -> not (mentionsIdentifier (textOfRange source result.Range) name)
+                        | ValueNone -> true)
+
                 let arms =
                     clauses
                     |> List.map (fun (SynMatchClause(pat = pat; whenExpr = guard; resultExpr = result)) ->
+                        let r = stripParens result
+
                         match guard, caughtTypes pat with
                         | None, Some types when types |> List.forall parseExceptions.Contains ->
-                            let r = stripParens result
-
                             if isValueFallback r then
                                 Some(types, textOfRange source r.Range)
                             else
                                 None
+                        | None, _ when catchAllUnread pat result && isValueFallback r ->
+                            Some([ "Exception" ], textOfRange source r.Range)
                         | _ -> None)
 
                 if arms |> List.forall Option.isSome then
                     let arms = arms |> List.choose id
                     let caught = arms |> List.collect fst |> set
+                    let catchAll = caught.Contains "Exception"
 
                     match arms |> List.map snd |> List.distinct with
                     | [ fallback ] ->
@@ -1111,8 +1129,9 @@ let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseS
                         // above all (CR0166's line); a null argument stays the
                         // one difference, which the note says
                         let covered =
-                            caught.Contains "FormatException"
-                            && (not (overflowing.Contains shortName) || caught.Contains "OverflowException")
+                            catchAll
+                            || (caught.Contains "FormatException"
+                                && (not (overflowing.Contains shortName) || caught.Contains "OverflowException"))
 
                         let offers =
                             if covered then
@@ -1127,6 +1146,7 @@ let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseS
                                 clauses
                                 |> List.map (fun (SynMatchClause(pat = pat)) -> textOfRange source pat.Range)
                                 |> String.concat " | "
+                            CatchAll = catchAll
                             Offers = offers
                         }
                     | _ -> ()

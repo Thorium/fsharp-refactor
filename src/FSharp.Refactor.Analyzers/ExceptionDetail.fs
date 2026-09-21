@@ -56,21 +56,40 @@ type Suggestion =
     }
 
 /// The types worth reporting, and where their diagnosis actually lives. A
-/// table on purpose: AggregateException (InnerExceptions), SqlException
-/// (Errors/Number) and FileNotFoundException (FusionLog) slot straight in
-/// once each has a real site to verify against.
+/// table on purpose; the full names are a list because SqlException lives
+/// in two namespaces (System.Data.SqlClient and Microsoft.Data.SqlClient).
+/// The last three rows are CSharp.Refactor's CR0070 additions, back-ported:
+/// note-only, and reading the member anywhere in the handler counts.
 let private carriers =
     Map.ofList
         [
             "ReflectionTypeLoadException",
-            ("System.Reflection.ReflectionTypeLoadException",
+            ([ "System.Reflection.ReflectionTypeLoadException" ],
              [ "Types"; "LoaderExceptions" ],
              "A ReflectionTypeLoadException's .Message is a fixed string naming no cause - reach for Types, which already holds the types that DID load. .NET loads every referenced assembly, so what failed is routinely a dependency this code never uses - a localization satellite, an optional plugin - and Types carries nulls where those would be. Filter them and carry on; LoaderExceptions is for when the failure genuinely has to be reported.")
 
             "WebException",
-            ("System.Net.WebException",
+            ([ "System.Net.WebException" ],
              [ "Response" ],
              "A WebException's .Message never carries the server's error body - that is only in Response.GetResponseStream(). Read it with a StreamReader inside the handler, guarded by a Response null check, which is how the idiomatic handler spells it.")
+
+            "AggregateException",
+            ([ "System.AggregateException" ],
+             [ "InnerExceptions"; "Flatten"; "InnerException" ],
+             "An AggregateException's .Message is \"One or more errors occurred.\" plus the FIRST inner message - the failures are in InnerExceptions (Flatten() unnests them), which is what a Task.Wait, a .Result or a Task.WaitAll wrapped. Log those, or `for inner in e.Flatten().InnerExceptions do`.")
+
+            "SqlException",
+            ([
+                "System.Data.SqlClient.SqlException"
+                "Microsoft.Data.SqlClient.SqlException"
+             ],
+             [ "Number"; "Errors" ],
+             "A SqlException's .Message is the server's text for the FIRST error only - Number says what happened (2627/2601 a unique violation, 1205 a deadlock, -2 a timeout) and Errors carries every error of the batch. A handler that retries or maps the failure reads Number.")
+
+            "FileNotFoundException",
+            ([ "System.IO.FileNotFoundException" ],
+             [ "FileName"; "FusionLog" ],
+             "A FileNotFoundException's .Message can omit the path - FileName is the file that was looked for, and for an assembly load FusionLog is the probing trace that says WHERE it was looked for.")
         ]
 
 /// `:? T as name` - the type tested for, and the name it binds.
@@ -217,7 +236,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match typedHandler p with
                         | ValueSome(typeId, bound) ->
                             match Map.tryFind typeId.idText carriers with
-                            | Some(fullName, memberNames, advice) when entityFullName typeId = fullName ->
+                            | Some(fullNames, memberNames, advice) when List.contains (entityFullName typeId) fullNames ->
                                 // the whole clause, guard included - a handler
                                 // that tests `wex.Response` in its `when` has
                                 // already shown it knows where the body is

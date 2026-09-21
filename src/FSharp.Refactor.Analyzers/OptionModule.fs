@@ -516,6 +516,46 @@ let enclosingFullName (value: FSharpMemberOrFunctionOrValue) =
     with FcsSymbolFailure ->
         ""
 
+/// Does this System.String entity offer `StartsWith(char)`? The char
+/// overloads arrived with netstandard2.1 / .NET Core 2.0 and net4x and
+/// netstandard2.0 never had them, so their presence is the proof that the
+/// compilation targets a MODERN framework — the gate the string rules
+/// (FR0106, FR0166, FR0167) share, without any TFM sniffing: a legacy
+/// compilation simply never proves it, and a multi-targeted project's
+/// legacy pass stays quiet on its own.
+let stringIsModern (stringEntity: FSharpEntity) =
+    try
+        stringEntity.TryFullName = Some "System.String"
+        && stringEntity.MembersFunctionsAndValues
+           |> Seq.exists (fun m ->
+               m.LogicalName = "StartsWith"
+               && m.CurriedParameterGroups.Count = 1
+               && m.CurriedParameterGroups.[0].Count = 1
+               && (let t = stripAbbreviations m.CurriedParameterGroups.[0].[0].Type
+                   t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.Char"))
+    with FcsSymbolFailure ->
+        false
+
+/// The System.String entity behind a type, or None for any other type.
+let stringEntityOfType (t: FSharpType) =
+    try
+        let t = stripAbbreviations t
+
+        if t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.String" then
+            Some t.TypeDefinition
+        else
+            None
+    with FcsSymbolFailure ->
+        None
+
+/// The System.String entity a value is typed as, or None for any other
+/// type: the receiver of a slice or a comparison, proven a string.
+let stringEntityOf (value: FSharpMemberOrFunctionOrValue) =
+    try
+        stringEntityOfType value.FullType
+    with FcsSymbolFailure ->
+        None
+
 /// True when the identifier resolves into FSharp.Core's operator modules —
 /// guards rules that pattern-match on names like `isNull`, `sprintf`, or
 /// `(+)` against user-defined shadowing. `sprintf` and friends live in

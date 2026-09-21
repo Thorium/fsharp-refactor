@@ -1016,7 +1016,36 @@ let ``FR0118: a loop under a token that never reads it is noted once, at the out
         Assert.Equal("ct", a.TokenName)
         Assert.Equal(5, a.Range.StartLine)
         Assert.Equal(15, b.Range.StartLine)
+
+        // the fix (CR0170's): the check as the body's first statement, the
+        // first statement moving down a line at its own indentation
+        match a.Fix, b.Fix with
+        | Some(ra, _, ta), Some(rb, _, tb) ->
+            Assert.Equal("ct.ThrowIfCancellationRequested()\n        ", ta)
+            let patched = applyEdit (applyEdit source rb tb) ra ta
+
+            Assert.Contains(
+                "    while go do\n        ct.ThrowIfCancellationRequested()\n        match next () with",
+                patched
+            )
+
+            Assert.Contains(
+                "    for x in xs do\n        ct.ThrowIfCancellationRequested()\n        do! handle x",
+                patched
+            )
+
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected both loops to carry the fix, got %A" other
     | other -> failwithf "Expected two loop notes, got %A" other
+
+[<Fact>]
+let ``FR0118: a one-line loop body gets the note without the fix`` () =
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet items (ct: CancellationToken) (xs: int list) (handle: int -> Task) = task {\n    for x in xs do do! handle x\n    return 0\n}"
+
+    match unobservedLoopsIn source with
+    | [ s ] -> Assert.True(s.Fix.IsNone, "a body on the header's line has no first statement to lead")
+    | other -> failwithf "Expected one loop note, got %A" other
 
 [<Fact>]
 let ``FR0118: a loop that observes the token, sits in async, or has the token fix inside stays quiet`` () =
@@ -1619,10 +1648,37 @@ let ``FR0055: a FormatException catch alone around a numeric parse is noted with
 [<Fact>]
 let ``FR0055: a narrow catch that does more than answer a value, or catches something else, stays quiet`` () =
     let source =
-        "module Test\nopen System\nlet logged (s: string) (log: string -> unit) =\n    try Int32.Parse s with :? FormatException as e -> log e.Message; 0\nlet io (s: string) =\n    try Int32.Parse s with :? IO.IOException -> 0\nlet mixed (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> Some 0\nlet catchAll (s: string) =\n    try Int32.Parse s with _ -> 0\nlet guarded (s: string) =\n    try Int32.Parse s with :? FormatException when s.Length > 3 -> 0"
+        "module Test\nopen System\nlet logged (s: string) (log: string -> unit) =\n    try Int32.Parse s with :? FormatException as e -> log e.Message; 0\nlet io (s: string) =\n    try Int32.Parse s with :? IO.IOException -> 0\nlet mixed (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> Some 0\nlet readsBinder (s: string) =\n    try Int32.Parse s with e -> e.HResult\nlet guarded (s: string) =\n    try Int32.Parse s with :? FormatException when s.Length > 3 -> 0"
 
-    // the catch-all is FR0055's own swallow note, not this shape
     Assert.Empty(parseControlFlowIn source)
+
+[<Fact>]
+let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow gone`` () =
+    // CR0166 takes `catch (Exception)` and a bare `catch` the same way: the
+    // rewrite drops the try, and the catch-all that hid every other failure
+    let source =
+        "module Test\nopen System\nlet catchAll (s: string) =\n    try Int32.Parse s with _ -> 0\nlet wrapped (s: string) =\n    try Some(Guid.Parse s) with :? Exception -> None\nlet unreadBinder (s: string) (fallback: decimal) =\n    try Decimal.Parse s with ex -> fallback"
+
+    match parseControlFlowIn source with
+    | [ a; b; c ] ->
+        for s in [ a; b; c ] do
+            Assert.True(s.CatchAll, $"expected a catch-all at line {s.Range.StartLine}")
+            Assert.NotEmpty s.Offers
+
+        let patched =
+            [ a; b; c ]
+            |> List.sortByDescending (fun s -> s.Range.StartLine)
+            |> List.fold
+                (fun acc s ->
+                    s.Offers.Head.Edits
+                    |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) acc)
+                source
+
+        Assert.Contains("    match Int32.TryParse s with\n    | true, v -> v\n    | false, _ -> 0", patched)
+        Assert.Contains("    match Guid.TryParse s with\n    | true, v -> Some v\n    | false, _ -> None", patched)
+        Assert.Contains("| false, _ -> fallback", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
 let ``FR0055: a file-IO body gets the narrower catch`` () =
@@ -2365,3 +2421,22 @@ let ``FR0049: a bare Thread member is still thread choreography`` () =
     match blockingIn source with
     | [ s ] -> Assert.Empty s.Fixes
     | other -> failwithf "Expected exactly one blocking site, got %A" other
+
+[<Fact>]
+let ``FR0168: a try in the middle of a line rewrites to a match whose arms compile`` () =
+    let source =
+        "module Test\nopen System\nlet parse (s: string) =\n    let n = try Int32.Parse s with _ -> 0\n    n + 1\nlet inline' (s: string) = 1 + (try Int32.Parse s with _ -> 0)"
+
+    match parseControlFlowIn source with
+    | [ a; b ] ->
+        let patched =
+            [ a; b ]
+            |> List.sortByDescending (fun s -> s.Range.StartLine)
+            |> List.fold
+                (fun acc s ->
+                    s.Offers.Head.Edits
+                    |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) acc)
+                source
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected two findings, got %A" other

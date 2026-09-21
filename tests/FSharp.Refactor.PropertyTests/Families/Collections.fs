@@ -171,6 +171,18 @@ let private shapes =
         // concurrent one at run time, and a dictionary tolerates removal
         withFree "EditedThroughInterface" [ "!FR0164" ] genSmall (fun n i ->
             $"let f{i} (items: IList<int>) (d: Dictionary<int, int>) =\n    for x in items do\n        if x < {n} then items.Remove x |> ignore\n    for KeyValue(k, v) in d do\n        if v < {n} then d.Remove k |> ignore")
+        // FR0169: a seq parameter walked twice on one path
+        withFree "SeqWalkedTwice" [ "FR0169" ] genSmall (fun n i ->
+            $"let f{i} (xs: int seq) =\n    if Seq.isEmpty xs then {n} else Seq.length xs + Seq.sum xs")
+        // FR0169 must stay quiet: the two walks sit in different arms
+        withFree "SeqWalkedOnce" [ "!FR0169" ] genSmall (fun n i ->
+            $"let f{i} (xs: int seq) (flag: bool) =\n    if flag then Seq.length xs else Seq.sum xs + {n}")
+        // FR0170: a loop over a dictionary's keys that looks each one up again
+        withFree "KeysLoopLookup" [ "FR0170" ] genSmall (fun n i ->
+            $"let f{i} (d: Dictionary<string, int>) =\n    let mutable total = {n}\n    for k in d.Keys do\n        total <- total + d.[k] + k.Length\n    total")
+        // FR0170 must stay quiet: a store through the indexer
+        withFree "KeysLoopStore" [ "!FR0170" ] genSmall (fun n i ->
+            $"let f{i} (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        d.[k] <- d.[k] + {n}")
     ]
 
 let family: Family =
@@ -181,8 +193,13 @@ let family: Family =
             fun c ->
                 [
                     for s in MapFusion.find c.Tree c.Source -> "FR0137", [ edit "FR0137" s.Range s.ReplacementText ]
+                    // the filter shape takes RemoveAll, as the analyzer prefers it
                     for s in EnumerationMutation.find c.Tree c.Source c.Check ->
-                        "FR0164", [ edit "FR0164" s.Range s.ReplacementText ]
+                        match s.Filter with
+                        | Some(r, _, replacement) -> "FR0164", [ edit "FR0164" r replacement ]
+                        | None -> "FR0164", [ edit "FR0164" s.Range s.ReplacementText ]
+                    for s in DictKeysLoop.find c.Tree c.Source c.Check ->
+                        "FR0170", [ for r, _, t in s.Edits -> edit "FR0170" r t ]
                     for s in SeqOnArray.find c.Tree c.Source c.Check ->
                         match s.LinqSpelling with
                         | None -> "FR0139", [ edit "FR0139" s.Range "Array" ]
@@ -220,5 +237,6 @@ let family: Family =
                             yield "FR0145", s.Range
                     for s in TypeChecks.find c.Tree c.Source -> "FR0036", s.Range
                     for s in ClosureCapture.find c.Tree c.Source c.Check -> "FR0027", s.Range
+                    for s in SeqEnumeratedTwice.find c.Tree c.Source c.Check -> "FR0169", s.Range
                 ]
     }

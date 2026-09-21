@@ -29,6 +29,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\MatchToIf.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\BooleanSimplify.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\OptionModule.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\StructUses.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ExpressionTree.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\TypeDefaults.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\IfRestructure.fs" />
@@ -81,6 +82,11 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\RecursiveAppend.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CheckedArithmetic.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\SubstringSpan.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\PrefixCompare.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\CharArrayCopy.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\SeqEnumeratedTwice.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\DictKeysLoop.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\ByteStringLiteral.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\TypeChecks.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CharOverload.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CaseInsensitive.fs" />

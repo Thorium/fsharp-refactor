@@ -105,7 +105,9 @@ let private categories =
         "FR0011",
         Category.Performance,
         "Trivial partial active patterns → [<return: Struct>] ValueSome/ValueNone (perf: no allocation per match attemp..."
-        "FR0015", Category.Performance, "Literal regex patterns → StartsWith/EndsWith/Contains"
+        "FR0015",
+        Category.Performance,
+        "Literal regex patterns → StartsWith/Contains/Replace/Split, the Match.Success and Matches.Count tests included"
         "FR0016",
         Category.Performance,
         "Small value-type-only unions → [<Struct>] (perf: no heap allocation per value) Edits the companion .fsi in ste..."
@@ -155,8 +157,25 @@ let private categories =
         "Task.WhenAll [| t |] / Task.WaitAll / Async.Parallel [ c ] over a single-element literal adds indirection for ..."
         "FR0093", Category.Performance, "A private/internal record field X: int * int is a reference tuple"
         "FR0102", Category.Performance, "list indexing in a loop is O(i) per access"
-        "FR0106", Category.Performance, "Substring copy fed to a parser; AsSpan is 2.6x and allocation-free"
+        "FR0106",
+        Category.Performance,
+        "Substring copy fed to a parser, StringBuilder.Append or TextWriter.Write; AsSpan reads in place (Parse 2.6x, allocation-free)"
         "FR0104", Category.Performance, "singleton append per recursive call is O(n²)"
+        "FR0166",
+        Category.Performance,
+        "a prefix or suffix cut out to compare with a literal is StartsWith/EndsWith Ordinal; 4.5 → 1.9 ns, allocation-free"
+        "FR0167",
+        Category.Performance,
+        "a ToCharArray copy read once by a for loop or Array.iter/exists/forall walks the string itself; 72 → 0 B"
+        "FR0168",
+        Category.Performance,
+        "try T.Parse with a parse-failure or catch-all handler is T.TryParse; a failed parse costs a bool, not a throw"
+        "FR0170",
+        Category.Performance,
+        "a loop over d.Keys reading d.[k] looks every key up again; KeyValue(k, v) reads the pair"
+        "FR0171",
+        Category.Performance,
+        "Encoding.UTF8.GetBytes of an ASCII literal encodes at run time; the byte string literal is compiled data"
 
         // --- idiom: same behaviour, written the way F# writes it
         "FR0001", Category.Idiom, "Boolean match → if-else"
@@ -279,6 +298,7 @@ let private categories =
         "FR0165",
         Category.Correctness,
         "a local DateTime compared with or subtracted from a UTC one flips with the timezone"
+        "FR0169", Category.Correctness, "a seq parameter or local enumerated twice on one path runs a query or a generator again"
         "FR0073",
         Category.Idiom,
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -434,6 +454,7 @@ let advisory =
             "FR0162"
             "FR0163"
             "FR0165"
+            "FR0169"
         ]
 
 /// The rules worth looking at first — a likely defect too costly to hold

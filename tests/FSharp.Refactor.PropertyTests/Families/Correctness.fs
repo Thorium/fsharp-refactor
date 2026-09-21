@@ -46,7 +46,7 @@ let private shapes =
         withFree "DivisionFallback" [ "FR0055" ] genSmall (fun n i ->
             $"let f{i} (a: int) (b: int) =\n    try\n        a / b\n    with _ -> {n}")
         // FR0055: a Parse whose catch is really TryParse
-        withFree "ParseFallback" [ "FR0055" ] genSmall (fun n i ->
+        withFree "ParseFallback" [ "FR0055"; "FR0168" ] genSmall (fun n i ->
             $"let f{i} (s: string) =\n    try\n        Int32.Parse s\n    with _ -> {n}")
         // FR0055: a one-line IO body, offered the narrower IO catch
         withFree "IoFallback" [ "FR0055" ] genWord (fun w i ->
@@ -54,11 +54,11 @@ let private shapes =
         // FR0055: the narrow catch that is TryParse as control flow
         withFree
             "NarrowParseCatch"
-            [ "FR0055" ]
+            [ "FR0168" ]
             (Gen.zip genSmall (Gen.elements [ ":? FormatException"; ":? FormatException | :? OverflowException" ]))
             (fun (n, pat) i -> $"let f{i} (s: string) =\n    try Int32.Parse s with {pat} -> {n}")
         // FR0055: the Some-wrapped Parse with its None fallback
-        fixed' "WrappedParseFallback" [ "FR0055" ] (fun i ->
+        fixed' "WrappedParseFallback" [ "FR0168" ] (fun i ->
             $"let f{i} (s: string) =\n    try\n        Some(Int64.Parse s)\n    with :? FormatException -> None")
         // FR0159: a float of an integer division, two names or a literal
         withFree
@@ -287,7 +287,7 @@ let family: Family =
                     // the narrow-catch TryParse rewrite, offered in the editor
                     for s in SwallowedException.findParseControlFlow c.Tree c.Source do
                         for offer in s.Offers do
-                            yield fixes "FR0055" offer.Edits
+                            yield fixes "FR0168" offer.Edits
                     // the editor offers the fix for a literal operand too
                     for s in IntDivisionToFloat.find c.Tree c.Source c.Check do
                         yield "FR0159", [ edit "FR0159" s.Range s.ReplacementText ]
@@ -302,6 +302,9 @@ let family: Family =
             fun c ->
                 [
                     for s in SwallowedException.find c.Tree c.Source (Some c.Check) -> "FR0055", s.Range
+                    for s in SwallowedException.findParseControlFlow c.Tree c.Source do
+                        if s.Offers.IsEmpty then
+                            yield "FR0168", s.Range
                     let finallies, reserved = ExceptionRules.find c.Tree c.Source
                     for s in finallies -> "FR0063", s.Range
                     for s in reserved -> "FR0064", s.Range

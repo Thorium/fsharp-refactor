@@ -354,6 +354,23 @@ let ``FR0032: a StringReader field owns nothing`` () =
             "module Test\nopen System.IO\ntype Session() =\n    let inStream = new StringReader(\"\")\n    member _.Read() = inStream.ReadLine()"
 
     Assert.Empty disposables
+
+[<Fact>]
+let ``FR0032: an HttpClient field is a shared lifetime, not a resource of the type`` () =
+    // CR0060/CR0061's noOwnership list: a client per instance is a lifetime
+    // question (a static instance, IHttpClientFactory), not a missing Dispose
+    let disposables, _, _ =
+        designIn
+            "module Test\nopen System.Net.Http\ntype Api() =\n    let client = new HttpClient()\n    member _.Get(u: string) = client.GetStringAsync(u).Result"
+
+    Assert.Empty disposables
+
+    // a FileStream field beside it is still the note
+    let disposables, _, _ =
+        designIn
+            "module Test\nopen System.IO\ntype Api() =\n    let log = new FileStream(\"x\", FileMode.Append)\n    member _.Size = log.Length"
+
+    Assert.Single disposables |> ignore
 // ---- FR0033 audit guards ----
 
 [<Fact>]

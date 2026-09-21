@@ -229,6 +229,13 @@ let oneItem = [ 42 ]
 let pieces200 = List.init 200 (fun i -> string (i % 10))
 let orderId = "ORDER-12345-CONFIRMED"
 
+// FR0167's input: a MUTABLE static, so the JIT cannot treat the string as
+// a frozen constant and stack-allocate the ToCharArray copy whose size it
+// would then know (.NET 10 does exactly that for `orderId`, hiding the
+// allocation the rule removes for a string that arrives as a parameter)
+let mutable orderIdRuntime =
+    String.Concat("ORDER-", string (Environment.TickCount % 1 + 12345), "-CONFIRMED")
+
 // FR0157's pair: the string the match reads today, and the union it becomes
 [<RequireQualifiedAccess>]
 type Region =
@@ -899,6 +906,93 @@ let cases =
             Before = fun () -> System.Int32.Parse(orderId.Substring(6, 5))
             After = fun () -> System.Int32.Parse(orderId.AsSpan(6, 5))
         }
+
+        {
+            Code = "FR0106"
+            Name = "Append of a Substring copy -> Append of AsSpan"
+            Cat = Perf
+            Iters = 2_000_000
+            Before =
+                fun () ->
+                    let sb = System.Text.StringBuilder()
+                    sb.Append(orderId.Substring(6, 5)).Length
+            After =
+                fun () ->
+                    let sb = System.Text.StringBuilder()
+                    sb.Append(orderId.AsSpan(6, 5)).Length
+        }
+
+        {
+            Code = "FR0166"
+            Name = "Substring(0, n) = literal -> StartsWith Ordinal"
+            Cat = Perf
+            Iters = 5_000_000
+            Before =
+                fun () ->
+                    if orderId.Length >= 6 && orderId.Substring(0, 6) = "ORDER-" then
+                        1
+                    else
+                        0
+            After =
+                fun () ->
+                    if orderId.Length >= 6 && orderId.StartsWith("ORDER-", System.StringComparison.Ordinal) then
+                        1
+                    else
+                        0
+        }
+
+        {
+            Code = "FR0166"
+            Name = "s[..n] = literal -> StartsWith Ordinal"
+            Cat = Perf
+            Iters = 5_000_000
+            Before = fun () -> if orderId[..5] = "ORDER-" then 1 else 0
+            After =
+                fun () ->
+                    if orderId.StartsWith("ORDER-", System.StringComparison.Ordinal) then
+                        1
+                    else
+                        0
+        }
+
+        {
+            Code = "FR0167"
+            Name = "for c in s.ToCharArray() -> for c in s"
+            Cat = Perf
+            Iters = 2_000_000
+            Before =
+                fun () ->
+                    let mutable n = 0
+
+                    for c in orderIdRuntime.ToCharArray() do
+                        if c = '-' then
+                            n <- n + 1
+
+                    n
+            After =
+                fun () ->
+                    let mutable n = 0
+
+                    for c in orderIdRuntime do
+                        if c = '-' then
+                            n <- n + 1
+
+                    n
+        }
+
+        {
+            Code = "FR0167"
+            Name = "Array.exists over ToCharArray -> String.exists"
+            Cat = Perf
+            Iters = 2_000_000
+            Before = fun () -> if orderIdRuntime.ToCharArray() |> Array.exists (fun c -> c = '-') then 1 else 0
+            After = fun () -> if orderIdRuntime |> String.exists (fun c -> c = '-') then 1 else 0
+        }
+
+        // FR0167 deliberately leaves `Seq.*` over the copy alone: measured
+        // here, `Seq.filter` over the string was 2.3x SLOWER than over the
+        // array (69 -> 156 ns, the string's CharEnumerator against the
+        // array's) for 72 B less — a trade the rule does not make
 
         {
             Code = "FR0104"

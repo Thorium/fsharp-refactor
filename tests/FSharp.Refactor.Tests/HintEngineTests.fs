@@ -303,6 +303,35 @@ let ``named argument on a new construction is never rewritten`` () =
         "module Test
 let f (period: float) = new System.Timers.Timer(period, AutoReset = true)"
 
+[<Fact>]
+let ``a null named argument is never rewritten, a null test beside an operator is`` () =
+    // the guard treats a parent APPLICATION as a call, but not an OPERATOR
+    // application: `MyType(Prop = null)`, `m.Method(Prop = null)` and
+    // `new MyType(Prop = null)` keep their named arguments, while
+    // `x = null || y` and `f (x = null)`'s sibling `not (x = null)`... are
+    // the hint's business
+    let stub =
+        "module Test\n"
+        + "[<AllowNullLiteral>]\n"
+        + "type MyType() =\n"
+        + "    member val Prop: string = null with get, set\n"
+        + "    member val Other: string = null with get, set\n"
+        + "    member this.With(v: int) = this\n"
+
+    assertNoSuggestion (stub + "let a () = MyType(Prop = null)")
+    assertNoSuggestion (stub + "let b () = MyType(Prop = null, Other = null)")
+    assertNoSuggestion (stub + "let c () = new MyType(Prop = null)")
+    assertNoSuggestion (stub + "let d () = MyType().With(1, Prop = null)")
+
+    // the same equality as an operand of `||` is a null test
+    let src = stub + "let e (t: MyType) (flag: bool) = if t.Prop = null || flag then 1 else 0"
+
+    match findIn src with
+    | [ s ] ->
+        Assert.Equal("isNull t.Prop", s.ReplacementText)
+        Assert.Contains("if isNull t.Prop || flag then", applyEdit src s.Range s.ReplacementText)
+    | other -> failwithf "Expected one suggestion, got %A" other
+
 // ---- harder cases ----
 
 [<Fact>]

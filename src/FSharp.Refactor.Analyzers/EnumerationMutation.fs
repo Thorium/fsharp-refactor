@@ -37,6 +37,11 @@ type Suggestion =
         /// The collection's name and the mutating call, for the message.
         Collection: string
         Mutation: string
+        /// The filter shape — `for x in items do if cond then items.Remove x
+        /// |> ignore` over a `List<T>` — as `items.RemoveAll(fun x -> cond)
+        /// |> ignore`: the whole loop's range and its replacement (CR0171's
+        /// first fix). Offered instead of the snapshot where the shape holds.
+        Filter: (range * string * string) option
     }
 
 /// Every edit a List, Queue, Stack, LinkedList, SortedSet, SortedList or
@@ -244,10 +249,55 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | Some _ when leavesAfter path e -> None
                     | found -> found)
 
+        // `items.Remove x |> ignore`, `items.Remove(x) |> ignore` or
+        // `ignore (items.Remove x)` — the loop variable removed from the
+        // enumerated list, result discarded
+        let removesLoopVar (collection: Ident) (loopVar: Ident) (e: SynExpr) =
+            let isRemoveCall (call: SynExpr) =
+                match call with
+                | SynExpr.App(
+                    isInfix = false
+                    funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ recv; m ]))
+                    argExpr = arg) ->
+                    m.idText = "Remove"
+                    && sameCollection collection recv
+                    && (match stripParens arg with
+                        | SynExpr.Ident x -> x.idText = loopVar.idText
+                        | _ -> false)
+                | _ -> false
+
+            match e with
+            | PipeApp(call, SynExpr.Ident ig) when ig.idText = "ignore" -> isRemoveCall call
+            | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident ig; argExpr = arg) when ig.idText = "ignore" ->
+                isRemoveCall (stripParens arg)
+            | _ -> false
+
+        // the filter shape: a `List<T>` walked by a plain variable, the body
+        // exactly `if cond then <remove x>` with no else, the condition on
+        // one line and never naming the list (RemoveAll runs it per element
+        // in the same order the loop did, so its effects keep their count)
+        let filterShape (collection: Ident) (typeName: string) (pat: SynPat) (body: SynExpr) (loop: SynExpr) =
+            match typeName, pat, body with
+            | "System.Collections.Generic.List`1",
+              SynPat.Named(ident = SynIdent(ident = loopVar)),
+              SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenExpr; elseExpr = None) when
+                isSingleLine cond.Range
+                && removesLoopVar collection loopVar thenExpr
+                && not (mentionsIdentifier (textOfRange source cond.Range) collection.idText)
+                ->
+                let condText = textOfRange source cond.Range
+
+                Some(
+                    loop.Range,
+                    textOfRange source loop.Range,
+                    $"{collection.idText}.RemoveAll(fun {loopVar.idText} -> {condText}) |> ignore"
+                )
+            | _ -> None
+
         [
             for _, e in index.Exprs do
                 match e with
-                | SynExpr.ForEach(enumExpr = enumExpr; bodyExpr = body) ->
+                | SynExpr.ForEach(pat = pat; enumExpr = enumExpr; bodyExpr = body) ->
                     match enumerated enumExpr with
                     | Some collection ->
                         match genericCollection collection with
@@ -268,6 +318,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     ReplacementText = $"Array.ofSeq {text}"
                                     Collection = collection.idText
                                     Mutation = mutation
+                                    Filter =
+                                        // `items.Keys`/`.Values` is not the list itself
+                                        match stripParens enumExpr with
+                                        | SynExpr.Ident _ -> filterShape collection typeName pat body e
+                                        | _ -> None
                                 }
                             | None -> ()
                         | None -> ()

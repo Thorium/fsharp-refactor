@@ -28,6 +28,7 @@
 module FSharp.Refactor.StructDu
 
 open System
+open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
@@ -82,9 +83,18 @@ let private isSmallValueType (t: SynType) =
     | SynType.LongIdent(SynLongIdent(id = ids)) -> smallValueTypes.Contains (List.last ids).idText
     | _ -> false
 
-/// Find small module-level unions that can carry [<Struct>].
-let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+/// Find small module-level unions that can carry [<Struct>]. The check
+/// results, where the caller has them, veto a union the file boxes, locks or
+/// null-tests (StructUses.hostileUse); without them only the size cap and
+/// the type-named shapes apply.
+let findWith
+    (check: FSharpCheckFileResults option)
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+    let index = lazy (AstIndex.ofTree parseTree)
 
     // the companion signature is carried along: its `type` gains the same
     // attribute in the same edit set, or — where it cannot be read — every
@@ -147,7 +157,19 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                                |> List.forall (fun (_, group) ->
                                    group |> List.map snd |> List.distinct |> List.length <= 1)
 
-                        if not fields.IsEmpty && allSmall && namingOk && sameNameSameType then
+                        // every case's fields sit side by side in a struct union
+                        // (no overlap), so the cap is over all of them
+                        let fitsInline =
+                            StructUses.fitsInline (fields |> List.map (fun (SynField(fieldType = t)) -> t))
+
+                        if
+                            not fields.IsEmpty
+                            && allSmall
+                            && namingOk
+                            && sameNameSameType
+                            && fitsInline
+                            && not (StructUses.hostileUse check index.Value source typeName)
+                        then
                             // below any XML doc, so the attribute sits
                             // against the type it marks
                             let insertPos = attributeInsertPos source decl.Range
@@ -170,3 +192,7 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions
+
+/// `findWith` without check results: the parse-only entry.
+let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+    findWith None allowApiChanges parseTree source

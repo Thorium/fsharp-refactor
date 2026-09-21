@@ -128,6 +128,48 @@ let private interfaceIsDisposable (check: FSharpCheckFileResults) (source: ISour
             | _ -> false)
     | None -> false
 
+/// Types whose lifetime is not the scope's to end, or whose Dispose frees
+/// nothing worth a `use` — the list CSharp.Refactor's CR0060 keeps as
+/// `noOwnership`, learned on real test suites:
+///   - `HttpClient` is a shared lifetime (a static instance, or the
+///     factory under DI), never a per-scope resource
+///   - `HttpRequestMessage` and the string/form/byte contents own nothing
+///     unmanaged, and a test's handler mock reads the request back AFTER
+///     the send: a `use` there breaks the test and gains nothing
+///   - a `Task`, a `SemaphoreSlim` or a `ManualResetEventSlim` disposes
+///     a wait handle that is only allocated on first contended use
+/// Matched by full name up the base chain, so `FormUrlEncodedContent`
+/// (a `ByteArrayContent`) is covered through its base.
+let private noOwnershipBases =
+    set
+        [
+            "System.Net.Http.HttpClient"
+            "System.Net.Http.HttpRequestMessage"
+            "System.Net.Http.StringContent"
+            "System.Net.Http.FormUrlEncodedContent"
+            "System.Net.Http.ByteArrayContent"
+            "System.Threading.Tasks.Task"
+            "System.Threading.SemaphoreSlim"
+            "System.Threading.ManualResetEventSlim"
+        ]
+
+/// Does the binder resolve to one of the no-ownership types (or a subtype)?
+let noOwnershipType (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =
+    match symbolAt check source ident with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            let t = OptionModule.stripAbbreviations value.FullType
+
+            let rec baseChain (t: FSharpType) =
+                t.HasTypeDefinition
+                && ((t.TypeDefinition.TryFullName |> Option.exists noOwnershipBases.Contains)
+                    || (t.TypeDefinition.BaseType |> Option.exists baseChain))
+
+            baseChain t
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             false)
+    | _ -> false
+
 /// A construction whose Dispose is a no-op because the object owns no
 /// unmanaged resource: a MemoryStream over a buffer the caller owns
 /// (suave's HPACK and Huffman codecs), a StringReader, a StringWriter
@@ -362,6 +404,9 @@ let find
                                         // a StringReader or a MemoryStream over the
                                         // caller's buffer has nothing to release
                                         && not (ownsNoResource check source rhs)
+                                        // an HttpClient is a shared lifetime, not a
+                                        // field's resource
+                                        && not (noOwnershipType check source var)
                                         // a disposable built WITH the object itself —
                                         // `new GraphicsDeviceManager(this)` (MonoGame) —
                                         // registers with it: the base or the framework

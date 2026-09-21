@@ -1336,6 +1336,21 @@ let ``a PEM private key header is key material`` () =
 let ``ordinary prefixed identifiers are not keys`` () =
     Assert.Empty(secretsIn "module M\nlet sku = \"sk-1234\"\nlet gh = \"ghx_short\"")
 
+[<Fact>]
+let ``a key carrying 123456 is the standard made-up one`` () =
+    let header = "-----BEGIN RSA PRIVATE" + " KEY-----"
+    let key = "AKIA" + "IOSFODNN7EXAMPLE"
+    let slack = "xoxb-" + "123456abcdefghij"
+
+    // the PEM body and the Slack token carry the marker; the AWS id beside
+    // them still fires, the marker is per literal
+    Assert.Equal<string list>(
+        [ "AWS" ],
+        secretsIn
+            $"module M\nlet pem = \"%s{header}\\nMIIE123456vQIBADANBg\"\nlet k = \"%s{key}\"\nlet s = \"%s{slack}\""
+        |> List.map (fun s -> s.Provider)
+    )
+
 // ---- FR0128 ObsoleteCrypto ----
 
 let private obsoleteCryptoIn (source: string) =
@@ -2523,6 +2538,48 @@ let ``FR0070 still offers the struct fix when the quotation reads other fields``
     Assert.Contains(structs, fun s -> s.TypeName = "Itm" && s.Fix.IsSome)
 
 [<Fact>]
+let ``FR0070: a record over 32 bytes, or one implementing an interface, stays a class`` () =
+    // CR0081's cap: four decimals are 64 bytes copied per pass; an
+    // interface call boxes a struct on every call
+    let _, structs, _ =
+        structHintsIn "module Test\ntype private Money = { A: decimal; B: decimal; C: decimal; D: decimal }"
+
+    Assert.Empty structs
+
+    let _, structs, _ =
+        structHintsIn
+            "module Test\ntype private P =\n    { X: int; Y: int }\n    interface System.IComparable with\n        member this.CompareTo(o) = 0"
+
+    Assert.Empty structs
+
+    // two decimals fit
+    let _, structs, _ =
+        structHintsIn "module Test\ntype private Pair = { A: decimal; B: decimal }"
+
+    Assert.Single structs |> ignore
+
+[<Fact>]
+let ``FR0070: a record the file boxes, locks or null-tests stays a class`` () =
+    let typed (source: string) =
+        let tree, sourceText, check = parseAndCheck source
+        let _, structs, _ = StructHints.findWith (Some check) false tree sourceText
+        structs
+
+    // boxed: the allocation comes straight back
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = string (box p)")
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = (p :> obj).GetHashCode()")
+    // locked: FS0001 on a struct
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet gate (p: P) (f: unit -> int) = lock p f")
+    // a null sentinel
+    Assert.Empty(
+        typed
+            "module Test\ntype private P = { X: int; Y: int }\nlet missing () : P = Unchecked.defaultof<P>\nlet isMissing (p: P) = obj.ReferenceEquals(p, null)"
+    )
+    // an ordinary use keeps the fix
+    Assert.Single(typed "module Test\ntype private P = { X: int; Y: int }\nlet sum (p: P) = p.X + p.Y")
+    |> ignore
+
+[<Fact>]
 let ``FR0121: a same-day comparison against a Date is not a calendar cut`` () =
     // FSharp.Data's TimeOnly probe: TryParse fills in today's date, and the
     // check `dt.Date <> DateTime.Today` asks whether a real date was given
@@ -2704,6 +2761,42 @@ let ``FR0066: CreateCommand and a helper named for SQL are sinks`` () =
             "module Test\nlet g (provider: ISqlProvider) (con: obj) (name: string) =\n    use com = provider.CreateCommand(con, $\"SELECT typeof([{name}]) FROM t\")\n    executeSql (\"UPDATE t SET x = '\" + name + \"'\") []"
 
     Assert.Equal<string list>([ "CreateCommand"; "executeSql" ], sqls |> List.map (fun s -> s.Sink))
+
+[<Fact>]
+let ``FR0066: a hole filled from a constant is not a value`` () =
+    let sinks (source: string) =
+        let _, sqls, _ = securityIn source
+        sqls |> List.map (fun s -> s.Sink)
+
+    // a local constant, a module constant and a [<Literal>], one hop each:
+    // nothing a caller can bend
+    Assert.Empty(
+        sinks
+            "module Test\nopen Npgsql\n[<Literal>]\nlet Schema = \"app\"\nlet mypath = \"test\"\nlet f (connection: NpgsqlConnection) =\n    let table = \"users\"\n    let a = new NpgsqlCommand($\"SET search_path = \\\"{mypath}\\\", public\", connection)\n    let b = new NpgsqlCommand($\"SET search_path = {Schema}\", connection)\n    let c = new NpgsqlCommand(\"SELECT 1 FROM \" + table + \" WHERE id = @id\", connection)\n    let d = new NpgsqlCommand(sprintf \"SELECT 1 FROM %s\" table, connection)\n    let e = new NpgsqlCommand(sprintf \"SELECT 1 FROM x\", connection)\n    a, b, c, d, e"
+    )
+
+    // a mutable, a parameter and a call stay values
+    Assert.Equal<string list>(
+        [ "NpgsqlCommand"; "NpgsqlCommand"; "NpgsqlCommand" ],
+        sinks
+            "module Test\nopen Npgsql\nlet mutable schema = \"app\"\nlet f (connection: NpgsqlConnection) (name: string) =\n    let a = new NpgsqlCommand($\"SET search_path = {schema}\", connection)\n    let b = new NpgsqlCommand($\"SET search_path = {name}\", connection)\n    let c = new NpgsqlCommand(\"SELECT 1 FROM \" + name.Trim() + \" WHERE id = @id\", connection)\n    a, b, c"
+    )
+
+    // a module-level text reads its names at module level: the sink's local
+    // `schema` does not stand in for the mutable one the text was built from
+    Assert.Equal<string list>(
+        [ "NpgsqlCommand" ],
+        sinks
+            "module Test\nopen Npgsql\nlet mutable schema = \"app\"\nlet setPath = $\"SET search_path = {schema}\"\nlet f (connection: NpgsqlConnection) =\n    let schema = \"fixed\"\n    new NpgsqlCommand(setPath, connection)"
+    )
+
+    // a parameter or a lambda argument named like a module constant is a
+    // value: the name is bound twice in the file, so neither reading counts
+    Assert.Equal<string list>(
+        [ "NpgsqlCommand"; "NpgsqlCommand" ],
+        sinks
+            "module Test\nopen Npgsql\nlet schema = \"app\"\nlet f (connection: NpgsqlConnection) (schema: string) =\n    new NpgsqlCommand($\"SET search_path = {schema}\", connection)\nlet g (connection: NpgsqlConnection) (names: string list) =\n    names |> List.map (fun schema -> new NpgsqlCommand($\"SET search_path = {schema}\", connection))"
+    )
 
 [<Fact>]
 let ``FR0146: a literal statement with no parameter marker is suspicious, a parametrized one is not`` () =
@@ -3178,6 +3271,39 @@ let ``FR0151: WebException is reported without a fix`` () =
     | other -> failwithf "Expected one WebException suggestion, got %A" other
 
 [<Fact>]
+let ``FR0151: AggregateException and FileNotFoundException handlers reading only Message are noted`` () =
+    // CR0070's rows, back-ported: a Task.Wait wraps the failures in
+    // InnerExceptions, and a FileNotFoundException's path is in FileName
+    let aggregate =
+        "module M\nopen System\nopen System.Threading.Tasks\nlet run (t: Task) =\n    try\n        t.Wait()\n        0\n    with :? AggregateException as e ->\n        printfn \"%s\" e.Message\n        1"
+
+    match exceptionDetailIn aggregate with
+    | [ s ] ->
+        Assert.Equal("AggregateException", s.ExceptionType)
+        Assert.Equal("InnerExceptions", s.Carrier)
+        Assert.True(s.Fix.IsNone, "AggregateException carries no fix")
+    | other -> failwithf "Expected one AggregateException suggestion, got %A" other
+
+    let missing =
+        "module M\nopen System.IO\nlet run (p: string) =\n    try\n        File.ReadAllText p\n    with :? FileNotFoundException as e ->\n        printfn \"%s\" e.Message\n        \"\""
+
+    match exceptionDetailIn missing with
+    | [ s ] -> Assert.Equal("FileName", s.Carrier)
+    | other -> failwithf "Expected one FileNotFoundException suggestion, got %A" other
+
+[<Fact>]
+let ``FR0151: a handler flattening the aggregate, or naming the file, is informed`` () =
+    Assert.Empty(
+        exceptionDetailIn
+            "module M\nopen System\nopen System.Threading.Tasks\nlet run (t: Task) =\n    try\n        t.Wait()\n        0\n    with :? AggregateException as e ->\n        for inner in e.Flatten().InnerExceptions do\n            printfn \"%s\" inner.Message\n        1"
+    )
+
+    Assert.Empty(
+        exceptionDetailIn
+            "module M\nopen System.IO\nlet run (p: string) =\n    try\n        File.ReadAllText p\n    with :? FileNotFoundException as e ->\n        printfn \"%s %s\" e.FileName e.Message\n        \"\""
+    )
+
+[<Fact>]
 let ``FR0151: an ordinary exception handler is not this rule's business`` () =
     // FR0120 owns the plain handler, and ex.Message there is a PII choice
     let source =
@@ -3324,3 +3450,22 @@ let ``FR0065: a protocol the framework marks obsolete is flagged beyond the cura
     match flagged with
     | [ s ] -> Assert.Equal(SecurityRules.WeakKind.Protocol "Tls13", s.Kind)
     | other -> failwithf "Expected one protocol note, got %A" other
+
+[<Fact>]
+let ``FR0070: a record boxed implicitly at a call, a %A hole or a string keeps its class`` () =
+    let typed (source: string) =
+        let tree, sourceText, check = parseAndCheck source
+        let _, structs, _ = StructHints.findWith (Some check) false tree sourceText
+        structs
+
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = System.Console.WriteLine p")
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = printfn \"%A\" p")
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = sprintf \"p=%O\" p")
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = string p")
+    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet same (p: P) (o: obj) = o.Equals p")
+    // a field read in a hole, a typed parameter: no boxing
+    Assert.Single(
+        typed
+            "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = printfn \"%d %s\" p.X (string p.Y)\nlet keep (q: P) = q"
+    )
+    |> ignore

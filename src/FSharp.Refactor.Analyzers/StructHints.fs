@@ -23,6 +23,7 @@
 /// public case deliberately.
 module FSharp.Refactor.StructHints
 
+open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.SyntaxTrivia
 open FSharp.Compiler.Text
@@ -175,8 +176,11 @@ let private isStructField (t: SynType) =
             true
         | _ -> false)
 
-/// Find all three hint kinds. Parse-only.
-let find
+/// Find all three hint kinds. The check results, where the caller has them,
+/// veto a record the file boxes, locks or null-tests (StructUses.hostileUse);
+/// the rest is parse-only.
+let findWith
+    (check: FSharpCheckFileResults option)
     (allowApiChanges: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -211,7 +215,7 @@ let find
     for path, decl in index.Decls do
         match decl with
         | SynModuleDecl.Types(typeDefns = defns) ->
-            for SynTypeDefn(typeInfo = info; typeRepr = repr; trivia = defnTrivia) in defns do
+            for SynTypeDefn(typeInfo = info; typeRepr = repr; members = members; trivia = defnTrivia) in defns do
                 let (SynComponentInfo(attributes = attrs; longId = typeIds; accessibility = access)) =
                     info
 
@@ -271,12 +275,29 @@ let find
                         fields
                         |> List.forall (fun (SynField(fieldType = t; isMutable = m)) -> not m && isStructField t)
 
+                    // an interface the record implements boxes it on every
+                    // call through that interface once it is a struct
+                    let implementsInterface =
+                        members
+                        |> List.exists (fun m ->
+                            match m with
+                            | SynMemberDefn.Interface _ -> true
+                            | _ -> false)
+
                     if
                         not alreadyStruct
                         && not fields.IsEmpty
                         && fields.Length <= 4
                         && allStructFields
                         && not typeIds.IsEmpty
+                        // CR0081's cap: four decimals are 64 bytes, copied on
+                        // every pass where the class was one allocation
+                        && StructUses.fitsInline (fields |> List.map (fun (SynField(fieldType = t)) -> t))
+                        && not implementsInterface
+                        // a `box`, an upcast, a `lock`, a null test of a value
+                        // of this type puts the allocation back or stops
+                        // compiling
+                        && not (StructUses.hostileUse check index source (List.last typeIds))
                     then
                         // the fix: `[<Struct>]` on its own line above the
                         // `type` keyword (below any /// doc by position).
@@ -317,3 +338,11 @@ let find
         | _ -> ()
 
     List.ofSeq voptions, List.ofSeq structs, List.ofSeq structTuples
+
+/// `findWith` without check results: the parse-only entry.
+let find
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : VOptionFieldSuggestion list * StructTypeSuggestion list * StructTupleFieldSuggestion list =
+    findWith None allowApiChanges parseTree source

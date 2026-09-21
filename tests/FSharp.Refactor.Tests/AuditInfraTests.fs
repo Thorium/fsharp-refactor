@@ -480,3 +480,82 @@ let ``FR0092: a test spelling the text about something else vetoes the enrichmen
         Assert.Empty m.Fixes
         Assert.Contains("RulesTests.fs mentions its exact text", m.Message)
     | other -> failwithf "Expected one FR0092 note, got %A" other
+
+// ---- test-file gates shared with CSharp.Refactor (CR0110, CR0169) ----
+
+/// A file the test-marker regex recognises (`[<Test>]`) without a test
+/// framework reference: the attribute is declared in the file itself.
+let private testFileWith (tag: string) (body: string) =
+    let dir = freshDir tag
+    let file = Path.Combine(dir, "Tests.fs")
+
+    File.WriteAllText(
+        file,
+        "module Tests\nopen System\ntype TestAttribute() =\n    inherit Attribute()\n"
+        + body
+    )
+
+    let options = exeOptions (Path.Combine(dir, "App.fsproj")) [ file ]
+    file, options
+
+[<Fact>]
+let ``FR0037: an HttpClient built per case in a test file is not the lifetime question`` () =
+    let file, options =
+        testFileWith
+            "test-httpclient"
+            "[<Test>]\nlet check () =\n    for u in [ \"a\"; \"b\" ] do\n        let client = new System.Net.Http.HttpClient()\n        printfn \"%s\" (client.GetStringAsync(u).Result)\n"
+
+    let messages = run Analyzers.loopPerfCliAnalyzer (cliContext options file)
+    Assert.Empty(messages |> List.filter (fun m -> m.Code = "FR0037"))
+
+    // the same loop outside a test file keeps the note
+    let dir = freshDir "app-httpclient"
+    let plain = Path.Combine(dir, "Program.fs")
+
+    File.WriteAllText(
+        plain,
+        "module Program\nlet check () =\n    for u in [ \"a\"; \"b\" ] do\n        let client = new System.Net.Http.HttpClient()\n        printfn \"%s\" (client.GetStringAsync(u).Result)\n"
+    )
+
+    let messages =
+        run Analyzers.loopPerfCliAnalyzer (cliContext (exeOptions (Path.Combine(dir, "App.fsproj")) [ plain ]) plain)
+
+    Assert.NotEmpty(messages |> List.filter (fun m -> m.Code = "FR0037"))
+
+[<Fact>]
+let ``FR0165: a test pinning a local clock against a UTC one is left alone`` () =
+    let file, options =
+        testFileWith
+            "test-kindmix"
+            "[<Test>]\nlet check () =\n    let started = DateTime.UtcNow\n    DateTime.Now > started\n"
+
+    let messages = run Analyzers.dateTimeKindMixCliAnalyzer (cliContext options file)
+    Assert.Empty messages
+
+[<Fact>]
+let ``FR0168 owns a try around Parse with a catch-all, and FR0055 stands down there`` () =
+    let dir = freshDir "parse-control-flow"
+    let file = Path.Combine(dir, "Program.fs")
+
+    File.WriteAllText(
+        file,
+        "module Program\nopen System\nlet parse (s: string) =\n    try Int32.Parse s with _ -> 0\nlet swallow (read: unit -> string) =\n    try read () with _ -> \"\"\n"
+    )
+
+    let options = exeOptions (Path.Combine(dir, "App.fsproj")) [ file ]
+    let ctx = cliContext options file
+
+    let parses = run Analyzers.parseControlFlowCliAnalyzer ctx
+    let swallows = run Analyzers.swallowedExceptionCliAnalyzer ctx
+
+    match parses with
+    | [ m ] ->
+        Assert.Equal("FR0168", m.Code)
+        Assert.Equal(4, m.Range.StartLine)
+        Assert.NotEmpty m.Fixes
+    | other -> failwithf "Expected one FR0168 message, got %A" other
+
+    // the swallow around `read ()` is still FR0055's; the one FR0168 rewrites is not
+    match swallows with
+    | [ m ] -> Assert.Equal(6, m.Range.StartLine)
+    | other -> failwithf "Expected one FR0055 message, got %A" other

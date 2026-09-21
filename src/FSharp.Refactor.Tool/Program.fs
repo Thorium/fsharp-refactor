@@ -1804,6 +1804,8 @@ let parseOnlySafeAnalyzers =
             "StructDu"
             "StructHints"
             "SwallowedException"
+            "ParseControlFlow"
+            "ByteStringLiteral"
             "TabIndentation"
             "TaskStateMachine"
             "TrailingSemicolon"

@@ -185,13 +185,40 @@ let ``FR0164: a collection edited inside a for loop over itself walks a snapshot
         Assert.Equal("Array.ofSeq d.Keys", b.ReplacementText)
         Assert.Equal("[k] <-", c.Mutation)
 
+        // the first loop is the filter shape: the list's own RemoveAll
+        // (CR0171's first fix); the other two are not
+        match a.Filter, b.Filter, c.Filter with
+        | Some(_, _, replacement), None, None -> Assert.Equal("items.RemoveAll(fun x -> x < 0) |> ignore", replacement)
+        | other -> failwithf "Expected the filter fix on the first loop only, got %A" other
+
         let patched =
             [ a; b; c ]
             |> List.sortByDescending (fun s -> s.Range.StartLine)
             |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
 
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+        let (r, _, replacement) = a.Filter.Value
+        let filtered = applyEdit source r replacement
+
+        Assert.Contains(
+            "let prune (items: List<int>) =\n    items.RemoveAll(fun x -> x < 0) |> ignore\nlet grow",
+            filtered
+        )
+
+        Assert.True(typechecksCleanly filtered, $"Filtered source does not typecheck:\n%s{filtered}")
     | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
+let ``FR0164: a body with more than the removal, or a condition naming the list, keeps the snapshot`` () =
+    let source =
+        "module M\nopen System.Collections.Generic\nlet prune (items: List<int>) (log: int -> unit) =\n    for x in items do\n        if x < 0 then\n            log x\n            items.Remove x |> ignore\nlet dedupe (items: List<int>) =\n    for x in items do\n        if items.IndexOf x > 0 then items.Remove x |> ignore"
+
+    match enumerationMutationsIn source with
+    | [ a; b ] ->
+        Assert.True(a.Filter.IsNone, "a body doing more than removing is not a filter")
+        Assert.True(b.Filter.IsNone, "a condition reading the list is not a filter")
+    | other -> failwithf "Expected two findings, got %A" other
 
 [<Fact>]
 let ``FR0164: a removal from a dictionary or set, an edit to another collection, and a concurrent one stay quiet`` () =
@@ -382,3 +409,70 @@ let ``FR0165: a plain TimeSpan taken off a clock read keeps its kind`` () =
         Assert.Equal("DateTime.Now - grace", a.LocalText)
         Assert.Equal("DateTime.Now.Subtract(TimeSpan.FromHours 1.0)", b.LocalText)
     | other -> failwithf "Expected two findings, got %A" other
+
+// ---- FR0169 SeqEnumeratedTwice ----
+
+let private seqTwiceIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    SeqEnumeratedTwice.find tree sourceText checkResults
+
+[<Fact>]
+let ``FR0169: a seq parameter walked twice on one path is noted at the first site`` () =
+    let source =
+        "module M\nlet report (xs: int seq) =\n    if Seq.isEmpty xs then \"none\" else $\"{Seq.length xs} items\"\nlet total (ys: seq<int>) =\n    for y in ys do\n        printfn \"%d\" y\n    ys |> Seq.map ((+) 1) |> Seq.sum\nlet twice (zs: System.Collections.Generic.IEnumerable<int>) =\n    let first = List.ofSeq zs\n    let again = Seq.length zs\n    first.Length + again"
+
+    match seqTwiceIn source with
+    | [ a; b; c ] ->
+        Assert.Equal("xs", a.ParameterName)
+        Assert.Equal(3, a.Range.StartLine)
+        Assert.Equal(3, a.SecondLine)
+        Assert.Equal("ys", b.ParameterName)
+        Assert.Equal(5, b.Range.StartLine)
+        Assert.Equal(7, b.SecondLine)
+        Assert.Equal("zs", c.ParameterName)
+        Assert.Equal(10, c.SecondLine)
+    | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
+let ``FR0169: different arms, a lambda, a list parameter, a shadow and a single walk stay quiet`` () =
+    let source =
+        "module M\nlet arms (xs: int seq) (flag: bool) =\n    if flag then Seq.length xs else Seq.sum xs\nlet matched (xs: int seq) (n: int) =\n    match n with\n    | 0 -> Seq.isEmpty xs\n    | _ -> Seq.exists ((=) n) xs\nlet deferred (xs: int seq) (run: (unit -> int) -> int) =\n    run (fun () -> Seq.length xs) + Seq.sum xs\nlet list (xs: int list) =\n    if List.isEmpty xs then 0 else List.length xs + Seq.length xs\nlet shadowed (xs: int seq) =\n    let xs = List.ofSeq xs\n    if xs.IsEmpty then 0 else Seq.length xs\nlet once (xs: int seq) =\n    xs |> Seq.map ((+) 1) |> Seq.filter ((<) 2) |> Seq.toList\nlet lazyOnly (xs: int seq) =\n    let ys = Seq.map ((+) 1) xs\n    let zs = Seq.filter ((<) 2) xs\n    Seq.append ys zs"
+
+    Assert.Empty(seqTwiceIn source)
+
+[<Fact>]
+let ``FR0169: a nested function's and a member's seq parameter are read in their own scope`` () =
+    let source =
+        "module M\nlet outer (n: int) =\n    let inner (xs: int seq) =\n        if Seq.isEmpty xs then n else Seq.length xs\n    inner [ 1 ]\ntype T() =\n    member _.Count(ys: int seq) =\n        let first = Seq.tryHead ys\n        Seq.length ys + (defaultArg first 0)"
+
+    match seqTwiceIn source with
+    | [ a; b ] ->
+        Assert.Equal("xs", a.ParameterName)
+        Assert.Equal("ys", b.ParameterName)
+    | other -> failwithf "Expected two findings, got %A" other
+
+[<Fact>]
+let ``FR0169: an inferred seq parameter and a lazily built local are walked twice too; cheap sources are not`` () =
+    // SQLProvider's `itms`: a Seq.collect chain tested for emptiness and then
+    // read - the second walk repeats the reflection
+    let source =
+        "module M\nlet inferred xs = if Seq.isEmpty xs then 0 else Seq.length xs\nlet local (ys: int list) (keep: int -> bool) =\n    let itms = ys |> Seq.filter keep |> Seq.map ((+) 1)\n    if Seq.isEmpty itms then 0 else itms |> Seq.head\nlet cached (ys: int list) (keep: int -> bool) =\n    let itms = ys |> Seq.filter keep |> Seq.cache\n    if Seq.isEmpty itms then 0 else itms |> Seq.head\nlet coerced (ys: int list) =\n    let itms = ys :> seq<int>\n    if Seq.isEmpty itms then 0 else itms |> Seq.head\nlet once (ys: int list) (keep: int -> bool) =\n    let itms = ys |> Seq.filter keep\n    itms |> Seq.length"
+
+    match seqTwiceIn source with
+    | [ a; b ] ->
+        Assert.Equal("xs", a.ParameterName)
+        Assert.Equal("itms", b.ParameterName)
+        Assert.Equal(5, b.Range.StartLine)
+    | other -> failwithf "Expected two findings, got %A" other
+
+[<Fact>]
+let ``FR0169: a local seq inside a generic member of a class is walked twice (SQLProvider's fetchItem)`` () =
+    let source =
+        "module M\ntype G<'k>(distinctItem: obj) as this =\n    inherit ResizeArray<obj>([| distinctItem |])\n    member private __.fetchItem<'ret> (itemType: string) (columnName: string option) =\n        let filterColumnValues (columnValues: seq<string * obj>) =\n            columnValues |> Seq.filter (fun (s, k) -> s.Contains itemType)\n        let itms =\n            match box distinctItem with\n            | :? string -> filterColumnValues Seq.empty\n            | _ -> Seq.empty\n        let itm =\n            if Seq.isEmpty itms then failwith \"x\"\n            else itms |> Seq.head |> snd\n        unbox<'ret> itm\n    member __.Count2 = this.fetchItem<int> \"COUNT\" None"
+
+    match seqTwiceIn source with
+    | [ s ] ->
+        Assert.Equal("itms", s.ParameterName)
+        Assert.Equal(12, s.Range.StartLine)
+        Assert.Equal(13, s.SecondLine)
+    | other -> failwithf "Expected one finding, got %A" other

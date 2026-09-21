@@ -94,9 +94,12 @@ let private connectionStringLeak (text: string) =
 /// A literal that says "test" anywhere is a test account's credential — a test
 /// database, a test key, a test user. Good practice would keep those in a test
 /// key vault too, but the practice is to keep them in source, so they are
-/// not the leak this rule hunts.
+/// not the leak this rule hunts. `123456` is the same signal: the standard
+/// made-up key, and six specific digits do not occur by chance in real key
+/// material (one in 64^6 per position of base64).
 let private isTestFixture (text: string) =
     text.Contains("test", System.StringComparison.OrdinalIgnoreCase)
+    || text.Contains "123456"
 
 let private providerOf (text: string) =
     if isTestFixture text then

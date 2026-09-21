@@ -59,6 +59,15 @@ type RegexSuggestionKind =
     /// construction is FR0037's note, not this rule's).
     | HoistConstruction
 
+/// Why the site runs more than once: the wording of the note.
+[<RequireQualifiedAccess>]
+type Repeat =
+    /// Inside a loop or a collection-function callback.
+    | LoopIteration
+    /// In the body of a function or a lambda: once per call. A module
+    /// VALUE's initialiser runs once and is never reported.
+    | FunctionCall
+
 type Suggestion =
     {
         Range: range
@@ -66,7 +75,36 @@ type Suggestion =
         Kind: RegexSuggestionKind
         /// Zero or more text edits ((range, original, replacement)).
         Edits: (range * string * string) list
+        /// For the two hoist kinds: what repeats the parse.
+        Repeat: Repeat
     }
+
+/// Does the site run more than once per module initialisation — inside a
+/// loop or a collection callback (LoopPerf.loopBinders), or in the body of
+/// a FUNCTION: a module `let` with parameters, or any lambda? A method
+/// called from a loop is a loop the file cannot see, so a per-call parse
+/// is the same cost spelled one frame down — CSharp.Refactor's CR0109
+/// hoists from any member body for the same reason. A module value's
+/// initialiser runs once and needs no hoist.
+let private runsRepeatedly (path: SyntaxNode list) =
+    match LoopPerf.loopBinders path with
+    | ValueSome _ -> ValueSome Repeat.LoopIteration
+    | ValueNone ->
+        let inFunction =
+            path
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.Lambda _) -> true
+                | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)))) ->
+                    true
+                | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.NamePatPairs _))) ->
+                    true
+                | _ -> false)
+
+        if inFunction then
+            ValueSome Repeat.FunctionCall
+        else
+            ValueNone
 
 /// `Regex.<method>(...)` or `System.Text.RegularExpressions.Regex.<method>(...)`.
 [<return: Struct>]
@@ -267,10 +305,87 @@ let private hoistLine (source: ISourceText) (floorLine: int) (column: int) (star
 /// between two hoists in one file.
 let private hoistedNameIn = Regex(@"let private (\w+) =", RegexOptions.Compiled)
 
+/// The string operation a literal-pattern MATCH TEST is: `Contains`, or
+/// `StartsWith` with `StringComparison.Ordinal` for a `^`-anchored pattern.
+/// The regex compared ordinally; `Contains(string)` is ordinal too, but
+/// `StartsWith(string)` is current-culture and differs on ligatures,
+/// ignorable characters and Turkish i — the Ordinal overload says what the
+/// regex did. None when the pattern is not literal text.
+let private matchTestText (source: ISourceText) (input: SynExpr) (pattern: string) =
+    match literalPattern pattern with
+    | Some("StartsWith", literal) ->
+        let prefix = if opensSystemNamespace source then "" else "System."
+
+        Some(sprintf "%s.StartsWith(\"%s\", %sStringComparison.Ordinal)" (argumentText source input) literal prefix)
+    | Some(operation, literal) -> Some(sprintf "%s.%s \"%s\"" (argumentText source input) operation literal)
+    | None -> None
+
+/// `a op b` with the operator's one-segment name.
+[<return: Struct>]
+let private (|Infix|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.App(
+        isInfix = false
+        funcExpr = SynExpr.App(
+            isInfix = true; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])); argExpr = l)
+        argExpr = r) -> ValueSome(op.idText, l, r)
+    | SynExpr.App(
+        isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = SynExpr.Ident op; argExpr = l); argExpr = r) ->
+        ValueSome(op.idText, l, r)
+    | _ -> ValueNone
+
+/// `Regex.Matches(input, "literal").Count` — the count of a literal's
+/// non-overlapping occurrences, as its input and pattern.
+[<return: Struct>]
+let private (|MatchesCount|_|) (e: SynExpr) =
+    match stripParens e with
+    | SynExpr.DotGet(expr = StaticRegexCall("Matches", arg); longDotId = SynLongIdent(id = [ m ])) when
+        m.idText = "Count"
+        ->
+        match argsOf arg with
+        | [ input; StringLiteral pattern ] -> ValueSome(input, pattern)
+        | _ -> ValueNone
+    | _ -> ValueNone
+
+/// What a comparison of a match count with an integer literal asks: Some
+/// true for "at least one match" (`> 0`, `<> 0`, `>= 1`), Some false for
+/// "none" (`= 0`, `< 1`, `<= 0`), None for any other question (`> 1` is a
+/// count, not a test). `flipped` when the literal stands on the left.
+let private countTest (op: string) (k: int) (flipped: bool) =
+    let op =
+        if not flipped then
+            op
+        else
+            match op with
+            | "op_GreaterThan" -> "op_LessThan"
+            | "op_LessThan" -> "op_GreaterThan"
+            | "op_GreaterThanOrEqual" -> "op_LessThanOrEqual"
+            | "op_LessThanOrEqual" -> "op_GreaterThanOrEqual"
+            | other -> other
+
+    match op, k with
+    | "op_GreaterThan", 0
+    | "op_Inequality", 0
+    | "op_GreaterThanOrEqual", 1 -> Some true
+    | "op_Equality", 0
+    | "op_LessThan", 1
+    | "op_LessThanOrEqual", 0 -> Some false
+    | _ -> None
+
 /// Find literal-pattern IsMatch calls and loop-resident static Regex calls.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
     let index = AstIndex.ofTree parseTree
+
+    let stringOperation (r: range) (replacement: string) =
+        suggestions.Add
+            {
+                Range = r
+                OriginalText = textOfRange source r
+                Kind = RegexSuggestionKind.StringOperation
+                Edits = [ r, textOfRange source r, replacement ]
+                Repeat = Repeat.LoopIteration
+            }
 
     // the lines of every `open System.Text.RegularExpressions` in the file:
     // a bare `Regex` in a hoisted binding resolves only under an open that
@@ -332,38 +447,64 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         { new SyntaxCollectorBase() with
             override _.WalkExpr(path, expr) =
                 match expr with
+                // rule 1a: Match(input, "literal").Success is the same test
+                // as IsMatch — the Match object was built only to be asked
+                | SynExpr.DotGet(expr = StaticRegexCall("Match", arg); longDotId = SynLongIdent(id = [ m ])) when
+                    m.idText = "Success" && isSingleLine expr.Range
+                    ->
+                    match argsOf arg with
+                    | [ input; StringLiteral pattern ] ->
+                        matchTestText source input pattern |> Option.iter (stringOperation expr.Range)
+                    | _ -> ()
+                // rule 1a: Matches(input, "literal").Count > 0 (<> 0, >= 1,
+                // and the literal on either side) is Contains; = 0 (< 1,
+                // <= 0) is `not (… .Contains …)`. Every match was found and
+                // counted to answer whether there was one. A `^` pattern
+                // matches at most once, so its count test is StartsWith
+                | Infix(op, MatchesCount(input, pattern), SynExpr.Const(SynConst.Int32 k, _)) when
+                    isSingleLine expr.Range
+                    ->
+                    match countTest op k false, matchTestText source input pattern with
+                    | Some true, Some test -> stringOperation expr.Range test
+                    | Some false, Some test -> stringOperation expr.Range $"not ({test})"
+                    | _ -> ()
+                | Infix(op, SynExpr.Const(SynConst.Int32 k, _), MatchesCount(input, pattern)) when
+                    isSingleLine expr.Range
+                    ->
+                    match countTest op k true, matchTestText source input pattern with
+                    | Some true, Some test -> stringOperation expr.Range test
+                    | Some false, Some test -> stringOperation expr.Range $"not ({test})"
+                    | _ -> ()
+                | _ -> ()
+
+                match expr with
                 | StaticRegexCall(methodName, arg) ->
                     let args = argsOf arg
 
                     // rule 1: IsMatch(input, "literal") -> string operation
                     match methodName, args with
                     | "IsMatch", [ input; StringLiteral pattern ] when isSingleLine input.Range ->
-                        match literalPattern pattern with
-                        | Some(operation, literal) ->
-                            // the regex compared ordinally; `Contains(string)`
-                            // is ordinal too, but `StartsWith(string)` is
-                            // current-culture and differs on ligatures,
-                            // ignorable characters and Turkish i — the
-                            // Ordinal overload says what the regex did
-                            let replacement =
-                                match operation with
-                                | "StartsWith" ->
-                                    let prefix = if opensSystemNamespace source then "" else "System."
+                        matchTestText source input pattern |> Option.iter (stringOperation expr.Range)
+                    // rule 1c: Split(input, "literal") splits at each
+                    // occurrence of the text, which is String.Split with
+                    // that one separator — spelled with the separator array
+                    // and StringSplitOptions.None, the overload every
+                    // framework has (`Split(string)` is netcoreapp2.0+),
+                    // and the same result: no capture group, so no captured
+                    // pieces, empty entries kept on both sides. An anchored
+                    // pattern is not the same operation and keeps the engine
+                    | "Split", [ input; StringLiteral pattern ] when isSingleLine input.Range ->
+                        match plainLiteral pattern with
+                        | Some literal ->
+                            let prefix = if opensSystemNamespace source then "" else "System."
 
-                                    sprintf
-                                        "%s.StartsWith(\"%s\", %sStringComparison.Ordinal)"
-                                        (argumentText source input)
-                                        literal
-                                        prefix
-                                | _ -> sprintf "%s.%s \"%s\"" (argumentText source input) operation literal
-
-                            suggestions.Add
-                                {
-                                    Range = expr.Range
-                                    OriginalText = textOfRange source expr.Range
-                                    Kind = RegexSuggestionKind.StringOperation
-                                    Edits = [ expr.Range, textOfRange source expr.Range, replacement ]
-                                }
+                            stringOperation
+                                expr.Range
+                                (sprintf
+                                    "%s.Split([| \"%s\" |], %sStringSplitOptions.None)"
+                                    (argumentText source input)
+                                    literal
+                                    prefix)
                         | None -> ()
                     | _ -> ()
 
@@ -390,6 +531,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     OriginalText = textOfRange source expr.Range
                                     Kind = RegexSuggestionKind.StringOperation
                                     Edits = [ expr.Range, textOfRange source expr.Range, text ]
+                                    Repeat = Repeat.LoopIteration
                                 }
                         | _ -> ()
                     | _ -> ()
@@ -403,8 +545,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         | [ _; (StringLiteral _ as p); _ ] when methodName = "Replace" -> Some p
                         | _ -> None
 
-                    match patternArg, LoopPerf.loopBinders path with
-                    | Some patternExpr, ValueSome _ ->
+                    match patternArg, runsRepeatedly path with
+                    | Some patternExpr, ValueSome repeat ->
                         let name =
                             match patternExpr with
                             | StringLiteral pattern -> nameFromPattern pattern
@@ -447,13 +589,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     ]
                             | _ -> []
 
-                        suggestions.Add
-                            {
-                                Range = expr.Range
-                                OriginalText = textOfRange source expr.Range
-                                Kind = RegexSuggestionKind.HoistFromLoop
-                                Edits = edits
-                            }
+                        // a static call in a function body is served from the
+                        // runtime's cache until it turns over: worth the hoist
+                        // where one lands, not a note on every Regex.IsMatch
+                        // in a method
+                        if repeat = Repeat.LoopIteration || not edits.IsEmpty then
+                            suggestions.Add
+                                {
+                                    Range = expr.Range
+                                    OriginalText = textOfRange source expr.Range
+                                    Kind = RegexSuggestionKind.HoistFromLoop
+                                    Edits = edits
+                                    Repeat = repeat
+                                }
                     | _ -> ()
                 // rule 3: a Regex constructed inside a loop, pattern literal
                 // and options constant. The construction's own source text
@@ -469,8 +617,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         | [ StringLiteral pattern; options ] when constantOptions options -> Some pattern
                         | _ -> None
 
-                    match pattern, enclosingLet path, LoopPerf.loopBinders path with
-                    | Some pattern, Some decl, ValueSome _ when qualified || regexOpenAbove decl ->
+                    match pattern, enclosingLet path, runsRepeatedly path with
+                    | Some pattern, Some decl, ValueSome repeat when qualified || regexOpenAbove decl ->
                         let name = nameFromPattern pattern
 
                         if not (fileText.Value.Contains name) then
@@ -484,6 +632,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                             hoistInsert decl expr.Range.StartLine name (textOfRange source expr.Range)
                                             expr.Range, textOfRange source expr.Range, name
                                         ]
+                                    Repeat = repeat
                                 }
                     | _ -> ()
                 | _ -> ()
@@ -508,11 +657,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             if m.Success then Some m.Groups.[1].Value else None
         | [] -> None
 
+    // the string operation's range is the call's, or the `.Success` /
+    // `.Count > 0` expression AROUND the call, so containment is the test
     all
     |> List.filter (fun s ->
         s.Kind = RegexSuggestionKind.StringOperation
         || all
-           |> List.exists (fun o -> o.Kind = RegexSuggestionKind.StringOperation && o.Range = s.Range)
+           |> List.exists (fun o ->
+               o.Kind = RegexSuggestionKind.StringOperation
+               && Range.rangeContainsRange o.Range s.Range)
            |> not)
     |> List.choose (fun s ->
         match s.Kind, hoistedName s with

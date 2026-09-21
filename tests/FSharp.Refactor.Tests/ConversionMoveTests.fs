@@ -145,6 +145,47 @@ let ``conversion before exists is dropped`` () =
         "module Test\nlet f (p: int -> bool) xs = xs |> Seq.exists p"
 
 [<Fact>]
+let ``a short-circuiting consumer keeps the conversion over a source whose enumeration runs user code`` () =
+    // `Seq.toList |> List.exists` read every element; `Seq.exists` stops at
+    // the first hit and skips the `printfn` for the rest (CR0020 asks the
+    // same of its source before Any/First/Contains)
+    let typed (source: string) =
+        let tree, sourceText, check = parseAndCheck source
+        ConversionMove.findWith (Some check) tree sourceText
+
+    assertNoSuggestion
+        "module Test\nlet f (xs: int list) =\n    seq { for x in xs do printfn \"%d\" x; yield x } |> Seq.toList |> List.exists (fun x -> x > 2)"
+
+    assertNoSuggestion
+        "module Test\nlet log (x: int) = printfn \"%d\" x; x\nlet f (xs: int list) = xs |> Seq.map log |> Seq.toList |> List.exists (fun x -> x > 2)"
+
+    // parse-only, a user function returning a sequence cannot be cleared
+    assertNoSuggestion "module Test\nlet f (read: unit -> int seq) = read () |> Seq.toList |> List.tryHead"
+
+    // the same shapes under a consumer that reads everything are still fixed
+    assertPatched
+        "module Test\nlet log (x: int) = printfn \"%d\" x; x\nlet f (xs: int list) = xs |> Seq.map log |> Seq.toList |> List.length"
+        "module Test\nlet log (x: int) = printfn \"%d\" x; x\nlet f (xs: int list) = xs |> Seq.map log |> Seq.length"
+
+    // a name, a literal, an eager stage: pure by shape
+    assertPatched
+        "module Test\nlet f (xs: int[]) = xs |> Array.map ((+) 1) |> Seq.toList |> List.tryHead"
+        "module Test\nlet f (xs: int[]) = xs |> Array.map ((+) 1) |> Seq.tryHead"
+
+    // typed: a lazy stage over FSharp.Core's own functions is cleared
+    match
+        typed "module Test\nlet f (xs: int list) = xs |> Seq.map ((+) 1) |> Seq.toList |> List.exists (fun x -> x > 2)"
+    with
+    | [ s ] -> Assert.Contains("Seq.exists", s.ReplacementText)
+    | other -> failwithf "Expected the typed proof to clear the source, got %A" other
+
+    // typed: a user callback in the lazy stage is not
+    Assert.Empty(
+        typed
+            "module Test\nlet log (x: int) = printfn \"%d\" x; x\nlet f (xs: int list) = xs |> Seq.map log |> Seq.toList |> List.exists (fun x -> x > 2)"
+    )
+
+[<Fact>]
 let ``conversion before isEmpty is dropped`` () =
     assertPatched "module Test\nlet f xs = xs |> Seq.toList |> List.isEmpty" "module Test\nlet f xs = xs |> Seq.isEmpty"
 

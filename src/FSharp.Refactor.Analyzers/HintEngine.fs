@@ -48,6 +48,12 @@ open FSharp.Refactor.Text
 /// every time — which is what our own FR0015 flags.
 let private plainOperand = System.Text.RegularExpressions.Regex @"^[\w.]+$"
 
+/// An application of atoms — `isNull x`, `not (isNull x)`, `List.isEmpty
+/// xs` — which stands bare as the operand of an infix operator: function
+/// application binds tighter than any of them.
+let private plainApplication =
+    System.Text.RegularExpressions.Regex @"^[\w.']+(\s+(\([^()]*\)|[\w.'""]+))*$"
+
 type Suggestion =
     {
         /// Range of the matched expression, i.e. the text the fix replaces.
@@ -848,13 +854,23 @@ let private maybeNamedArgument (path: SyntaxNode list) (e: SynExpr) =
             op.idText = "op_Equality"
         | _ -> false
 
+    // an operator application is not a call: `a = null || b` puts the
+    // equality under the `||` application (either side), where no argument
+    // is ever named — the guard used to withhold every null hint beside a
+    // `||` or `&&`
+    let isOperatorApp (e: SynExpr) =
+        match e with
+        | SynExpr.App(isInfix = true; funcExpr = SingleIdent op)
+        | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op)) -> op.idText.StartsWith "op_"
+        | _ -> false
+
     let rec insideCallArguments nodes =
         match nodes with
         // the argument list itself, and the tuple of arguments within it
         | SyntaxNode.SynExpr(SynExpr.Paren _) :: rest
         | SyntaxNode.SynExpr(SynExpr.Tuple _) :: rest -> insideCallArguments rest
         | SyntaxNode.SynExpr(SynExpr.New _) :: _ -> true
-        | SyntaxNode.SynExpr(SynExpr.App _) :: _ -> true
+        | SyntaxNode.SynExpr(SynExpr.App _ as app) :: _ -> not (isOperatorApp app)
         | _ -> false
 
     isEquality && insideCallArguments path
@@ -1373,13 +1389,28 @@ let find
                         | Some text -> text
                         | None -> substitute hint.RhsVarSpans hint.RhsText
 
-                    let inOperandPosition =
+                    // the operand of an infix operator (`a = null || b`) takes
+                    // an application bare; a function's argument (`f (a =
+                    // null)`) takes only a name bare
+                    let inOperandPosition, underOperator =
                         match path with
-                        | SyntaxNode.SynExpr(SynExpr.App(argExpr = arg)) :: _ -> arg.Range = expr.Range
-                        | _ -> false
+                        | SyntaxNode.SynExpr(SynExpr.App(argExpr = arg) as app) :: _ when arg.Range = expr.Range ->
+                            let operator =
+                                match app with
+                                | SynExpr.App(isInfix = true; funcExpr = SingleIdent op)
+                                | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op)) ->
+                                    op.idText.StartsWith "op_"
+                                | _ -> false
+
+                            true, operator
+                        | _ -> false, false
 
                     let replacement =
-                        if inOperandPosition && not (plainOperand.IsMatch replacement) then
+                        if
+                            inOperandPosition
+                            && not (plainOperand.IsMatch replacement)
+                            && not (underOperator && plainApplication.IsMatch replacement)
+                        then
                             $"({replacement})"
                         else
                             replacement

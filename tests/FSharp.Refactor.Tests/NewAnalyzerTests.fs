@@ -5,12 +5,21 @@ open Xunit
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 open System.IO
+open System.Text.RegularExpressions
 
 // ---- FR0015 RegexUsage ----
 
 let private regexIn (source: string) =
     let tree, sourceText = parse source
     RegexUsage.find tree sourceText
+
+/// The rule-1 view: a pattern the string rewrite declines. The regex stays
+/// a regex there, and a hoist from the function body is a different finding.
+let private noStringOperation (source: string) =
+    Assert.Empty(
+        regexIn source
+        |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.StringOperation)
+    )
 
 let private assertRegexFix (source: string) (expectedReplacement: string) =
     match regexIn source with
@@ -53,6 +62,120 @@ let ``FR0015: Regex.Replace keeps the engine wherever the swap would differ`` ()
     unchanged "Regex.Replace(s, \"^abcd\", \"x\")" // an anchor Replace cannot carry
     unchanged "Regex.Replace(s, \"abcd\", \"x\", RegexOptions.IgnoreCase)" // different operation
 
+[<Fact>]
+let ``FR0015: Match(...).Success and a Matches(...).Count test are the same Contains or StartsWith`` () =
+    let header =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = "
+
+    assertRegexFix (header + "Regex.Match(s, \"abcd\").Success") "s.Contains \"abcd\""
+
+    assertRegexFix
+        (header + "Regex.Match(s, \"^abcd\").Success")
+        "s.StartsWith(\"abcd\", System.StringComparison.Ordinal)"
+
+    for test in [ "> 0"; "<> 0"; ">= 1" ] do
+        assertRegexFix (header + $"Regex.Matches(s, \"abcd\").Count {test}") "s.Contains \"abcd\""
+
+    for test in [ "= 0"; "< 1"; "<= 0" ] do
+        assertRegexFix (header + $"Regex.Matches(s, \"abcd\").Count {test}") "not (s.Contains \"abcd\")"
+
+    // the literal on the left flips the comparison
+    assertRegexFix (header + "0 < Regex.Matches(s, \"abcd\").Count") "s.Contains \"abcd\""
+    assertRegexFix (header + "0 = Regex.Matches(s, \"abcd\").Count") "not (s.Contains \"abcd\")"
+
+    assertRegexFix
+        (header + "1 > Regex.Matches(s, \"^abcd\").Count")
+        "not (s.StartsWith(\"abcd\", System.StringComparison.Ordinal))"
+
+    // typechecks, and the semantics hold on the engine's own answers
+    let source =
+        header
+        + "Regex.Match(s, \"^abcd\").Success, Regex.Matches(s, \"abcd\").Count > 0, 0 = Regex.Matches(s, \"abcd\").Count"
+
+    let patched =
+        regexIn source
+        |> List.collect (fun s -> s.Edits)
+        |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+        |> List.fold (fun src (r, _, t) -> applyEdit src r t) source
+
+    Assert.Equal(
+        header
+        + "s.StartsWith(\"abcd\", System.StringComparison.Ordinal), s.Contains \"abcd\", not (s.Contains \"abcd\")",
+        patched
+    )
+
+    Assert.True(typechecksCleanly patched, patched)
+
+    for input in [ "abcd"; "xabcd"; "abc"; ""; "abcdabcd" ] do
+        Assert.Equal(
+            (Regex.Match(input, "^abcd").Success,
+             Regex.Matches(input, "abcd").Count > 0,
+             0 = Regex.Matches(input, "abcd").Count),
+            (input.StartsWith("abcd", System.StringComparison.Ordinal),
+             input.Contains "abcd",
+             not (input.Contains "abcd"))
+        )
+
+[<Fact>]
+let ``FR0015: a count that is a count, a real pattern and a Matches call on its own keep the engine`` () =
+    let header =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = "
+
+    for body in
+        [
+            "Regex.Matches(s, \"abcd\").Count > 1"
+            "Regex.Matches(s, \"abcd\").Count"
+            "Regex.Matches(s, \"a+\").Count > 0"
+            "Regex.Match(s, \"a.c\").Success"
+            "Regex.Match(s, \"abcd\").Value"
+            "Regex.Matches(s, \"abcd\", RegexOptions.IgnoreCase).Count > 0"
+        ] do
+        Assert.Empty(
+            regexIn (header + body)
+            |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.StringOperation)
+        )
+
+[<Fact>]
+let ``FR0015: a literal-pattern Regex.Split is a String.Split with that separator`` () =
+    assertRegexFix
+        "module Test\nopen System\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.Split(s, \"ab\")"
+        "s.Split([| \"ab\" |], StringSplitOptions.None)"
+
+    let source =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.Split(s, \", \")"
+
+    match regexIn source with
+    | [ s ] ->
+        let _, _, replacement = s.Edits.Head
+        Assert.Equal("s.Split([| \", \" |], System.StringSplitOptions.None)", replacement)
+        let patched = applyEdit source s.Range replacement
+        Assert.True(typechecksCleanly patched, patched)
+    | other -> failwithf "Expected one suggestion, got %A" other
+
+    for input in [ "a, b, c"; ", a, "; ""; "abc"; ", , " ] do
+        Assert.Equal<string[]>(Regex.Split(input, ", "), input.Split([| ", " |], System.StringSplitOptions.None))
+
+    // an anchored, a metacharacter and an options pattern keep the engine
+    for body in
+        [
+            "Regex.Split(s, \"^ab\")"
+            "Regex.Split(s, \"a|b\")"
+            "Regex.Split(s, \"ab\", RegexOptions.IgnoreCase)"
+        ] do
+        Assert.Empty(
+            regexIn ("module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = " + body)
+            |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.StringOperation)
+        )
+
+[<Fact>]
+let ``FR0015: a count test in a loop is the string operation alone, not a hoist as well`` () =
+    let source =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (lines: string list) =\n    for line in lines do\n        if Regex.Matches(line, \"abcd\").Count > 0 then printfn \"%s\" line"
+
+    match regexIn source with
+    | [ s ] -> Assert.Equal(RegexUsage.RegexSuggestionKind.StringOperation, s.Kind)
+    | other -> failwithf "Expected the string operation alone, got %A" other
+
 /// Apply a hoist suggestion's edits bottom-up and verify the patched text.
 let private assertRegexHoist (source: string) (expectedPatched: string) =
     match regexIn source with
@@ -87,9 +210,7 @@ let ``anchored-start literal under open System spells the comparison short`` () 
 let ``anchored-end literal keeps the regex`` () =
     // `$` also matches before a final newline: `Regex.IsMatch("abc\n",
     // "abc$")` is true where `"abc\n".EndsWith "abc"` is false
-    Assert.Empty(
-        regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc$\")"
-    )
+    noStringOperation "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc$\")"
 
 [<Fact>]
 let ``unanchored literal becomes Contains`` () =
@@ -99,21 +220,44 @@ let ``unanchored literal becomes Contains`` () =
 
 [<Fact>]
 let ``pattern with metacharacters is left alone`` () =
-    Assert.Empty(
-        regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"a.c\")"
-    )
+    noStringOperation "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"a.c\")"
 
 [<Fact>]
 let ``escaped dollar is not an anchor`` () =
-    Assert.Empty(
-        regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc\\\\$\")"
-    )
+    noStringOperation
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc\\\\$\")"
 
 [<Fact>]
 let ``fully anchored pattern is left alone`` () =
-    Assert.Empty(
-        regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"^abc$\")"
-    )
+    noStringOperation
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"^abc$\")"
+
+[<Fact>]
+let ``a regex call in a function body is hoisted once per call, a module value's is not`` () =
+    // a function is called from loops the file cannot see (CR0109 hoists
+    // from any member body); a module value's initialiser runs once
+    match regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"a.c\")" with
+    | [ s ] ->
+        Assert.Equal(RegexUsage.RegexSuggestionKind.HoistFromLoop, s.Kind)
+        Assert.Equal(RegexUsage.Repeat.FunctionCall, s.Repeat)
+        Assert.NotEmpty s.Edits
+    | other -> failwithf "Expected one per-call hoist, got %A" other
+
+    Assert.Empty(regexIn "module Test\nopen System.Text.RegularExpressions\nlet ok = Regex.IsMatch(\"abc\", \"a.c\")")
+
+    // a static call in a function body WITHOUT a landing fix (no open) is
+    // not worth a note: the runtime cache serves it
+    Assert.Empty(regexIn "module Test\nlet f (s: string) = System.Text.RegularExpressions.Regex.IsMatch(s, \"a.c\")")
+
+    // a construction in a function body is parsed per call: hoisted
+    match
+        regexIn
+            "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) =\n    let r = Regex(\"a+\")\n    r.IsMatch s"
+    with
+    | [ s ] ->
+        Assert.Equal(RegexUsage.RegexSuggestionKind.HoistConstruction, s.Kind)
+        Assert.Equal(RegexUsage.Repeat.FunctionCall, s.Repeat)
+    | other -> failwithf "Expected one construction hoist, got %A" other
 
 [<Fact>]
 let ``regex call in a loop is hoisted above the declaration`` () =
@@ -164,10 +308,13 @@ let ``regex call in a List.filter lambda is hoisted like a loop`` () =
 [<Fact>]
 let ``regex call in a lambda given to a non-collection function is not a loop`` () =
     // `lock` runs its callback once; only List/Seq/Array callbacks iterate
-    Assert.Empty(
+    // — the site still hoists, as any function body does, but per CALL
+    match
         regexIn
             "module Test\nopen System.Text.RegularExpressions\nlet f (o: obj) (s: string) =\n    lock o (fun () -> Regex.IsMatch(s, \"a.c\"))"
-    )
+    with
+    | [ s ] -> Assert.Equal(RegexUsage.Repeat.FunctionCall, s.Repeat)
+    | other -> failwithf "Expected one per-call hoist, got %A" other
 
 /// Apply a construction hoist's edits bottom-up and verify the patched text.
 let private assertRegexConstructionHoist (source: string) (expectedPatched: string) =
@@ -301,6 +448,34 @@ let ``a public union is left alone`` () =
     // struct-vs-class is a semantic change consumers outside the assembly
     // see without any compiler error
     Assert.Empty(structDuIn "module Test\ntype Shape =\n    | Circle of radius: float\n    | Square of side: float")
+
+[<Fact>]
+let ``FR0016: a union over 32 bytes, or one the file boxes or locks, stays a class`` () =
+    // a struct union lays every case's fields side by side: three decimal
+    // cases are 48 bytes plus the tag, copied on every pass (CR0081's cap)
+    Assert.Empty(
+        structDuIn
+            "module Test\ntype private Amount =\n    | Eur of eur: decimal\n    | Usd of usd: decimal\n    | Gbp of gbp: decimal"
+    )
+
+    let typed (source: string) =
+        let tree, sourceText, check = parseAndCheck source
+        StructDu.findWith (Some check) false tree sourceText
+
+    Assert.Empty(
+        typed
+            "module Test\ntype private Shape =\n    | Circle of radius: float\n    | Square of side: float\nlet key (s: Shape) = (box s).GetHashCode()"
+    )
+
+    Assert.Empty(
+        typed
+            "module Test\ntype private Shape =\n    | Circle of radius: float\n    | Square of side: float\nlet gate (s: Shape) (f: unit -> int) = lock s f"
+    )
+
+    Assert.NotEmpty(
+        typed
+            "module Test\ntype private Shape =\n    | Circle of radius: float\n    | Square of side: float\nlet area (s: Shape) =\n    match s with\n    | Circle r -> r * r\n    | Square a -> a * a"
+    )
 
 [<Fact>]
 let ``a union in an internal module is contained`` () =

@@ -394,6 +394,10 @@ type LoopSuggestion =
         /// The whole loop.
         Range: range
         TokenName: string
+        /// `token.ThrowIfCancellationRequested()` as the body's first
+        /// statement (CR0170's fix), where the body starts on its own line
+        /// below the loop header; a one-line body stays a note.
+        Fix: (range * string * string) option
     }
 
 let findUnobservedLoops
@@ -512,6 +516,27 @@ let findUnobservedLoops
                     | SynExpr.MatchBang _ -> true
                     | _ -> false))
 
+        // the fix: a zero-width insert at the body's first statement, the
+        // statement itself moving to the next line at its own indentation
+        let checkAtTop (token: string) (loop: SynExpr) =
+            let body =
+                match loop with
+                | SynExpr.While(doExpr = b)
+                | SynExpr.ForEach(bodyExpr = b)
+                | SynExpr.For(doBody = b) -> Some b
+                | _ -> None
+
+            match body with
+            | Some b when
+                b.Range.StartLine > loop.Range.StartLine
+                // the body heads its line: nothing before it to move
+                && (source.GetLineString(b.Range.StartLine - 1)).Substring(0, b.Range.StartColumn).Trim() = ""
+                ->
+                let at = Range.mkRange loop.Range.FileName b.Range.Start b.Range.Start
+                let indent = String.replicate b.Range.StartColumn " "
+                Some(at, "", token + ".ThrowIfCancellationRequested()\n" + indent)
+            | _ -> None
+
         let unobserved =
             [
                 for path, e in index.Exprs do
@@ -542,7 +567,11 @@ let findUnobservedLoops
                                 not observed
                                 && not (offeredInside |> List.exists (fun r -> Range.rangeContainsRange e.Range r))
                             then
-                                { Range = e.Range; TokenName = token }
+                                {
+                                    Range = e.Range
+                                    TokenName = token
+                                    Fix = checkAtTop token e
+                                }
                         | None -> ()
             ]
 

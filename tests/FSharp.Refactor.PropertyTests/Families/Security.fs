@@ -133,7 +133,8 @@ let private shapes =
         fixed' "ArgumentsSprintf" [ "FR0126" ] (fun i ->
             $"let f{i} (psi: System.Diagnostics.ProcessStartInfo) (v: string) =\n    psi.Arguments <- sprintf \"run %%s\" v")
         // FR0127: a provider-format key in a literal (digits vary it; a random
-        // word could spell `test`, which the rule reads as a fixture)
+        // word could spell `test`, and a digit run `123456`, which the rule
+        // reads as a fixture)
         withFree
             "ProviderKeyLiteral"
             [ "FR0127" ]
@@ -142,7 +143,7 @@ let private shapes =
                     [
                         "AKIAIOSFODNN7EXAMP{n:D2}"
                         "sk-ant-api03-abcdefghijklmnop{n}"
-                        "ghp_abcdefghijklmnopqrstuvwxyz0123456789{n}"
+                        "ghp_abcdefghijklmnopqrstuvwxyz0246813579{n}"
                         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuv{n}"
                         "Server=db{n}.example.net;Database=app;User Id=app;Password=Hunter2Real9x"
                     ])

@@ -247,6 +247,8 @@ let private awaitingFrameworks =
         "Xunit."
         "NUnit.Framework."
         "Microsoft.VisualStudio.TestTools.UnitTesting."
+        // TUnit's `[<Test>]` lives in TUnit.Core; the runner awaits a Task
+        "TUnit."
     ]
 
 let private hasTestAttribute (check: FSharpCheckFileResults) (source: ISourceText) (attributes: SynAttributes) =

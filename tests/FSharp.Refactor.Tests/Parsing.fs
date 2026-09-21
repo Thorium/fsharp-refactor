@@ -91,6 +91,25 @@ let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFile
     | FSharpCheckFileAnswer.Succeeded checkResults -> parseResults.ParseTree, sourceText, checkResults
     | FSharpCheckFileAnswer.Aborted -> failwith $"Typechecking was aborted, calling parseAndCheck with source: {source}"
 
+/// `parseAndCheck` against the LEGACY .NET Framework reference set (the
+/// machine's mscorlib): the compilation a netstandard2.0/net4x project
+/// sees, where the char and span overloads of String do not exist. The
+/// rules that gate on a modern framework must stay quiet here.
+let parseAndCheckLegacyFramework (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
+    let sourceText = SourceText.ofString source
+
+    let options, _ =
+        checker.GetProjectOptionsFromScript("Legacy.fsx", sourceText, assumeDotNetFramework = true)
+        |> Async.RunSynchronously
+
+    let parseResults, answer =
+        checker.ParseAndCheckFileInProject("Legacy.fsx", source.GetHashCode(), sourceText, options)
+        |> Async.RunSynchronously
+
+    match answer with
+    | FSharpCheckFileAnswer.Succeeded checkResults -> parseResults.ParseTree, sourceText, checkResults
+    | FSharpCheckFileAnswer.Aborted -> failwith $"Typechecking was aborted, calling parseAndCheckLegacyFramework with source: {source}"
+
 /// True when the source typechecks as a script without errors.
 let typechecksCleanly (source: string) : bool =
     let _, _, checkResults = parseAndCheck source

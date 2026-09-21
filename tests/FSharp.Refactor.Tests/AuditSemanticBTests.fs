@@ -123,24 +123,24 @@ let ``FR0075: a task from the binder handed to a collection refuses the fix`` ()
         lines
             [
                 "module Test"
-                "open System.Net.Http"
+                "open System.IO"
                 "open System.Threading.Tasks"
-                "let downloadAll (urls: string list) ="
-                "    let client = new HttpClient()"
+                "let readAll (path: string) (n: int) ="
+                "    let reader = new StreamReader(path)"
                 "    let tasks = ResizeArray<Task<string>>()"
-                "    for u in urls do"
-                "        tasks.Add(client.GetStringAsync u)"
+                "    for _ in 1 .. n do"
+                "        tasks.Add(reader.ReadLineAsync())"
                 "    Task.WhenAll tasks"
             ]
 
     assertTypechecks source
 
-    match useBindingsIn source |> List.filter (fun s -> s.Name = "client") with
+    match useBindingsIn source |> List.filter (fun s -> s.Name = "reader") with
     | [ s ] ->
         Assert.Equal(None, s.Fix)
-        Assert.Equal(Some(UseBinding.Destination.InFlight "GetStringAsync"), s.Destination)
-        Assert.Contains("'GetStringAsync'", UseBinding.describeEscape s)
-    | other -> failwithf "Expected exactly one advisory for 'client', got %A" other
+        Assert.Equal(Some(UseBinding.Destination.InFlight "ReadLineAsync"), s.Destination)
+        Assert.Contains("'ReadLineAsync'", UseBinding.describeEscape s)
+    | other -> failwithf "Expected exactly one advisory for 'reader', got %A" other
 
 [<Fact>]
 let ``FR0075: a task from the binder finished in the scope still gets the fix`` () =
@@ -148,19 +148,19 @@ let ``FR0075: a task from the binder finished in the scope still gets the fix`` 
         lines
             [
                 "module Test"
-                "open System.Net.Http"
-                "let downloadAll (urls: string list) ="
-                "    let client = new HttpClient()"
-                "    for u in urls do"
-                "        printfn \"%s\" (client.GetStringAsync(u).Result)"
+                "open System.IO"
+                "let readAll (path: string) (n: int) ="
+                "    let reader = new StreamReader(path)"
+                "    for _ in 1 .. n do"
+                "        printfn \"%s\" (reader.ReadLineAsync().Result)"
             ]
 
-    match useBindingsIn source |> List.filter (fun s -> s.Name = "client") with
+    match useBindingsIn source |> List.filter (fun s -> s.Name = "reader") with
     | [ s ] ->
-        Assert.True(Some("let", "use") = s.Fix, $"Expected a fix for 'client', got %A{s}")
+        Assert.True(Some("let", "use") = s.Fix, $"Expected a fix for 'reader', got %A{s}")
         let patched = applyEdit source s.Range "use"
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
-    | other -> failwithf "Expected exactly one use-binding fix for 'client', got %A" other
+    | other -> failwithf "Expected exactly one use-binding fix for 'reader', got %A" other
 
 // ---- 3 and 4: FR0012 HintEngine ----
 
@@ -240,9 +240,12 @@ let ``FR0015: an anchored-start literal becomes the ordinal StartsWith`` () =
 
 [<Fact>]
 let ``FR0015: an anchored-end literal keeps the regex`` () =
-    // `$` matches before a final newline; EndsWith does not
+    // `$` matches before a final newline; EndsWith does not (the regex is
+    // kept — and hoisted out of the function body, which is a different
+    // finding)
     Assert.Empty(
         regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc$\")"
+        |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.StringOperation)
     )
 
 // ---- 6: FR0039 CaseInsensitive ----

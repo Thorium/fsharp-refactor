@@ -210,6 +210,231 @@ let ``byref TryParse spelling is deliberately untouched`` () =
             "module Test\nopen System\nlet f (s: string) =\n    let mutable r = 0\n    Int32.TryParse(s.Substring(6, 5), &r) |> ignore\n    r"
     )
 
+[<Fact>]
+let ``a Substring fed to StringBuilder.Append or TextWriter.Write becomes AsSpan`` () =
+    let source =
+        "module Test\nopen System\nopen System.IO\nopen System.Text\nlet f (s: string) (sb: StringBuilder) (w: TextWriter) (sw: StringWriter) =\n    sb.Append(s.Substring(6, 5)) |> ignore\n    w.Write(s.Substring 6)\n    sw.WriteLine(s.Substring(0, 3))\n    Console.Write(s.Substring 1)\n    sb.Append(s.Substring(6, 5)).Append(s.Substring 2) |> ignore"
+
+    let found = substringSpansIn source
+    // Console.Write has no span overload; the chained Append has two
+    Assert.Equal<string list>(
+        [ "Append"; "Write"; "WriteLine"; "Append"; "Append" ],
+        found |> List.map (fun s -> s.ParserName)
+    )
+
+    Assert.Equal<string list>(
+        [ "appends"; "writes"; "writes"; "appends"; "appends" ],
+        found |> List.map (fun s -> s.Verb)
+    )
+
+    let patched =
+        found
+        |> List.sortByDescending (fun s -> s.Range.StartLine, s.Range.StartColumn)
+        |> List.fold (fun src s -> applyEdit src s.Range "AsSpan") source
+
+    Assert.Contains("sb.Append(s.AsSpan(6, 5)) |> ignore", patched)
+    Assert.Contains("w.Write(s.AsSpan 6)", patched)
+    Assert.Contains("sw.WriteLine(s.AsSpan(0, 3))", patched)
+    Assert.Contains("Console.Write(s.Substring 1)", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``a user type's Parse with a span overload of its own is not assumed identical either`` () =
+    // MyType.Parse(string) and MyType.Parse(ReadOnlySpan<char>) are the
+    // author's two methods; only the BCL's parsers are one implementation
+    Assert.Empty(
+        substringSpansIn
+            "module Test\nopen System\ntype Money =\n    static member Parse(text: string) = text.Length\n    static member Parse(text: ReadOnlySpan<char>) = -text.Length\nlet f (s: string) = Money.Parse(s.Substring(6, 5))"
+    )
+
+    // while Guid, DateTime and BigInteger still qualify
+    Assert.Equal(
+        3,
+        (substringSpansIn
+            "module Test\nopen System\nlet f (s: string) = Guid.Parse(s.Substring 1), DateTime.Parse(s.Substring 2), Numerics.BigInteger.Parse(s.Substring 3)")
+            .Length
+    )
+
+[<Fact>]
+let ``a user type's Append with a span overload of its own is not assumed identical`` () =
+    Assert.Empty(
+        substringSpansIn
+            "module Test\nopen System\ntype Sink() =\n    member _.Append(s: string) = s.Length\n    member _.Append(s: ReadOnlySpan<char>) = -s.Length\nlet f (s: string) (k: Sink) = k.Append(s.Substring(6, 5))"
+    )
+
+// ---- FR0166 PrefixCompare ----
+
+let private prefixComparesIn (source: string) =
+    let tree, sourceText, checkResults =
+        FSharp.Refactor.Tests.Parsing.parseAndCheck source
+
+    FSharp.Refactor.PrefixCompare.find true tree sourceText checkResults
+
+let private patchedWith (source: string) (found: FSharp.Refactor.PrefixCompare.Suggestion list) =
+    found
+    |> List.sortByDescending (fun s -> s.Range.StartLine, s.Range.StartColumn)
+    |> List.fold (fun src s -> applyEdit src s.Range s.ReplacementText) source
+
+[<Fact>]
+let ``FR0166: a slice compared with a literal is StartsWith or EndsWith, exactly`` () =
+    let source =
+        "module Test\nlet f (s: string) =\n    let a = s[..5] = \"ORDER-\"\n    let b = s.[0..2] <> \"ORD\"\n    let c = s[s.Length - 3 ..] = \"MED\"\n    let d = \"MED\" = s[s.Length - 3 ..]\n    a, b, c, d"
+
+    let found = prefixComparesIn source
+    Assert.Equal(4, found.Length)
+    Assert.True(found |> List.forall (fun s -> s.Exact))
+
+    Assert.Equal<string list>(
+        [
+            "s.StartsWith(\"ORDER-\", System.StringComparison.Ordinal)"
+            "not (s.StartsWith(\"ORD\", System.StringComparison.Ordinal))"
+            "s.EndsWith(\"MED\", System.StringComparison.Ordinal)"
+            "s.EndsWith(\"MED\", System.StringComparison.Ordinal)"
+        ],
+        found |> List.map (fun s -> s.ReplacementText)
+    )
+
+    let patched = patchedWith source found
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``FR0166: a Substring compared with a literal is exact only under a length guard`` () =
+    let source =
+        "module Test\nopen System\nlet f (s: string) (flag: bool) =\n    let a = s.Substring(0, 6) = \"ORDER-\"\n    let b = s.Length >= 6 && s.Substring(0, 6) = \"ORDER-\" && flag\n    let c = if s.Length > 5 then s.Substring(0, 6) <> \"ORDER-\" else false\n    let d = if s.Length < 3 then false else s.Substring(s.Length - 3) = \"MED\"\n    let e = s.Substring(0, 6) = \"ORDER-\" && s.Length >= 6\n    let g = 6 <= s.Length && s.Substring(0, 6) = \"ORDER-\"\n    a, b, c, d, e, g"
+
+    let found = prefixComparesIn source
+    Assert.Equal(6, found.Length)
+    // a: bare; b, c, d, g: guarded before the cut; e: guarded AFTER it
+    Assert.Equal<bool list>([ false; true; true; true; false; true ], found |> List.map (fun s -> s.Exact))
+    Assert.Equal("s.StartsWith(\"ORDER-\", StringComparison.Ordinal)", found.Head.ReplacementText)
+    Assert.Equal("not (s.StartsWith(\"ORDER-\", StringComparison.Ordinal))", found.[2].ReplacementText)
+    Assert.Equal("s.EndsWith(\"MED\", StringComparison.Ordinal)", found.[3].ReplacementText)
+
+    let patched = patchedWith source found
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``FR0166: a literal of another length, a computed right-hand side, another receiver's Length and a non-string are left alone``
+    ()
+    =
+    Assert.Empty(
+        prefixComparesIn
+            "module Test\ntype Doc(t: string) =\n    member _.Substring(a: int, b: int) = t.Substring(a, b)\n    member _.Length = t.Length\nlet f (s: string) (t: string) (d: Doc) (lit: string) =\n    let a = s.Substring(0, 3) = \"ab\"\n    let b = s[..2] = lit\n    let c = s.Substring(t.Length - 3) = \"abc\"\n    let d = d.Substring(0, 3) = \"abc\"\n    let e = s[1..3] = \"abc\"\n    let g = s.Substring(0, 3) = $\"ab{1}\"\n    a, b, c, d, e, g"
+    )
+
+
+[<Fact>]
+let ``FR0166: a guard says nothing about a receiver rebound below it, and a slice is exact only under tolerant slicing``
+    ()
+    =
+    let source =
+        "module Test\nopen System\nlet f (s: string) (xs: string list) =\n    let a = if s.Length >= 6 then xs |> List.map (fun s -> s.Substring(0, 6) = \"ORDER-\") else []\n    let b = if s.Length >= 6 then (let t = s.Trim() in s.Substring(0, 6) = \"ORDER-\") else false\n    let c = if s.Length >= 6 then (let s = s.Trim() in s.Substring(0, 6) = \"ORDER-\") else false\n    let d = match xs with | s :: _ when s.Length >= 6 && s.Substring(0, 6) = \"ORDER-\" -> true | _ -> false\n    a, b, c, d"
+
+    // a: a lambda rebinds `s`; b: a `let` of another name is fine; c: a
+    // `let` rebinding `s`; d: a match arm's own guard, same binding
+    Assert.Equal<bool list>([ false; true; false; true ], prefixComparesIn source |> List.map (fun s -> s.Exact))
+
+    // under FSharp.Core 4 a slice throws like a Substring: exact only guarded
+    let tree, sourceText, check =
+        FSharp.Refactor.Tests.Parsing.parseAndCheck
+            "module Test\nlet f (s: string) = s[..5] = \"ORDER-\", (s.Length > 5 && s[..5] = \"ORDER-\")"
+
+    Assert.Equal<bool list>(
+        [ false; true ],
+        FSharp.Refactor.PrefixCompare.find false tree sourceText check
+        |> List.map (fun s -> s.Exact)
+    )
+
+[<Fact>]
+let ``FR0166: a dotted receiver is proven through its member's type`` () =
+    let source =
+        "module Test\ntype Doc = { Name: string; Size: int64 }\nlet f (d: Doc) = d.Name[..2] = \"abc\", d.Name.Substring(d.Name.Length - 3) = \"abc\""
+
+    let found = prefixComparesIn source
+
+    Assert.Equal<string list>(
+        [
+            "d.Name.StartsWith(\"abc\", System.StringComparison.Ordinal)"
+            "d.Name.EndsWith(\"abc\", System.StringComparison.Ordinal)"
+        ],
+        found |> List.map (fun s -> s.ReplacementText)
+    )
+
+    Assert.True(typechecksCleanly (patchedWith source found))
+
+// ---- FR0167 CharArrayCopy ----
+
+let private charArrayCopiesIn (source: string) =
+    let tree, sourceText, checkResults =
+        FSharp.Refactor.Tests.Parsing.parseAndCheck source
+
+    FSharp.Refactor.CharArrayCopy.find tree sourceText checkResults
+
+[<Fact>]
+let ``FR0167: a ToCharArray copy read once by a loop or an Array function walks the string`` () =
+    let source =
+        "module Test\nopen System\nlet f (s: string) (name: string) =\n    let mutable n = 0\n    for c in s.ToCharArray() do\n        if c = '-' then n <- n + 1\n    let a = Array.exists Char.IsDigit (s.ToCharArray())\n    let b = s.Trim().ToCharArray() |> Array.forall (fun c -> c <> ' ')\n    name.ToCharArray() |> Array.iteri (fun i c -> n <- n + i + int c)\n    n, a, b"
+
+    let found = charArrayCopiesIn source
+
+    Assert.Equal<string list>(
+        [ "for"; "String.exists"; "String.forall"; "String.iteri" ],
+        found |> List.map (fun s -> s.Consumer)
+    )
+    // the `for` throws on a null string on both sides; the String module
+    // reads null as empty where the copy threw, so those are not exact
+    Assert.Equal<bool list>([ true; false; false; false ], found |> List.map (fun s -> s.Exact))
+
+    Assert.Equal<string list>(
+        [
+            "s"
+            "String.exists Char.IsDigit s"
+            "s.Trim() |> String.forall (fun c -> c <> ' ')"
+            "name |> String.iteri (fun i c -> n <- n + i + int c)"
+        ],
+        found |> List.map (fun s -> s.ReplacementText)
+    )
+
+    let patched =
+        found
+        |> List.sortByDescending (fun s -> s.Range.StartLine, s.Range.StartColumn)
+        |> List.fold (fun src s -> applyEdit src s.Range s.ReplacementText) source
+
+    Assert.Contains("for c in s do", patched)
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``FR0167: a bound copy, a sliced copy, a Seq or map consumer and a non-string receiver are left alone`` () =
+    Assert.Empty(
+        charArrayCopiesIn
+            "module Test\nopen System\ntype Doc(t: string) =\n    member _.ToCharArray() = t.ToCharArray()\nlet f (s: string) (d: Doc) =\n    let chars = s.ToCharArray()\n    for c in chars do ignore c\n    for c in s.ToCharArray(1, 2) do ignore c\n    let a = s.ToCharArray() |> Seq.filter Char.IsDigit |> Seq.length\n    let b = Array.map Char.ToUpper (s.ToCharArray())\n    for c in d.ToCharArray() do ignore c\n    a, b"
+    )
+
+
+// ---- the modern-framework gate the string rules share ----
+
+[<Fact>]
+let ``FR0106, FR0166 and FR0167 stay quiet in a legacy .NET Framework compilation`` () =
+    // the same shapes fire against modern .NET above; against mscorlib the
+    // char and span overloads of String are absent, so nothing is proven
+    // and nothing fires — this is how netstandard2.0/net4x stay untouched
+    let source =
+        "module Test\nopen System\nopen System.Text\nlet f (s: string) (sb: StringBuilder) =\n    sb.Append(s.Substring(6, 5)) |> ignore\n    let a = s.[..5] = \"ORDER-\"\n    let b = s.Length >= 6 && s.Substring(0, 6) = \"ORDER-\"\n    let mutable n = 0\n    for c in s.ToCharArray() do n <- n + int c\n    let d = Array.exists Char.IsDigit (s.ToCharArray())\n    Int32.Parse(s.Substring(0, 2)), a, b, n, d"
+
+    let tree, sourceText, check =
+        FSharp.Refactor.Tests.Parsing.parseAndCheckLegacyFramework source
+
+    Assert.False(FSharp.Refactor.OptionModule.hasErrors check, "the legacy fixture itself must typecheck")
+    Assert.Empty(FSharp.Refactor.SubstringSpan.find tree sourceText check)
+    Assert.Empty(FSharp.Refactor.PrefixCompare.find true tree sourceText check)
+    Assert.Empty(FSharp.Refactor.CharArrayCopy.find tree sourceText check)
+
+    // and the modern compilation of the very same text fires all three
+    let tree, sourceText, check = FSharp.Refactor.Tests.Parsing.parseAndCheck source
+    Assert.Equal(2, (FSharp.Refactor.SubstringSpan.find tree sourceText check).Length)
+    Assert.Equal(2, (FSharp.Refactor.PrefixCompare.find true tree sourceText check).Length)
+    Assert.Equal(2, (FSharp.Refactor.CharArrayCopy.find tree sourceText check).Length)
+
 // ---- CapabilityFix dual-framework emission ----
 
 let private withDualTfm (f: unit -> unit) =
@@ -290,3 +515,98 @@ let ``without the dual signal the fix is always plain`` () =
             "module Test\nopen System\n#if NETSTANDARD\nlet flag = 1\n#endif\nlet f (s: string) = Int32.Parse(s.Substring(6, 5))"
 
     Assert.Equal("AsSpan", fix.ToText)
+
+// ---- FR0170 DictKeysLoop ----
+
+let private dictKeysLoopsIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    FSharp.Refactor.DictKeysLoop.find tree sourceText checkResults
+
+[<Fact>]
+let ``FR0170: a loop over Keys reading the indexer becomes a KeyValue loop`` () =
+    let source =
+        "module M\nopen System.Collections.Generic\nlet show (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        printfn \"%s=%d\" k d.[k]\n        printfn \"%d\" (d[k] + 1)\ntype Holder() =\n    member val Table = Dictionary<int, string>() with get\n    member this.Dump() =\n        for key in this.Table.Keys do\n            printfn \"%d %s\" key this.Table.[key]"
+
+    match dictKeysLoopsIn source with
+    | [ a; b ] ->
+        Assert.Equal("k", a.KeyName)
+        Assert.Equal("value", a.ValueName)
+        Assert.Equal(3, a.Edits.Length)
+        Assert.Equal("key", b.KeyName)
+
+        let patched =
+            a.Edits @ b.Edits
+            |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
+            |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
+
+        Assert.Contains(
+            "    for KeyValue(k, value) in d do\n        printfn \"%s=%d\" k value\n        printfn \"%d\" (value + 1)",
+            patched
+        )
+
+        Assert.Contains("for KeyValue(key, value) in this.Table do\n            printfn \"%d %s\" key value", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected two findings, got %A" other
+
+[<Fact>]
+let ``FR0170: a store through the indexer, a concurrent dictionary, no lookup, and a taken value name stay put`` () =
+    let source =
+        "module M\nopen System.Collections.Generic\nopen System.Collections.Concurrent\nlet bump (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        d.[k] <- d.[k] + 1\nlet concurrent (d: ConcurrentDictionary<string, int>) =\n    for k in d.Keys do\n        printfn \"%d\" d.[k]\nlet keysOnly (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        printfn \"%s\" k\nlet taken (d: Dictionary<string, int>) (value: int) (v: int) (v1: int) =\n    for k in d.Keys do\n        printfn \"%d\" (d.[k] + value + v + v1)"
+
+    Assert.Empty(dictKeysLoopsIn source)
+
+// ---- FR0171 ByteStringLiteral ----
+
+let private byteStringsIn (source: string) =
+    let tree, sourceText = parse source
+    FSharp.Refactor.ByteStringLiteral.find tree sourceText
+
+[<Fact>]
+let ``FR0171: an ASCII literal handed to GetBytes is a byte string literal`` () =
+    let source =
+        "module M\nopen System.Text\nlet a = Encoding.UTF8.GetBytes \"GET / HTTP/1.1\"\nlet b = Encoding.ASCII.GetBytes(\"OK\")\nlet c = System.Text.Encoding.UTF8.GetBytes @\"C:\\x\"\nlet d = Text.Encoding.Latin1.GetBytes \"a\\nb\""
+
+    match byteStringsIn source with
+    | [ a; b; c; d ] ->
+        Assert.Equal("\"GET / HTTP/1.1\"B", a.ReplacementText)
+        Assert.Equal("\"OK\"B", b.ReplacementText)
+        Assert.Equal("@\"C:\\x\"B", c.ReplacementText)
+        Assert.Equal("\"a\\nb\"B", d.ReplacementText)
+
+        let patched =
+            [ a; b; c; d ]
+            |> List.sortByDescending (fun s -> s.Range.StartLine)
+            |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected four findings, got %A" other
+
+[<Fact>]
+let ``FR0171: a non-ASCII literal, an interpolated string, a variable and another encoding stay put`` () =
+    let source =
+        "module M\nopen System.Text\nlet a = Encoding.UTF8.GetBytes \"häh\"\nlet b (n: int) = Encoding.UTF8.GetBytes $\"n={n}\"\nlet c (s: string) = Encoding.UTF8.GetBytes s\nlet d = Encoding.Unicode.GetBytes \"OK\"\nlet e = Encoding.UTF8.GetBytes \"\"\"OK\"\"\""
+
+    Assert.Empty(byteStringsIn source)
+
+[<Fact>]
+let ``FR0170: a body that rebinds the key keeps the loop`` () =
+    // `d.[k]` under a `let k = ...` reads another key: replacing it with the
+    // pair's value would read the wrong one
+    let source =
+        "module M\nopen System.Collections.Generic\nlet shifted (d: Dictionary<int, int>) =\n    for k in d.Keys do\n        let k = k + 1\n        if d.ContainsKey k then printfn \"%d\" d.[k]\nlet lambda (d: Dictionary<int, int>) (f: (int -> int) -> unit) =\n    for k in d.Keys do\n        f (fun k -> d.[k])"
+
+    Assert.Empty(dictKeysLoopsIn source)
+
+[<Fact>]
+let ``FR0171: a user type named Encoding is not the framework's under a typecheck`` () =
+    let source =
+        "module M\ntype Codec() =\n    member _.GetBytes(s: string) = Array.zeroCreate<byte> s.Length\ntype Encoding() =\n    static member val UTF8 = Codec() with get\nlet a = Encoding.UTF8.GetBytes \"OK\"\nlet b = System.Text.Encoding.UTF8.GetBytes \"OK\""
+
+    let tree, sourceText, check = parseAndCheck source
+
+    match FSharp.Refactor.ByteStringLiteral.findWith (Some check) tree sourceText with
+    | [ s ] -> Assert.Equal(7, s.Range.StartLine)
+    | other -> failwithf "Expected the framework call alone, got %A" other
+
+    // parse-only, the spelling is the proof: both
+    Assert.Equal(2, (FSharp.Refactor.ByteStringLiteral.find tree sourceText).Length)

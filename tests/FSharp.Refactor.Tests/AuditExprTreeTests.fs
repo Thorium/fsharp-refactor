@@ -284,6 +284,29 @@ let ``FR0012 still emits isNull when only unrelated names are defined`` () =
         Assert.True(typechecksCleanly (applyEdit src s.Range s.ReplacementText))
     | other -> failwithf "expected one suggestion, got %A" other
 
+[<Fact>]
+let ``FR0012 rewrites a null test in a type-test guard and leaves the Count test beside it alone`` () =
+    // the Roslyn shape `:? ObjectCreationExpressionSyntax as c when
+    // c.ArgumentList = null || c.ArgumentList.Arguments.Count = 0`, over
+    // stand-ins: a nullable class holding a struct list with a Count
+    let src =
+        "module Test\n"
+        + "[<Struct>] type Args = { Count: int }\n"
+        + "[<AllowNullLiteral>] type ArgList() = member _.Arguments = { Count = 0 }\n"
+        + "type Creation() = member val ArgumentList: ArgList = null with get, set\n"
+        + "let f (node: obj) =\n"
+        + "    match node with\n"
+        + "    | :? Creation as c when c.ArgumentList = null || c.ArgumentList.Arguments.Count = 0 -> 1\n"
+        + "    | _ -> 0"
+
+    match hints src with
+    | [ s ] ->
+        Assert.Equal("isNull c.ArgumentList", s.ReplacementText)
+        let patched = applyEdit src s.Range s.ReplacementText
+        Assert.Contains("when isNull c.ArgumentList || c.ArgumentList.Arguments.Count = 0 ->", patched)
+        Assert.True(typechecksCleanly patched)
+    | other -> failwithf "expected one suggestion, got %A" other
+
 // ---- A5: a unit-of-measure float is a float with NaN ----
 
 [<Literal>]

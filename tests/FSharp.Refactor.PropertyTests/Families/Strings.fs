@@ -1,6 +1,6 @@
 /// The string rules: FR0031 StringConcat, FR0038 CharOverload, FR0039
 /// CaseInsensitive, FR0042 SprintfInterpolation, FR0043 TypedHoles, FR0048
-/// FormatArgs, FR0053 HexString, FR0106 SubstringSpan, FR0138
+/// FormatArgs, FR0053 HexString, FR0106 SubstringSpan, FR0166 PrefixCompare, FR0167 CharArrayCopy, FR0138
 /// StringEmptiness, FR0021 InterpToString, FR0015 RegexUsage, FR0122
 /// RegexValidity, FR0125 UnicodeHygiene, FR0157 StringUnion.
 ///
@@ -131,6 +131,30 @@ let private shapes =
         // FR0106: a one-argument Substring handed to Int64.Parse
         withFree "SubstringTailParse" [ "FR0106" ] genSmall (fun n i ->
             $"let f{i} (s: string) = Int64.Parse(s.Substring {n})")
+        // FR0106: a Substring handed to StringBuilder.Append and to a TextWriter
+        withFree "SubstringAppend" [ "FR0106" ] genSmall (fun n i ->
+            $"let f{i} (s: string) (sb: System.Text.StringBuilder) (w: System.IO.TextWriter) =\n    w.Write(s.Substring {n})\n    sb.Append(s.Substring({n}, 2)).Length")
+        // FR0166: a slice compared with a literal of the slice's length — exact
+        withFree "SliceEqualsLiteral" [ "FR0166" ] genWord (fun w i ->
+            $"let f{i} (s: string) = s[..{w.Length - 1}] = \"{w}\" || s[s.Length - {w.Length} ..] <> \"{w}\"")
+        // FR0166: a Substring compared with a literal under a length guard — exact
+        withFree "GuardedSubstringEqualsLiteral" [ "FR0166" ] genWord (fun w i ->
+            $"let f{i} (s: string) = s.Length >= {w.Length} && s.Substring(0, {w.Length}) = \"{w}\"")
+        // FR0166: a bare Substring compared with a literal — a note in a sweep
+        withFree "BareSubstringEqualsLiteral" [ "FR0166" ] genWord (fun w i ->
+            $"let f{i} (s: string) = s.Substring(s.Length - {w.Length}) = \"{w}\"")
+        // FR0167: a ToCharArray copy read once by a loop and by Array functions
+        withFree "CharArrayCopy" [ "FR0167" ] genLetter (fun ch i ->
+            $"let f{i} (s: string) =\n    let mutable n = 0\n    for c in s.ToCharArray() do n <- n + int c\n    n, Array.exists (fun c -> c = '{ch}') (s.ToCharArray()), (s.ToCharArray() |> Array.forall (fun c -> c <> '{ch}'))")
+        // FR0167 decoy: a Seq consumer and a bound copy stay as they are
+        fixed' "CharArrayCopyKept" [ "!FR0167" ] (fun i ->
+            $"let f{i} (s: string) =\n    let chars = s.ToCharArray()\n    Seq.length (Seq.filter Char.IsDigit (s.ToCharArray())) + chars.Length")
+        // FR0171: an ASCII literal encoded at run time is a byte string literal
+        withFree "AsciiGetBytes" [ "FR0171" ] genWord (fun w i ->
+            $"let f{i} () = Encoding.UTF8.GetBytes \"{w}\" |> Array.length")
+        // FR0171 must stay quiet: a variable, and a non-ASCII literal
+        fixed' "GetBytesKept" [ "!FR0171" ] (fun i ->
+            $"let f{i} (s: string) = Encoding.UTF8.GetBytes s |> Array.length")
         // FR0138: the guarded emptiness test, an exact rewrite
         withFree "NullOrEmptyGuarded" [ "FR0138" ] genSmall (fun n i ->
             $"let f{i} (x: string) = if isNull x || x = \"\" then {n} else 1")
@@ -165,6 +189,12 @@ let private shapes =
         // FR0015: a literal Replace is a string Replace
         withFree "RegexReplaceLiteral" [ "FR0015" ] genWord (fun w i ->
             $"let f{i} (s: string) = Regex.Replace(s, \"{w}\", \"x\")")
+        // FR0015: Match(...).Success and the Matches(...).Count tests are Contains
+        withFree "RegexMatchSuccess" [ "FR0015" ] genWord (fun w i ->
+            $"let f{i} (s: string) = Regex.Match(s, \"{w}\").Success, Regex.Matches(s, \"{w}\").Count > 0, 0 = Regex.Matches(s, \"^{w}\").Count")
+        // FR0015: a literal Split is a String.Split with that separator
+        withFree "RegexSplitLiteral" [ "FR0015" ] genWord (fun w i ->
+            $"let f{i} (s: string) = Regex.Split(s, \"{w}\").Length")
         // FR0015: a static call with a real pattern inside a loop is hoisted
         withFree "RegexInLoop" [ "FR0015" ] genWord (fun w i ->
             $"let f{i} (xs: string list) =\n    for s in xs do\n        if Regex.IsMatch(s, \"{w}+\") then Console.WriteLine s")
@@ -283,9 +313,20 @@ let family: Family =
                     if not (CapabilityFix.guardUnavailable ()) then
                         for s in SubstringSpan.find c.Tree c.Source c.Check do
                             yield "FR0106", [ capability "FR0106" c s.Range "Substring" "AsSpan" ]
+                        // a sweep applies the exact ones only; the bare
+                        // Substring is the editor's offer and a note here
+                        for s in PrefixCompare.find true c.Tree c.Source c.Check do
+                            if s.Exact then
+                                yield "FR0166", [ capability "FR0166" c s.Range s.OriginalText s.ReplacementText ]
+
+                        for s in CharArrayCopy.find c.Tree c.Source c.Check do
+                            if s.Exact then
+                                yield "FR0167", [ capability "FR0167" c s.Range s.OriginalText s.ReplacementText ]
                     for s in StringEmptiness.find c.Tree c.Source do
                         if s.Guarded then
                             yield "FR0138", [ edit "FR0138" s.Range s.ReplacementText ]
+                    for s in ByteStringLiteral.find c.Tree c.Source do
+                        yield "FR0171", [ edit "FR0171" s.Range s.ReplacementText ]
                     for s in InterpToString.find c.Tree c.Source do
                         yield "FR0021", [ edit "FR0021" s.Range s.ReplacementText ]
                     for s in RegexUsage.find c.Tree c.Source do
@@ -322,5 +363,11 @@ let family: Family =
                     for s in UnicodeHygiene.find c.Tree c.Source do
                         if s.Fix.IsNone then
                             yield "FR0125", s.Range
+                    for s in PrefixCompare.find true c.Tree c.Source c.Check do
+                        if not s.Exact then
+                            yield "FR0166", s.Range
+                    for s in CharArrayCopy.find c.Tree c.Source c.Check do
+                        if not s.Exact then
+                            yield "FR0167", s.Range
                 ]
     }

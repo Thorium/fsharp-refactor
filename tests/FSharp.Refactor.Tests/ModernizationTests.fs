@@ -1855,6 +1855,27 @@ let ``a disposable handed to a disposable owner's property or Add is adopted`` (
     )
 
 [<Fact>]
+let ``FR0075: HttpClient, a request message and its contents, a SemaphoreSlim are nobody's leak`` () =
+    // CR0060's noOwnership list: a client is a shared lifetime; a request
+    // and its StringContent own nothing unmanaged and a handler mock reads
+    // them back after the send (a `use` there broke the test); a
+    // SemaphoreSlim's wait handle is only allocated on contended use
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.Net.Http\nlet fetch (url: string) =\n    let client = new HttpClient()\n    client.GetStringAsync(url).Result"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.Net.Http\nlet send (client: HttpClient) (body: string) =\n    let request = new HttpRequestMessage(HttpMethod.Post, \"http://x\")\n    let content = new StringContent(body)\n    request.Content <- content\n    client.Send(request).StatusCode"
+    )
+
+    Assert.Empty(
+        useBindingsIn
+            "module Test\nopen System.Threading\nlet guard (work: unit -> int) =\n    let gate = new SemaphoreSlim(1)\n    gate.Wait()\n    let r = work ()\n    gate.Release() |> ignore\n    r"
+    )
+
+[<Fact>]
 let ``FR0147: a union case an F#-compiled assembly's namespace brings is a clash`` () =
     // FsAutoComplete: `type SymbolKind = | Ident | ...` in namespace
     // FsAutoComplete (FsAutoComplete.Core.dll) beside FCS's Ident class —
@@ -2384,7 +2405,7 @@ let ``FR0075: a plain-valued member call as the scope's result is read before us
 
     match
         useBindingsIn
-            "module Test\nopen System.Net.Http\nlet fetch (url: string) =\n    let client = new HttpClient()\n    client.GetStringAsync url"
+            "module Test\nopen System.IO\nlet fetch (path: string) =\n    let reader = new StreamReader(path)\n    reader.ReadToEndAsync()"
     with
     | [ s ] ->
         Assert.Equal(None, s.Fix)

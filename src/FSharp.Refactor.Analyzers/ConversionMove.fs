@@ -30,6 +30,7 @@
 /// preserved verbatim.
 module FSharp.Refactor.ConversionMove
 
+open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
@@ -335,6 +336,81 @@ let private callbackMayWrite (source: ISourceText) (path: SyntaxNode list) (sour
     || assigningLocals |> List.exists mentions
     || sourceName |> Option.exists mentions
 
+/// The consuming operations that STOP EARLY: `exists` at the first hit,
+/// `head` after one element, `exactlyOne` after two. The `Seq.toList`
+/// they replace read the whole source, so a source whose enumeration
+/// runs user code - a `seq { }` with a side effect, a lazy `Seq.map` over
+/// a user callback, a function call handing back a sequence - runs LESS
+/// of it after the move. `length`, `iter`, `sum` and the rest read every
+/// element either way and need no such proof.
+let private shortCircuitOps =
+    set
+        [
+            "exists"
+            "forall"
+            "isEmpty"
+            "contains"
+            "find"
+            "tryFind"
+            "findIndex"
+            "tryFindIndex"
+            "pick"
+            "tryPick"
+            "head"
+            "tryHead"
+            "exactlyOne"
+            "tryExactlyOne"
+        ]
+
+/// The modules whose functions EVALUATE their input before returning: a
+/// `List.map f xs` has run `f` over every element by the time the pipeline
+/// reaches the conversion, whatever `f` does. Only `Seq` defers.
+let private eagerModules = set [ "List"; "Array"; "Set"; "Map"; "String" ]
+
+/// Does enumerating this source run no user code that a short-circuiting
+/// consumer could skip? Syntactically first - a name, a constant, a
+/// property read, a literal (a `[ for ... ]` comprehension is eager), a
+/// pipeline ending in an eager module's function - and where that cannot
+/// tell, the typed proof (OptionModule.callsOnlyCore: every call in the
+/// expression is FSharp.Core's or System.String's, and no callback is a
+/// user function) when the caller has check results; without them the
+/// answer is no, and the conversion stays. CR0020 asks the same of its
+/// source before `Any`/`First`/`Contains`.
+let rec private enumerationComputesOnly
+    (check: FSharpCheckFileResults option)
+    (index: Lazy<AstIndex.Index>)
+    (source: ISourceText)
+    (e: SynExpr)
+    =
+    let syntactically =
+        let rec plain (e: SynExpr) =
+            match e with
+            | SynExpr.Paren(expr = inner)
+            | SynExpr.Typed(expr = inner) -> plain inner
+            | SynExpr.Ident _
+            | SynExpr.LongIdent _
+            | SynExpr.Const _
+            | SynExpr.ArrayOrList _
+            | SynExpr.ArrayOrListComputed _ -> true
+            | SynExpr.DotGet(expr = receiver) -> plain receiver
+            | SynExpr.Tuple(exprs = es) -> List.forall plain es
+            | PipeApp(_, stage) ->
+                match headModuleFunc stage with
+                | ValueSome(m, _, _) -> eagerModules.Contains m
+                | ValueNone -> false
+            | SynExpr.App(isInfix = false) ->
+                match headModuleFunc e with
+                | ValueSome(m, _, _) -> eagerModules.Contains m
+                | ValueNone -> false
+            | _ -> false
+
+        plain e
+
+    syntactically
+    || (match check with
+        | Some c -> OptionModule.callsOnlyCore c source index.Value e.Range
+        | None -> false)
+
 /// Is the pipeline's source ALREADY the collection the conversion
 /// produces? Then the conversion is at most a copy, and moving the
 /// operation in front of it trades a tight Array/List pass for a lazy Seq
@@ -384,8 +460,12 @@ let private alreadyMaterialised (targetModule: string) (sourceExpr: SynExpr) =
     | e -> producesTarget e
 
 /// Find pipeline segments `conv |> Module.op args` that can be rewritten.
-let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+/// The check results, where the caller has them, prove a source pure under
+/// a short-circuiting consumer; without them only the syntactic shapes
+/// (a name, a literal, an eager stage) pass that gate.
+let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+    let index = lazy (AstIndex.ofTree parseTree)
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -423,6 +503,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 (movable || consuming)
                                 && opAllowedForModules opFunc sourceModule targetModule
                                 && safeUnderCallback
+
+                                // a consumer that stops early over a source whose
+
+                                // enumeration runs user code would skip some of it
+
+                                && not (
+
+                                    consuming
+
+                                    && shortCircuitOps.Contains opFunc
+
+                                    && not (enumerationComputesOnly check index source sourceExpr)
+
+                                )
                                 // a source that already IS the target kind
                                 // gains nothing from a lazy detour — not
                                 // even for a consuming drop, where
@@ -474,3 +568,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions
+
+/// `findWith` without check results: the parse-only entry the property
+/// suite and the older tests use.
+let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list = findWith None parseTree source
