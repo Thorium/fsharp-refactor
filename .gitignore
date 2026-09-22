@@ -7,5 +7,6 @@ TestResults/
 .tools/
 artifacts/
 *.log
+*.bak
 
 .claude/worktrees/
