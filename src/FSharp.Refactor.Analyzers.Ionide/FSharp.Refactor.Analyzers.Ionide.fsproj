@@ -84,6 +84,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\SubstringSpan.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\PrefixCompare.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CharArrayCopy.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\ListHeadPattern.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\SeqEnumeratedTwice.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DictKeysLoop.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ByteStringLiteral.fs" />

@@ -62,9 +62,11 @@ let private (|Infix|_|) (e: SynExpr) =
     match e with
     | SynExpr.App(
         isInfix = false
-        funcExpr = SynExpr.App(isInfix = true; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])); argExpr = l)
+        funcExpr = SynExpr.App(
+            isInfix = true; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])); argExpr = l)
         argExpr = r) -> ValueSome(op.idText, l, r)
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = SynExpr.Ident op; argExpr = l); argExpr = r) ->
+    | SynExpr.App(
+        isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = SynExpr.Ident op; argExpr = l); argExpr = r) ->
         ValueSome(op.idText, l, r)
     | _ -> ValueNone
 
@@ -83,7 +85,8 @@ let private (|Receiver|_|) (e: SynExpr) =
     | _ -> ValueNone
 
 let private sameIdents (a: Ident list) (b: Ident list) =
-    a.Length = b.Length && List.forall2 (fun (x: Ident) (y: Ident) -> x.idText = y.idText) a b
+    a.Length = b.Length
+    && List.forall2 (fun (x: Ident) (y: Ident) -> x.idText = y.idText) a b
 
 /// `recv.Length - n`: the start of a suffix of length `n`.
 [<return: Struct>]
@@ -226,8 +229,7 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
         match node with
         // a `let` between the `if` and the comparison rebinds the receiver
         // only when one of its bindings names it
-        | SyntaxNode.SynExpr(LetOrUseE lou) ->
-            lou.Bindings |> List.exists (fun (SynBinding(headPat = p)) -> patBinds p)
+        | SyntaxNode.SynExpr(LetOrUseE lou) -> lou.Bindings |> List.exists (fun (SynBinding(headPat = p)) -> patBinds p)
         | SyntaxNode.SynExpr(SynExpr.Lambda _)
         | SyntaxNode.SynExpr(SynExpr.MatchLambda _)
         | SyntaxNode.SynExpr(SynExpr.ForEach _)
@@ -245,7 +247,8 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
         match path with
         | SyntaxNode.SynExpr(SynExpr.Paren _ as p) :: rest -> chainGuards rest p.Range
         | SyntaxNode.SynExpr(Infix("op_BooleanAnd", l, r) as whole) :: rest ->
-            (Range.rangeContainsRange r.Range inner && guards l) || chainGuards rest whole.Range
+            (Range.rangeContainsRange r.Range inner && guards l)
+            || chainGuards rest whole.Range
         | SyntaxNode.SynExpr(SynExpr.App(isInfix = true)) :: rest -> chainGuards rest inner
         | _ -> false
 

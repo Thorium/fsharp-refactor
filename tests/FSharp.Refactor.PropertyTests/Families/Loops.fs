@@ -177,6 +177,54 @@ let private shapes =
                         ""
                         $"    {drain}"
                     ])
+        // FR0156: a mutable list appended one element per iteration, or consed
+        // and reversed, and only read after - the list expression; FR0050
+        // leaves the combine alone (a fold would keep the copy)
+        withFree
+            "MutableListFill"
+            [ "FR0156"; "!FR0050" ]
+            (Gen.zip
+                genSmall
+                (Gen.elements
+                    [
+                        "acc <- acc @ [ x * 2 ]", "acc"
+                        "acc <- List.append acc [ x * 2 ]", "List.sum acc"
+                        "acc <- x * 2 :: acc", "List.rev acc"
+                    ]))
+            (fun (n, (feed, drain)) i ->
+                let feed = feed.Replace("acc", $"acc{i}")
+                let drain = drain.Replace("acc", $"acc{i}")
+
+                lines
+                    [
+                        $"let f{i} (xs: int list) ="
+                        $"    let mutable acc{i} = []"
+                        ""
+                        "    for x in xs do"
+                        $"        if x > {n} then"
+                        $"            {feed}"
+                        ""
+                        $"    {drain}"
+                    ])
+        // FR0156 must stay quiet: a consed list read without the reverse
+        // is backwards, and a list assigned after its loops is still
+        // being built (FR0051's note either way)
+        withFree
+            "MutableListKept"
+            [ "!FR0156" ]
+            (Gen.zip genSmall (Gen.elements [ "acc <- x :: acc", "acc"; "acc <- acc @ [ x ]", "acc <- []\n    acc" ]))
+            (fun (n, (feed, drain)) i ->
+                let feed = feed.Replace("acc", $"acc{i}")
+                let drain = drain.Replace("acc", $"acc{i}")
+
+                lines
+                    [
+                        $"let f{i} (xs: int list) ="
+                        $"    let mutable acc{i} = []"
+                        "    for x in xs do"
+                        $"        if x > {n} then {feed}"
+                        $"    {drain}"
+                    ])
         // FR0158: a while loop stepping a mutable index while a condition holds
         withFree
             "IndexScan"

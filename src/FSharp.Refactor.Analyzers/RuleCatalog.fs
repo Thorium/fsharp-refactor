@@ -298,7 +298,9 @@ let private categories =
         "FR0165",
         Category.Correctness,
         "a local DateTime compared with or subtracted from a UTC one flips with the timezone"
-        "FR0169", Category.Correctness, "a seq parameter or local enumerated twice on one path runs a query or a generator again"
+        "FR0169",
+        Category.Correctness,
+        "a seq parameter or local enumerated twice on one path runs a query or a generator again"
         "FR0073",
         Category.Idiom,
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -324,13 +326,16 @@ let private categories =
         "FR0103", Category.Idiom, "isinstance-style type-test ladders as match"
         "FR0156",
         Category.Idiom,
-        "a ResizeArray filled one Add at a time by loops and only read after is a list expression"
+        "a ResizeArray filled one Add at a time by loops, or a mutable list appended one element at a time, and only read after is a list expression"
         "FR0157",
         Category.Idiom,
         "a closed set of string literals matched by name becomes a union with a ToString returning the text"
         "FR0158",
         Category.Idiom,
         "a while loop walking a mutable index while a condition holds is a tail-recursive local function"
+        "FR0172",
+        Category.Idiom,
+        "a match arm binding a whole list and reading only itms.[0] / .[1] / .Tail is a cons pattern; an earlier [] arm makes it exact"
 
         // --- cosmetic: punctuation and spelling of code
         "FR0013", Category.Cosmetic, "Redundant parentheses around single atomic arguments to a *function*: List.max([4"

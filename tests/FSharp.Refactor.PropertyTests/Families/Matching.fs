@@ -2,8 +2,9 @@
 /// FR0009 ResultModule, FR0025 OptionOfObj, FR0034 OptionMatch, FR0059
 /// StructOption, FR0003 Composition, FR0072 ExpandWildcard, FR0087 /
 /// FR0088 / FR0089 PatternCleanups, FR0129 MatchGuards, FR0117
-/// MatchArmMerge, FR0110 MissingCases, FR0100 UnimplementedBranch and
-/// FR0040 RedundantGuard. A shape that needs a union or a private helper
+/// MatchArmMerge, FR0110 MissingCases, FR0100 UnimplementedBranch, FR0172
+/// ListHeadPattern and FR0040 RedundantGuard. A shape that needs a union or
+/// a private helper
 /// prints one nested module holding the type and the function, so it is
 /// still one declaration and shrinks as one.
 module FSharp.Refactor.PropertyTests.Families.Matching
@@ -162,6 +163,19 @@ let private shapes =
                     "(s: HashSet<int>) (x: int) = if s.Contains x then s.Remove x |> ignore"
                 ])
             (fun rest i -> $"let f{i} {rest}")
+        // FR0172: an arm binding the whole list and reading only its head
+        withFree "ListHeadArm" [ "FR0172" ] genSmall (fun n i ->
+            $"let f{i} (xs: int list) =\n    match xs with\n    | [] -> {n}\n    | itms -> itms.[0] + {n}")
+        // FR0172: head, second element and tail, under `[]` and `[ _ ]` arms
+        withFree "ListHeadSecondTailArm" [ "FR0172" ] genSmall (fun n i ->
+            $"let f{i} (xs: int list) =\n    match xs with\n    | [] -> {n}\n    | [ _ ] -> {n} + 1\n    | itms -> itms.[0] + itms.[1] + List.length itms.Tail")
+        // FR0172 must stay quiet: no `[]` arm keeps the empty list out (the
+        // index throws where a cons pattern would fall through), and an
+        // array has no head/rest pattern
+        withFree "ListHeadArmKept" [ "!FR0172" ] genSmall (fun n i ->
+            $"let f{i} (xs: int list) =\n    match xs with\n    | itms when itms.Length > {n} -> itms.[0]\n    | _ -> {n}")
+        withFree "ArrayHeadArmKept" [ "!FR0172" ] genSmall (fun n i ->
+            $"let f{i} (xs: int[]) =\n    match xs with\n    | [||] -> {n}\n    | itms -> itms.[0] + {n}")
     ]
 
 let family: Family =
@@ -207,6 +221,9 @@ let family: Family =
 
                     for s in RedundantGuard.find c.Tree c.Source c.Check ->
                         "FR0040", [ edit "FR0040" s.Range s.ReplacementText ]
+
+                    for s in ListHeadPattern.find c.Tree c.Source ->
+                        "FR0172", [ edit "FR0172" s.Range s.ReplacementText ]
                 ]
         Notes = fun _ -> []
     }

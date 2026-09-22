@@ -436,6 +436,21 @@ let ``a name used after the loop stays put`` () =
     )
 
 [<Fact>]
+let ``an array literal stays: hoisting would share one buffer`` () =
+    // every iteration allocates its own buffer; hoisted, they all write
+    // into the same one
+    Assert.Empty(
+        invariantsIn
+            "let sink (b: int[]) = ()\nlet run (a: int) (xs: int list) =\n    for x in xs do\n        let buf = [| a + 1 |]\n        buf.[0] <- x\n        sink buf"
+    )
+
+[<Fact>]
+let ``a list literal still hoists`` () =
+    assertHoisted
+        "let sink (b: int list) = ()\nlet run (a: int) (xs: int list) =\n    for x in xs do\n        let ys = [ a + 1 ]\n        sink ys"
+        "let sink (b: int list) = ()\nlet run (a: int) (xs: int list) =\n    let ys = [ a + 1 ]\n    for x in xs do\n        sink ys"
+
+[<Fact>]
 let ``while loops hoist too`` () =
     assertHoisted
         "let sink (n: int) = ()\nlet run (a: int) (keep: unit -> bool) =\n    while keep () do\n        let c = a + 3\n        sink c"

@@ -79,7 +79,9 @@ let private (|ToCharArrayCall|_|) (source: ISourceText) (e: SynExpr) =
 [<return: Struct>]
 let private (|ArrayFunction|_|) (e: SynExpr) =
     match e with
-    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when m.idText = "Array" && arrayToString.Contains f.idText ->
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when
+        m.idText = "Array" && arrayToString.Contains f.idText
+        ->
         ValueSome(f)
     | _ -> ValueNone
 
@@ -118,7 +120,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 if not (insideQuotedCode path) then
                     match expr with
                     // for c in s.ToCharArray() do
-                    | SynExpr.ForEach(enumExpr = ToCharArrayCall source (m, receiver) as enumExpr) when isSingleLine enumExpr.Range && stringCopy m ->
+                    | SynExpr.ForEach(enumExpr = ToCharArrayCall source (m, receiver) as enumExpr) when
+                        isSingleLine enumExpr.Range && stringCopy m
+                        ->
                         {
                             Range = enumExpr.Range
                             OriginalText = textOfRange source enumExpr.Range
@@ -130,7 +134,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | SynExpr.App(
                         isInfix = false
                         funcExpr = SynExpr.App(isInfix = false; funcExpr = ArrayFunction f; argExpr = fn)
-                        argExpr = ToCharArrayCall source (m, receiver)) when isSingleLine expr.Range && stringCopy m && coreArrayFunction f ->
+                        argExpr = ToCharArrayCall source (m, receiver)) when
+                        isSingleLine expr.Range && stringCopy m && coreArrayFunction f
+                        ->
                         {
                             Range = expr.Range
                             OriginalText = textOfRange source expr.Range

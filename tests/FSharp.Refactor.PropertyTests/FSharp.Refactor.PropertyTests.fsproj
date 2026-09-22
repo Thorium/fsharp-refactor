@@ -28,10 +28,13 @@
     <Compile Include="Families\Strings.fs" />
     <Compile Include="Families\Declarations.fs" />
     <Compile Include="Families.fs" />
+    <Compile Include="Execution.fs" />
+    <Compile Include="Effects.fs" />
     <Compile Include="RobustnessTests.fs" />
     <Compile Include="BooleanSemanticsTests.fs" />
     <Compile Include="FixTests.fs" />
     <Compile Include="TypedTests.fs" />
+    <Compile Include="ExecutionTests.fs" />
   </ItemGroup>
 
   <ItemGroup>

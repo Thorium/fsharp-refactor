@@ -334,3 +334,91 @@ let ``a delegate element type converted the lambda where a yield does not`` () =
         findIn
             "module T\nopen System\nlet f (xs: int list) =\n    let acc = ResizeArray<Action>()\n    for x in xs do\n        acc.Add(fun () -> printfn \"%d\" x)\n    List.ofSeq acc"
     )
+
+// ---- a `let mutable` list fed by appends ----
+
+[<Fact>]
+let ``a mutable list appended one element per iteration is a list expression`` () =
+    let s =
+        assertRewrite
+            "let f (i: int) = i * 2\nlet build (ys: int list) =\n    let mutable xs = []\n\n    for i in ys do\n        let r = f i\n        xs <- List.append xs [ r ]\n\n    xs"
+            "let f (i: int) = i * 2\nlet build (ys: int list) =\n\n    let xs =\n        [\n            for i in ys do\n                let r = f i\n                r\n        ]\n\n    xs"
+
+    Assert.True s.Mutable
+
+[<Fact>]
+let ``the @ spelling, a guard and an annotation keep their shape`` () =
+    assertRewrite
+        "let build (ys: int list) =\n    let mutable xs: int64 list = []\n    for i in ys do\n        if i > 0 then\n            xs <- xs @ [ int64 i ]\n    List.sum xs"
+        "let build (ys: int list) =\n    let xs: int64 list =\n        [\n            for i in ys do\n                if i > 0 then\n                    int64 i\n        ]\n    List.sum xs"
+    |> ignore
+
+[<Fact>]
+let ``a consed list read through List.rev yields in loop order`` () =
+    assertRewrite
+        "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- i * 2 :: xs\n    List.rev xs"
+        "let build (ys: int list) =\n    let xs =\n        [\n            for i in ys do\n                i * 2\n        ]\n    xs"
+    |> ignore
+
+    // read without the reverse, the consed list is backwards: FR0051's
+    // note, not a rewrite
+    Assert.Empty(
+        findIn
+            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- i * 2 :: xs\n    xs"
+    )
+
+    // fed at both ends there is no loop order to yield in
+    Assert.Empty(
+        findIn
+            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- i :: xs\n        xs <- xs @ [ i ]\n    List.rev xs"
+    )
+
+[<Fact>]
+let ``two loops and any later read of the list`` () =
+    assertRewrite
+        "let build (ys: int list) (zs: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- List.append xs [ i + 1 ]\n    for z in zs do\n        xs <- xs @ [ z * 2 ]\n    printfn \"%d\" xs.Length\n    xs |> List.map string"
+        "let build (ys: int list) (zs: int list) =\n    let xs =\n        [\n            for i in ys do\n                i + 1\n            for z in zs do\n                z * 2\n        ]\n    printfn \"%d\" xs.Length\n    xs |> List.map string"
+    |> ignore
+
+[<Fact>]
+let ``a list read in its loop, reassigned after, or built two at a time stays`` () =
+    // read while building: the expression has no partial list to read
+    Assert.Empty(
+        findIn
+            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        if xs.Length < 3 then\n            xs <- xs @ [ i ]\n    xs"
+    )
+
+    // assigned after the loops: the result is immutable
+    Assert.Empty(
+        findIn
+            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i ]\n    if xs.Length > 5 then\n        xs <- []\n    xs"
+    )
+
+    // two elements per step, or a whole list
+    Assert.Empty(
+        findIn
+            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i; i + 1 ]\n    xs"
+    )
+
+    Assert.Empty(
+        findIn
+            "let build (ys: int list list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ i\n    xs"
+    )
+
+    // the element reads the accumulator
+    Assert.Empty(
+        findIn
+            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i + xs.Length ]\n    xs"
+    )
+
+[<Fact>]
+let ``a project's own @ or List module is not FSharp.Core's append`` () =
+    Assert.Empty(
+        findIn
+            "module T\nlet (@) (a: int list) (b: int list) = a\nlet build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i ]\n    xs"
+    )
+
+    Assert.Empty(
+        findIn
+            "module T\nmodule List =\n    let append (a: int list) (b: int list) = a\nlet build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- List.append xs [ i ]\n    xs"
+    )

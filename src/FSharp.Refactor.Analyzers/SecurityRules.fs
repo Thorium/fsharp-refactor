@@ -218,8 +218,7 @@ let private (|Addition|_|) (e: SynExpr) =
     | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Addition"; argExpr = l); argExpr = r) -> Some(l, r)
     | SynExpr.App(
         funcExpr = SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])); argExpr = l)
-        argExpr = r) when op.idText = "op_Addition" ->
-        Some(l, r)
+        argExpr = r) when op.idText = "op_Addition" -> Some(l, r)
     | _ -> None
 
 /// The curried arguments of an application, innermost first:
@@ -367,7 +366,8 @@ let find
              |> Array.choose (fun (_, p) ->
                  match p with
                  | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-                 | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> Some id.idText
+                 | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
+                     Some id.idText
                  | _ -> None)
              |> Array.countBy id
              |> Map.ofArray)

@@ -1775,6 +1775,9 @@ let parseOnlySafeAnalyzers =
             "IndexedLoop"
             "InterpToString"
             "LambdaBuiltin"
+            // the `[]` arm it requires proves the list type from the parse
+            // tree alone
+            "ListHeadPattern"
             "LoopPerf"
             "MatchBang"
             "MatchToIf"

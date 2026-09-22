@@ -108,7 +108,8 @@ let parseAndCheckLegacyFramework (source: string) : ParsedInput * ISourceText * 
 
     match answer with
     | FSharpCheckFileAnswer.Succeeded checkResults -> parseResults.ParseTree, sourceText, checkResults
-    | FSharpCheckFileAnswer.Aborted -> failwith $"Typechecking was aborted, calling parseAndCheckLegacyFramework with source: {source}"
+    | FSharpCheckFileAnswer.Aborted ->
+        failwith $"Typechecking was aborted, calling parseAndCheckLegacyFramework with source: {source}"
 
 /// True when the source typechecks as a script without errors.
 let typechecksCleanly (source: string) : bool =

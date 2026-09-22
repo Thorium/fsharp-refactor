@@ -2329,11 +2329,13 @@ let private accumulatorLoopMessages
 
     AccumulatorLoop.findWith arrays explicitYield parseTree source checkResults
     |> List.map (fun s ->
-        hint
-            "FR0156"
-            $"ResizeArray '%s{s.Name}' is filled one Add at a time by its loops and only read after: the loops are a list expression, with each Add's argument as its yield."
-            s.Range
-            (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
+        let message =
+            if s.Mutable then
+                $"Mutable list '%s{s.Name}' is built one element at a time by its loops and only read after: the loops are a list expression with each element as its yield, built once — an append copied the whole list per element (measured at 1000 elements: 250x faster on 0.3%% of the allocation; a cons and List.rev 1.5x on half)."
+            else
+                $"ResizeArray '%s{s.Name}' is filled one Add at a time by its loops and only read after: the loops are a list expression, with each Add's argument as its yield."
+
+        hint "FR0156" message s.Range (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
 
 [<EditorAnalyzer("AccumulatorLoop", "Turn an Add-by-Add ResizeArray fill into a list expression", HelpBase)>]
 let accumulatorLoopEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -3509,7 +3511,7 @@ let private accumulationMessages
                         match s.Kind with
                         | Accumulation.QuadraticKind.Collection ->
                             sprintf
-                                "Appending to '%s' inside a loop copies it every iteration (O(n²)); accumulate into a ResizeArray, or cons with :: and List.rev once at the end."
+                                "Appending to '%s' inside a loop copies it every iteration (O(n²)); write the loop as a list expression (FR0156 rewrites a `let mutable` list that is only read after its loops), accumulate into a ResizeArray, or cons with :: and List.rev once at the end."
                                 s.Name
                         | Accumulation.QuadraticKind.Str ->
                             sprintf
@@ -6377,6 +6379,31 @@ let charArrayCopyEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let charArrayCopyCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0167" "CharArrayCopy" (fun () ->
         charArrayCopyMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0172 ListHeadPattern ----
+
+let private listHeadPatternMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    ListHeadPattern.find parseTree source
+    |> List.map (fun (s: ListHeadPattern.Suggestion) ->
+        // an earlier unguarded `[]` arm (and `[_]` for a second element)
+        // already keeps the short lists out of this arm, so the cons
+        // pattern matches exactly the lists the name did and a sweep
+        // applies it
+        hint
+            "FR0172"
+            $"'{s.Name}' binds the whole list and the arm reads it only by position — `| {s.Pattern} ->` names the elements the arm uses, and the compiler's exhaustiveness check stands in for the ArgumentException a list index raises on a shorter list."
+            s.Range
+            [ fix s.Range s.OriginalText s.ReplacementText ])
+
+[<EditorAnalyzer("ListHeadPattern", "A match arm indexing the list it bound is a cons pattern", HelpBase)>]
+let listHeadPatternEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0172" "ListHeadPattern" (fun () ->
+        listHeadPatternMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("ListHeadPattern", "A match arm indexing the list it bound is a cons pattern", HelpBase)>]
+let listHeadPatternCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0172" "ListHeadPattern" (fun () ->
+        listHeadPatternMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0169 SeqEnumeratedTwice ----
 

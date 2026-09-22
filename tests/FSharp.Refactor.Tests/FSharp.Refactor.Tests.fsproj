@@ -70,6 +70,7 @@
     <Compile Include="AttributeMergeTests.fs" />
     <Compile Include="QualityRulesTests.fs" />
     <Compile Include="PerfTests.fs" />
+    <Compile Include="ListHeadPatternTests.fs" />
     <Compile Include="ModernizationTests.fs" />
     <Compile Include="ApiChangesTests.fs" />
     <Compile Include="FileWalkTests.fs" />

@@ -58,6 +58,33 @@
 ///   - the loops read no byref-like value (a Span): the list expression
 ///     may not capture one
 ///   - the loops span no `#if` and no multi-line literal
+///
+/// The `let mutable` LIST is the same shape with the copy made per
+/// element instead of once:
+///
+///     let mutable xs = []                        let xs =
+///     for i in ys do                                 [
+///         let r = f i                                    for i in ys do
+///         xs <- List.append xs [ r ]                         let r = f i
+///     xs                                                     r
+///                                                    ]
+///                                                xs
+///
+/// `xs <- xs @ [ e ]` and `xs <- List.append xs [ e ]` (FSharp.Core's,
+/// typed) are the feeds, each yielding its one element; `xs <- e :: xs`
+/// feeds the front and comes out reversed, so that direction qualifies
+/// only when every later read is FSharp.Core's `List.rev xs`, which
+/// becomes `xs` - the expression yields in loop order. A list fed at both
+/// ends has no order to yield in. The result is a list already, so every
+/// later read stays as it is; an assignment after the loops (the result
+/// is immutable), a `&xs`, or a read of `xs` inside its own loops stands
+/// the rule down, and an annotation (`let mutable xs: T list = []`) is
+/// kept on the result, since it typed the elements. `[]`, `List.empty`
+/// and `List.Empty` start it. Measured in PerfClaims (1000 ints, two
+/// thirds kept): 250x faster on 0.3% of the allocation for the append,
+/// 1.5x on half for the cons-and-reverse. FR0050 leaves this shape to
+/// this rule (a fold would keep the copy), and FR0051 notes it wherever
+/// this rule cannot rewrite it.
 module FSharp.Refactor.AccumulatorLoop
 
 open System
@@ -78,6 +105,9 @@ type Edit =
 type Suggestion =
     {
         Name: string
+        /// A `let mutable` list fed by appends (or conses read through
+        /// `List.rev`), rather than a ResizeArray filled by `Add`.
+        Mutable: bool
         /// The `let` that declares the accumulator.
         Range: range
         Edits: Edit list
@@ -98,6 +128,70 @@ let private (|AddCall|_|) (e: SynExpr) =
         funcExpr = SynExpr.DotGet(expr = SynExpr.Ident receiver; longDotId = SynLongIdent(id = [ addIdent ]))
         argExpr = arg) when addIdent.idText = "Add" -> ValueSome([ receiver ], addIdent, arg)
     | _ -> ValueNone
+
+/// What a list feed's typed proof must resolve: `@` to FSharp.Core's
+/// operator, `List.append` to its ListModule; `::` is syntax.
+type private Proof =
+    | Operator of Ident
+    | ListModule of Ident
+    | Syntax
+
+/// `acc <- acc @ [ e ]`, `acc <- List.append acc [ e ]` and `acc <- e :: acc`:
+/// the accumulator, the element, whether it went on the FRONT (a cons,
+/// which leaves the list reversed) and the proof to resolve.
+[<return: Struct>]
+let private (|ListFeed|_|) (e: SynExpr) =
+    // `[ e ]`: one element - not a range, a comprehension or a sequence
+    let singleton (l: SynExpr) =
+        match l with
+        | SynExpr.ArrayOrList(isArray = false; exprs = [ elem ]) -> ValueSome elem
+        | SynExpr.ArrayOrListComputed(isArray = false; expr = elem) ->
+            match elem with
+            | SynExpr.Sequential _
+            | SynExpr.ForEach _
+            | SynExpr.For _
+            | SynExpr.While _
+            | SynExpr.IndexRange _
+            | SynExpr.IfThenElse _
+            | SynExpr.Match _
+            | SynExpr.YieldOrReturn _
+            | SynExpr.YieldOrReturnFrom _
+            | LetOrUseE _ -> ValueNone
+            | _ -> ValueSome elem
+        | _ -> ValueNone
+
+    match e with
+    | SynExpr.LongIdentSet(SynLongIdent(id = [ acc ]), rhs, _) ->
+        match rhs with
+        | SynExpr.App(
+            isInfix = false
+            funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = SynExpr.Ident lhs)
+            argExpr = list) when op.idText = "op_Append" && lhs.idText = acc.idText ->
+            singleton list |> ValueOption.map (fun elem -> acc, elem, false, Operator op)
+        | SynExpr.App(
+            funcExpr = SynExpr.App(
+                funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = SynExpr.Ident lhs)
+            argExpr = list) when m.idText = "List" && f.idText = "append" && lhs.idText = acc.idText ->
+            singleton list |> ValueOption.map (fun elem -> acc, elem, false, ListModule f)
+        // `::` is syntax, and nothing can redefine it
+        | SynExpr.App(
+            isInfix = true
+            funcExpr = IdentName "op_ColonColon"
+            argExpr = SynExpr.Tuple(exprs = [ elem; SynExpr.Ident rhsAcc ])) when rhsAcc.idText = acc.idText ->
+            ValueSome(acc, elem, true, Syntax)
+        | _ -> ValueNone
+    | _ -> ValueNone
+
+/// `[]`, `List.empty`, `List.Empty` (under an annotation or not): the empty
+/// list a list expression starts from too.
+let rec private isEmptyList (e: SynExpr) =
+    match e with
+    | SynExpr.Typed(expr = inner)
+    | SynExpr.Paren(expr = inner) -> isEmptyList inner
+    | SynExpr.ArrayOrList(isArray = false; exprs = []) -> true
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) ->
+        m.idText = "List" && (f.idText = "empty" || f.idText = "Empty")
+    | _ -> false
 
 /// `ResizeArray()`, `ResizeArray<T>()`, `List<T>()`, `new ResizeArray<T>()`:
 /// an empty one. A copy-constructed `ResizeArray(xs)` starts full, and the
@@ -177,6 +271,49 @@ let private elementType (check: FSharpCheckFileResults) (source: ISourceText) (a
                     && t.GenericArguments.Count = 1
                 then
                     Some(u.Symbol, t.GenericArguments.[0])
+                else
+                    None
+            with _ -> // an unresolved type stands the rule down; fsharpanalyzer: ignore-line FR0055
+                None
+        | _ -> None
+    | None -> None
+
+/// Does a list feed's `@` or `List.append` resolve to FSharp.Core's? A
+/// project's own `@` or `List` module would not append.
+let private feedResolves (check: FSharpCheckFileResults) (source: ISourceText) (proof: Proof) =
+    match proof with
+    | Syntax -> true
+    | Operator op -> OptionModule.resolvesToCoreOperator check source op
+    | ListModule f ->
+        let r = f.idRange
+        let lineText = source.GetLineString(r.EndLine - 1)
+
+        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ "List"; f.idText ]) with
+        | Some u ->
+            match u.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as v ->
+                // the module's logical name is `List`, its compiled one `ListModule`
+                let name = OptionModule.fullNameOf v
+
+                name = "Microsoft.FSharp.Collections.List.append"
+                || name = "Microsoft.FSharp.Collections.ListModule.append"
+            | _ -> false
+        | None -> false
+
+/// The symbol of a `let mutable` local whose type is an F# list.
+let private listSymbol (check: FSharpCheckFileResults) (source: ISourceText) (acc: Ident) =
+    match symbolAt check source acc with
+    | Some u ->
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as v ->
+            try
+                let t = OptionModule.stripAbbreviations v.FullType
+
+                if
+                    t.HasTypeDefinition
+                    && t.TypeDefinition.TryFullName = Some "Microsoft.FSharp.Collections.FSharpList`1"
+                then
+                    Some u.Symbol
                 else
                     None
             with _ -> // an unresolved type stands the rule down; fsharpanalyzer: ignore-line FR0055
@@ -436,6 +573,20 @@ type private Drain =
     | Indexed
     /// A read the list and the array both satisfy as they are.
     | AsSeq
+    /// `List.rev acc` / `acc |> List.rev` on a consed list accumulator: the
+    /// list expression yields in loop order, and the whole becomes `acc`.
+    | Reversed of range
+    /// A read of a list accumulator that stays as it is.
+    | Kept
+
+/// What is accumulated.
+[<RequireQualifiedAccess>]
+type private Kind =
+    /// `let acc = ResizeArray()` filled by `acc.Add e`.
+    | ResizeArray
+    /// `let mutable acc = []` fed by `acc <- acc @ [ e ]` (or `List.append`),
+    /// or by `acc <- e :: acc` and read through `List.rev` alone.
+    | List
 
 /// The `f`, the whole application and the argument's position, for `f acc`
 /// (position counted from the first argument) and `acc |> f` (-1: the
@@ -571,6 +722,36 @@ let rec private classifyDrain
                     None
             | ValueNone -> None
 
+/// Classify a read of a LIST accumulator after its loops. The list is
+/// already what the expression builds, so a read stays as it is; the consed
+/// direction reads only through FSharp.Core's `List.rev`, which becomes the
+/// bare name. An assignment's target is no expression node and never
+/// reaches here (the caller stands down on it); a byref of the mutable
+/// cannot be taken of the immutable result.
+[<TailCall>]
+let rec private classifyListDrain
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (cons: bool)
+    (path: SyntaxNode list)
+    (node: SynExpr)
+    : Drain option =
+    let useRange = node.Range
+
+    match path with
+    | SyntaxNode.SynExpr(SynExpr.Paren(expr = e) as paren) :: rest when sameSpan e.Range useRange ->
+        classifyListDrain check source cons rest paren
+    | SyntaxNode.SynExpr(SynExpr.AddressOf _) :: _ -> None
+    | _ when not cons -> Some Kept
+    | _ ->
+        match node with
+        | SynExpr.LongIdent _ -> None
+        | _ ->
+            match applicationOf path useRange with
+            | ValueSome(f, whole, _) when functionText f = "List.rev" && coreConversion check source f ->
+                Some(Reversed whole)
+            | _ -> None
+
 /// The yield that stands in for `acc.Add arg`, placed where the call stood:
 /// the argument, its outer parentheses dropped where the bare expression
 /// reads the same at statement level, and an argument written on the lines
@@ -655,14 +836,24 @@ let private aloneOnItsLine (source: ISourceText) (binding: SynBinding) =
     let r = binding.RangeOfBindingWithRhs
     let line = (source.GetLineString(r.StartLine - 1)).Trim()
 
+    // `let mutable acc = []` too: the keyword sits before the binding's range
+    let afterMutable (text: string) =
+        let text = text.TrimStart()
+
+        if text.StartsWith "mutable " then
+            text.Substring(8).TrimStart()
+        else
+            text
+
     line.StartsWith "let "
-    && line.Substring(4).TrimStart() = (textOfRange source r).Trim()
+    && afterMutable (line.Substring 4) = afterMutable ((textOfRange source r).Trim())
 
 /// Find the accumulators whose loops are a list expression. Requires typed
 /// check results.
 /// The suggestion for one candidate accumulator, when its loops and drains
 /// allow one.
 let private suggestionFor
+    (kind: Kind)
     (index: AstIndex.Index)
     (source: ISourceText)
     (check: FSharpCheckFileResults)
@@ -683,23 +874,53 @@ let private suggestionFor
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> sameSpan first.idRange r
             | _ -> false)
 
-    // `acc.Add arg` whose receiver is exactly this use
-    let addCallAt (r: range) =
+    // the feed whose receiver or target is exactly this use: the statement's
+    // range, the element it adds, whether it consed it to the front, and
+    // the typed proof it is the feed it looks like (deferred: a resolution
+    // per call is the expensive step)
+    let feedAt (r: range) =
         index.Exprs
         |> Array.tryPick (fun (_, e) ->
-            match e with
-            | AddCall([ recv ], addIdent, arg) when sameSpan recv.idRange r -> Some(e, addIdent, arg)
+            match kind, e with
+            | Kind.ResizeArray, AddCall([ recv ], addIdent, arg) when sameSpan recv.idRange r ->
+                Some(e.Range, arg, false, (fun () -> resolvesToListAdd check source addIdent))
+            | Kind.List, ListFeed(target, elem, cons, proof) when sameSpan target.idRange r ->
+                Some(e.Range, elem, cons, (fun () -> feedResolves check source proof))
             | _ -> None)
 
-    match elementType check source acc with
-    | Some(symbol, element) when closedElementType element ->
+    let accumulator =
+        match kind with
+        | Kind.ResizeArray ->
+            match elementType check source acc with
+            | Some(symbol, element) when closedElementType element -> Some symbol
+            | _ -> None
+        | Kind.List -> listSymbol check source acc
+
+    match accumulator with
+    | Some symbol ->
         let uses =
             check.GetUsesOfSymbolInFile symbol
             |> Array.filter (fun u -> not u.IsFromDefinition)
             |> Array.map (fun u -> u.Range)
             |> Array.sortBy (fun r -> r.StartLine, r.StartColumn)
 
-        let addCalls = uses |> Array.map (fun r -> r, addCallAt r)
+        let feeds = uses |> Array.choose (fun r -> feedAt r |> Option.map (fun f -> r, f))
+
+        // `acc <- acc @ [ e ]` reads `acc` once on its right: that read is
+        // the feed's own, not a use of its own - unless it sits in the
+        // element, which the feed check below must still see
+        let uses =
+            uses
+            |> Array.filter (fun r ->
+                not (
+                    feeds
+                    |> Array.exists (fun (target, (call, elem, _, _)) ->
+                        not (sameSpan target r)
+                        && Range.rangeContainsRange call r
+                        && not (Range.rangeContainsRange elem.Range r))
+                ))
+
+        let addCalls = uses |> Array.map (fun r -> r, feedAt r)
         let statements = statementsOf body
 
         // the loops that feed the accumulator: a `for` statement with an
@@ -741,14 +962,20 @@ let private suggestionFor
                 inLoops
                 |> List.map (fun (r, call) ->
                     match call, loopOf r with
-                    | Some(e, addIdent, arg), Some(_, loop) when
-                        inStatementPosition loop e.Range
-                        && resolvesToListAdd check source addIdent
+                    | Some(call, arg, _, resolves), Some(_, loop) when
+                        inStatementPosition loop call
+                        && resolves ()
                         && not (uses |> Array.exists (fun v -> Range.rangeContainsRange arg.Range v))
                         ->
-                        yieldText explicitYield source e.Range arg
-                        |> Option.map (fun text -> e.Range, text)
+                        yieldText explicitYield source call arg |> Option.map (fun text -> call, text)
                     | _ -> None)
+
+            // a list fed at the front comes out reversed and is read through
+            // `List.rev`; fed at both ends it has no loop order to yield in
+            let consed =
+                inLoops
+                |> List.choose (fun (_, call) -> call |> Option.map (fun (_, _, cons, _) -> cons))
+                |> List.distinct
 
             let quietBefore =
                 outside |> List.forall (fun (r, _) -> Position.posGeq r.Start region.End)
@@ -762,10 +989,12 @@ let private suggestionFor
                         // have to move with it
                         || (match e with
                             | AddCall(recv :: _, _, _) -> recv.idText <> acc.idText
+                            | ListFeed(target, _, _, _) -> target.idText <> acc.idText
                             | _ -> false)))
 
             if
                 not quietBefore
+                || consed.Length <> 1
                 || hostile
                 || not (yields |> List.forall Option.isSome)
                 || spansDirective source region
@@ -783,9 +1012,13 @@ let private suggestionFor
                 let drains =
                     outside
                     |> List.map (fun (r, _) ->
-                        match nodeAt r with
-                        | Some(path, node) -> classifyDrain check source path node
-                        | None -> None)
+                        match nodeAt r, kind with
+                        | Some(path, node), Kind.ResizeArray -> classifyDrain check source path node
+                        | Some(path, node), Kind.List -> classifyListDrain check source consed.Head path node
+                        // an assignment's target, `acc <- ...` after the
+                        // loops, is no expression node: the list is not
+                        // done being built, and the result is immutable
+                        | None, _ -> None)
 
                 // What the drains ask for decides the shape, and PerfClaims decides
                 // whether the shape is worth writing (.NET 10, 1000 ints):
@@ -820,6 +1053,11 @@ let private suggestionFor
                 let shape =
                     if not (drains |> List.forall Option.isSome) then
                         None
+                    // a list accumulator is a list already: the expression
+                    // builds it once where the appends copied it per
+                    // element, and no drain asks for anything else
+                    elif kind = Kind.List then
+                        Some false
                     elif wantsArray || not wantsList then
                         (if arrays then Some true else None)
                     else
@@ -838,10 +1076,21 @@ let private suggestionFor
                         let pad n = String(' ', n)
 
                         let annotation =
-                            match declaredElementType source construction with
-                            | Some t when wantsArray -> $": {t}[]"
-                            | Some t -> $": {t} list"
-                            | None -> ""
+                            match kind with
+                            | Kind.ResizeArray ->
+                                match declaredElementType source construction with
+                                | Some t when wantsArray -> $": {t}[]"
+                                | Some t -> $": {t} list"
+                                | None -> ""
+                            // `let mutable acc: T list = []` keeps its
+                            // annotation: it is what typed the elements
+                            | Kind.List ->
+                                match binding with
+                                | SynBinding(returnInfo = Some(SynBindingReturnInfo(typeName = t))) when
+                                    isSingleLine t.Range
+                                    ->
+                                    $": {textOfRange source t.Range}"
+                                | _ -> ""
 
                         let replacement =
                             String.concat
@@ -886,14 +1135,16 @@ let private suggestionFor
                                 | ToList r when not wantsArray -> Some(edit r (drainName r))
                                 | ToArray r when wantsArray -> Some(edit r (drainName r))
                                 | Count r when wantsArray -> Some(edit r "Length")
+                                | Reversed r -> Some(edit r (drainName r))
                                 | _ -> None)
 
                         {
                             Name = acc.idText
+                            Mutable = (kind = Kind.List)
                             Range = binding.RangeOfBindingWithRhs
                             Edits = edit declRange "" :: edit region replacement :: drainEdits
                         })
-    | _ -> None
+    | None -> None
 
 /// Find the accumulators whose loops are a list expression. Requires typed
 /// check results.
@@ -918,8 +1169,13 @@ let findWith
                 match expr with
                 | LetOrUseE lou when not (lou.IsRecursive || lou.IsBang || lou.IsUse) ->
                     match lou.Bindings with
-                    | [ SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = acc)); expr = construction) as binding ] when
-                        isEmptyConstruction construction
+                    | [ SynBinding(
+                            isMutable = isMutable
+                            headPat = SynPat.Named(ident = SynIdent(ident = acc))
+                            expr = construction) as binding ] when
+                        // `let acc = ResizeArray()`, or `let mutable acc = []`
+                        ((not isMutable && isEmptyConstruction construction)
+                         || (isMutable && isEmptyList construction))
                         && binding.RangeOfBindingWithRhs.StartLine = binding.RangeOfBindingWithRhs.EndLine
                         // the declaration alone on its line: the line goes — and not
                         // from between two directives
@@ -933,8 +1189,10 @@ let findWith
                                     (Position.mkPos (binding.RangeOfBindingWithRhs.StartLine + 1) 0))
                         )
                         ->
+                        let kind = if isMutable then Kind.List else Kind.ResizeArray
+
                         match
-                            suggestionFor index source check acc binding construction lou.Body arrays explicitYield
+                            suggestionFor kind index source check acc binding construction lou.Body arrays explicitYield
                         with
                         | Some s -> s
                         | None -> ()

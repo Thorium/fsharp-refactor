@@ -324,7 +324,8 @@ let ``a null named argument is never rewritten, a null test beside an operator i
     assertNoSuggestion (stub + "let d () = MyType().With(1, Prop = null)")
 
     // the same equality as an operand of `||` is a null test
-    let src = stub + "let e (t: MyType) (flag: bool) = if t.Prop = null || flag then 1 else 0"
+    let src =
+        stub + "let e (t: MyType) (flag: bool) = if t.Prop = null || flag then 1 else 0"
 
     match findIn src with
     | [ s ] ->

@@ -56,6 +56,41 @@ type QuadraticSuggestion =
         Kind: QuadraticKind
     }
 
+/// `acc @ [ e ]`, `List.append acc [ e ]`, `Array.append acc [| e |]`,
+/// `e :: acc`: one element added per step, which a fold would keep copying
+/// the accumulator for.
+let private appendsOne (acc: Ident) (rhs: SynExpr) =
+    let isAcc (e: SynExpr) =
+        match e with
+        | SynExpr.Ident i -> i.idText = acc.idText
+        | _ -> false
+
+    let literal (e: SynExpr) =
+        match e with
+        | SynExpr.ArrayOrList _
+        | SynExpr.ArrayOrListComputed _ -> true
+        | _ -> false
+
+    match rhs with
+    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = added) when
+        op.idText = "op_Append" && isAcc lhs && literal added
+        ->
+        true
+    | SynExpr.App(
+        funcExpr = SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = lhs)
+        argExpr = added) when
+        (m.idText = "List" || m.idText = "Array")
+        && f.idText = "append"
+        && isAcc lhs
+        && literal added
+        ->
+        true
+    | SynExpr.App(funcExpr = SingleIdent op; argExpr = SynExpr.Tuple(exprs = [ _; rest ])) when
+        op.idText = "op_ColonColon" && isAcc rest
+        ->
+        true
+    | _ -> false
+
 /// A loop pattern usable as a lambda parameter.
 let private lambdaPatText (source: ISourceText) (pat: SynPat) =
     let text = textOfRange source pat.Range
@@ -255,6 +290,10 @@ let find
                     match loopBody with
                     | SynExpr.LongIdentSet(SynLongIdent(id = [ target ]), rhs, _) when
                         target.idText = acc.idText
+                        // `acc <- acc @ [ e ]` folded would still copy the
+                        // list per element: FR0051 notes the loop, and
+                        // FR0156 writes the list expression
+                        && not (appendsOne acc rhs)
                         && isSingleLine rhs.Range
                         && isSingleLine src.Range
                         && isSingleLine init.Range

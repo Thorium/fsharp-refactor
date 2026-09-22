@@ -11,8 +11,10 @@
 /// Hoisting changes how many times the right-hand side runs (n iterations
 /// become exactly one, and an empty loop still runs it once), so the
 /// safety rules make that unobservable:
-///   - the RHS is PURE: constants, identifiers, tuples, list/array
-///     literals, and a whitelist of core operators that are pure and total
+///   - the RHS is PURE: constants, identifiers, tuples, LIST literals
+///     (an array literal is a fresh mutable buffer every iteration, and
+///     hoisting makes every iteration share one), and a whitelist of
+///     core operators that are pure and total
 ///     on their operands (typed-gated against shadowed operators) — no
 ///     calls, no property reads, and none of the operators that APPLY
 ///     something (`|>`, `>>`, `!`, `:=`): `reader |> readLine` is a call;
@@ -145,6 +147,11 @@ let rec private pureIdentsLoop
         | SynExpr.Paren(expr = inner)
         | SynExpr.Typed(expr = inner) -> pureIdentsLoop acc ops (inner :: rest)
         | SynExpr.Tuple(exprs = exprs) -> pureIdentsLoop acc ops (exprs @ rest)
+        // A LIST literal is immutable: n allocations become one and nothing
+        // can tell. An ARRAY literal is a fresh mutable buffer per
+        // iteration — hoisted, every iteration shares one, so
+        // `let buf = [| a + 1 |]` above a `buf.[0] <- x` quietly changes
+        // what the loop does. Same for anything else handed the buffer.
         | SynExpr.ArrayOrListComputed(expr = inner) -> pureIdentsLoop acc ops (inner :: rest)
         | SynExpr.ArrayOrList(exprs = exprs) -> pureIdentsLoop acc ops (exprs @ rest)
         // infix operator: App(App(op, lhs), rhs)

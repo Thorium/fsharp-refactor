@@ -236,6 +236,21 @@ let orderId = "ORDER-12345-CONFIRMED"
 let mutable orderIdRuntime =
     String.Concat("ORDER-", string (Environment.TickCount % 1 + 12345), "-CONFIRMED")
 
+// FR0168 / FR0170 / FR0171 / FR0172 inputs: built at run time, so nothing
+// constant-folds
+let mutable notANumber = String.Concat("abc", string (Environment.TickCount % 1))
+let mutable shortList = List.init (3 + Environment.TickCount % 1) id
+// the array a FR0171 side built, kept so the JIT cannot elide it
+let mutable keep: byte[] = null
+
+let keyedDict =
+    System.Collections.Generic.Dictionary<int, int>(
+        seq {
+            for k in 0..999 do
+                System.Collections.Generic.KeyValuePair(k, k * 2)
+        }
+    )
+
 // FR0157's pair: the string the match reads today, and the union it becomes
 [<RequireQualifiedAccess>]
 type Region =
@@ -935,7 +950,10 @@ let cases =
                         0
             After =
                 fun () ->
-                    if orderId.Length >= 6 && orderId.StartsWith("ORDER-", System.StringComparison.Ordinal) then
+                    if
+                        orderId.Length >= 6
+                        && orderId.StartsWith("ORDER-", System.StringComparison.Ordinal)
+                    then
                         1
                     else
                         0
@@ -985,8 +1003,18 @@ let cases =
             Name = "Array.exists over ToCharArray -> String.exists"
             Cat = Perf
             Iters = 2_000_000
-            Before = fun () -> if orderIdRuntime.ToCharArray() |> Array.exists (fun c -> c = '-') then 1 else 0
-            After = fun () -> if orderIdRuntime |> String.exists (fun c -> c = '-') then 1 else 0
+            Before =
+                fun () ->
+                    if orderIdRuntime.ToCharArray() |> Array.exists (fun c -> c = '-') then
+                        1
+                    else
+                        0
+            After =
+                fun () ->
+                    if orderIdRuntime |> String.exists (fun c -> c = '-') then
+                        1
+                    else
+                        0
         }
 
         // FR0167 deliberately leaves `Seq.*` over the copy alone: measured
@@ -1296,6 +1324,153 @@ let cases =
                         |]
 
                     acc.Length
+        }
+
+        // FR0156, the `let mutable` list form: `xs <- xs @ [ e ]` copies
+        // the whole list per element (O(n²) - FR0051's note), where the
+        // list expression collects once. Measured (.NET 10, x64, 1000
+        // ints, two thirds kept): see the run's line for the ratio the
+        // message quotes
+        {
+            Code = "FR0156"
+            Name = "mutable list @ [ e ] loop -> list expression"
+            Cat = Idiom
+            Iters = 200
+            Before =
+                fun () ->
+                    let mutable acc = []
+
+                    for x in xsArr do
+                        if x % 3 <> 0 then
+                            acc <- acc @ [ x * 2 ]
+
+                    acc.Length
+            After =
+                fun () ->
+                    let acc =
+                        [
+                            for x in xsArr do
+                                if x % 3 <> 0 then
+                                    x * 2
+                        ]
+
+                    acc.Length
+        }
+
+        // the consed form is linear already; the list expression saves the
+        // List.rev pass and its second list
+        {
+            Code = "FR0156"
+            Name = "mutable list e :: acc loop + List.rev -> list expression"
+            Cat = Idiom
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let mutable acc = []
+
+                    for x in xsArr do
+                        if x % 3 <> 0 then
+                            acc <- x * 2 :: acc
+
+                    (List.rev acc).Length
+            After =
+                fun () ->
+                    let acc =
+                        [
+                            for x in xsArr do
+                                if x % 3 <> 0 then
+                                    x * 2
+                        ]
+
+                    acc.Length
+        }
+
+        // FR0168: a failed Parse under a handler pays the throw; TryParse
+        // answers false. Measured on an input that is not a number
+        {
+            Code = "FR0168"
+            Name = "try Int32.Parse with _ -> 0  ->  TryParse (failing input)"
+            Cat = Perf
+            Iters = 20_000
+            Before =
+                fun () ->
+                    try
+                        Int32.Parse notANumber
+                    with _ ->
+                        0
+            After =
+                fun () ->
+                    match Int32.TryParse notANumber with
+                    | true, v -> v
+                    | _ -> 0
+        }
+
+        // FR0170: a loop over d.Keys reading d.[k] looks every key up
+        // again; KeyValue(k, v) reads the pair the enumerator already holds
+        {
+            Code = "FR0170"
+            Name = "for k in d.Keys do d.[k]  ->  for KeyValue(k, v) in d"
+            Cat = Perf
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let mutable sum = 0
+
+                    for k in keyedDict.Keys do
+                        sum <- sum + keyedDict.[k]
+
+                    sum
+            After =
+                fun () ->
+                    let mutable sum = 0
+
+                    for KeyValue(_, v) in keyedDict do
+                        sum <- sum + v
+
+                    sum
+        }
+
+        // FR0171: the encoder run over an ASCII literal per call, against
+        // the byte string literal's copy of compiled data. The literal is
+        // `InitializeArray` from an RVA field, which the JIT expands to a
+        // copy only at tier 1: at tier 0 it is a helper call resolving the
+        // field handle (measured 55 ns and 104 B against GetBytes' 11 ns
+        // and 32 B), and a 200k-iteration case finished inside the tiering
+        // delay, so this one runs long enough to be measured as the code
+        // that ships runs (4 ns/32 B against 12 ns/32 B, kept alive)
+        {
+            Code = "FR0171"
+            Name = "Encoding.UTF8.GetBytes \"OK\"  ->  \"OK\"B"
+            Cat = Perf
+            Iters = 5_000_000
+            Before =
+                fun () ->
+                    keep <- Text.Encoding.UTF8.GetBytes "OK"
+                    keep.Length
+            After =
+                fun () ->
+                    keep <- "OK"B
+                    keep.Length
+        }
+
+        // FR0172: `.[0]` on a list in an arm walks no cells, so the cons
+        // pattern is the idiom (and the compile-time exhaustiveness check),
+        // not a speed-up: measured level, both a few ns and no allocation
+        {
+            Code = "FR0172"
+            Name = "| itms -> itms.[0]  ->  | itmsHead :: _ -> itmsHead"
+            Cat = Idiom
+            Iters = 2_000_000
+            Before =
+                fun () ->
+                    match shortList with
+                    | [] -> 0
+                    | itms -> itms.[0] + itms.[0] * 2
+            After =
+                fun () ->
+                    match shortList with
+                    | [] -> 0
+                    | itmsHead :: _ -> itmsHead + itmsHead * 2
         }
 
         {
