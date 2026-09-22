@@ -532,6 +532,24 @@ different risk:
 }
 ```
 
+FR0015 takes `perCall` (default true). A `Regex` call inside a loop
+re-parses its pattern once per element and is always hoisted; one in a
+plain function body costs a lookup in the runtime's regex cache per call,
+and a re-parse only once that cache (fifteen patterns) turns over. It is
+hoisted by default all the same - a function is far likelier to be called
+many times than a module is to be initialised and its binding never read,
+and F# builds a module's bindings on first access, so a hoisted `Regex`
+nothing reaches is never built. Set it false to keep only the loop
+hoists:
+
+```json
+{
+  "rules": {
+    "FR0015": { "perCall": false }
+  }
+}
+```
+
 Paths can be excluded too - additively over the built-in defaults
 (`paket-files`, `.paket`, `node_modules`), which cover generated and
 vendored code a compilation nonetheless includes:

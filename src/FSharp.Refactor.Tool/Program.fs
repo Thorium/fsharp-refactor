@@ -266,7 +266,7 @@ type private Options =
     }
 
 let private helpText =
-    """fsharp-refactor — applies F# refactoring quick fixes to your code.
+    """fsharp-refactor - applies F# refactoring quick fixes to your code.
 
 USAGE
   fsharp-refactor <what> [options]
@@ -328,7 +328,7 @@ OPTIONS
   --fail-on-findings    exit 3 when any finding survives the filters — the
                         hard CI gate (0 clean, 1 failure, 2 usage)
   --honor-suppressions  honor every suppression comment regardless of the
-                        config's "suppressions" policy — the CI override
+                        config's "suppressions" policy - the CI override
                         for a repo that wants comments inert locally
   --notes [on|off|only] on (the bare flag) lists fix-less advisory notes
                         inline; only lists nothing but them. By default a
@@ -776,7 +776,7 @@ let private runForProject (project: string) (timeout: TimeSpan) (fileName: strin
                 if m.Success then m.Groups.[1].Value.Trim() else "an SDK"
 
             Out.skip
-                $"  (global.json pins {pin}, which is not installed — analysed with the SDK dotnet resolves outside the repository; install it or relax rollForward to verify against the pin)"
+                $"  (global.json pins {pin}, which is not installed - analysed with the SDK dotnet resolves outside the repository; install it or relax rollForward to verify against the pin)"
 
             buildDirectories.[key] <- Some neutral
             runProcessIn (Some neutral) timeout fileName arguments
@@ -1300,7 +1300,7 @@ let private ensureRestorable (projectPath: string) =
                         printfn
                             $"  paket.dependencies in {root}, and its global.json pins an SDK not installed here: after installing it, run `dotnet tool restore` and `dotnet paket restore` there"
                     else
-                        printfn $"  paket.dependencies in {root} — running the restores the repository documents"
+                        printfn $"  paket.dependencies in {root} - running the restores the repository documents"
 
                         for exe, args, label in steps do
                             // a Windows executable needs mono elsewhere
@@ -1455,7 +1455,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         )
 
     if isDatabaseProject then
-        Error "a SQL database project (dacpac), not an F# compilation — skipped"
+        Error "a SQL database project (dacpac), not an F# compilation - skipped"
     else
 
         // A multi-targeted project builds "outer" and dispatches one inner build
@@ -1635,7 +1635,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                 else
                     String.concat "\n" errorLines
 
-            Error $"dotnet build failed — fix the build before applying fixes:\n{detail}"
+            Error $"dotnet build failed - fix the build before applying fixes:\n{detail}"
         else
             // the build above left the project up to date, and an
             // incremental skip of CoreCompile yields no args at all — so the
@@ -3931,7 +3931,7 @@ let private runApiPass
             let names = templated |> Seq.distinct |> String.concat ", "
 
             Out.skip
-                $"  ({templated.Count} migration(s) kept back: a string literal in the project names the function — a template's calls no symbol table lists: {names})"
+                $"  ({templated.Count} migration(s) kept back: a string literal in the project names the function - a template's calls no symbol table lists: {names})"
 
         if branched.Count > 0 then
             let names = branched |> Seq.distinct |> String.concat ", "
@@ -4186,7 +4186,7 @@ let private runApiPass
                             let blamed = blamed ()
 
                             Out.skip
-                                $"  ({name} stopped building as {other} after the edits — the #if branch the analysis could not see: {blamed.Length} suggestion(s) put back)"
+                                $"  ({name} stopped building as {other} after the edits - the #if branch the analysis could not see: {blamed.Length} suggestion(s) put back)"
 
                             for l in lines |> Array.truncate 2 do
                                 Out.dim $"    {l}"
@@ -5146,7 +5146,7 @@ let private writeHtmlReport (path: string) (target: string) (findings: ReportedF
     let stamp = DateTime.UtcNow.ToString "yyyy-MM-dd HH:mm"
 
     line
-        $"<div class=\"meta\"><code>{esc (Path.GetFullPath target)}</code> · fsharp-refactor {esc toolVersion.Value} · {stamp} UTC · paths relative to <code>{esc root}</code></div>"
+        $"<div class=\"meta\"><code>{esc (Path.GetFullPath target)}</code> | fsharp-refactor {esc toolVersion.Value} | {stamp} UTC | paths relative to <code>{esc root}</code></div>"
 
     line "<div class=\"summary\">"
     line $"<div class=\"card\"><b>{findings.Length}</b><span>findings</span></div>"
@@ -5181,7 +5181,7 @@ let private writeHtmlReport (path: string) (target: string) (findings: ReportedF
 
         for code, items in grouped do
             line
-                $"<h2 class=\"rule\" id=\"{code}\"><a href=\"{RuleCatalog.helpUri code}\">{code}</a> <span class=\"desc\">— {esc (RuleCatalog.describe code)}</span> <span class=\"cat\">({items.Length})</span></h2>"
+                $"<h2 class=\"rule\" id=\"{code}\"><a href=\"{RuleCatalog.helpUri code}\">{code}</a> <span class=\"desc\">- {esc (RuleCatalog.describe code)}</span> <span class=\"cat\">({items.Length})</span></h2>"
 
             for f in items |> List.sortBy (fun f -> f.File, f.StartLine, f.StartColumn) do
                 let level = reportLevel f.Code f.Severity
@@ -5542,7 +5542,7 @@ let private runPass
                     |> List.map (fun m ->
                         { m with
                             Fixes = []
-                            Message = m.Message + " (suppression comment not honored — \"suppressions\" policy)"
+                            Message = m.Message + " (suppression comment not honored - \"suppressions\" policy)"
                         })
 
                 // baseline last: a finding an earlier accepted run already
@@ -5663,7 +5663,7 @@ let private runPass
             |> String.concat ", "
 
         Out.skip
-            $"  ({projectOwned.Length} #loaded file(s) left to the project that compiles them — a script's reference set is not the project's: {names})"
+            $"  ({projectOwned.Length} #loaded file(s) left to the project that compiles them - a script's reference set is not the project's: {names})"
 
     Out.dimPart $"sweeping {filesToSweep.Length} file(s)... "
     Console.Out.Flush()
@@ -5886,7 +5886,7 @@ let private runPass
                     crossFileSkipped <- crossFileSkipped + 1
 
     if crossFileSkipped > 0 then
-        Out.skip $"  ({crossFileSkipped} cross-file fix(es) held back — rerun with --api-changes to apply them)"
+        Out.skip $"  ({crossFileSkipped} cross-file fix(es) held back - rerun with --api-changes to apply them)"
 
     if filesWithErrors > 0 then
         eprintfn
@@ -6048,7 +6048,7 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
             let named =
                 checkouts |> List.filter (fun c -> not (solutionsIn c).IsEmpty) |> List.length
 
-            printfn $"({named} checkouts with solutions under {dir} — analysing each checkout on its own)"
+            printfn $"({named} checkouts with solutions under {dir} - analysing each checkout on its own)"
 
             let nested =
                 checkouts
@@ -6056,7 +6056,7 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
                     try
                         fromDirectory child
                     with ex -> // fsharpanalyzer: ignore-line FR0055
-                        eprintfn $"  ({Path.GetFileName child}: skipped — {ex.Message})"
+                        eprintfn $"  ({Path.GetFileName child}: skipped - {ex.Message})"
                         [])
 
             let looseScripts =
@@ -6080,7 +6080,7 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
                     // FsCDK.sln's whole library because FsCDK.Samples.sln
                     // sorted ahead of it
                     if solutions.Length > 1 then
-                        printfn $"({solutions.Length} solutions here — analysing the union of their projects)"
+                        printfn $"({solutions.Length} solutions here - analysing the union of their projects)"
 
                     solutions
                     |> List.collect projectsInSolution
@@ -6125,13 +6125,13 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
             | Some project -> Ok [ Target.Project(project, Some(Path.GetFullPath raw)) ]
             | None ->
                 Error
-                    $"No .fsproj found above '{Path.GetFileName raw}'. A source file is not a compilation on its own — it needs its project for references and file order."
+                    $"No .fsproj found above '{Path.GetFileName raw}'. A source file is not a compilation on its own - it needs its project for references and file order."
         | _ ->
             match targetOf raw with
             | Some target -> Ok [ target ]
             | None ->
                 Error
-                    $"Don't know what to do with '{Path.GetFileName raw}' — pass a .fsproj, .fsx, solution, directory or glob."
+                    $"Don't know what to do with '{Path.GetFileName raw}' - pass a .fsproj, .fsx, solution, directory or glob."
 
 /// A script's own compilation, as FCS resolves it.
 ///
@@ -6784,7 +6784,7 @@ let private verifyPassChecked
 
             if second.Length <= baselineErrors then
                 Out.dim
-                    "  (the check reported errors once and was clean on a second look — a transient failure, not this pass)"
+                    "  (the check reported errors once and was clean on a second look - a transient failure, not this pass)"
 
             second
 
@@ -6877,7 +6877,7 @@ let private verifyPassChecked
                             split |> List.sumBy (fun (cf, culprits) -> cf.Fixes.Length - culprits.Length)
 
                         printfn
-                            $"  ({kept} fix(es) away from the error sites kept — the retry without the error-site fixes checks clean)"
+                            $"  ({kept} fix(es) away from the error sites kept - the retry without the error-site fixes checks clean)"
 
                         for cf, culprits in split do
                             for _, code, f in culprits do
@@ -7032,7 +7032,7 @@ let private verifyPassChecked
                         checker.InvalidateConfiguration options
 
                         eprintfn
-                            "  (the new errors persist without this pass's fixes — pre-existing breakage elsewhere, fixes kept)"
+                            "  (the new errors persist without this pass's fixes - pre-existing breakage elsewhere, fixes kept)"
 
                         []
                     else
@@ -7080,7 +7080,7 @@ let private verifyPassChecked
                                     $"the fixes in {blamed.Length} file(s) the errors never named are to blame, and the {named.Length} named file(s) do not check clean without them either"
 
                             printfn
-                                $"  ({keptFixes} fix(es) in {kept.Length} file(s) kept — {verdict}; found by bisection in {checks} check(s))"
+                                $"  ({keptFixes} fix(es) in {kept.Length} file(s) kept - {verdict}; found by bisection in {checks} check(s))"
 
                             rolled @ orphanFiles
             else
@@ -7117,7 +7117,7 @@ let private verifyPassChecked
                     checker.InvalidateConfiguration options
 
                     eprintfn
-                        "  (the new errors persist without this pass's fixes — pre-existing breakage elsewhere, fixes kept)"
+                        "  (the new errors persist without this pass's fixes - pre-existing breakage elsewhere, fixes kept)"
 
                     []
 
@@ -7126,7 +7126,7 @@ let private verifyPassChecked
             true
         else
             eprintfn
-                "  this pass introduced type errors — its changes were rolled back and the offending fixes suppressed:"
+                "  this pass introduced type errors - its changes were rolled back and the offending fixes suppressed:"
 
             // the errors themselves, or diagnosing WHICH fix broke means
             // re-running the whole thing by hand
@@ -7271,7 +7271,7 @@ let private prefetchNextFramework (runChecker: FSharpChecker) (opts: Options) (t
                         with _ -> // reported by the framework's own check; fsharpanalyzer: ignore-line FR0055
                             ())
             | Ok _ ->
-                Out.dim $"  ({tfm}: its typecheck waits its turn — a type provider or a strong-name key is involved)"
+                Out.dim $"  ({tfm}: its typecheck waits its turn - a type provider or a strong-name key is involved)"
             | Error _ -> ()
         | None -> ()
     | _ -> ()
@@ -7350,7 +7350,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // NOT-APPLICABLE targets are not failures: a dacpac project or a
         // wildcard-item fsproj beyond --parse-only was skipped, not broken
         // (a solution containing one used to fail the whole run's exit)
-        if message.Contains "— skipped" || message.Contains "beyond --parse-only" then
+        if message.Contains "- skipped" || message.Contains "beyond --parse-only" then
             0
         else if message.Contains "dotnet build failed" then
             System.Threading.Interlocked.Increment(&runBuildFailures) |> ignore
@@ -7631,7 +7631,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
         let baselineErrorList =
             if skipCompilationCheck then
-                printfn "  (every source file already swept in an earlier compilation — project check skipped)"
+                printfn "  (every source file already swept in an earlier compilation - project check skipped)"
                 [||]
             else
                 match scriptBaseline with
@@ -7725,7 +7725,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 // dry run modifies nothing, so there the errors are simply
                 // pre-existing
                 eprintfn
-                    $"  (multi-project run: an earlier compilation of this run applied {runTotalApplied} fix(es) — those may have introduced these; review the diff)"
+                    $"  (multi-project run: an earlier compilation of this run applied {runTotalApplied} fix(es) - those may have introduced these; review the diff)"
 
             for d in projectErrors checker options |> Array.truncate 5 do
                 eprintfn $"  {d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}"
@@ -7834,7 +7834,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
                         if n >= 3 && grown && blockedRuleFile.Add(code, Path.GetFullPath cf.Path) then
                             eprintfn
-                                $"  ({code} re-fired in {Path.GetFileName cf.Path} across {n} passes while the file grew — likely rewriting its own output; blocked for this run, please report)"
+                                $"  ({code} re-fired in {Path.GetFileName cf.Path} across {n} passes while the file grew - likely rewriting its own output; blocked for this run, please report)"
 
             while pass < opts.MaxPasses && lastApplied <> 0 do
                 pass <- pass + 1
@@ -7875,7 +7875,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
             if not opts.DryRun && lastApplied > 0 && pass = opts.MaxPasses then
                 eprintfn
-                    $"did not converge: fixes were still being applied after {opts.MaxPasses} pass(es) — rerun to continue, or raise --max-passes"
+                    $"did not converge: fixes were still being applied after {opts.MaxPasses} pass(es) - rerun to continue, or raise --max-passes"
 
             if opts.DryRun then
                 markSwept options
@@ -8071,10 +8071,10 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 match judgeAgainstBaseline verificationBuild output withoutFixes with
                                 | PreExisting ->
                                     keepFixes
-                                        $"{subjectCap} fails to build, but it fails WITHOUT this run's fixes too — pre-existing breakage, fixes kept:"
+                                        $"{subjectCap} fails to build, but it fails WITHOUT this run's fixes too - pre-existing breakage, fixes kept:"
                                 | Unverifiable ->
                                     keepFixes
-                                        $"{subjectCap} fails to build, and fails DIFFERENTLY from one build to the next without this run's fixes — this build cannot verify them; fixes kept (each passed the typecheck of the framework analysed), review the diff:"
+                                        $"{subjectCap} fails to build, and fails DIFFERENTLY from one build to the next without this run's fixes - this build cannot verify them; fixes kept (each passed the typecheck of the framework analysed), review the diff:"
                                 // the baseline build (or the second) was
                                 // stopped at the cap and said nothing about
                                 // the code; the files are already back, and
@@ -8102,7 +8102,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 match verificationBuild () with
                                 | Ok() ->
                                     printfn
-                                        $"done; {verified} still builds (the first verification build failed and the second passed — a build that only fails sometimes)"
+                                        $"done; {verified} still builds (the first verification build failed and the second passed - a build that only fails sometimes)"
 
                                     markSwept options
                                     0
@@ -8640,7 +8640,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                 let other = (defaultConfiguration project).Other
 
                 printfn
-                    $"{Path.GetFileName project}: its sources branch on the build configuration — analysing the {other} branches too"
+                    $"{Path.GetFileName project}: its sources branch on the build configuration - analysing the {other} branches too"
 
                 analysisConfiguration <- Some other
 
@@ -8675,7 +8675,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                     // tree, so one sweep covers them all — and the
                     // final all-frameworks build still verifies the rest
                     printfn
-                        $"{Path.GetFileName opts.Target}: {frameworks.Length} target frameworks, no conditional compilation — sweeping the narrowest only"
+                        $"{Path.GetFileName opts.Target}: {frameworks.Length} target frameworks, no conditional compilation - sweeping the narrowest only"
 
                     runTarget
                         checker
@@ -8823,7 +8823,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                     |> List.map (fun kv -> $"{kv.Value} {kv.Key}")
                     |> String.concat ", "
 
-                Out.note $"  {total} advisory note(s) held: {breakdown} — list with --notes, export with --report"
+                Out.note $"  {total} advisory note(s) held: {breakdown} - list with --notes, export with --report"
 
             if baselineSuppressed > 0 then
                 printfn $"  ({baselineSuppressed} finding(s) matched the baseline and were suppressed)"
@@ -8833,7 +8833,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
             if suppressionOverridden > 0 then
                 printfn
-                    $"  ({suppressionOverridden} suppression comment(s) not honored by the \"suppressions\" policy — reported above, never auto-fixed)"
+                    $"  ({suppressionOverridden} suppression comment(s) not honored by the \"suppressions\" policy - reported above, never auto-fixed)"
 
             // What the scope gate held back, named. Without this the
             // invitation below is an abstraction: nobody widens a scope for
@@ -8852,7 +8852,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                     held |> List.map (fun (code, n) -> $"{n} {code}") |> String.concat ", "
 
                 Out.white
-                    $"  {total} finding(s) held back by scope: {breakdown} — public declarations this run may not reshape. Set \"publicApi\": false in {Configuration.ConfigFileName} if nothing outside this assembly links to them or serializes them."
+                    $"  {total} finding(s) held back by scope: {breakdown} - public declarations this run may not reshape. Set \"publicApi\": false in {Configuration.ConfigFileName} if nothing outside this assembly links to them or serializes them."
 
             // the second half of the pair the run opened with — after every
             // count, where the reader has just seen what the run found and
@@ -8870,18 +8870,18 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                         $"the findings above cover only the {runCompilations - runBuildFailures} that built"
 
                 Out.bad
-                    $"  WARNING: {runBuildFailures} of {runCompilations} compilation(s) could not be analysed — they do not build, so {scope}. Fix the build (a missing `dotnet tool restore`/`paket restore` is the usual cause), or use --parse-only for the syntactic rules."
+                    $"  WARNING: {runBuildFailures} of {runCompilations} compilation(s) could not be analysed - they do not build, so {scope}. Fix the build (a missing `dotnet tool restore`/`paket restore` is the usual cause), or use --parse-only for the syntactic rules."
 
             if runAnalyzerFailures > 0 then
                 Out.bad
-                    $"  WARNING: {runAnalyzerFailures} rule invocation(s) threw and were skipped (the `(analyzer ... failed on ...)` lines above name them) — those files were not fully analysed, and a fix of the failing rule was neither offered nor applied there. Please report the exception."
+                    $"  WARNING: {runAnalyzerFailures} rule invocation(s) threw and were skipped (the `(analyzer ... failed on ...)` lines above name them) - those files were not fully analysed, and a fix of the failing rule was neither offered nor applied there. Please report the exception."
 
             // the last line before a non-zero exit says which compilations
             // caused it and why — the paragraphs that did are pages up
             let reasons = lock exitReasons (fun () -> List.ofSeq exitReasons)
 
             if exitCode <> 0 && not reasons.IsEmpty then
-                Out.bad $"""exit {exitCode}: {reasons.Length} compilation(s) — {String.concat "; " reasons}"""
+                Out.bad $"""exit {exitCode}: {reasons.Length} compilation(s) - {String.concat "; " reasons}"""
 
             if exitCode = 0 && opts.FailOnFindings && reportedFindings.Count > 0 then
                 3
@@ -8929,7 +8929,7 @@ let defaultConfigText () =
     let text = System.Text.StringBuilder()
     let line (s: string) = text.AppendLine s |> ignore
 
-    line "// fsharprefactor.json — per-repository configuration for fsharp-refactor."
+    line "// fsharprefactor.json - per-repository configuration for fsharp-refactor."
     line "// Generated by `fsharp-refactor --create-config`: every value below is this"
     line "// version's default, so an untouched file changes nothing. Delete a line to"
     line "// follow the tool's default for it as that default changes between versions;"
@@ -8937,14 +8937,14 @@ let defaultConfigText () =
     line "{"
     line "  // Does anything OUTSIDE this assembly link against its public declarations?"
     line "  // F# makes a declaration public by default, so `public` is usually the"
-    line "  // absence of a decision rather than one. `false` says this is a leaf — an"
-    line "  // application, an internal tool — and the rules that change a declaration's"
+    line "  // absence of a decision rather than one. `false` says this is a leaf - an"
+    line "  // application, an internal tool - and the rules that change a declaration's"
     line "  // compiled shape in place ([<Struct>], [<Literal>], named union fields) then"
     line "  // treat public as internal. It never licenses an edit to another file."
     line "  //"
     line "  // Left COMMENTED OUT because the default is not a fixed value: with no"
-    line "  // setting the compilation answers, and an OutputType of Exe or WinExe — or"
-    line "  // a script — is read as a leaf, a library is not. Uncomment to overrule"
+    line "  // setting the compilation answers, and an OutputType of Exe or WinExe - or"
+    line "  // a script - is read as a leaf, a library is not. Uncomment to overrule"
     line "  // that either way: `true` is what an executable writes when it serializes"
     line "  // its own public types or loads plugins by reflection."
     line "  // \"publicApi\": true,"
@@ -8996,7 +8996,23 @@ let defaultConfigText () =
                     else
                         full
 
-                line $"    \"{code}\": {value}, // {summary}"
+                // a rule with tunables is written as an OBJECT, so the file
+                // shows what it takes: a config listing every rule and none
+                // of their parameters reads as though there are none
+                match RuleCatalog.knobsOf code with
+                | [] -> line $"    \"{code}\": {value}, // {summary}"
+                | knobs ->
+                    line $"    // {summary}"
+
+                    for knob in knobs do
+                        line $"    //   {knob.Name} ({knob.Default}): {knob.Summary}"
+
+                    let settings =
+                        knobs
+                        |> List.map (fun knob -> $"\"{knob.Name}\": {knob.Default}")
+                        |> String.concat ", "
+
+                    line $"    \"{code}\": {{ \"enabled\": {value}, {settings} }},"
 
     line "  }"
     line "}"
@@ -9331,14 +9347,21 @@ let main argv =
             if File.Exists path then
                 // someone's decisions live in there; --create-config is a
                 // starting point, never a reset
-                eprintfn $"{path} already exists — delete it first, or write the new one elsewhere."
+                eprintfn $"{path} already exists - delete it first, or write the new one elsewhere."
                 2
             else
                 try
-                    File.WriteAllText(path, defaultConfigText ())
+                    // Plain UTF-8, no byte-order mark, and the text is
+                    // pure ASCII (ConfigKnobTests holds it that way). A
+                    // BOM was tried first and made things worse: a console
+                    // reading the file under an OEM codepage does not
+                    // honour it and prints the mark itself as garbage on
+                    // top of the characters it was meant to rescue. ASCII
+                    // renders correctly under every codepage instead.
+                    File.WriteAllText(path, defaultConfigText (), Text.UTF8Encoding false)
 
                     printfn
-                        $"Wrote {path} — every rule at this build's default, so it changes nothing until you edit it."
+                        $"Wrote {path} - every rule at this build's default, so it changes nothing until you edit it."
 
                     0
                 with

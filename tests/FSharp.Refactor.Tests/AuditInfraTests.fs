@@ -317,6 +317,38 @@ let ``FR0150 false keeps FR0075`` () =
         codes (withConfig """{ "rules": { "FR0150": false } }""" useSource Analyzers.useBindingCliAnalyzer)
     )
 
+// ---- D8b: FR0015's per-call hoist is a knob, on by default ----
+
+/// Two Regex sites: one in a loop (always hoisted) and one in a plain
+/// function body (the per-call hoist the knob governs).
+[<Literal>]
+let private regexSource =
+    "open System.Text.RegularExpressions\nlet inLoop (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a.c\") then ignore x\nlet perCall (s: string) = Regex.IsMatch(s, \"d.f\")\n"
+
+let private regexLines (messages: Message list) =
+    messages
+    |> List.filter (fun m -> m.Code = "FR0015")
+    |> List.map (fun m -> m.Range.StartLine)
+    |> List.sort
+
+[<Fact>]
+let ``FR0015 hoists from a loop and from a function body by default`` () =
+    Assert.Equal<int list>([ 4; 5 ], regexLines (withConfig "{}" regexSource Analyzers.regexUsageCliAnalyzer))
+
+[<Fact>]
+let ``FR0015 perCall false keeps the loop hoist and drops the function one`` () =
+    Assert.Equal<int list>(
+        [ 4 ],
+        regexLines (withConfig """{ "FR0015": { "perCall": false } }""" regexSource Analyzers.regexUsageCliAnalyzer)
+    )
+
+[<Fact>]
+let ``FR0015 perCall true is the default spelled out`` () =
+    Assert.Equal<int list>(
+        [ 4; 5 ],
+        regexLines (withConfig """{ "FR0015": { "perCall": true } }""" regexSource Analyzers.regexUsageCliAnalyzer)
+    )
+
 // ---- D9: the FR0105 scale-factor note never throws ----
 
 let private checkedNotes (source: string) =

@@ -365,7 +365,7 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
                                                 InsertRange = lineStart (snd firstLoad)
                                                 InsertText = None
                                                 Message =
-                                                    $"'{name}' is not defined: it lives in {Path.GetFileName refProj}, a ProjectReference of the loaded project, which has no built assembly under its bin directory yet — build it, then #r the dll here."
+                                                    $"'{name}' is not defined: it lives in {Path.GetFileName refProj}, a ProjectReference of the loaded project, which has no built assembly under its bin directory yet - build it, then #r the dll here."
                                             }
                             | None -> ()
             ]

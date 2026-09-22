@@ -19,6 +19,10 @@
 ///    so `xs |> List.map (fun x -> Regex.IsMatch(x, "asdf"))` is the same
 ///    loop (LoopPerf.loopBinders decides, shared with the other loop rules).
 ///
+///    A site in a plain FUNCTION body — no loop above it — is hoisted too,
+///    since the function is called from loops this file cannot see. That
+///    half is the `perCall` knob, on by default; see `keepingPerCall`.
+///
 ///    The instance name is derived from the pattern text; when the name is
 ///    taken, the required `open` is missing, or the call shape is unusual,
 ///    the hint is emitted without a fix.
@@ -673,13 +677,36 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         | RegexSuggestionKind.HoistConstruction, Some name when not (seenNames.Add name) -> None
         | _ -> Some s)
 
+/// Keep only what the `perCall` knob allows.
+///
+/// A site inside a LOOP re-parses the pattern once per element and is
+/// always worth hoisting. A site in a plain function body costs one
+/// dictionary lookup in the runtime's regex cache per call, and a re-parse
+/// only once the cache (fifteen patterns) turns over — a smaller and less
+/// certain win, since the function might be called once. It is on by
+/// default all the same: a function is far likelier to be called many
+/// times than a module is to be initialised and its binding never used,
+/// and F# initialises a module's bindings lazily, on first access, so a
+/// hoisted Regex in a module nothing touches is never built.
+let keepingPerCall (perCall: bool) (suggestions: Suggestion list) : Suggestion list =
+    if perCall then
+        suggestions
+    else
+        suggestions
+        |> List.filter (fun s ->
+            // rule 1 rewrites a pattern to a string operation and hoists
+            // nothing, so the knob does not reach it
+            s.Kind = RegexSuggestionKind.StringOperation || s.Repeat = Repeat.LoopIteration)
+
 /// The constructions rule 3 fixes, by range: FR0037 ("Regex built in a
 /// loop") stands down on these, since the fix here already answers its
 /// note. Every construction this rule declines - a pattern that is not a
-/// literal, options naming a local, a taken name, a missing open - is
-/// absent here and stays FR0037's to report.
-let hoistedConstructions (parseTree: ParsedInput) (source: ISourceText) : range list =
+/// literal, options naming a local, a taken name, a missing open, or a
+/// per-call site the knob turned off - is absent here and stays FR0037's
+/// to report.
+let hoistedConstructions (perCall: bool) (parseTree: ParsedInput) (source: ISourceText) : range list =
     find parseTree source
+    |> keepingPerCall perCall
     |> List.choose (fun s ->
         match s.Kind, s.Edits with
         | RegexSuggestionKind.HoistConstruction, _ :: _ -> Some s.Range

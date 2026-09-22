@@ -104,42 +104,42 @@ let private categories =
         "ContainsKey + indexer: two lookups (measured 1.26x); the ConcurrentDictionary race is called out in the message"
         "FR0011",
         Category.Performance,
-        "Trivial partial active patterns → [<return: Struct>] ValueSome/ValueNone (perf: no allocation per match attemp..."
+        "Trivial partial active patterns => [<return: Struct>] ValueSome/ValueNone (perf: no allocation per match attemp..."
         "FR0015",
         Category.Performance,
-        "Literal regex patterns → StartsWith/Contains/Replace/Split, the Match.Success and Matches.Count tests included"
+        "Literal regex patterns => StartsWith/Contains/Replace/Split, the Match.Success and Matches.Count tests included"
         "FR0016",
         Category.Performance,
-        "Small value-type-only unions → [<Struct>] (perf: no heap allocation per value) Edits the companion .fsi in ste..."
+        "Small value-type-only unions => [<Struct>] (perf: no heap allocation per value) Edits the companion .fsi in ste..."
         "FR0021", Category.Performance, "Redundant .ToString() inside interpolated strings"
         "FR0028", Category.Performance, "N+1 queries"
         "FR0029", Category.Performance, "task state machine"
         "FR0030",
         Category.Performance,
-        "A loop whose whole body is a single ResizeArray.Add becomes one AddRange call (for x in xs do acc.Add(x * 2) →..."
+        "A loop whose whole body is a single ResizeArray.Add becomes one AddRange call (for x in xs do acc.Add(x * 2) =>..."
         "FR0035", Category.Performance, "List/Array/Seq.contains x ys inside a loop"
         "FR0037",
         Category.Performance,
         "Build-once types constructed inside a loop: ConcurrentDictionary, HttpClient, JsonSerializerOptions (CA1869), ..."
         "FR0038",
         Category.Performance,
-        "Char overloads for single-character strings (CA1834/1847/1865-67): s.Contains 'x' → s.Contains 'x' and sb.Appe..."
+        "Char overloads for single-character strings (CA1834/1847/1865-67): s.Contains 'x' => s.Contains 'x' and sb.Appe..."
         "FR0039",
         Category.Performance,
         "Allocating case-insensitive comparisons (CA1862): x.ToLower() = 'literal' gets a FIX to String.Equals(x, 'lite..."
         "FR0040",
         Category.Performance,
-        "Redundant membership guards (CA1853/1868, fix): if d.ContainsKey k then d.Remove k |> ignore → d.Remove k |> i..."
+        "Redundant membership guards (CA1853/1868, fix): if d.ContainsKey k then d.Remove k |> ignore => d.Remove k |> i..."
         "FR0041", Category.Performance, "Array.sum/average/min/max/contains on int[]/int64[] is a scalar loop"
         "FR0051",
         Category.Performance,
         "acc <- acc @ [x] / acc <- Array.append acc [|x|] inside a loop copies the accumulator per iteration"
         "FR0052",
         Category.Performance,
-        "q.Count = 0 on ConcurrentQueue/Stack/Bag → q.IsEmpty (CA1836, fix): their Count walks segments, IsEmpty peeks"
+        "q.Count = 0 on ConcurrentQueue/Stack/Bag => q.IsEmpty (CA1836, fix): their Count walks segments, IsEmpty peeks"
         "FR0053",
         Category.Performance,
-        "BitConverter.ToString(bytes).Replace('-', '') → System.Convert.ToHexString bytes (CA1872, fix)"
+        "BitConverter.ToString(bytes).Replace('-', '') => System.Convert.ToHexString bytes (CA1872, fix)"
         "FR0058",
         Category.Performance,
         "A let rec re-entering itself through seq/taskSeq/asyncSeq { } builds a fresh enumerator per recursion level"
@@ -160,13 +160,13 @@ let private categories =
         "FR0106",
         Category.Performance,
         "Substring copy fed to a parser, StringBuilder.Append or TextWriter.Write; AsSpan reads in place (Parse 2.6x, allocation-free)"
-        "FR0104", Category.Performance, "singleton append per recursive call is O(n²)"
+        "FR0104", Category.Performance, "singleton append per recursive call is O(n^2)"
         "FR0166",
         Category.Performance,
-        "a prefix or suffix cut out to compare with a literal is StartsWith/EndsWith Ordinal; 4.5 → 1.9 ns, allocation-free"
+        "a prefix or suffix cut out to compare with a literal is StartsWith/EndsWith Ordinal; 4.5 => 1.9 ns, allocation-free"
         "FR0167",
         Category.Performance,
-        "a ToCharArray copy read once by a for loop or Array.iter/exists/forall walks the string itself; 72 → 0 B"
+        "a ToCharArray copy read once by a for loop or Array.iter/exists/forall walks the string itself; 72 => 0 B"
         "FR0168",
         Category.Performance,
         "try T.Parse with a parse-failure or catch-all handler is T.TryParse; a failed parse costs a bool, not a throw"
@@ -178,23 +178,23 @@ let private categories =
         "Encoding.UTF8.GetBytes of an ASCII literal encodes at run time; the byte string literal is compiled data"
 
         // --- idiom: same behaviour, written the way F# writes it
-        "FR0001", Category.Idiom, "Boolean match → if-else"
+        "FR0001", Category.Idiom, "Boolean match => if-else"
         "FR0002",
         Category.Idiom,
-        "Manual Some/None (and ValueSome/ValueNone) match → Option/ValueOption map/bind/flatten/defaultValue/defaultWit..."
+        "Manual Some/None (and ValueSome/ValueNone) match => Option/ValueOption map/bind/flatten/defaultValue/defaultWit..."
         "FR0003", Category.Idiom, "Extract function composition (f >> g) from pipeline/nested-application lambdas"
         "FR0005",
         Category.Idiom,
-        "Strip do-nothing CE wrapping (async { return! c }, rewrap identity, immediately-run wraps, task { return x } →..."
+        "Strip do-nothing CE wrapping (async { return! c }, rewrap identity, immediately-run wraps, task { return x } =>..."
         "FR0006", Category.Idiom, "Extract a when guard into an active pattern"
         "FR0007",
         Category.Idiom,
         "Remove mutable from never-mutated local bindings and type-level let mutable fields (class lets are private to ..."
-        "FR0008", Category.Idiom, "Tupled → curried parameters for private functions (definition + all call sites)"
+        "FR0008", Category.Idiom, "Tupled => curried parameters for private functions (definition + all call sites)"
         "FR0009",
         Category.Idiom,
-        "Manual Ok/Error match → Result.map/bind/mapError/isOk/isError/defaultValue/defaultWith/iter"
-        "FR0010", Category.Idiom, "Simplifications: if c then true else false → c"
+        "Manual Ok/Error match => Result.map/bind/mapError/isOk/isError/defaultValue/defaultWith/iter"
+        "FR0010", Category.Idiom, "Simplifications: if c then true else false => c"
         "FR0012",
         Category.Idiom,
         "Term-rewriting hints (fsharplint-style lhs ===> rhs rules): comparison flips, x = true, null checks via isNull..."
@@ -204,23 +204,23 @@ let private categories =
         "FR0023",
         Category.Idiom,
         "Private two-parameter functions called as fun x -> f x k are reordered data-last, all in one fix: the definiti..."
-        "FR0024", Category.Idiom, "raise (Exception msg) → failwith msg (plain System.Exception only"
+        "FR0024", Category.Idiom, "raise (Exception msg) => failwith msg (plain System.Exception only"
         "FR0025",
         Category.Idiom,
-        "Null test wrapping a value into an option → Option.ofObj / ValueOption.ofObj (if isNull x then None else Some ..."
+        "Null test wrapping a value into an option => Option.ofObj / ValueOption.ofObj (if isNull x then None else Some ..."
         "FR0026",
         Category.Idiom,
-        "Mutable backing field + trivial get/set member → member val X = init with get, set (field must be untouched el..."
+        "Mutable backing field + trivial get/set member => member val X = init with get, set (field must be untouched el..."
         "FR0031",
         Category.Idiom,
-        "String + chains mixing literals and string values → interpolated string ('Hello ' + name + '!' → $'Hello {name..."
+        "String + chains mixing literals and string values => interpolated string ('Hello ' + name + '!' => $'Hello {name..."
         "FR0033", Category.Idiom, "An instance member touching no instance state"
         "FR0034",
         Category.Idiom,
-        "if x.IsSome then x.Value + 1 else e → match x with | Some v -> v + 1 | None -> e (.Value throws when misused"
+        "if x.IsSome then x.Value + 1 else e => match x with | Some v -> v + 1 | None -> e (.Value throws when misused"
         "FR0042",
         Category.Idiom,
-        "Fully applied sprintf → typed interpolated string (sprintf 'asdf %s' x → $'asdf %s{x}')"
+        "Fully applied sprintf => typed interpolated string (sprintf 'asdf %s' x => $'asdf %s{x}')"
         "FR0043",
         Category.Idiom,
         "In an interpolated string that *already* has a typed hole, the remaining plain holes gain specifiers ($'%s{nam..."
@@ -285,7 +285,7 @@ let private categories =
         "an internal class nothing inherits, stored in arrays or type-tested, gains [<Sealed>]"
         "FR0159",
         Category.Correctness,
-        "a float/decimal conversion of an integer division truncates first: float (a / b) → float a / float b"
+        "a float/decimal conversion of an integer division truncates first: float (a / b) => float a / float b"
         "FR0160",
         Category.Correctness,
         "a handler raising a new exception drops the one it caught; the constructor's trailing inner-exception argument"
@@ -306,22 +306,22 @@ let private categories =
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
         "FR0074",
         Category.Idiom,
-        "Nested record copy-and-update flattens to F# 8 path syntax: { r with X = { r.X with Y = v } } → { r with X.Y =..."
+        "Nested record copy-and-update flattens to F# 8 path syntax: { r with X = { r.X with Y = v } } => { r with X.Y =..."
         "FR0078",
         Category.Idiom,
         "The three-part mutable-condition loop idiom (let! first / let mutable go / rebind at loop end) collapses to F#..."
-        "FR0081", Category.Idiom, "Path fragments joined with a hard-coded / or \ separator → Path.Combine advice"
-        "FR0087", Category.Idiom, "The pattern x :: [] → [ x ]"
+        "FR0081", Category.Idiom, "Path fragments joined with a hard-coded / or \ separator => Path.Combine advice"
+        "FR0087", Category.Idiom, "The pattern x :: [] => [ x ]"
         "FR0090",
         Category.Idiom,
-        "Tupled → curried for internal/public functions with every project call site rewritten (cross-file"
+        "Tupled => curried for internal/public functions with every project call site rewritten (cross-file"
         "FR0091",
         Category.Idiom,
         "Data-last parameter reorder for internal/public functions with every project call site rewritten (cross-file"
         "FR0092", Category.Idiom, "A constant failwith 'Error' gains the enclosing function's arguments"
         "FR0095",
         Category.Idiom,
-        "A lambda that restates a built-in: fun x -> x → id, fun (a, b) -> a → fst, fun (a, b) -> b → snd"
+        "A lambda that restates a built-in: fun x -> x => id, fun (a, b) -> a => fst, fun (a, b) -> b => snd"
         "FR0101", Category.Idiom, "index-based loop over a collection it only indexes"
         "FR0103", Category.Idiom, "isinstance-style type-test ladders as match"
         "FR0156",
@@ -342,29 +342,29 @@ let private categories =
         "FR0057", Category.Cosmetic, "XML doc drift"
         "FR0060",
         Category.Cosmetic,
-        "Consecutive attribute brackets merge: [<Attr1>] [<Attr2>] (stacked or same-line) → [<Attr1"
-        "FR0082", Category.Cosmetic, "[<FooAttribute>] → [<Foo>]"
-        "FR0083", Category.Cosmetic, "[<Foo()>] → [<Foo>]"
+        "Consecutive attribute brackets merge: [<Attr1>] [<Attr2>] (stacked or same-line) => [<Attr1"
+        "FR0082", Category.Cosmetic, "[<FooAttribute>] => [<Foo>]"
+        "FR0083", Category.Cosmetic, "[<Foo()>] => [<Foo>]"
         "FR0084", Category.Cosmetic, " name  backticks around a plain non-keyword identifier do nothing"
         "FR0085", Category.Cosmetic, "new on a non-IDisposable construction is noise"
-        "FR0086", Category.Cosmetic, "$'no holes' → 'no holes'"
+        "FR0086", Category.Cosmetic, "$'no holes' => 'no holes'"
         "FR0088",
         Category.Cosmetic,
-        "Case(_, _) → Case _ when every field is a wildcard (typed-gated to real union cases"
+        "Case(_, _) => Case _ when every field is a wildcard (typed-gated to real union cases"
         "FR0094",
         Category.Cosmetic,
-        "Redundant parentheses around a single atomic argument to an instance *method*: s.Contains('x') → s.Contains 'x..."
+        "Redundant parentheses around a single atomic argument to an instance *method*: s.Contains('x') => s.Contains 'x..."
         "FR0096",
         Category.Cosmetic,
-        "Redundant parentheses around a pattern: | (Some y) -> → | Some y ->, let f (x) = x → let f x = x"
+        "Redundant parentheses around a pattern: | (Some y) -> => | Some y ->, let f (x) = x => let f x = x"
         "FR0097",
         Category.Cosmetic,
-        "Redundant parentheses around a type: (x: (int)) → (x: int), (string) list → string list"
+        "Redundant parentheses around a type: (x: (int)) => (x: int), (string) list => string list"
         "FR0098",
         Category.Cosmetic,
-        "The BCL name of a type F# abbreviates: System.Int32 → int, System.String → string, System.Object → obj"
+        "The BCL name of a type F# abbreviates: System.Int32 => int, System.String => string, System.Object => obj"
         "FR0111", Category.Cosmetic, "else-holding-an-if is elif spelled tall"
-        "FR0099", Category.Cosmetic, "A ; ending a line does nothing in light syntax: let x = 1; → let x = 1"
+        "FR0099", Category.Cosmetic, "A ; ending a line does nothing in light syntax: let x = 1; => let x = 1"
     ]
     |> List.map (fun (code, category, description) -> code, (category, description))
     |> Map.ofList
@@ -487,3 +487,98 @@ let priority =
 
 let isPriority (code: string) =
     priority.Contains(code.ToUpperInvariant())
+
+/// One tunable a rule reads from its own config entry, beside `enabled`.
+type Knob =
+    {
+        Name: string
+        /// This build's default, as the JSON the generated config writes.
+        Default: string
+        /// One line, for the comment above the entry.
+        Summary: string
+    }
+
+let private flag name value summary =
+    {
+        Name = name
+        Default = (if value then "true" else "false")
+        Summary = summary
+    }
+
+let private number name (value: int) summary =
+    {
+        Name = name
+        Default = string value
+        Summary = summary
+    }
+
+/// The tunables, by rule. `--create-config` writes each rule that has one
+/// as an object (`{ "enabled": true, "perCall": true }`) rather than a
+/// bare bool, so the knob is discoverable from the generated file instead
+/// of only from the README — a config listing every rule but none of
+/// their parameters reads as though there are none.
+///
+/// A default here is the SAME value the rule passes to
+/// `Configuration.parameterBool`/`parameterInt`; ConfigKnobTests holds the
+/// two together, so a rule whose default moves fails a test rather than
+/// writing a config that lies.
+let knobs: (string * Knob list) list =
+    [
+        "FR0015",
+        [
+            flag "perCall" true "hoist a Regex out of a plain function body too, not only out of a loop"
+        ]
+        "FR0029",
+        [
+            number "tailLines" 40 "non-awaiting lines after the last await that earn a tail extraction"
+            flag "hoistReturnOnAsync" false "extend the return hoist (not the FS3511 advice) to async { }"
+        ]
+        "FR0049",
+        [
+            flag "syncSwap" false "let a sweep swap an awaited call for its synchronous sibling"
+        ]
+        "FR0060",
+        [
+            number "maxAttributes" 4 "how many attributes may share one [<A; B>] bracket"
+            number "wrapColumn" 110 "how wide the merged attribute line may get"
+        ]
+        "FR0065",
+        [
+            flag "dropLegacyProtocols" false "let a sweep comment a dead TLS protocol out of the flags"
+        ]
+        "FR0067",
+        [
+            flag "invariant" false "let a sweep apply CultureInfo.InvariantCulture to an uncultured parse"
+        ]
+        "FR0114",
+        [
+            number "thenAtLeast" 20 "how long the then-branch must be before flipping is suggested"
+            number "elseAtMost" 3 "how short the else-branch must stay"
+        ]
+        "FR0121", [ flag "utcNow" false "let a sweep rewrite DateTime.Now to UtcNow" ]
+        "FR0133",
+        [
+            flag "locals" false "rename local and file-private names too, not only test-attributed ones"
+        ]
+        "FR0147",
+        [
+            number "uses" 6 "how many spellings of a namespace earn an open"
+            number "deepUses" 4 "the same, for a namespace three segments deep"
+        ]
+        "FR0156",
+        [
+            flag "arrays" false "write an array expression too, at the measured cost of a slower collector"
+            flag "explicitYield" false "spell the collected element `yield x` rather than bare `x`"
+        ]
+        "FR0159",
+        [
+            flag "all" false "note the literal-operand and product-dividend divisions on a sweep too"
+        ]
+    ]
+
+/// The tunables of one rule, empty when it has none.
+let knobsOf (code: string) =
+    knobs
+    |> List.tryFind (fun (c, _) -> String.Equals(c, code, StringComparison.OrdinalIgnoreCase))
+    |> Option.map snd
+    |> Option.defaultValue []

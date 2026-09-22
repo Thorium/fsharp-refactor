@@ -366,7 +366,7 @@ let ``a declined regex construction stays silent here and remains FR0037's note`
     let declined (source: string) =
         let tree, sourceText = parse source
         Assert.Empty(RegexUsage.find tree sourceText)
-        Assert.Empty(RegexUsage.hoistedConstructions tree sourceText)
+        Assert.Empty(RegexUsage.hoistedConstructions true tree sourceText)
         let _, constructions = LoopPerf.find false None tree sourceText
         Assert.Equal(1, constructions.Length)
 
@@ -387,7 +387,7 @@ let ``a declined regex construction stays silent here and remains FR0037's note`
 
     let _, constructions = LoopPerf.find false None tree sourceText
 
-    match RegexUsage.hoistedConstructions tree sourceText, constructions with
+    match RegexUsage.hoistedConstructions true tree sourceText, constructions with
     | [ hoisted ], [ noted ] -> Assert.Equal(noted.Range, hoisted)
     | other -> failwithf "Expected one hoist matching one note, got %A" other
 

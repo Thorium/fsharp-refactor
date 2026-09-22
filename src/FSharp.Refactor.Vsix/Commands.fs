@@ -175,7 +175,7 @@ module internal Commands =
         let answer =
             VsShellUtilities.ShowMessageBox(
                 ServiceProvider.GlobalProvider,
-                $"{what}\r\n\r\nYes — apply the fixes (every pass is build-verified and rolled back on error).\r\nNo — report only, change nothing.\r\n\r\nOpen documents are saved first, because the tool rewrites files on disk.",
+                $"{what}\r\n\r\nYes - apply the fixes (every pass is build-verified and rolled back on error).\r\nNo - report only, change nothing.\r\n\r\nOpen documents are saved first, because the tool rewrites files on disk.",
                 "FSharp.Refactor",
                 OLEMSGICON.OLEMSGICON_QUERY,
                 OLEMSGBUTTON.OLEMSGBUTTON_YESNOCANCEL,

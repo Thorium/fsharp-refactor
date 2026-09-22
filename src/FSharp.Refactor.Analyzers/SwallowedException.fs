@@ -292,7 +292,7 @@ let private tryParseOffer (source: ISourceText) (expr: SynExpr) (tryBody: SynExp
             [
                 {
                     Label =
-                        $"Fix: {typeName}.TryParse instead of a catch — the parse failing is the expected case, not an exception"
+                        $"Fix: {typeName}.TryParse instead of a catch - the parse failing is the expected case, not an exception"
                     Edits =
                         [
                             expr.Range,
@@ -765,7 +765,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         [
                                             {
                                                 Label =
-                                                    $"Fix: guard the division instead of catching — `if {d} = {zero} then {fb} else ...`; the catch goes, nothing else in the body throws"
+                                                    $"Fix: guard the division instead of catching - `if {d} = {zero} then {fb} else ...`; the catch goes, nothing else in the body throws"
                                                 Edits =
                                                     [
                                                         expr.Range,
@@ -843,7 +843,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     [
                                         {
                                             Label =
-                                                "Alternative: catch the IO exceptions only — IOException and UnauthorizedAccessException — and let the rest surface"
+                                                "Alternative: catch the IO exceptions only - IOException and UnauthorizedAccessException - and let the rest surface"
                                             Edits = [ pat.Range, patText, narrowed ]
                                         }
                                     ]
@@ -988,7 +988,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     [
                                         {
                                             Label =
-                                                $"Alternative: log it the way this file logs — the exception, the method '{method'}' and its parameters — before the fallback"
+                                                $"Alternative: log it the way this file logs - the exception, the method '{method'}' and its parameters - before the fallback"
                                             Edits = bindEdit @ bodyEdit
                                         }
                                     ]

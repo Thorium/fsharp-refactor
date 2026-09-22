@@ -412,7 +412,7 @@ let family: Family =
                 // a Regex construction FR0015 hoists gets its fix there, not this note
                 let hoistedByRegexUsage =
                     if constructions |> List.exists (fun s -> s.TypeName = "Regex") then
-                        RegexUsage.hoistedConstructions c.Tree c.Source
+                        RegexUsage.hoistedConstructions true c.Tree c.Source
                     else
                         []
 

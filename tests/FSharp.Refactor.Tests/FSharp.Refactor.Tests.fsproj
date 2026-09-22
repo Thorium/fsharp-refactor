@@ -9,6 +9,7 @@
     <Compile Include="Parsing.fs" />
     <Compile Include="ConfigurationTests.fs" />
     <Compile Include="RuleCatalogTests.fs" />
+    <Compile Include="ConfigKnobTests.fs" />
     <Compile Include="MatchToIfTests.fs" />
     <Compile Include="OptionModuleTests.fs" />
     <Compile Include="CompositionTests.fs" />

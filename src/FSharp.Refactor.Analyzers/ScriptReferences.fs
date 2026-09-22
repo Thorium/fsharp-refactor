@@ -395,7 +395,7 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                                             ReplacementText = $"\"{spec}\""
                                             IsNugetReference = true
                                             Message =
-                                                $"#r path does not exist and no other folder under the package has it — nothing on disk to re-point to. `#r \"{spec}\"` resolves it from nuget instead; that needs `dotnet fsi` (F# 5+), as the .NET Framework fsi.exe does not resolve package references."
+                                                $"#r path does not exist and no other folder under the package has it - nothing on disk to re-point to. `#r \"{spec}\"` resolves it from nuget instead; that needs `dotnet fsi` (F# 5+), as the .NET Framework fsi.exe does not resolve package references."
                                         }
                                 | _ -> ()
         ]

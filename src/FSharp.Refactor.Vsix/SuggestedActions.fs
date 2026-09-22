@@ -74,7 +74,7 @@ let private previewOf (edits: PinnedEdit list) : obj =
         let lines = text.Replace("\r\n", "\n").Split '\n'
 
         if lines.Length > 12 then
-            String.Join("\n", Array.append (Array.take 12 lines) [| "…" |])
+            String.Join("\n", Array.append (Array.take 12 lines) [| "..." |])
         else
             text
 
@@ -195,7 +195,7 @@ let private disambiguate (raw: (string * Edit list) list) =
                 else
                     line
 
-            $"{title} → {firstLine}", edits
+            $"{title} => {firstLine}", edits
         | _ -> title, edits)
 
 type FrActionsSource(buffer: ITextBuffer, filePath: string) =

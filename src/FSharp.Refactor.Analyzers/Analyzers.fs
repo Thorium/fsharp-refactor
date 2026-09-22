@@ -363,7 +363,7 @@ let heldByScope = System.Collections.Concurrent.ConcurrentDictionary<string, int
 /// detector there is.
 [<Literal>]
 let private ShapeCaveat =
-    " CHANGES THE PUBLIC SHAPE: safe only if nothing outside this assembly links to it or serializes it (JSON, XML, protobuf — the tool cannot tell)."
+    " CHANGES THE PUBLIC SHAPE: safe only if nothing outside this assembly links to it or serializes it (JSON, XML, protobuf - the tool cannot tell)."
 
 /// The findings a widened scope adds, marked with the caveat.
 ///
@@ -610,7 +610,7 @@ let private booleanSimplifyMessages (fileName: string) (parseTree: ParsedInput) 
                 Some(
                     hint
                         "FR0109"
-                        "Both operands are the same expression; one suffices — unless the duplicate was meant to be something else, which is worth a look."
+                        "Both operands are the same expression; one suffices - unless the duplicate was meant to be something else, which is worth a look."
                         s.Range
                         [ fix s.Range s.OriginalText s.ReplacementText ]
                 )
@@ -661,7 +661,7 @@ let private cancellationMessages (parseTree: ParsedInput) (source: ISourceText) 
         |> List.map (fun (s: CancellationOverload.LoopSuggestion) ->
             hint
                 "FR0118"
-                $"'{s.TokenName}' is in scope but this loop never observes it — no call in the body takes it and nothing checks it — so cancellation cannot stop the loop; pass it to a call inside, or start the body with `{s.TokenName}.ThrowIfCancellationRequested()` (the fix)."
+                $"'{s.TokenName}' is in scope but this loop never observes it - no call in the body takes it and nothing checks it - so cancellation cannot stop the loop; pass it to a call inside, or start the body with `{s.TokenName}.ThrowIfCancellationRequested()` (the fix)."
                 s.Range
                 (s.Fix
                  |> Option.map (fun (r, original, replacement) -> fix r original replacement)
@@ -731,7 +731,7 @@ let private awaitableMessages (parseTree: ParsedInput) (source: ISourceText) che
 
         hint
             "FR0119"
-            $"'{s.MethodName}' blocks inside the computation although '{s.MethodName}Async' exists; binding the async twin keeps the thread free — and FR0118 hands it the CancellationToken on the next pass.{suffix}"
+            $"'{s.MethodName}' blocks inside the computation although '{s.MethodName}Async' exists; binding the async twin keeps the thread free - and FR0118 hands it the CancellationToken on the next pass.{suffix}"
             s.Range
             fixes)
 
@@ -771,7 +771,7 @@ let private catchLogMessages
         let primary =
             hint
                 "FR0120"
-                $"This {s.LogMethod} inside the handler never mentions '{s.ExceptionName}' — the one fact the handler exists to record; {howItLands} (logging only {s.ExceptionName}.Message deliberately is a legitimate PII choice — write that instead)."
+                $"This {s.LogMethod} inside the handler never mentions '{s.ExceptionName}' - the one fact the handler exists to record; {howItLands} (logging only {s.ExceptionName}.Message deliberately is a legitimate PII choice - write that instead)."
                 s.Range
                 [ fix s.Range "" (insert s.ExceptionName) ]
 
@@ -780,7 +780,7 @@ let private catchLogMessages
                 primary
                 hint
                     "FR0120"
-                    $"Alternative: pass {s.ExceptionName}.GetBaseException() — the root cause of a wrapped or aggregate exception."
+                    $"Alternative: pass {s.ExceptionName}.GetBaseException() - the root cause of a wrapped or aggregate exception."
                     s.Range
                     [ fix s.Range "" (insert $"{s.ExceptionName}.GetBaseException()") ]
             ]
@@ -880,7 +880,7 @@ let private dateTimeMessages
         | DateTimeRules.WallClockKind.UtcDateCut text, _ ->
             hint
                 "FR0121"
-                $"'{text}' cuts a calendar date at a timezone-random instant — UTC midnight is nobody's midnight, and the server's own date is a deployment accident the end user never sees; convert to the USER'S timezone first, then take the date."
+                $"'{text}' cuts a calendar date at a timezone-random instant - UTC midnight is nobody's midnight, and the server's own date is a deployment accident the end user never sees; convert to the USER'S timezone first, then take the date."
                 s.Range
                 []
         | DateTimeRules.WallClockKind.LocalNow, Some fixRange when
@@ -889,13 +889,13 @@ let private dateTimeMessages
             ->
             hint
                 "FR0121"
-                "DateTime.Now reads the server's local clock — a deployment accident; DateTime.UtcNow records an instant. (Local time is right for Fable/desktop code: leave this off there.)"
+                "DateTime.Now reads the server's local clock - a deployment accident; DateTime.UtcNow records an instant. (Local time is right for Fable/desktop code: leave this off there.)"
                 s.Range
                 [ fix fixRange "Now" "UtcNow" ]
         | DateTimeRules.WallClockKind.LocalNow, _ ->
             hint
                 "FR0121"
-                "DateTime.Now reads the server's local clock — a deployment accident; DateTime.UtcNow records an instant. Opt the rewrite in with { \"FR0121\": { \"utcNow\": 1 } } (server code), or ignore for Fable/desktop."
+                "DateTime.Now reads the server's local clock - a deployment accident; DateTime.UtcNow records an instant. Opt the rewrite in with { \"FR0121\": { \"utcNow\": 1 } } (server code), or ignore for Fable/desktop."
                 s.Range
                 [])
 
@@ -938,7 +938,7 @@ let private monitorLockMessages (parseTree: ParsedInput) (source: ISourceText) c
             // withheld, and the note must not call it a leak
             hint
                 "FR0123"
-                $"Monitor.Enter/try/finally/Monitor.Exit over '{s.LockText}' is what `lock {s.LockText} (fun () -> ...)` spells in one line; not rewritten here because the body binds in a computation, reads a mutable declared outside it, or crosses a compiler directive — a lambda could not take it verbatim."
+                $"Monitor.Enter/try/finally/Monitor.Exit over '{s.LockText}' is what `lock {s.LockText} (fun () -> ...)` spells in one line; not rewritten here because the body binds in a computation, reads a mutable declared outside it, or crosses a compiler directive - a lambda could not take it verbatim."
                 s.Range
                 []
         | None ->
@@ -972,7 +972,7 @@ let private logTemplateMessages (parseTree: ParsedInput) (source: ISourceText) c
             | LogTemplates.TemplateProblem.DuplicateName name ->
                 $"This {s.LogMethod} template names '{{{name}}}' twice; structured sinks key properties by name, so one value overwrites the other."
             | LogTemplates.TemplateProblem.Interpolated ->
-                $"An interpolated string as a {s.LogMethod} template destroys structured logging: every message becomes a distinct event, and the values lose their property names — use a constant template with placeholders."
+                $"An interpolated string as a {s.LogMethod} template destroys structured logging: every message becomes a distinct event, and the values lose their property names - use a constant template with placeholders."
             | LogTemplates.TemplateProblem.MissingFields names ->
                 let listed = names |> List.map (fun n -> "{" + n + "}") |> String.concat ", "
 
@@ -997,7 +997,7 @@ let private matchArmMergeMessages (parseTree: ParsedInput) (source: ISourceText)
     |> List.map (fun s ->
         hint
             "FR0117"
-            $"{s.Count} adjacent arms return the same result; one or-pattern arm says it once — same patterns, same order."
+            $"{s.Count} adjacent arms return the same result; one or-pattern arm says it once - same patterns, same order."
             s.ReplaceRange
             [ fix s.ReplaceRange (Text.textOfRange source s.ReplaceRange) s.NewText ])
 
@@ -1055,7 +1055,7 @@ let private ifRestructureMessages
             for s in IfRestructure.findGuardOrderNotes parseTree source do
                 hint
                     "FR0115"
-                    $"The base case sits FIRST behind a compound guard on '{s.Variable}'; every new error condition must be threaded into it. Inverted — error guards first, the base case as the final arm — the match reads top-down and extends by appending."
+                    $"The base case sits FIRST behind a compound guard on '{s.Variable}'; every new error condition must be threaded into it. Inverted - error guards first, the base case as the final arm - the match reads top-down and extends by appending."
                     s.Range
                     []
         if elseIfEnabled then
@@ -1076,7 +1076,7 @@ let private ifRestructureMessages
             for s in IfRestructure.findNestedIfMerges parseTree source do
                 hint
                     "FR0113"
-                    "The nested if can merge into one `&&` condition — the branches are unchanged, one level of nesting is gone."
+                    "The nested if can merge into one `&&` condition - the branches are unchanged, one level of nesting is gone."
                     s.Range
                     [ fix s.Range s.OriginalText s.ReplacementText ]
     ]
@@ -1681,8 +1681,18 @@ let dictTryGetCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0015 RegexUsage ----
 
-let private regexUsageMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
+/// Is the per-call (non-loop) hoist on? Default true: a function is far
+/// likelier to be called many times than a module is to be initialised
+/// and its hoisted binding never read — F# builds a module's bindings on
+/// first access, so the one that is never reached costs nothing. A
+/// codebase that would rather keep the construction where it is written
+/// sets `{ "FR0015": { "perCall": false } }` and keeps the loop hoists.
+let private regexPerCallHoist (fileName: string) =
+    Configuration.parameterBool fileName "FR0015" "RegexUsage" "perCall" true
+
+let private regexUsageMessages (fileName: string) (parseTree: ParsedInput) (source: ISourceText) : Message list =
     RegexUsage.find parseTree source
+    |> RegexUsage.keepingPerCall (regexPerCallHoist fileName)
     |> List.map (fun s ->
         let message =
             match s.Kind with
@@ -1706,12 +1716,12 @@ let private regexUsageMessages (parseTree: ParsedInput) (source: ISourceText) : 
 [<EditorAnalyzer("RegexUsage", "Simplify literal regex patterns; hoist Regex construction out of loops", HelpBase)>]
 let regexUsageEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0015" "RegexUsage" (fun () ->
-        regexUsageMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        regexUsageMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("RegexUsage", "Simplify literal regex patterns; hoist Regex construction out of loops", HelpBase)>]
 let regexUsageCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0015" "RegexUsage" (fun () ->
-        regexUsageMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        regexUsageMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0122 RegexValidity ----
 
@@ -1725,7 +1735,7 @@ let private regexValidityMessages (parseTree: ParsedInput) : Message list =
 
         hint
             "FR0122"
-            $"This regex pattern does not compile — a guaranteed ArgumentException on first use: {firstLine}"
+            $"This regex pattern does not compile - a guaranteed ArgumentException on first use: {firstLine}"
             r
             [])
 
@@ -1852,11 +1862,11 @@ let private discardedAsyncMessages
                 "FR0017"
                 (if s.IsValueTask then
                      sprintf
-                         "'%s' returns a ValueTask: ignore drops its outcome — a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it (let! _ = / do! inside task { }) or call .AsTask() and hand the task to whoever waits."
+                         "'%s' returns a ValueTask: ignore drops its outcome - a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it (let! _ = / do! inside task { }) or call .AsTask() and hand the task to whoever waits."
                          s.Name
                  else
                      sprintf
-                         "'%s' is an Async computation: ignore discards it without running it. Bind it inside the computation — let! _ = %s (do! when it returns unit) — or Async.Start it to fire and forget."
+                         "'%s' is an Async computation: ignore discards it without running it. Bind it inside the computation - let! _ = %s (do! when it returns unit) - or Async.Start it to fire and forget."
                          s.Name
                          s.Name)
                 s.Range
@@ -1879,7 +1889,7 @@ let private unhandledStartMessages
             hint
                 "FR0149"
                 (sprintf
-                    "%s hands this computation to the thread pool with nobody to observe a failure: an exception in it is UNHANDLED on a pool thread, which terminates the process rather than stopping the work quietly. %s Handle it in the body — a try/with, or Async.Catch bound and matched on both Choice1Of2 and Choice2Of2 (producing the Choice is not handling it).%s"
+                    "%s hands this computation to the thread pool with nobody to observe a failure: an exception in it is UNHANDLED on a pool thread, which terminates the process rather than stopping the work quietly. %s Handle it in the body - a try/with, or Async.Catch bound and matched on both Choice1Of2 and Choice2Of2 (producing the Choice is not handling it).%s"
                     s.Starter
                     (if s.Starter = "Async.Start" then
                          "A try/with around this call catches nothing: the work never runs on this thread."
@@ -1887,13 +1897,13 @@ let private unhandledStartMessages
                          "Async.StartImmediate runs on this thread only until the first await; past it the pool has the failure and a try/with around this call can no longer reach it.")
                     ((if s.WrappedInTry then
                           (if s.TryFix.IsSome then
-                               " The try/with around this call does not cover it either — that handler is on this thread, the work is not; it wraps this start and nothing else, so it moves inside the computation as it stands."
+                               " The try/with around this call does not cover it either - that handler is on this thread, the work is not; it wraps this start and nothing else, so it moves inside the computation as it stands."
                            else
-                               " The try/with around this call does not cover it either — that handler is on this thread, the work is not.")
+                               " The try/with around this call does not cover it either - that handler is on this thread, the work is not.")
                       else
                           "")
                      + (if s.LoopsInBody then
-                            " The body loops, so where the handler goes decides the behaviour: around the whole computation it still stops on the first failure, INSIDE the loop it keeps running — which of the two is wanted is yours to choose, and why no fix is offered."
+                            " The body loops, so where the handler goes decides the behaviour: around the whole computation it still stops on the first failure, INSIDE the loop it keeps running - which of the two is wanted is yours to choose, and why no fix is offered."
                         else
                             "")))
                 s.Range
@@ -2181,7 +2191,7 @@ let private closureCaptureMessages (parseTree: ParsedInput) (source: ISourceText
             // a publisher handed in from elsewhere: a leak only if it
             // outlives the subscriber
             | ClosureCapture.PublisherKind.External ->
-                $"This handler captures '{s.CapturedName}', so the {s.SinkName} subscription keeps the whole object alive as long as the publisher lives — a leak when the publisher outlives it. If the object is large, bind the needed values to locals before the lambda, or keep and dispose the subscription."
+                $"This handler captures '{s.CapturedName}', so the {s.SinkName} subscription keeps the whole object alive as long as the publisher lives - a leak when the publisher outlives it. If the object is large, bind the needed values to locals before the lambda, or keep and dispose the subscription."
 
         hint "FR0027" message s.Range [])
 
@@ -2262,10 +2272,10 @@ let private taskStateMachineMessages
                     "This task is large enough to risk the dynamic state-machine fallback (FS3511): %d plain let binding(s) before the first await can move out of the task (note: a throw in hoisted code then surfaces at the call instead of faulting the Task)."
                     count
             | TaskStateMachine.AdviceKind.SplitBranches ->
-                "This task is large enough to risk the dynamic state-machine fallback (FS3511): each branch can become its own smaller task { } — a branch without awaits becomes a trivially static one."
+                "This task is large enough to risk the dynamic state-machine fallback (FS3511): each branch can become its own smaller task { } - a branch without awaits becomes a trivially static one."
             | TaskStateMachine.AdviceKind.HoistReturn leaves ->
                 sprintf
-                    "Every one of this branch's %d leaves returns, so one `return` in front of the whole branch hands the builder a value once instead of %d times — the branch becomes an ordinary expression rather than an exit per arm. Nothing moves: the branch stays where it is and gains an indent level."
+                    "Every one of this branch's %d leaves returns, so one `return` in front of the whole branch hands the builder a value once instead of %d times - the branch becomes an ordinary expression rather than an exit per arm. Nothing moves: the branch stays where it is and gains an indent level."
                     leaves
                     leaves
             | TaskStateMachine.AdviceKind.ExtractTail lines ->
@@ -2331,7 +2341,7 @@ let private accumulatorLoopMessages
     |> List.map (fun s ->
         let message =
             if s.Mutable then
-                $"Mutable list '%s{s.Name}' is built one element at a time by its loops and only read after: the loops are a list expression with each element as its yield, built once — an append copied the whole list per element (measured at 1000 elements: 250x faster on 0.3%% of the allocation; a cons and List.rev 1.5x on half)."
+                $"Mutable list '%s{s.Name}' is built one element at a time by its loops and only read after: the loops are a list expression with each element as its yield, built once - an append copied the whole list per element (measured at 1000 elements: 250x faster on 0.3%% of the allocation; a cons and List.rev 1.5x on half)."
             else
                 $"ResizeArray '%s{s.Name}' is filled one Add at a time by its loops and only read after: the loops are a list expression, with each Add's argument as its yield."
 
@@ -2603,7 +2613,7 @@ let private stringConcatMessages
                 primary
                 hint
                     "FR0031"
-                    "…or as one explicit String.Concat call — the same thing the compiler emits for the interpolation, spelled out."
+                    "...or as one explicit String.Concat call - the same thing the compiler emits for the interpolation, spelled out."
                     s.Range
                     [ fix s.Range s.OriginalText concat ]
             ]
@@ -2653,7 +2663,7 @@ let private objectDesignMessages
                 hint
                     "FR0148"
                     (sprintf
-                        "Type '%s' exposes a public Dispose() but does not implement IDisposable; nothing can `use` it, and only a caller that knows the member releases what it holds — implement IDisposable and let Dispose be its member."
+                        "Type '%s' exposes a public Dispose() but does not implement IDisposable; nothing can `use` it, and only a caller that knows the member releases what it holds - implement IDisposable and let Dispose be its member."
                         s.TypeName)
                     s.Range
                     [])
@@ -2717,7 +2727,7 @@ let private objectDesignMessages
                         "FR0047"
                         (if s.MentionedOnly then
                              sprintf
-                                 "Type '%s' is IDisposable and its Dispose uses field '%s' without disposing it — cancelling or closing a handle is not releasing it; add '%s.Dispose()'."
+                                 "Type '%s' is IDisposable and its Dispose uses field '%s' without disposing it - cancelling or closing a handle is not releasing it; add '%s.Dispose()'."
                                  s.TypeName
                                  s.FieldName
                                  s.FieldName
@@ -2818,7 +2828,7 @@ let private loopPerfMessages
                         hint
                             "FR0035"
                             (sprintf
-                                "%s.contains scans '%s' linearly on every iteration; '%s' is a startup-built module binding, so the fix adds a private HashSet companion beside it (built once) and probes that in O(1) — every probe of it in this file converts together."
+                                "%s.contains scans '%s' linearly on every iteration; '%s' is a startup-built module binding, so the fix adds a private HashSet companion beside it (built once) and probes that in O(1) - every probe of it in this file converts together."
                                 s.ModuleName
                                 s.CollectionName
                                 s.CollectionName)
@@ -2828,7 +2838,7 @@ let private loopPerfMessages
                         hint
                             "FR0035"
                             (sprintf
-                                "%s.contains scans '%s' linearly on every iteration. If the loop is long and '%s' is more than a handful of elements, build a HashSet from it once outside the loop for O(1) probes — the one-time build only pays for itself then; for a few elements the linear scan is already the fastest option, and F# Set's persistent tree costs more to build and probe than HashSet unless you need its immutability."
+                                "%s.contains scans '%s' linearly on every iteration. If the loop is long and '%s' is more than a handful of elements, build a HashSet from it once outside the loop for O(1) probes - the one-time build only pays for itself then; for a few elements the linear scan is already the fastest option, and F# Set's persistent tree costs more to build and probe than HashSet unless you need its immutability."
                                 s.ModuleName
                                 s.CollectionName
                                 s.CollectionName)
@@ -2849,7 +2859,7 @@ let private loopPerfMessages
                         constructions |> List.exists (fun s -> s.TypeName = "Regex")
                         && Configuration.isRuleEnabled fileName "FR0015" "RegexUsage"
                     then
-                        RegexUsage.hoistedConstructions parseTree source
+                        RegexUsage.hoistedConstructions (regexPerCallHoist fileName) parseTree source
                     else
                         []
 
@@ -2869,10 +2879,10 @@ let private loopPerfMessages
                             // right lifetime is framework-dependent (a
                             // long-lived instance, or IHttpClientFactory
                             // under DI), so this stays advice
-                            "An HttpClient is constructed on every iteration — under load this exhausts sockets (TIME_WAIT) and skips DNS refresh. Reuse one long-lived client (it is thread-safe for concurrent requests) or take an IHttpClientFactory."
+                            "An HttpClient is constructed on every iteration - under load this exhausts sockets (TIME_WAIT) and skips DNS refresh. Reuse one long-lived client (it is thread-safe for concurrent requests) or take an IHttpClientFactory."
                         else
                             sprintf
-                                "A %s is constructed on every iteration; it is expensive by design — hoist it outside the loop or make it static."
+                                "A %s is constructed on every iteration; it is expensive by design - hoist it outside the loop or make it static."
                                 s.TypeName
 
                     hint "FR0037" message s.Range [])
@@ -2988,7 +2998,7 @@ let private charOverloadMessages
             hint
                 "FR0038"
                 (sprintf
-                    "%s with a single-character string has a faster char overload — but the char overload compares ordinally while the string overload is culture-sensitive; switch (or add StringComparison.Ordinal) only if ordinal is intended."
+                    "%s with a single-character string has a faster char overload - but the char overload compares ordinally while the string overload is culture-sensitive; switch (or add StringComparison.Ordinal) only if ordinal is intended."
                     s.MethodName)
                 s.Range
                 (match s.OrdinalOffer with
@@ -3023,7 +3033,7 @@ let private caseInsensitiveMessages
                     s.LoweringName
             | CaseInsensitive.CaseKind.Equality ->
                 sprintf
-                    "%s() allocates a copy just to compare; String.Equals(a, b, StringComparison...IgnoreCase) is allocation-free — pick the comparison type deliberately (Ordinal vs Culture)."
+                    "%s() allocates a copy just to compare; String.Equals(a, b, StringComparison...IgnoreCase) is allocation-free - pick the comparison type deliberately (Ordinal vs Culture)."
                     s.LoweringName
             | CaseInsensitive.CaseKind.MethodCall method when s.Replacement.IsSome ->
                 sprintf
@@ -3033,7 +3043,7 @@ let private caseInsensitiveMessages
                     method
             | CaseInsensitive.CaseKind.MethodCall method ->
                 sprintf
-                    "%s() allocates a copy just to call %s; the %s overload taking a StringComparison is allocation-free — pick the comparison type deliberately (Ordinal vs Culture)."
+                    "%s() allocates a copy just to call %s; the %s overload taking a StringComparison is allocation-free - pick the comparison type deliberately (Ordinal vs Culture)."
                     s.LoweringName
                     method
                     method
@@ -3064,7 +3074,7 @@ let private caseInsensitiveMessages
                 primary
                 hint
                     "FR0039"
-                    "…or culture-aware: InvariantCultureIgnoreCase compares by linguistic rules (ligatures, accents) where ordinal compares code points."
+                    "...or culture-aware: InvariantCultureIgnoreCase compares by linguistic rules (ligatures, accents) where ordinal compares code points."
                     s.Range
                     [ fix s.Range (Text.textOfRange source s.Range) culture ]
             ]
@@ -3329,7 +3339,7 @@ let private syncOverAsyncMessages
         let message =
             match s.Kind, s.Builder with
             | SyncOverAsync.BlockKind.AntecedentResult, _ ->
-                ".Result on a continuation's antecedent does not block, but a faulted antecedent throws its exception wrapped in an AggregateException there; the continuation is a bind — task { let! r = t ... } gets the value, the exception itself, and no ContinueWith."
+                ".Result on a continuation's antecedent does not block, but a faulted antecedent throws its exception wrapped in an AggregateException there; the continuation is a bind - task { let! r = t ... } gets the value, the exception itself, and no ContinueWith."
             | kind, None ->
                 let what =
                     match kind with
@@ -3360,14 +3370,14 @@ let private syncOverAsyncMessages
                     // no task to bind: the work the primitive signals is
                     // what the computation should await
                     sprintf
-                        "%s inside %s { }; await the work it waits for instead (the task or a TaskCompletionSource that completes it, SemaphoreSlim.WaitAsync) — sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
+                        "%s inside %s { }; await the work it waits for instead (the task or a TaskCompletionSource that completes it, SemaphoreSlim.WaitAsync) - sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
                         what
                         builder
                 | _ when s.InFinally ->
                     // no let!/do! may appear in a finally block: the wait
                     // has to leave the handler before it can become a bind
                     sprintf
-                        "%s inside the finally block of %s { }, where no let!/do! can appear; move the wait out of the handler (record the outcome in the body, await after the try) — sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
+                        "%s inside the finally block of %s { }, where no let!/do! can appear; move the wait out of the handler (record the outcome in the body, await after the try) - sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
                         what
                         builder
                 | _ when s.InLambda ->
@@ -3375,13 +3385,13 @@ let private syncOverAsyncMessages
                     // callback's own signature is where the blocking is
                     // decided
                     sprintf
-                        "%s inside a lambda within %s { }; the builder's let!/do! cannot reach into the callback, so its signature is the synchronous boundary — make the callback return a computation, or move the blocking call out of %s { } — sync-over-async here invites thread-pool starvation and deadlocks."
+                        "%s inside a lambda within %s { }; the builder's let!/do! cannot reach into the callback, so its signature is the synchronous boundary - make the callback return a computation, or move the blocking call out of %s { } - sync-over-async here invites thread-pool starvation and deadlocks."
                         what
                         builder
                         builder
                 | _ ->
                     sprintf
-                        "%s inside %s { }; bind with let!/do! instead — sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
+                        "%s inside %s { }; bind with let!/do! instead - sync-over-async in a computation expression invites thread-pool starvation and deadlocks."
                         what
                         builder
 
@@ -3404,9 +3414,9 @@ let private syncOverAsyncMessages
                     "FR0049"
                     (match s.Kind with
                      | SyncOverAsync.BlockKind.AntecedentResult ->
-                         "Read the antecedent with GetAwaiter().GetResult(): a fault then arrives as the exception itself, not wrapped in an AggregateException — an observable change for a caller that catches the wrapper."
+                         "Read the antecedent with GetAwaiter().GetResult(): a fault then arrives as the exception itself, not wrapped in an AggregateException - an observable change for a caller that catches the wrapper."
                      | _ ->
-                         "Alternative: call the synchronous sibling API instead — this walks the code away from async, a waypoint at best.")
+                         "Alternative: call the synchronous sibling API instead - this walks the code away from async, a waypoint at best.")
                     s.Range
                     (asFixes s.AlternativeFixes)
         ])
@@ -3485,7 +3495,7 @@ let private accumulationMessages
                 |> List.map (fun s ->
                     hint
                         "FR0107"
-                        "This mutable flag loop asks an exists/forall question; the rewrite answers it directly — and short-circuits, doing the same or less work."
+                        "This mutable flag loop asks an exists/forall question; the rewrite answers it directly - and short-circuits, doing the same or less work."
                         s.Range
                         [ fix s.Range s.OriginalText s.ReplacementText ])
             else
@@ -3511,11 +3521,11 @@ let private accumulationMessages
                         match s.Kind with
                         | Accumulation.QuadraticKind.Collection ->
                             sprintf
-                                "Appending to '%s' inside a loop copies it every iteration (O(n²)); write the loop as a list expression (FR0156 rewrites a `let mutable` list that is only read after its loops), accumulate into a ResizeArray, or cons with :: and List.rev once at the end."
+                                "Appending to '%s' inside a loop copies it every iteration (O(n^2)); write the loop as a list expression (FR0156 rewrites a `let mutable` list that is only read after its loops), accumulate into a ResizeArray, or cons with :: and List.rev once at the end."
                                 s.Name
                         | Accumulation.QuadraticKind.Str ->
                             sprintf
-                                "Building the string '%s' with + inside a loop copies it every iteration (O(n²)) — the slowest way to build a string (measured: 36x slower and 200x the allocation of a StringBuilder at 1000 pieces). Use a StringBuilder, or collect the pieces and String.concat once."
+                                "Building the string '%s' with + inside a loop copies it every iteration (O(n^2)) - the slowest way to build a string (measured: 36x slower and 200x the allocation of a StringBuilder at 1000 pieces). Use a StringBuilder, or collect the pieces and String.concat once."
                                 s.Name
 
                     hint "FR0051" message s.Range [])
@@ -3630,7 +3640,7 @@ let private swallowedExceptionMessages
             | Some probe ->
                 $"'with %s{s.PatternText} -> %s{clause}' swallows every exception around %s{probe}, which does not throw for a missing path (it answers 1601-01-01) and throws only for a malformed one or a permissions failure, which the fallback then hides; delete the try, and check File.Exists first if a missing file needs the fallback."
             | None when s.Teardown ->
-                $"'with %s{s.PatternText} -> ()' around a teardown call is the best-effort release idiom, and still hides an ObjectDisposedException that says the release ran twice; narrow the catch to what a release throws — IOException, SocketException, ObjectDisposedException — and let the rest surface."
+                $"'with %s{s.PatternText} -> ()' around a teardown call is the best-effort release idiom, and still hides an ObjectDisposedException that says the release ran twice; narrow the catch to what a release throws - IOException, SocketException, ObjectDisposedException - and let the rest surface."
             | None ->
                 match s.FallbackText with
                 | Some fallback ->
@@ -3665,11 +3675,11 @@ let private parseControlFlowMessages (parseTree: ParsedInput) (source: ISourceTe
     |> List.map (fun s ->
         let message =
             if s.Offers.IsEmpty then
-                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch covers less than TryParse answers false to (an overflow would propagate here and fall back there), so the rewrite is yours to judge."
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal - a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch covers less than TryParse answers false to (an overflow would propagate here and fall back there), so the rewrite is yours to judge."
             elif s.CatchAll then
-                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the fix drops the try, and with it the catch-all that swallowed every other failure (a null input, which Parse threw for, takes the fallback either way)."
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal - a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the fix drops the try, and with it the catch-all that swallowed every other failure (a null input, which Parse threw for, takes the fallback either way)."
             else
-                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal — a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch says which failures are expected, TryParse says it without the cost (a null input, which Parse threw for, then takes the fallback too)."
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal - a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch says which failures are expected, TryParse says it without the cost (a null input, which Parse threw for, then takes the fallback too)."
 
         hint
             "FR0168"
@@ -3750,7 +3760,7 @@ let private structOptionMessages (parseTree: ParsedInput) (source: ISourceText) 
         hint
             "FR0059"
             (sprintf
-                "Private '%s' returns Option, allocating per call; ValueOption is a struct — the definition and every match site are rewritten together."
+                "Private '%s' returns Option, allocating per call; ValueOption is a struct - the definition and every match site are rewritten together."
                 s.FunctionName)
             s.DefRange
             (s.Edits
@@ -3815,7 +3825,7 @@ let private argNamesMessages (offerRename: bool) (parseTree: ParsedInput) (sourc
         hint
             "FR0061"
             (sprintf
-                "'%s' is not a parameter of this function (parameters: %s); the wrong name sends the caller debugging the wrong argument — nameof would keep it honest."
+                "'%s' is not a parameter of this function (parameters: %s); the wrong name sends the caller debugging the wrong argument - nameof would keep it honest."
                 s.UsedName
                 (String.concat ", " s.ParameterNames))
             s.Range
@@ -3850,7 +3860,7 @@ let private exceptionRulesMessages (fileName: string) (parseTree: ParsedInput) (
                 |> List.map (fun s ->
                     hint
                         "FR0063"
-                        "Raising inside finally replaces any exception already in flight — the original failure vanishes."
+                        "Raising inside finally replaces any exception already in flight - the original failure vanishes."
                         s.Range
                         [])
             else
@@ -3862,7 +3872,7 @@ let private exceptionRulesMessages (fileName: string) (parseTree: ParsedInput) (
                 |> List.map (fun s ->
                     hint
                         "FR0064"
-                        $"%s{s.TypeName} is reserved for the runtime; raising it manually misleads catchers and debuggers — InvalidOperationException or an Argument exception says what actually happened."
+                        $"%s{s.TypeName} is reserved for the runtime; raising it manually misleads catchers and debuggers - InvalidOperationException or an Argument exception says what actually happened."
                         s.Range
                         [])
             else
@@ -3959,7 +3969,7 @@ let private securityRulesMessages
                     [
                         hint
                             "FR0126"
-                            $"A dynamically built string reaches {s.Sink} — the command/argument-injection sink, and doubly so when the string carries LLM or agent output; pass a fixed executable with an argument LIST (ProcessStartInfo.ArgumentList) instead."
+                            $"A dynamically built string reaches {s.Sink} - the command/argument-injection sink, and doubly so when the string carries LLM or agent output; pass a fixed executable with an argument LIST (ProcessStartInfo.ArgumentList) instead."
                             s.Range
                             []
                         // the list form needs .NET Core 3 or later, and a shell's
@@ -3969,7 +3979,7 @@ let private securityRulesMessages
                         | Some(r, original, replacement) when offerAlternatives ->
                             hint
                                 "FR0126"
-                                "Alternative: pass the arguments as a list — each reaches the process whole, quoting and all (a hole that already carries several arguments becomes one; split it)."
+                                "Alternative: pass the arguments as a list - each reaches the process whole, quoting and all (a hole that already carries several arguments becomes one; split it)."
                                 s.Range
                                 [ fix r original replacement ]
                         | _ -> ()
@@ -3993,12 +4003,12 @@ let private securityRulesMessages
                         [
                             hint
                                 "FR0065"
-                                "Alternative: switch to SHA256 (mind persisted hashes and interop — the output size changes)."
+                                "Alternative: switch to SHA256 (mind persisted hashes and interop - the output size changes)."
                                 s.Range
                                 [ fix algo weak "SHA256" ]
                             hint
                                 "FR0065"
-                                "Alternative: switch to SHA512 (mind persisted hashes and interop — the output size changes)."
+                                "Alternative: switch to SHA512 (mind persisted hashes and interop - the output size changes)."
                                 s.Range
                                 [ fix algo weak "SHA512" ]
                         ]
@@ -4091,7 +4101,7 @@ let private securityRulesMessages
                             hint
                                 "FR0146"
                                 (sprintf
-                                    "This SQL command carries no parameter at all (%s): a full-table statement, or values written into the text — possible, but suspicious; parameters are where the values were supposed to go."
+                                    "This SQL command carries no parameter at all (%s): a full-table statement, or values written into the text - possible, but suspicious; parameters are where the values were supposed to go."
                                     s.Sink)
                                 s.Range
                                 []
@@ -4151,7 +4161,7 @@ let private unicodeMessages (parseTree: ParsedInput) (source: ISourceText) : Mes
 
         hint
             "FR0125"
-            $"Invisible character {s.CodePoint} ({s.FamilyName}) — it cannot be seen in review, which is exactly how Trojan Source and prompt-smuggling work; spell it as an escape or remove it."
+            $"Invisible character {s.CodePoint} ({s.FamilyName}) - it cannot be seen in review, which is exactly how Trojan Source and prompt-smuggling work; spell it as an escape or remove it."
             s.Range
             fixes)
 
@@ -4190,18 +4200,18 @@ let private secretMessages (fileName: string) (parseTree: ParsedInput) : Message
                 | "connection-string password" -> "This connection string carries its password"
                 | provider -> $"This literal matches {provider}'s credential format and holds it"
 
-            hint "FR0153" $"{what} in a literal — it should be a development credential." s.Range []
+            hint "FR0153" $"{what} in a literal - it should be a development credential." s.Range []
         else
 
             let text =
                 match s.Provider with
                 | "connection-string password" ->
-                    "This connection string carries its password in source — a leaked credential until proven otherwise; rotate it and move the string to configuration or a secret store."
+                    "This connection string carries its password in source - a leaked credential until proven otherwise; rotate it and move the string to configuration or a secret store."
                 | "JWT"
                 | "bearer token" ->
-                    $"This literal is a signed {s.Provider} — a leaked credential until proven otherwise; revoke it and move it to configuration or a secret store."
+                    $"This literal is a signed {s.Provider} - a leaked credential until proven otherwise; revoke it and move it to configuration or a secret store."
                 | provider ->
-                    $"This literal matches {provider}'s documented credential format — a leaked key until proven otherwise; rotate it and move it to configuration or a secret store."
+                    $"This literal matches {provider}'s documented credential format - a leaked key until proven otherwise; rotate it and move it to configuration or a secret store."
 
             hint "FR0127" text s.Range [])
 
@@ -4243,7 +4253,7 @@ let private matchGuardsMessages (parseTree: ParsedInput) (source: ISourceText) :
     |> List.map (fun s ->
         hint
             "FR0129"
-            $"The guard only equality-tests '{s.BinderName}' against {s.LiteralText} — that IS the literal pattern."
+            $"The guard only equality-tests '{s.BinderName}' against {s.LiteralText} - that IS the literal pattern."
             s.Range
             [ fix s.Range (Text.textOfRange source s.Range) s.LiteralText ])
 
@@ -4359,7 +4369,7 @@ let private nameQuotingMessages
     |> List.map (fun s ->
         hint
             "FR0133"
-            $"'{s.Name}' is {s.Name.Length} characters of camel case; the double-backtick name ``{s.Quoted}`` reads as the sentence it is — renamed at its definition and every use."
+            $"'{s.Name}' is {s.Name.Length} characters of camel case; the double-backtick name ``{s.Quoted}`` reads as the sentence it is - renamed at its definition and every use."
             s.Range
             (s.Edits
              |> List.map (fun (r, original, replacement) -> fix r original replacement)))
@@ -4395,7 +4405,7 @@ let private dateTimeOffsetMessages
             |> Option.map (fun edits ->
                 hint
                     "FR0134"
-                    $"Field '{s.FieldName}: DateTime' of the file-private type '{s.TypeName}' drops the clock it was read from; every write and read fits DateTimeOffset, which keeps the instant AND its offset — migrated in one edit set."
+                    $"Field '{s.FieldName}: DateTime' of the file-private type '{s.TypeName}' drops the clock it was read from; every write and read fits DateTimeOffset, which keeps the instant AND its offset - migrated in one edit set."
                     s.Range
                     (edits |> List.map (fun (r, original, replacement) -> fix r original replacement)))
         else
@@ -4429,7 +4439,7 @@ let private literateCommentMessages (parseTree: ParsedInput) (source: ISourceTex
 
         hint
             "FR0135"
-            $"this block comment carries {s.Evidence} — markdown FSharp.Formatting silently drops from a plain comment; one more star makes it the literate cell it reads as."
+            $"this block comment carries {s.Evidence} - markdown FSharp.Formatting silently drops from a plain comment; one more star makes it the literate cell it reads as."
             s.Range
             [ fix r "" text ])
 
@@ -4458,7 +4468,7 @@ let private emptyGuidMessages
         [
             hint
                 "FR0136"
-                $"the zero-argument Guid constructor is 00000000-…: if the empty value is intended, {s.EmptyText} says so; if a FRESH guid was meant, this is the classic .NET slip."
+                $"the zero-argument Guid constructor is 00000000-...: if the empty value is intended, {s.EmptyText} says so; if a FRESH guid was meant, this is the classic .NET slip."
                 s.Range
                 [ fix s.Range original s.EmptyText ]
             // the behavior-CHANGING repair — the likely intent, but only a
@@ -4466,7 +4476,7 @@ let private emptyGuidMessages
             if offerAlternatives then
                 hint
                     "FR0136"
-                    $"Alternative: {s.NewGuidText} — if a fresh guid was the intent, this is the actual bug fix."
+                    $"Alternative: {s.NewGuidText} - if a fresh guid was the intent, this is the actual bug fix."
                     s.Range
                     [ fix s.Range original s.NewGuidText ]
         ])
@@ -4521,7 +4531,7 @@ let private seqOnArrayMessages
                 hint
                     "FR0139"
                     (sprintf
-                        "Seq.%s on '%s' walks an array through IEnumerable — an interface call per element; Array.%s reads the block directly. Arrays only: a Seq call on a list or a lazy source can be deliberate."
+                        "Seq.%s on '%s' walks an array through IEnumerable - an interface call per element; Array.%s reads the block directly. Arrays only: a Seq call on a list or a lazy source can be deliberate."
                         s.FunctionName
                         s.CollectionText
                         s.FunctionName)
@@ -4534,7 +4544,7 @@ let private seqOnArrayMessages
                 hint
                     "FR0139"
                     (sprintf
-                        "Seq.contains on '%s' walks the array element by element; Enumerable.Contains vectorises over its span — measured 587ns to 109ns over 1000 ints. Equivalent for int and int64, whose structural equality agrees with EqualityComparer.Default."
+                        "Seq.contains on '%s' walks the array element by element; Enumerable.Contains vectorises over its span - measured 587ns to 109ns over 1000 ints. Equivalent for int and int64, whose structural equality agrees with EqualityComparer.Default."
                         s.CollectionText)
                     callRange
                     [ fix callRange (Text.textOfRange source callRange) linqText ]
@@ -4548,7 +4558,7 @@ let private seqOnArrayMessages
                 primary
                 hint
                     "FR0139"
-                    "…or keep the F# module: Array.contains is the idiomatic step and still beats Seq (measured 587ns to 464ns), without bringing System.Linq into the file."
+                    "...or keep the F# module: Array.contains is the idiomatic step and still beats Seq (measured 587ns to 464ns), without bringing System.Linq into the file."
                     s.Range
                     [ fix s.Range "Seq" "Array" ]
             ]
@@ -4572,7 +4582,7 @@ let private objectInitializerMessages (parseTree: ParsedInput) (source: ISourceT
         hint
             "FR0140"
             (sprintf
-                "This constructor and the %d property assignment(s) after it are F#'s named-property construction spelled out. Setting them in the call reads as one constructed value instead of an assembled one, and the half-built object stops being nameable in between — the same calls, in the same order."
+                "This constructor and the %d property assignment(s) after it are F#'s named-property construction spelled out. Setting them in the call reads as one constructed value instead of an assembled one, and the half-built object stops being nameable in between - the same calls, in the same order."
                 s.Count)
             s.Range
             [ fix s.Range s.OriginalText s.ReplacementText ])
@@ -4599,7 +4609,7 @@ let private generativeLoopMessages (parseTree: ParsedInput) (source: ISourceText
         let exit =
             if s.TailAfterFlag > 0 then
                 sprintf
-                    "raising '%s' does not leave the loop — the %d statement(s) after it still run in that same iteration, and the loop exits only at the next condition check"
+                    "raising '%s' does not leave the loop - the %d statement(s) after it still run in that same iteration, and the loop exits only at the next condition check"
                     s.Flag
                     s.TailAfterFlag
             else
@@ -4610,7 +4620,7 @@ let private generativeLoopMessages (parseTree: ParsedInput) (source: ISourceText
         hint
             "FR0141"
             (sprintf
-                "Consider a tail-recursive function here: this loop carries %s forward by mutation, and %s. Recursion would take that state as parameters and return at the point the decision is made, leaving no flag, no mutables, and no tail to run. Note only — naming the function and its parameters is yours."
+                "Consider a tail-recursive function here: this loop carries %s forward by mutation, and %s. Recursion would take that state as parameters and return at the point the decision is made, leaving no flag, no mutables, and no tail to run. Note only - naming the function and its parameters is yours."
                 carried
                 exit)
             s.Range
@@ -4645,7 +4655,7 @@ let private stringEmptinessMessages
             [
                 hint
                     "FR0138"
-                    $"this hand-rolled emptiness test IS {predicate} — the null guard short-circuits exactly as the predicate answers, and the Trim spellings stop allocating a trimmed copy."
+                    $"this hand-rolled emptiness test IS {predicate} - the null guard short-circuits exactly as the predicate answers, and the Trim spellings stop allocating a trimmed copy."
                     s.Range
                     [ fix s.Range s.OriginalText s.ReplacementText ]
             ]
@@ -4655,7 +4665,7 @@ let private stringEmptinessMessages
             [
                 hint
                     "FR0138"
-                    $"trimming a copy just to test it: {predicate} tests the same whitespace set without allocating — but it answers true for null where this throws, so apply deliberately."
+                    $"trimming a copy just to test it: {predicate} tests the same whitespace set without allocating - but it answers true for null where this throws, so apply deliberately."
                     s.Range
                     (if offerAlternatives then
                          [ fix s.Range s.OriginalText s.ReplacementText ]
@@ -4712,7 +4722,7 @@ let private miscRulesMessages
                         hint
                             "FR0062"
                             (sprintf
-                                "'%s' is visible mutable module state — a global variable any consumer can write, with no thread safety; make it private (internal when another module of the same assembly writes it) or pass the state explicitly."
+                                "'%s' is visible mutable module state - a global variable any consumer can write, with no thread safety; make it private (internal when another module of the same assembly writes it) or pass the state explicitly."
                                 s.Name)
                             s.Range
                             (if offerAlternatives then
@@ -4722,7 +4732,7 @@ let private miscRulesMessages
                         if offerAlternatives then
                             hint
                                 "FR0062"
-                                $"Alternative: make '{s.Name}' internal — for when another module of the same assembly writes it."
+                                $"Alternative: make '{s.Name}' internal - for when another module of the same assembly writes it."
                                 s.Range
                                 [ fix insertAt "" "internal " ]
                     ])
@@ -4769,7 +4779,7 @@ let private miscRulesMessages
                                 [ fix ri oi pi ]
                             hint
                                 "FR0067"
-                                "Alternative: spell out CurrentCulture — today's implicit behavior, made deliberate."
+                                "Alternative: spell out CurrentCulture - today's implicit behavior, made deliberate."
                                 s.Range
                                 [ fix rc oc pc ]
                         ]
@@ -4784,7 +4794,7 @@ let private miscRulesMessages
                     hint
                         "FR0068"
                         (sprintf
-                            "Enum case '%s' has the same value as '%s'; comparisons and ToString silently conflate them — usually a copy-paste slip."
+                            "Enum case '%s' has the same value as '%s'; comparisons and ToString silently conflate them - usually a copy-paste slip."
                             s.CaseName
                             s.OriginalName)
                         s.Range
@@ -4914,7 +4924,7 @@ let private structHintsMessages
                         | None ->
                             hint
                                 "FR0069"
-                                $"Field '%s{s.FieldName}: %s{s.ElementText} option' of the contained type '%s{s.TypeName}' boxes the %s{s.ElementText} on every Some; '%s{s.ElementText} voption' keeps it flat — and private/internal visibility keeps the migration contained (public types risk serialization changes and unbounded call-site churn)."
+                                $"Field '%s{s.FieldName}: %s{s.ElementText} option' of the contained type '%s{s.TypeName}' boxes the %s{s.ElementText} on every Some; '%s{s.ElementText} voption' keeps it flat - and private/internal visibility keeps the migration contained (public types risk serialization changes and unbounded call-site churn)."
                                 s.Range
                                 [])
                 else
@@ -4982,7 +4992,7 @@ let private structHintsMessages
                         | None ->
                             hint
                                 "FR0093"
-                                $"Field '%s{s.FieldName}: %s{s.TupleText}' of the contained type '%s{s.TypeName}' is a reference tuple: one heap object per value. 'struct (%s{s.TupleText})' stores it inline — but every construction and destructuring of the field needs the struct keyword too, so this is advice, not a mechanical fix."
+                                $"Field '%s{s.FieldName}: %s{s.TupleText}' of the contained type '%s{s.TypeName}' is a reference tuple: one heap object per value. 'struct (%s{s.TupleText})' stores it inline - but every construction and destructuring of the field needs the struct keyword too, so this is advice, not a mechanical fix."
                                 s.Range
                                 [])
                 else
@@ -5029,7 +5039,7 @@ let private loopInvariantMessages (parseTree: ParsedInput) (source: ISourceText)
     |> List.map (fun s ->
         hint
             "FR0071"
-            $"'let %s{s.Name} = ...' does not depend on the loop, but every iteration re-evaluates it; the rewrite hoists it above the loop (the value is pure, so evaluating it once is the only observable change — a saving)."
+            $"'let %s{s.Name} = ...' does not depend on the loop, but every iteration re-evaluates it; the rewrite hoists it above the loop (the value is pure, so evaluating it once is the only observable change - a saving)."
             s.Range
             [
                 for range, original, replacement in s.Edits -> fix range original replacement
@@ -5186,7 +5196,7 @@ let private useBindingMessages (parseTree: ParsedInput) (source: ISourceText) ch
 
             hint
                 "FR0075"
-                $"'%s{s.Name}' is a locally constructed disposable that nothing here disposes; %s{escape}, so decide the owner — 'use' here if the value only gets borrowed, or disposal at the destination.%s{context}"
+                $"'%s{s.Name}' is a locally constructed disposable that nothing here disposes; %s{escape}, so decide the owner - 'use' here if the value only gets borrowed, or disposal at the destination.%s{context}"
                 s.Range
                 []
             |> weigh)
@@ -5221,7 +5231,7 @@ let private escapingUseMessages
             hint
                 "FR0150"
                 (sprintf
-                    "'%s' is disposed when this scope returns, but the %s { } the scope hands back reads it afterwards — the first read past the return throws ObjectDisposedException. The computation owns it: move the `use` inside the %s { }, where it is disposed when the work finishes."
+                    "'%s' is disposed when this scope returns, but the %s { } the scope hands back reads it afterwards - the first read past the return throws ObjectDisposedException. The computation owns it: move the `use` inside the %s { }, where it is disposed when the work finishes."
                     s.Name
                     s.Builder
                     s.Builder)
@@ -5263,7 +5273,7 @@ let private mapIgnoreMessages (parseTree: ParsedInput) (source: ISourceText) che
         | None ->
             hint
                 "FR0076"
-                "Seq.map is lazy: piping it to ignore evaluates nothing — the mapping never runs. Seq.iter would run the effects; if none are wanted, delete the line."
+                "Seq.map is lazy: piping it to ignore evaluates nothing - the mapping never runs. Seq.iter would run the effects; if none are wanted, delete the line."
                 s.Range
                 [])
 
@@ -5346,7 +5356,7 @@ let private failwithContextMessages
             | _ ->
                 hint
                     "FR0092"
-                    $"This failure message is a constant: every occurrence in the log reads the same. Interpolating %s{s.FunctionName}'s arguments says which call produced it — check the values are safe to log first, and that no test asserts on the text."
+                    $"This failure message is a constant: every occurrence in the log reads the same. Interpolating %s{s.FunctionName}'s arguments says which call produced it - check the values are safe to log first, and that no test asserts on the text."
                     s.Range
                     (if applies then
                          [
@@ -5496,7 +5506,7 @@ let private recordFieldsMessages
             if s.AllObvious then
                 $"This {s.TypeName} leaves {s.Missing.Length} field(s) unassigned ({missing}); the fix adds them with the empty value their types make obvious."
             else
-                $"This {s.TypeName} leaves {s.Missing.Length} field(s) unassigned ({missing}); the fix adds them, with a NotImplementedException placeholder where no default is obvious — replace it before the record is built."
+                $"This {s.TypeName} leaves {s.Missing.Length} field(s) unassigned ({missing}); the fix adds them, with a NotImplementedException placeholder where no default is obvious - replace it before the record is built."
 
         // an editor applies EVERY fix of a message as one action, so two
         // alternatives must be two messages — one message carrying both
@@ -5511,7 +5521,7 @@ let private recordFieldsMessages
                 hint "FR0145" text s.Range [ fix s.Range "" s.InsertText ]
                 hint
                     "FR0145"
-                    $"Alternative: add the {s.Missing.Length} missing field(s) ({missing}) with zero values — false, 0, \"\", Guid.Empty, Unchecked.defaultof for the rest."
+                    $"Alternative: add the {s.Missing.Length} missing field(s) ({missing}) with zero values - false, 0, \"\", Guid.Empty, Unchecked.defaultof for the rest."
                     s.Range
                     [ fix s.Range "" s.ZeroInsertText ]
             ]
@@ -5540,7 +5550,7 @@ let private singleAwaitableMessages
     |> List.map (fun s ->
         let advice =
             if s.CallName = "Async.Parallel" then
-                "nothing runs in parallel — run the one computation directly (the result becomes 'T instead of 'T[])"
+                "nothing runs in parallel - run the one computation directly (the result becomes 'T instead of 'T[])"
             elif s.CallName = "Task.WaitAll" then
                 "wait on the one task directly with its own Wait() (the blocking stays; FR0049 covers moving it toward async)"
             else
@@ -5592,7 +5602,7 @@ let private implementMissingMessages
             if offerEmpty then
                 hint
                     "FR0077"
-                    $"Alternative: stub the %d{s.MissingNames.Length} missing member(s) (%s{missing}) returning each type's empty value — None, [], 0, \"\", Unchecked.defaultof for the rest."
+                    $"Alternative: stub the %d{s.MissingNames.Length} missing member(s) (%s{missing}) returning each type's empty value - None, [], 0, \"\", Unchecked.defaultof for the rest."
                     s.Range
                     [ fix s.Range "" s.EmptyInsertText ]
         ])
@@ -5616,7 +5626,7 @@ let private tabIndentationMessages (fileName: string) (source: ISourceText) : Me
     |> List.map (fun s ->
         hint
             "FR0080"
-            $"TABs are not allowed as F# indentation (FS1161) — pasted code often brings them along; the fix expands each leading TAB to four spaces on all %d{s.Edits.Length} affected line(s)."
+            $"TABs are not allowed as F# indentation (FS1161) - pasted code often brings them along; the fix expands each leading TAB to four spaces on all %d{s.Edits.Length} affected line(s)."
             s.Range
             [
                 for range, original, replacement in s.Edits -> fix range original replacement
@@ -5767,7 +5777,7 @@ let private patternCleanupMessages
                 for s in tuples do
                     hint
                         "FR0089"
-                        $"This literal holds ONE tuple of %d{s.Elements} elements — ',' builds a tuple, ';' separates elements; if a single-tuple collection is intended, ignore or disable this rule."
+                        $"This literal holds ONE tuple of %d{s.Elements} elements - ',' builds a tuple, ';' separates elements; if a single-tuple collection is intended, ignore or disable this rule."
                         s.Range
                         (if offerFixes then
                              (let (r, original, replacement) = s.Fix in [ fix r original replacement ])
@@ -5869,11 +5879,11 @@ let private listIndexingMessages (parseTree: ParsedInput) (source: ISourceText) 
             (match s.Kind with
              | ListIndexing.AccessKind.Index ->
                  sprintf
-                     "Indexing the F# list '%s' is O(i) per access — inside a loop that is quadratic. Iterate it directly, or convert once with List.toArray if random access is needed."
+                     "Indexing the F# list '%s' is O(i) per access - inside a loop that is quadratic. Iterate it directly, or convert once with List.toArray if random access is needed."
                      s.CollectionText
              | ListIndexing.AccessKind.Length ->
                  sprintf
-                     "Reading the F# list '%s''s length walks the whole list — inside a loop that is quadratic. Bind the length once outside the loop, or convert once with List.toArray."
+                     "Reading the F# list '%s''s length walks the whole list - inside a loop that is quadratic. Bind the length once outside the loop, or convert once with List.toArray."
                      s.CollectionText)
             s.Range
             [])
@@ -5918,7 +5928,7 @@ let private recursiveAppendMessages (parseTree: ParsedInput) (source: ISourceTex
         hint
             "FR0104"
             (sprintf
-                "'%s' appends one element to '%s' on every recursive call — the accumulator is copied each step, O(n²) overall. Cons instead ('x :: %s') and List.rev once in the base case, or accumulate into an array when the result is consumed positionally."
+                "'%s' appends one element to '%s' on every recursive call - the accumulator is copied each step, O(n^2) overall. Cons instead ('x :: %s') and List.rev once in the base case, or accumulate into an array when the result is consumed positionally."
                 s.FunctionName
                 s.AccumulatorName
                 s.AccumulatorName)
@@ -5959,7 +5969,7 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
                 with
                 | true, n when n <> 0L ->
                     sprintf
-                        "Multiplying by %s overflows int32 once the other operand passes %d — the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
+                        "Multiplying by %s overflows int32 once the other operand passes %d - the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
                         s.ConstantText
                         // one times any int32 fits, so the threshold is
                         // never below 1 (the minimum's magnitude is 2^31)
@@ -5967,16 +5977,16 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
                         digits
                 | _ ->
                     sprintf
-                        "Multiplying by %s overflows int32 once the other operand is large enough — the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
+                        "Multiplying by %s overflows int32 once the other operand is large enough - the seconds-to-microseconds, milliseconds-to-ticks conversion that wraps SILENTLY; widen to int64 (`int64 x * %sL`), or open Checked so it throws instead."
                         s.ConstantText
                         digits
             | CheckedArithmetic.OverflowKind.LimitConstant ->
                 sprintf
-                    "Arithmetic on %s overflows for every operand but zero — F# operators wrap SILENTLY; a wider type, Checked operators, or a comment saying the wraparound is intended."
+                    "Arithmetic on %s overflows for every operand but zero - F# operators wrap SILENTLY; a wider type, Checked operators, or a comment saying the wraparound is intended."
                     s.ConstantText
             | CheckedArithmetic.OverflowKind.NearLimit ->
                 sprintf
-                    "Arithmetic on the near-limit constant %s wraps SILENTLY on overflow — F# operators are unchecked by default. Consider `open Microsoft.FSharp.Core.Operators.Checked` in this scope, a wider type (int64/bigint), or a comment saying the wraparound is intended."
+                    "Arithmetic on the near-limit constant %s wraps SILENTLY on overflow - F# operators are unchecked by default. Consider `open Microsoft.FSharp.Core.Operators.Checked` in this scope, a wider type (int64/bigint), or a comment saying the wraparound is intended."
                     s.ConstantText
 
         // the editor's two offers, as two messages: widening keeps the
@@ -5986,14 +5996,14 @@ let private checkedArithmeticMessages (offerFixes: bool) (parseTree: ParsedInput
             if offerFixes then
                 match s.WidenFix with
                 | Some(r, original, replacement) ->
-                    hint "FR0105" $"Fix: widen to int64 — {replacement}." s.Range [ fix r original replacement ]
+                    hint "FR0105" $"Fix: widen to int64 - {replacement}." s.Range [ fix r original replacement ]
                 | None -> ()
 
                 match s.CheckedFix with
                 | Some(r, original, replacement) ->
                     hint
                         "FR0105"
-                        $"Alternative: {replacement} — still fails on overflow, but with an OverflowException instead of a wrong number."
+                        $"Alternative: {replacement} - still fails on overflow, but with an OverflowException instead of a wrong number."
                         s.Range
                         [ fix r original replacement ]
                 | None -> ()
@@ -6017,7 +6027,7 @@ let private substringSpanMessages (parseTree: ParsedInput) (source: ISourceText)
         hint
             "FR0106"
             (sprintf
-                "This Substring allocates a copy that %s immediately discards — AsSpan %s in place (Parse measured 2.6x, allocation-free; Append 32 B less per call). The span overload is present in this compilation."
+                "This Substring allocates a copy that %s immediately discards - AsSpan %s in place (Parse measured 2.6x, allocation-free; Append 32 B less per call). The span overload is present in this compilation."
                 s.ParserName
                 s.Verb)
             s.Range
@@ -6112,9 +6122,9 @@ let private intDivisionMessages
 
             let message =
                 if s.LikelyMeant then
-                    $"'{s.OriginalText}' divides as integers first — the quotient is truncated before `{s.Conversion}` widens it; if the whole-number quotient is the intent (a unit conversion, a pixel centre, a coordinate scaled by a ratio) this is right as it is, otherwise convert the operands, then divide: `{s.ReplacementText}`."
+                    $"'{s.OriginalText}' divides as integers first - the quotient is truncated before `{s.Conversion}` widens it; if the whole-number quotient is the intent (a unit conversion, a pixel centre, a coordinate scaled by a ratio) this is right as it is, otherwise convert the operands, then divide: `{s.ReplacementText}`."
                 else
-                    $"'{s.OriginalText}' divides as integers first — the quotient is truncated before `{s.Conversion}` widens it, and the fraction the conversion was there to keep is gone; convert the operands, then divide: `{s.ReplacementText}`."
+                    $"'{s.OriginalText}' divides as integers first - the quotient is truncated before `{s.Conversion}` widens it, and the fraction the conversion was there to keep is gone; convert the operands, then divide: `{s.ReplacementText}`."
 
             Some(hint "FR0159" message s.Range fixes))
 
@@ -6137,19 +6147,19 @@ let private lostInnerMessages (parseTree: ParsedInput) (source: ISourceText) che
         | [] when LostInnerException.isFailureFunction s.Raised ->
             hint
                 "FR0160"
-                $"`{s.Raised}` in a handler raises a new exception and drops the one it caught — no InnerException, no original stack trace; `raise (Exception(message, {s.Binder}))` keeps the cause, or the exception type's own (message, inner) constructor."
+                $"`{s.Raised}` in a handler raises a new exception and drops the one it caught - no InnerException, no original stack trace; `raise (Exception(message, {s.Binder}))` keeps the cause, or the exception type's own (message, inner) constructor."
                 s.Range
                 []
         | [] ->
             hint
                 "FR0160"
-                $"'{s.Raised}' is raised in place of the exception the handler caught, which it does not carry — no InnerException, no original stack trace; pass the caught exception as the constructor's last argument."
+                $"'{s.Raised}' is raised in place of the exception the handler caught, which it does not carry - no InnerException, no original stack trace; pass the caught exception as the constructor's last argument."
                 s.Range
                 []
         | edits ->
             hint
                 "FR0160"
-                $"'{s.Raised}' is raised in place of the exception the handler caught, which it does not carry — no InnerException, no original stack trace; '{s.Raised}' has a constructor taking it last."
+                $"'{s.Raised}' is raised in place of the exception the handler caught, which it does not carry - no InnerException, no original stack trace; '{s.Raised}' has a constructor taking it last."
                 s.Range
                 (edits |> List.map (fun (r, original, replacement) -> fix r original replacement)))
 
@@ -6214,7 +6224,7 @@ let private droppedTimerMessages (parseTree: ParsedInput) (source: ISourceText) 
     |> List.map (fun s ->
         hint
             "FR0163"
-            "This System.Threading.Timer is constructed and dropped: nothing references it, so the next garbage collection finalizes it and the callbacks stop — bind it (`use` for the scope it should fire in, a `let` or a field for longer) for as long as it should run."
+            "This System.Threading.Timer is constructed and dropped: nothing references it, so the next garbage collection finalizes it and the callbacks stop - bind it (`use` for the scope it should fire in, a `let` or a field for longer) for as long as it should run."
             s.Range
             [])
 
@@ -6239,13 +6249,13 @@ let private enumerationMutationMessages (parseTree: ParsedInput) (source: ISourc
             // snapshot (CR0171's first fix)
             hint
                 "FR0164"
-                $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step — and only on the runs that take the branch; the loop is a filter: `{replacement}`."
+                $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step - and only on the runs that take the branch; the loop is a filter: `{replacement}`."
                 r
                 [ fix r original replacement ]
         | None ->
             hint
                 "FR0164"
-                $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step — and only on the runs that take the branch; walk a snapshot: `for ... in {s.ReplacementText} do`."
+                $"'{s.Collection}' is edited ({s.Mutation}) inside a `for` loop over itself, which throws InvalidOperationException at the next step - and only on the runs that take the branch; walk a snapshot: `for ... in {s.ReplacementText} do`."
                 s.Range
                 [ fix s.Range s.OriginalText s.ReplacementText ])
 
@@ -6270,7 +6280,7 @@ let private dateTimeKindMixMessages (parseTree: ParsedInput) (source: ISourceTex
         |> List.map (fun (s: DateTimeKindMix.Suggestion) ->
             hint
                 "FR0165"
-                $"'{s.LocalText}' is local time and '{s.UtcText}' is UTC: the two differ by the machine's UTC offset, so this `{s.Operation}` flips with the timezone and twice a year with daylight saving; use one kind on both sides — `DateTime.UtcNow` throughout, or `.ToUniversalTime()` on the local one."
+                $"'{s.LocalText}' is local time and '{s.UtcText}' is UTC: the two differ by the machine's UTC offset, so this `{s.Operation}` flips with the timezone and twice a year with daylight saving; use one kind on both sides - `DateTime.UtcNow` throughout, or `.ToUniversalTime()` on the local one."
                 s.Range
                 [])
 
@@ -6310,11 +6320,11 @@ let private prefixCompareMessages
             if s.Exact then
                 ""
             else
-                " (a string shorter than the literal throws here and answers false there — apply once that cannot happen, or guard with `.Length`)"
+                " (a string shorter than the literal throws here and answers false there - apply once that cannot happen, or guard with `.Length`)"
 
         hint
             "FR0166"
-            $"'{s.OriginalText}' cuts a copy of the string only to compare it — `{s.ReplacementText}` compares in place (measured 4.5 → 1.9 ns, allocation-free; F#'s `=` on strings is ordinal, and so is the {s.Method}){tail}."
+            $"'{s.OriginalText}' cuts a copy of the string only to compare it - `{s.ReplacementText}` compares in place (measured 4.5 => 1.9 ns, allocation-free; F#'s `=` on strings is ordinal, and so is the {s.Method}){tail}."
             s.Range
             fixes)
 
@@ -6364,9 +6374,9 @@ let private charArrayCopyMessages
 
         let message =
             if s.Exact then
-                $"'{s.OriginalText}' copies the whole string into an array the loop reads once — a string is already a sequence of its characters, and `for c in {s.ReplacementText} do` walks it by index without the copy (measured 13.4 → 9.4 ns, 72 → 0 B)."
+                $"'{s.OriginalText}' copies the whole string into an array the loop reads once - a string is already a sequence of its characters, and `for c in {s.ReplacementText} do` walks it by index without the copy (measured 13.4 => 9.4 ns, 72 => 0 B)."
             else
-                $"'{s.OriginalText}' copies the whole string into an array that is read once — `{s.ReplacementText}` walks the string itself, by index, without the copy (measured 9.2 → 4.3 ns, 72 → 0 B); a null string throws here and reads as empty there, so apply once that cannot happen."
+                $"'{s.OriginalText}' copies the whole string into an array that is read once - `{s.ReplacementText}` walks the string itself, by index, without the copy (measured 9.2 => 4.3 ns, 72 => 0 B); a null string throws here and reads as empty there, so apply once that cannot happen."
 
         hint "FR0167" message s.Range fixes)
 
@@ -6391,7 +6401,7 @@ let private listHeadPatternMessages (parseTree: ParsedInput) (source: ISourceTex
         // applies it
         hint
             "FR0172"
-            $"'{s.Name}' binds the whole list and the arm reads it only by position — `| {s.Pattern} ->` names the elements the arm uses, and the compiler's exhaustiveness check stands in for the ArgumentException a list index raises on a shorter list."
+            $"'{s.Name}' binds the whole list and the arm reads it only by position - `| {s.Pattern} ->` names the elements the arm uses, and the compiler's exhaustiveness check stands in for the ArgumentException a list index raises on a shorter list."
             s.Range
             [ fix s.Range s.OriginalText s.ReplacementText ])
 
@@ -6412,7 +6422,7 @@ let private seqEnumeratedTwiceMessages (parseTree: ParsedInput) (source: ISource
     |> List.map (fun (s: SeqEnumeratedTwice.Suggestion) ->
         hint
             "FR0169"
-            $"'{s.ParameterName}' is enumerated here and again at line {s.SecondLine}: a seq may be a query or a generator, run again from the start each time — materialise it once (`List.ofSeq`/`Array.ofSeq`) before the first use, or read it in one pass."
+            $"'{s.ParameterName}' is enumerated here and again at line {s.SecondLine}: a seq may be a query or a generator, run again from the start each time - materialise it once (`List.ofSeq`/`Array.ofSeq`) before the first use, or read it in one pass."
             s.Range
             [])
 
@@ -6459,7 +6469,7 @@ let private byteStringLiteralMessages
     |> List.map (fun (s: ByteStringLiteral.Suggestion) ->
         hint
             "FR0171"
-            $"Encoding.{s.EncodingName}.GetBytes runs the encoder over this ASCII literal on every call; `{s.ReplacementText}` is the same bytes as compiled data — no encoder, the same byte[]."
+            $"Encoding.{s.EncodingName}.GetBytes runs the encoder over this ASCII literal on every call; `{s.ReplacementText}` is the same bytes as compiled data - no encoder, the same byte[]."
             s.Range
             [ fix s.Range s.OriginalText s.ReplacementText ])
 
