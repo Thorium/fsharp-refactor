@@ -159,6 +159,115 @@ let private calleeIdent (head: SynExpr) =
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
     | _ -> None
 
+/// The type names a `Unchecked.defaultof<T>` spells anywhere in the file:
+/// null for the class, a zeroed value for the struct - a sentinel the code
+/// compares against.
+let private defaultofNames (index: AstIndex.Index) : Set<string> =
+    index.Exprs
+    |> Array.choose (fun (_, e) ->
+        match e with
+        | SynExpr.TypeApp(
+            expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+            typeArgs = [ SynType.LongIdent(SynLongIdent(id = tids)) ]) when
+            not ids.IsEmpty && (List.last ids).idText = "defaultof" && not tids.IsEmpty
+            ->
+            Some (List.last tids).idText
+        | _ -> None)
+    |> Set.ofArray
+
+/// The full names of every type whose value the file boxes, locks,
+/// null-tests or hands to an `obj` parameter. Read once per file: the
+/// callers ask about each candidate type, and a scan per candidate made the
+/// rules quadratic in the file size.
+let private hostileTypeNames
+    (check: FSharpCheckFileResults)
+    (index: AstIndex.Index)
+    (source: ISourceText)
+    : Set<string> =
+    let typeOfOperand (operand: SynExpr) =
+        match operandIdent operand with
+        | Some id ->
+            match OptionModule.symbolOfIdent check source id with
+            | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+                (try
+                    let t = OptionModule.stripAbbreviations value.FullType
+
+                    if t.HasTypeDefinition then
+                        t.TypeDefinition.TryFullName
+                    else
+                        None
+                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                     None)
+            | _ -> None
+        | None -> None
+
+    // the implicit boxing: a value handed to a parameter typed `obj`
+    // (`Console.WriteLine p`, `String.Format("{0}", p)`, `x.Equals p`), to
+    // `string`/`hash`, or to a `%A`/`%O` hole of the printf family
+    let objParameter (t: FSharpType) =
+        try
+            let t = OptionModule.stripAbbreviations t
+            t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.Object"
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+
+    let boxedAtCall (e: SynExpr) : SynExpr list =
+        match e with
+        | SynExpr.App _ ->
+            let head, args = applicationOf e
+
+            match calleeIdent head with
+            | Some callee when
+                printfFamily.Contains callee.idText
+                && (match args with
+                    | SynExpr.Const(SynConst.String(text = fmt), _) :: _ -> fmt.Contains "%A" || fmt.Contains "%O"
+                    | _ -> false)
+                ->
+                List.tail args
+            | Some callee when callee.idText = "string" || callee.idText = "hash" -> args
+            | Some callee ->
+                match OptionModule.symbolOfIdent check source callee with
+                | Some(:? FSharpMemberOrFunctionOrValue as mfv) ->
+                    (try
+                        let groups = mfv.CurriedParameterGroups |> Seq.map List.ofSeq |> List.ofSeq
+
+                        // one tupled group: the arguments by position;
+                        // curried groups: one argument each
+                        let pairs =
+                            match groups, args with
+                            | [ group ], [ single ] ->
+                                let actuals =
+                                    match stripParens single with
+                                    | SynExpr.Tuple(exprs = es) -> es
+                                    | other -> [ other ]
+
+                                List.zip (List.truncate actuals.Length group) (List.truncate group.Length actuals)
+                            | _ ->
+                                List.zip
+                                    (groups |> List.truncate args.Length |> List.map List.tryHead)
+                                    (List.truncate groups.Length args)
+                                |> List.choose (fun (p, a) -> p |> Option.map (fun p -> p, a))
+
+                        pairs
+                        |> List.choose (fun (parameter, actual) ->
+                            if objParameter parameter.Type then Some actual else None)
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         [])
+                | _ -> []
+            | None -> []
+        | _ -> []
+
+    index.Exprs
+    |> Seq.collect (fun (_, e) -> hostileOperands e @ boxedAtCall e)
+    |> Seq.choose typeOfOperand
+    |> Set.ofSeq
+
+let private defaultofCache =
+    System.Runtime.CompilerServices.ConditionalWeakTable<AstIndex.Index, Set<string>>()
+
+let private hostileCache =
+    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, Set<string>>()
+
 /// Is a value of the type declared by `typeIdent` boxed, locked,
 /// null-tested or defaulted anywhere in the file?
 let hostileUse
@@ -167,108 +276,14 @@ let hostileUse
     (source: ISourceText)
     (typeIdent: Ident)
     : bool =
-    let byName =
-        index.Exprs
-        |> Array.exists (fun (_, e) ->
-            match e with
-            // `Unchecked.defaultof<T>`: null for the class, a zeroed value
-            // for the struct - a sentinel the code compares against
-            | SynExpr.TypeApp(
-                expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-                typeArgs = [ SynType.LongIdent(SynLongIdent(id = tids)) ]) when
-                not ids.IsEmpty
-                && (List.last ids).idText = "defaultof"
-                && not tids.IsEmpty
-                && (List.last tids).idText = typeIdent.idText
-                ->
-                true
-            | _ -> false)
-
-    byName
+    (defaultofCache.GetValue(index, defaultofNames)).Contains typeIdent.idText
     || (match check with
         | None -> false
         | Some check ->
-            let typeFullName =
-                match OptionModule.symbolOfIdent check source typeIdent with
-                | Some(:? FSharpEntity as entity) -> entity.TryFullName
-                | _ -> None
-
-            match typeFullName with
-            | None -> false
-            | Some fullName ->
-                let isOfType (operand: SynExpr) =
-                    match operandIdent operand with
-                    | Some id ->
-                        match OptionModule.symbolOfIdent check source id with
-                        | Some(:? FSharpMemberOrFunctionOrValue as value) ->
-                            (try
-                                let t = OptionModule.stripAbbreviations value.FullType
-                                t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some fullName
-                             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                                 false)
-                        | _ -> false
-                    | None -> false
-
-                // the implicit boxing: a value of the type handed to a
-                // parameter typed `obj` (`Console.WriteLine p`,
-                // `String.Format("{0}", p)`, `x.Equals p`), to `string`/`hash`,
-                // or to a `%A`/`%O` hole of the printf family
-                let objParameter (t: FSharpType) =
-                    try
-                        let t = OptionModule.stripAbbreviations t
-                        t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.Object"
-                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                        false
-
-                let boxedAtCall (e: SynExpr) =
-                    match e with
-                    | SynExpr.App _ ->
-                        let head, args = applicationOf e
-
-                        match calleeIdent head with
-                        | Some callee when
-                            printfFamily.Contains callee.idText
-                            && (match args with
-                                | SynExpr.Const(SynConst.String(text = fmt), _) :: _ ->
-                                    fmt.Contains "%A" || fmt.Contains "%O"
-                                | _ -> false)
-                            ->
-                            args |> List.tail |> List.exists isOfType
-                        | Some callee when callee.idText = "string" || callee.idText = "hash" ->
-                            args |> List.exists isOfType
-                        | Some callee ->
-                            match OptionModule.symbolOfIdent check source callee with
-                            | Some(:? FSharpMemberOrFunctionOrValue as mfv) ->
-                                (try
-                                    let groups = mfv.CurriedParameterGroups |> Seq.map List.ofSeq |> List.ofSeq
-
-                                    // one tupled group: the arguments by position;
-                                    // curried groups: one argument each
-                                    let pairs =
-                                        match groups, args with
-                                        | [ group ], [ single ] ->
-                                            let actuals =
-                                                match stripParens single with
-                                                | SynExpr.Tuple(exprs = es) -> es
-                                                | other -> [ other ]
-
-                                            List.zip
-                                                (List.truncate actuals.Length group)
-                                                (List.truncate group.Length actuals)
-                                        | _ ->
-                                            List.zip
-                                                (groups |> List.truncate args.Length |> List.map List.tryHead)
-                                                (List.truncate groups.Length args)
-                                            |> List.choose (fun (p, a) -> p |> Option.map (fun p -> p, a))
-
-                                    pairs
-                                    |> List.exists (fun (parameter, actual) ->
-                                        objParameter parameter.Type && isOfType actual)
-                                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                                     false)
-                            | _ -> false
-                        | None -> false
-                    | _ -> false
-
-                index.Exprs
-                |> Array.exists (fun (_, e) -> (hostileOperands e |> List.exists isOfType) || boxedAtCall e))
+            match OptionModule.symbolOfIdent check source typeIdent with
+            | Some(:? FSharpEntity as entity) ->
+                match entity.TryFullName with
+                | Some fullName ->
+                    hostileCache.GetValue(check, (fun check -> hostileTypeNames check index source)).Contains fullName
+                | None -> false
+            | _ -> false)

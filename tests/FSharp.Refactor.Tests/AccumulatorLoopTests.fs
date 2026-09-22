@@ -347,7 +347,7 @@ let ``a mutable list appended one element per iteration is a list expression`` (
     Assert.True s.Mutable
 
 [<Fact>]
-let ``the @ spelling, a guard and an annotation keep their shape`` () =
+let ``the (at) spelling, a guard and an annotation keep their shape`` () =
     assertRewrite
         "let build (ys: int list) =\n    let mutable xs: int64 list = []\n    for i in ys do\n        if i > 0 then\n            xs <- xs @ [ int64 i ]\n    List.sum xs"
         "let build (ys: int list) =\n    let xs: int64 list =\n        [\n            for i in ys do\n                if i > 0 then\n                    int64 i\n        ]\n    List.sum xs"
@@ -412,7 +412,7 @@ let ``a list read in its loop, reassigned after, or built two at a time stays`` 
     )
 
 [<Fact>]
-let ``a project's own @ or List module is not FSharp.Core's append`` () =
+let ``a project's own (at) or List module is not FSharp.Core's append`` () =
     Assert.Empty(
         findIn
             "module T\nlet (@) (a: int list) (b: int list) = a\nlet build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i ]\n    xs"

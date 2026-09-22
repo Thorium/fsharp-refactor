@@ -656,8 +656,10 @@ let missingCasesCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0118 CancellationOverload ----
 
 let private cancellationMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    let calls = CancellationOverload.find parseTree source checkResults
+
     let loops =
-        CancellationOverload.findUnobservedLoops parseTree source checkResults
+        CancellationOverload.findUnobservedLoopsWith calls parseTree source checkResults
         |> List.map (fun (s: CancellationOverload.LoopSuggestion) ->
             hint
                 "FR0118"
@@ -667,7 +669,7 @@ let private cancellationMessages (parseTree: ParsedInput) (source: ISourceText) 
                  |> Option.map (fun (r, original, replacement) -> fix r original replacement)
                  |> Option.toList))
 
-    CancellationOverload.find parseTree source checkResults
+    calls
     |> List.map (fun (s: CancellationOverload.Suggestion) ->
         let message =
             match s.Kind with

@@ -1151,6 +1151,8 @@ let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText)
     if hasErrors check then
         []
     else
+        let evidence = lazy (declarationEvidence parseTree)
+
         findCandidates cfg parseTree source
         |> List.filter (fun c ->
             not (spansDirective source c.MatchRange)
@@ -1163,7 +1165,7 @@ let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText)
             let replacement =
                 if c.Target.EndsWith ".isSome" || c.Target.EndsWith ".isNone" then
                     match c.Scrutinee with
-                    | ReceiverPath(ids, text) when receiverSettled check source (declarationEvidence parseTree) ids ->
+                    | ReceiverPath(ids, text) when receiverSettled check source evidence.Value ids ->
                         text + (if c.Target.EndsWith ".isSome" then ".IsSome" else ".IsNone")
                     | _ -> c.Replacement
                 else

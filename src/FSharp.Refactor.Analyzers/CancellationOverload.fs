@@ -400,7 +400,10 @@ type LoopSuggestion =
         Fix: (range * string * string) option
     }
 
-let findUnobservedLoops
+/// `findUnobservedLoops` over call suggestions `find` already produced for
+/// this file: the analyzer reports both, so it runs `find` once.
+let findUnobservedLoopsWith
+    (calls: Suggestion list)
     (parseTree: ParsedInput)
     (source: ISourceText)
     (check: FSharpCheckFileResults)
@@ -484,7 +487,7 @@ let findUnobservedLoops
         // a loop that `find` already offers a token inside needs no second
         // message: the fix makes the loop observe it
         let offeredInside =
-            find parseTree source check
+            calls
             |> List.filter (fun s -> s.Kind = TokenGap.Omitted)
             |> List.map (fun s -> s.Range)
 
@@ -585,3 +588,7 @@ let findUnobservedLoops
                     not (Range.equals outer.Range s.Range)
                     && Range.rangeContainsRange outer.Range s.Range)
             ))
+
+/// Unobserved loops, with `find` run here.
+let findUnobservedLoops (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) =
+    findUnobservedLoopsWith (find parseTree source check) parseTree source check
