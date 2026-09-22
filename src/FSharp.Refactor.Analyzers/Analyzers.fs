@@ -6417,6 +6417,53 @@ let listHeadPatternCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0172" "ListHeadPattern" (fun () ->
         listHeadPatternMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
+// ---- FR0173 RangeMap ----
+
+let private rangeMapMessages
+    (offerFixes: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    RangeMap.find parseTree source checkResults
+    |> List.map (fun (s: RangeMap.Suggestion) ->
+        // `[| 0 .. n - 1 |]` with a negative `n` is the empty range and the
+        // map yields an empty array; `init` raises ArgumentException on a
+        // negative count. So a sweep applies the fix only where the count
+        // is provably not negative - a length, a count, a literal - and the
+        // editor offers it either way, since the author knows what `n` is
+        let fixes =
+            if s.CountProven || offerFixes then
+                [ fix s.Range s.OriginalText s.ReplacementText ]
+            else
+                []
+
+        let caveat =
+            if s.CountProven then
+                ""
+            else
+                " (a negative count would have given an empty result here and raises ArgumentException after, so a sweep leaves this one alone)"
+
+        hint
+            "FR0173"
+            $"This range is built only to be mapped over - it allocates a second collection the size of the result to have something to walk. `{s.ReplacementText}` builds the result and nothing else{caveat}."
+            s.Range
+            fixes)
+
+// the rewrite discards the range's own text, so a comment written inside
+// what it replaces would be deleted with it
+[<EditorAnalyzer("RangeMap", "A range built only to be mapped over is init", HelpBase)>]
+let rangeMapEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0173" "RangeMap" (fun () ->
+        whenChecked ctx (rangeMapMessages true ctx.ParseFileResults.ParseTree ctx.SourceText)
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("RangeMap", "A range built only to be mapped over is init", HelpBase)>]
+let rangeMapCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0173" "RangeMap" (fun () ->
+        rangeMapMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
 // ---- FR0169 SeqEnumeratedTwice ----
 
 let private seqEnumeratedTwiceMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =

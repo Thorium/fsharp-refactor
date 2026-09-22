@@ -176,6 +176,9 @@ let private categories =
         "FR0171",
         Category.Performance,
         "Encoding.UTF8.GetBytes of an ASCII literal encodes at run time; the byte string literal is compiled data"
+        "FR0173",
+        Category.Performance,
+        "a range built only to be mapped over allocates a second collection the size of the result; init builds the result alone"
 
         // --- idiom: same behaviour, written the way F# writes it
         "FR0001", Category.Idiom, "Boolean match => if-else"

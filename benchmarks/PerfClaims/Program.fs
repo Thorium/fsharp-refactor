@@ -1453,6 +1453,25 @@ let cases =
                     keep.Length
         }
 
+        // FR0173: the range literal is a second array the size of the
+        // result, allocated only to have something to walk. At a thousand
+        // elements the saving is the range itself - half the allocation -
+        // and the walk that filled it
+        {
+            Code = "FR0173"
+            Name = "[| 0 .. n - 1 |] |> Array.map f  ->  Array.init n f"
+            Cat = Perf
+            Iters = 20_000
+            Before =
+                fun () ->
+                    let r = [| 0 .. 1000 - 1 |] |> Array.map (fun i -> i * 2)
+                    r.Length
+            After =
+                fun () ->
+                    let r = Array.init 1000 (fun i -> i * 2)
+                    r.Length
+        }
+
         // FR0172: `.[0]` on a list in an arm walks no cells, so the cons
         // pattern is the idiom (and the compile-time exhaustiveness check),
         // not a speed-up: measured level, both a few ns and no allocation

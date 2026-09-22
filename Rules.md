@@ -179,6 +179,7 @@ and its category and default state match the code.
 | FR0169 | Correctness | v | | | `let f (xs: int seq) = if Seq.isEmpty xs then 0 else Seq.length xs` | — |
 | FR0170 | Performance | v | | | `for k in d.Keys do use k d.[k]` | `for KeyValue(k, v) in d do use k v` |
 | FR0171 | Performance | v | | | `Encoding.UTF8.GetBytes "OK"` | `"OK"B` |
+| FR0173 | Performance | v | | | `[\| 0 .. n - 1 \|] \|> Array.map f` | `Array.init n f` |
 | FR0172 | Idiom | v | | | `match xs with \| [] -> f () \| itms -> g itms.[0]` (`itms[0]`, `itms.Head`, `List.head itms`; `itms.[1]` under a `[_]` arm too; `itms.Tail`) | `\| itmsHead :: _ -> g itmsHead` (`itmsHead :: itmsSecond :: _`, `_ :: itmsTail`) |
 
 \*) Enabled by default. A blank cell means the rule is off until
@@ -883,6 +884,10 @@ A loop over a dictionary's keys that looks every key up again — `for k in d.Ke
 ### FR0171 — performance
 
 `Encoding.UTF8.GetBytes "OK"` (or `ASCII`, `Latin1`, `Default`, under any prefix of `System.Text`) runs the encoder over an ASCII literal on every call; `"OK"B` is the same bytes as compiled data, copied into a fresh `byte[]` with no transcoding pass (fix). Guards: the argument is one regular or verbatim string literal whose every character is ASCII — a non-ASCII character differs between the encodings and a byte string literal refuses it; single line. Parse-only. CSharp.Refactor's CR0148 (`"..."u8`)
+
+### FR0173 — performance
+
+A range built only to be mapped over allocates a second collection the size of the result purely to have something to walk: `[| 0 .. dimension - 1 |] |> Array.map f` becomes `Array.init dimension f` (fix). The range is the same length as the result and the same element width, so at 2^30 elements it is four gigabytes of `int` thrown away on top of what was asked for. Measured in benchmarks/PerfClaims (.NET 10, a million elements): 7.0 ms and 8,000,099 B become 3.3 ms and 4,000,044 B — twice as fast on exactly half the allocation, the half being the range. Covers `Array.map`, `List.map` and `Seq.map`, piped (`range |> Array.map f`) or applied (`Array.map f range`), over an array or list range literal whose container matches the module (`Seq.map` takes either), with the mapped function carried over as written. `init` applies the function for 0, 1, … n-1 in that order — the order the map walked the range in — so a side effect in it happens as often and in the same sequence. THE ONE DIFFERENCE is a negative count: `[| 0 .. n - 1 |]` with `n = -1` is the empty range and the map yields `[||]`, where `Array.init -1` raises `ArgumentException`. So a sweep applies the fix only where the count is provably not negative — a non-negative literal, or a `Length`/`Count`/`length` the typed tree says belongs to the FRAMEWORK, since a property somebody wrote can answer anything and trusting its name would defeat the guard — and the editor offers it wherever the shape matches, leaving the author to answer for the count; FR0166 draws the same line for the same reason. `0 .. 9` folds to `Array.init 10`. The count becomes an argument, so one that is not a single atom keeps its parentheses: `[| 0 .. n * 2 - 1 |]` gives `Array.init (n * 2) f`, because `Array.init n * 2 f` would parse as `(Array.init n) * (2 f)`. Declined: a range that does not start at 0 (the function would have to be shifted), a stepped range, a mapper spanning lines (its text is spliced as written), a `map` that does not resolve to FSharp.Core's — a project with its own `Array` module has no `init` to rewrite to — and a compiler directive or comment inside the expression, whose text the rewrite would drop with the range
 
 ### FR0172 — idiom
 

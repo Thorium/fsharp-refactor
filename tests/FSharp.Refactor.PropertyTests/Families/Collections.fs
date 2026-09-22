@@ -183,6 +183,13 @@ let private shapes =
         // FR0170 must stay quiet: a store through the indexer
         withFree "KeysLoopStore" [ "!FR0170" ] genSmall (fun n i ->
             $"let f{i} (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        d.[k] <- d.[k] + {n}")
+        // FR0173: a range allocated only to be mapped over
+        withFree "RangeMapped" [ "FR0173" ] genSmall (fun n i ->
+            $"let f{i} (count: int) = [| 0 .. count - 1 |] |> Array.map (fun x -> x + {n})")
+        // FR0173 must stay quiet: a range that does not start at 0, and a
+        // map over a collection that is not a range
+        withFree "RangeMapKept" [ "!FR0173" ] genSmall (fun n i ->
+            $"let f{i} (count: int) (xs: int[]) =\n    Array.append ([| 1 .. count |] |> Array.map (fun x -> x + {n})) (xs |> Array.map (fun x -> x - {n}))")
     ]
 
 let family: Family =
@@ -200,6 +207,8 @@ let family: Family =
                         | None -> "FR0164", [ edit "FR0164" s.Range s.ReplacementText ]
                     for s in DictKeysLoop.find c.Tree c.Source c.Check ->
                         "FR0170", [ for r, _, t in s.Edits -> edit "FR0170" r t ]
+                    for s in RangeMap.find c.Tree c.Source c.Check ->
+                        "FR0173", [ edit "FR0173" s.Range s.ReplacementText ]
                     for s in SeqOnArray.find c.Tree c.Source c.Check ->
                         match s.LinqSpelling with
                         | None -> "FR0139", [ edit "FR0139" s.Range "Array" ]
