@@ -35,8 +35,16 @@ jobs:
       - name: Build
         run: dotnet build -c Release
 
+      # The execution property draws programs and RUNS each one before and
+      # after every fix, so its cost is linear in the count and it is by far
+      # the slowest test here. Locally it defaults to 25, to keep the suite
+      # cheap to run; CI draws a few more. It does not need a big number:
+      # every run takes a fresh seed, so coverage accumulates over pushes
+      # rather than within one.
       - name: Test
         run: dotnet test -c Release --no-build
+        env:
+          FSREF_EXECUTION_RUNS: 60
 
       # fsharplint evaluates projects through Ionide.ProjInfo, which loads
       # MSBuild assemblies FROM THE SDK — those want System.Runtime

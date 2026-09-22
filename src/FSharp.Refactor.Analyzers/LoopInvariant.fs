@@ -152,8 +152,8 @@ let rec private pureIdentsLoop
         // iteration — hoisted, every iteration shares one, so
         // `let buf = [| a + 1 |]` above a `buf.[0] <- x` quietly changes
         // what the loop does. Same for anything else handed the buffer.
-        | SynExpr.ArrayOrListComputed(expr = inner) -> pureIdentsLoop acc ops (inner :: rest)
-        | SynExpr.ArrayOrList(exprs = exprs) -> pureIdentsLoop acc ops (exprs @ rest)
+        | SynExpr.ArrayOrListComputed(isArray = false; expr = inner) -> pureIdentsLoop acc ops (inner :: rest)
+        | SynExpr.ArrayOrList(isArray = false; exprs = exprs) -> pureIdentsLoop acc ops (exprs @ rest)
         // infix operator: App(App(op, lhs), rhs)
         | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = rhs) when
             hoistableOperators.Contains op.idText

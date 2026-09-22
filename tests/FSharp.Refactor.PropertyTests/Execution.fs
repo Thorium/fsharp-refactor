@@ -26,14 +26,7 @@ let private session =
          let outStream = new StringWriter(StringBuilder())
          let errStream = new StringWriter(StringBuilder())
 
-         let argv =
-             [|
-                 "dotnet"
-                 "fsi"
-                 "--noninteractive"
-                 "--nologo"
-                 "--gui-"
-             |]
+         let argv = [| "dotnet"; "fsi"; "--noninteractive"; "--nologo"; "--gui-" |]
 
          FsiEvaluationSession.Create(
              FsiEvaluationSession.GetDefaultConfiguration(),
