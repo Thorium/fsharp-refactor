@@ -130,9 +130,11 @@ let private projectReferences (fsproj: string) =
     with _ -> // fsharpanalyzer: ignore-line FR0055
         []
 
+let private assemblyNameRegex = Regex "<AssemblyName>([^<]+)</AssemblyName>"
+
 let private assemblyName (fsproj: string) =
     try
-        let m = Regex.Match(File.ReadAllText fsproj, "<AssemblyName>([^<]+)</AssemblyName>")
+        let m = assemblyNameRegex.Match(File.ReadAllText fsproj)
 
         if m.Success then
             m.Groups.[1].Value.Trim()

@@ -68,3 +68,19 @@ let ``an explicit return annotation is left alone`` () =
         structOptionIn
             "let private pick (n: int) : int option = if n > 0 then Some n else None\nlet f (n: int) =\n    match pick n with\n    | Some v -> v\n    | None -> 0"
     )
+
+[<Fact>]
+let ``a recursive function's match on its own call moves too`` () =
+    // the self-call's patterns sit inside the definition, where the use
+    // scan used not to look: `| Some d` against a voption is FS0001
+    assertStructOption
+        "let rec private depth (n: int) =\n    if n <= 0 then Some 0\n    else\n        match depth (n - 1) with\n        | Some d -> Some (d + 1)\n        | None -> None\n\nlet show (n: int) =\n    match depth n with\n    | Some d -> string d\n    | None -> \"-\""
+        "let rec private depth (n: int) =\n    if n <= 0 then ValueSome 0\n    else\n        match depth (n - 1) with\n        | ValueSome d -> ValueSome (d + 1)\n        | ValueNone -> ValueNone\n\nlet show (n: int) =\n    match depth n with\n    | ValueSome d -> string d\n    | ValueNone -> \"-\""
+
+[<Fact>]
+let ``an annotated result constructor keeps the option`` () =
+    // `(ValueSome n : int option)` would not compile
+    Assert.Empty(
+        structOptionIn
+            "let private pick (n: int) = if n > 0 then (Some n : int option) else None\nlet a (n: int) =\n    match pick n with\n    | Some v -> v\n    | None -> 0"
+    )

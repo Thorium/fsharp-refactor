@@ -20,7 +20,9 @@
 /// ArgumentOutOfRangeException on a short `s` where StartsWith answers
 /// false — and so does a slice under FSharp.Core 4 — so those forms are
 /// exact only under a length guard in the same condition — `s.Length >= 6
-/// && s.Substring(0, 6) = …`, or inside `if s.Length >= 6 then`, with no
+/// && s.Substring(0, 6) = …`, inside `if s.Length >= 6 then`, or in the
+/// else branch of a condition whose failure proves it (`if s.Length < 6
+/// then … else`; `< 3` proves too little), with no
 /// lambda, `let` or match arm rebinding the receiver between — and the fix
 /// is applied by a sweep only then (`Exact`); without the guard the editor
 /// still offers it, for a human who knows the string is long enough, and
@@ -195,14 +197,18 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
         | _ -> false
 
     // a condition that FAILS on a long-enough string: the else branch of
-    // `if recv.Length < n then … else <ours>` is guarded too
+    // `if recv.Length < n then … else <ours>` is guarded too. The else
+    // branch knows only the NEGATION: `Length < k` failed proves Length >= k,
+    // exact only for k >= n (`if s.Length < 3 then … else s.Substring(0, 6)`
+    // still throws on "ORDER", where StartsWith returns false); `Length <=
+    // k` failed proves Length >= k + 1
     let rec failsWhenLong (e: SynExpr) =
         match stripParens e with
         | Infix("op_BooleanOr", l, r) -> failsWhenLong l || failsWhenLong r
-        | Infix("op_LessThan", len, IntLiteral k) when isLength len -> k <= n
-        | Infix("op_LessThanOrEqual", len, IntLiteral k) when isLength len -> k <= n - 1
-        | Infix("op_GreaterThan", IntLiteral k, len) when isLength len -> k <= n
-        | Infix("op_GreaterThanOrEqual", IntLiteral k, len) when isLength len -> k <= n - 1
+        | Infix("op_LessThan", len, IntLiteral k) when isLength len -> k >= n
+        | Infix("op_LessThanOrEqual", len, IntLiteral k) when isLength len -> k >= n - 1
+        | Infix("op_GreaterThan", IntLiteral k, len) when isLength len -> k >= n
+        | Infix("op_GreaterThanOrEqual", IntLiteral k, len) when isLength len -> k >= n - 1
         | _ -> false
 
     // a node that binds names: below it the receiver may be ANOTHER value

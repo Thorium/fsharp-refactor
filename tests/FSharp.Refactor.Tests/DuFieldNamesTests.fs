@@ -137,3 +137,18 @@ let ``FR0022 stands down where a signature declares the case`` () =
         Assert.NotEmpty(DuFieldNames.find false loneTree loneText)
     finally
         Directory.Delete(dir, true)
+
+[<Fact>]
+let ``a reserved word from the case name is not a field name`` () =
+    // `| ModAndKey of mod: int * key: int` does not parse: `mod` is an
+    // F# keyword, and so are `inline`, `const`, `sig`, `downto`, ...
+    for caseName in
+        [
+            "ModAndKey"
+            "InlineAndKey"
+            "ConstAndKey"
+            "SigAndKey"
+            "DowntoAndKey"
+            "ParamsAndKey"
+        ] do
+        Assert.Empty(fieldNamesIn $"module Test\ntype private K =\n    | {caseName} of int * int\n    | Other of int")

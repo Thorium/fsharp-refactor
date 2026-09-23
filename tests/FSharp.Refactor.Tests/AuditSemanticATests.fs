@@ -180,6 +180,30 @@ let ``FR0050: a float accumulator still becomes sumBy`` () =
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
+[<Fact>]
+let ``FR0050: a decimal zero with a scale keeps the fold, a bare 0m becomes sum`` () =
+    // `0.00m + 1m` is 1.00m, `List.sum [ 1m ]` is 1m: the scale shows in
+    // ToString
+    let source (init: string) =
+        lines
+            [
+                "module T"
+                "let f (items: decimal list) ="
+                $"    let mutable total = {init}"
+                "    for x in items do"
+                "        total <- total + x"
+                "    total"
+            ]
+
+    for init in [ "0.00m"; "0.0M" ] do
+        let folds, _ = accumulationIn (source init)
+        Assert.NotEmpty folds // the general fold keeps the scale
+        Assert.All(folds, (fun s -> Assert.DoesNotContain("sum", s.ReplacementText)))
+
+    match accumulationIn (source "0m") with
+    | [ s ], _ -> Assert.Equal("items |> List.sum", s.ReplacementText)
+    | other -> failwithf "Expected exactly one fold suggestion, got %A" other
+
 // ---- FR0107 flag loops: user predicates ----
 
 let private flagLoopsIn (source: string) =
@@ -265,8 +289,8 @@ let ``FR0107: a String method in the predicate still becomes exists`` () =
 // ---- FR0004 ConversionMove: a lambda that mutates the source ----
 
 let private conversionsIn (source: string) =
-    let tree, sourceText = parse source
-    ConversionMove.find tree sourceText
+    let tree, sourceText, check = parseAndCheck source
+    ConversionMove.findWith (Some check) tree sourceText
 
 [<Fact>]
 let ``FR0004: a lambda removing from the source keeps the eager copy`` () =
@@ -290,7 +314,7 @@ let ``FR0004: a lambda adding to any collection keeps the eager copy`` () =
 
 [<Fact>]
 let ``FR0004: a lambda that only reads still drops the conversion`` () =
-    match conversionsIn "module T\nlet f (xs: seq<int>) = xs |> Seq.toList |> List.iter (printfn \"%d\")" with
+    match conversionsIn "module T\nlet f (xs: ResizeArray<int>) = xs |> Seq.toList |> List.iter (printfn \"%d\")" with
     | [ s ] -> Assert.Equal("Seq.iter (printfn \"%d\")", s.ReplacementText)
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 

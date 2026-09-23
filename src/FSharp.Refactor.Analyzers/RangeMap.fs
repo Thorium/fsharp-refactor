@@ -61,10 +61,10 @@ type Suggestion =
 /// written as for the two to typecheck together. `Seq.map` takes either.
 let private initOf (moduleName: string) =
     match moduleName with
-    | "Array" -> Some("Array.init", Some true)
-    | "List" -> Some("List.init", Some false)
-    | "Seq" -> Some("Seq.init", None)
-    | _ -> None
+    | "Array" -> ValueSome("Array.init", Some true)
+    | "List" -> ValueSome("List.init", Some false)
+    | "Seq" -> ValueSome("Seq.init", None)
+    | _ -> ValueNone
 
 /// Is this identifier the FRAMEWORK's, rather than something of the same
 /// name in this project? The whole point of the proof is that the count
@@ -185,7 +185,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             match (|RangeLiteral|_|) (check, source) rangeExpr, mapExpr with
             | ValueSome(isArray, count, proven), MapCall(moduleIdent, mapIdent, mapper) ->
                 match initOf moduleIdent.idText with
-                | Some(initName, wantsArray) when
+                | ValueSome(initName, wantsArray) when
                     wantsArray |> Option.forall (fun a -> a = isArray)
                     // the mapper's text is spliced as written, so it has to
                     // be one line for the replacement to stay well-formed

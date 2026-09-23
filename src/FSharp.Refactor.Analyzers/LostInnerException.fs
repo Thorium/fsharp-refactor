@@ -11,7 +11,9 @@
 /// CA2200 covers `raise ex` (FR0044 here); this is the other half — the
 /// wrapper that forgets its cause. The fix is offered when the constructed
 /// type has a constructor taking the same arguments plus a trailing
-/// `System.Exception` (the typed check compares parameter shapes), and
+/// `System.Exception` (the typed check compares parameter types AND
+/// names: `ArgumentNullException(paramName)` has a `(message,
+/// innerException)` sibling, and `, ex` would make the name a message), and
 /// the handler's binder — or a fresh `ex` bound in the pattern, free in
 /// the whole declaration — becomes that argument. Gates, as the C# twin
 /// (CR0165) draws them: the raise is one of the handler's own statements
@@ -115,7 +117,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                 None
 
-        // a sibling constructor: the same parameters, then an exception
+        let names (mfv: FSharpMemberOrFunctionOrValue) =
+            [ for p in Seq.collect id mfv.CurriedParameterGroups -> p.Name ]
+
+        // a sibling constructor: the same parameters (types and names),
+        // then an exception
         let hasInnerOverload (typeId: Ident) (arity: int) =
             match constructorAt typeId with
             | Some(symbolUse, ctor) ->
@@ -139,6 +145,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 && (match shapes symbolUse.DisplayContext m with
                                     | Some mps when mps.Length = arity + 1 ->
                                         List.truncate arity mps = ps
+                                        // the same parameter NAMES too: the
+                                        // one-string ctor of ArgumentNullException
+                                        // takes a paramName, its (string, Exception)
+                                        // sibling a message
+                                        && List.truncate arity (names m) = names ctor
                                         && (m.CurriedParameterGroups
                                             |> Seq.collect id
                                             |> Seq.tryLast

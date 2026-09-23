@@ -89,9 +89,94 @@ let rec private supportsComparison (depth: int) (t: FSharpType) : bool =
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             false)
 
-/// The element type of the list, array or seq a module binding holds, and
-/// whether it compares: None where the typed tree cannot say.
-let private elementComparable (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) : bool option =
+/// The value types whose `.Equals` is what F#'s `=` computes. Double and
+/// Single are absent on purpose: `nan = nan` is false, `nan.Equals nan`
+/// is true.
+let private equalsAgreeingTypes =
+    set
+        [
+            "System.String"
+            "System.Boolean"
+            "System.Char"
+            "System.Byte"
+            "System.SByte"
+            "System.Int16"
+            "System.UInt16"
+            "System.Int32"
+            "System.UInt32"
+            "System.Int64"
+            "System.UInt64"
+            "System.IntPtr"
+            "System.UIntPtr"
+            "System.Decimal"
+            "System.Guid"
+            "System.DateTime"
+            "System.DateTimeOffset"
+            "System.TimeSpan"
+            "System.DateOnly"
+            "System.TimeOnly"
+            "System.Numerics.BigInteger"
+        ]
+
+/// Does `.Equals` - what a HashSet probes with - agree with the structural
+/// `=` that `List.contains` used? Not for an array (`=` compares elements,
+/// `.Equals` references: a `byte[] list` probed through a HashSet finds
+/// nothing), nor a float (NaN), nor a function or generic parameter; a
+/// tuple, list, option, Set or Map by its parts, a record or union by its
+/// fields, a `[<CustomEquality>]` type by its own code (both spellings call
+/// it), and otherwise only the primitives above. Fail-safe: any lookup FCS
+/// refuses reads as disagreeing.
+let rec private equalsAgrees (depth: int) (t: FSharpType) : bool =
+    depth <= 4
+    && (try
+            let t = OptionModule.stripAbbreviations t
+
+            if t.IsGenericParameter || t.IsFunctionType then
+                false
+            elif t.IsTupleType || t.IsStructTupleType then
+                t.GenericArguments |> Seq.forall (equalsAgrees (depth + 1))
+            elif not t.HasTypeDefinition then
+                false
+            else
+                let d = t.TypeDefinition
+
+                let has (attribute: string) =
+                    d.Attributes |> Seq.exists (fun a -> a.AttributeType.DisplayName = attribute)
+
+                if d.IsArrayType || has "NoEqualityAttribute" then
+                    false
+                elif has "CustomEqualityAttribute" || has "ReferenceEqualityAttribute" then
+                    true
+                elif d.IsEnum then
+                    true
+                elif d.IsFSharpRecord then
+                    d.FSharpFields |> Seq.forall (fun f -> equalsAgrees (depth + 1) f.FieldType)
+                elif d.IsFSharpUnion then
+                    d.UnionCases
+                    |> Seq.forall (fun c -> c.Fields |> Seq.forall (fun f -> equalsAgrees (depth + 1) f.FieldType))
+                else
+                    match d.TryFullName with
+                    | Some n when equalsAgreeingTypes.Contains n -> true
+                    | Some n when
+                        n.StartsWith "Microsoft.FSharp.Collections.FSharpList`"
+                        || n.StartsWith "Microsoft.FSharp.Core.FSharpOption`"
+                        || n.StartsWith "Microsoft.FSharp.Core.FSharpValueOption`"
+                        || n.StartsWith "Microsoft.FSharp.Collections.FSharpSet`"
+                        || n.StartsWith "Microsoft.FSharp.Collections.FSharpMap`"
+                        ->
+                        t.GenericArguments |> Seq.forall (equalsAgrees (depth + 1))
+                    | _ -> false
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false)
+
+/// The element type of the list, array or seq a module binding holds,
+/// judged by `holds`: None where the typed tree cannot say.
+let private elementSatisfies
+    (holds: FSharpType -> bool)
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (id: Ident)
+    : bool option =
     let r = id.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
@@ -103,13 +188,19 @@ let private elementComparable (check: FSharpCheckFileResults) (source: ISourceTe
                 let t = OptionModule.stripAbbreviations v.FullType
 
                 if t.HasTypeDefinition && t.GenericArguments.Count = 1 then
-                    Some(supportsComparison 0 t.GenericArguments.[0])
+                    Some(holds t.GenericArguments.[0])
                 else
                     None
             | _ -> None
         | None -> None
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         None
+
+/// Whether the element compares (a Set's demand).
+let private elementComparable = elementSatisfies (supportsComparison 0)
+
+/// Whether the element's `.Equals` agrees with `=` (a HashSet's demand).
+let private elementEquatable = elementSatisfies (equalsAgrees 0)
 
 type ContainsSuggestion =
     {
@@ -121,7 +212,12 @@ type ContainsSuggestion =
         /// When the collection is a MODULE-LEVEL immutable binding in this
         /// file (startup-built, never shadowed or reassigned), the fix:
         /// insert a private HashSet companion right after it, and rewrite
-        /// every loop probe of it in this file. All-or-nothing.
+        /// every loop probe of it in this file. All-or-nothing. Guards: the
+        /// binding is a list or array literal (a ResizeArray or seq is not
+        /// what a snapshot saw), an array only private and with no use but
+        /// the probes (an element write), and the element's `.Equals`
+        /// agrees with `=` (no array, float or function inside), proven by
+        /// the typed tree.
         Fix: (range * string * string) list
     }
 
@@ -320,7 +416,8 @@ let findWith
                             && (Visibility.isPrivate path [ bindingAcc; patAcc ]
                                 || not (seenByLaterFile id.idText))
 
-                        yield id.idText, (id, decl.Range, rhs, confined)
+                        let isPrivate = Visibility.isPrivate path [ bindingAcc; patAcc ]
+                        yield id.idText, (id, decl.Range, rhs, confined, isPrivate)
                     | _ -> ()
                 | _ -> ()
         ]
@@ -393,7 +490,7 @@ let findWith
                         // probes of it convert together with one companion
                         let fix =
                             match moduleBindings.TryGetValue collText with
-                            | true, (moduleIdent, declRange, declRhs, confined) when
+                            | true, (moduleIdent, declRange, declRhs, confined, isPrivate) when
                                 collText = root.idText
                                 && not (shadowed collText moduleIdent)
                                 && not (reassigned collText)
@@ -427,16 +524,18 @@ let findWith
                                 // 2.5x over the list scan even at five
                                 // elements; the companion HashSet remains the
                                 // spelling when other uses need the original)
-                                let setOfFunction =
+                                // A `seq { ... }` is no candidate: it re-runs
+                                // on every probe, over state that may have
+                                // changed since, and a set is a snapshot
+                                let literalIsArray =
                                     match declRhs with
                                     | SynExpr.ArrayOrListComputed(isArray = isArray)
-                                    | SynExpr.ArrayOrList(isArray = isArray) ->
-                                        Some(if isArray then "Set.ofArray" else "Set.ofList")
-                                    | SynExpr.App(funcExpr = SynExpr.Ident seqId; argExpr = SynExpr.ComputationExpr _) when
-                                        seqId.idText = "seq"
-                                        ->
-                                        Some "Set.ofSeq"
+                                    | SynExpr.ArrayOrList(isArray = isArray) -> Some isArray
                                     | _ -> None
+
+                                let setOfFunction =
+                                    literalIsArray
+                                    |> Option.map (fun isArray -> if isArray then "Set.ofArray" else "Set.ofList")
 
                                 let probeRanges = siblings |> List.map (fun (_, _, r, _) -> r)
 
@@ -490,6 +589,29 @@ let findWith
                                             r, textOfRange source r, $"{collText}.Contains {probeArg itemExpr}")
 
                                     convert :: rewrites
+                                // the companion is a SNAPSHOT of the binding
+                                // probed with `.Equals`: only an F# list (or
+                                // an array nothing else in this file or any
+                                // other can reach to write an element into)
+                                // stays what the snapshot saw — a ResizeArray
+                                // grown later, a written array element or a
+                                // seq over mutable state would not — and only
+                                // an element whose `.Equals` is `=` (a
+                                // `byte[]` element compares by reference in a
+                                // HashSet). Unknown, without the typed tree,
+                                // is no
+                                elif
+                                    not (
+                                        (match literalIsArray with
+                                         | Some false -> true
+                                         | Some true -> not strayUse && isPrivate
+                                         | None -> false)
+                                        && (check
+                                            |> Option.bind (fun c -> elementEquatable c source moduleIdent)
+                                            |> Option.defaultValue false)
+                                    )
+                                then
+                                    []
                                 elif not (source.GetLineString(declRange.StartLine - 1).Contains "ProbeSet") then
                                     let setName = collText + "ProbeSet"
 

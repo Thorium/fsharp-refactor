@@ -96,7 +96,7 @@ let rec private headModuleFunc (e: SynExpr) =
 let private consumes (stage: SynExpr) =
     match headModuleFunc stage with
     | ValueSome("Seq", f) -> seqConsumers.Contains f
-    | ValueSome(("List" | "Array" | "Set" | "Map" | "HashSet"), "ofSeq") -> true
+    | ValueSome(("List" | "Array" | "Set" | "Map" | "HashSet"), "ofSeq")
     | ValueSome("String", "concat") -> true
     | _ -> false
 
@@ -107,8 +107,8 @@ let rec private pipelineRoot (e: SynExpr) =
     match e with
     | PipeApp(inner, _) -> pipelineRoot inner
     | SynExpr.Paren(expr = inner) -> pipelineRoot inner
-    | SynExpr.Ident id -> Some id
-    | _ -> None
+    | SynExpr.Ident id -> ValueSome id
+    | _ -> ValueNone
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
@@ -266,7 +266,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 // `xs |> Seq.length`, `xs |> Seq.map f |> Seq.toList`
                                 | PipeApp(_, stage) when consumes stage ->
                                     match pipelineRoot e with
-                                    | Some x when x.idText = id.idText && refersTo symbol x -> yield e.Range
+                                    | ValueSome x when x.idText = id.idText && refersTo symbol x -> yield e.Range
                                     | _ -> ()
                                 // `Seq.length xs`, `Seq.iter f xs`, `List.ofSeq xs`
                                 | SynExpr.App(isInfix = false; argExpr = arg) when consumes e ->

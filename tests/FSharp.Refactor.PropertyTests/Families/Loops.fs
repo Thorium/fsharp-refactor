@@ -22,7 +22,7 @@ let private lines (xs: string list) = String.concat "\n" xs
 let private genWords: Gen<string> =
     Gen.choose (2, 4)
     |> Gen.bind (fun n -> List.replicate n genWord |> Gen.sequenceToList)
-    |> Gen.map (fun ws -> ws |> List.map (fun w -> $"\"{w}\"") |> String.concat "; ")
+    |> Gen.map (List.map (fun w -> $"\"{w}\"") >> String.concat "; ")
 
 let private shapes =
     [

@@ -1773,7 +1773,6 @@ let parseOnlySafeAnalyzers =
             "FormatArgs"
             "Hints"
             "IndexedLoop"
-            "InterpToString"
             "LambdaBuiltin"
             // the `[]` arm it requires proves the list type from the parse
             // tree alone
@@ -1824,24 +1823,72 @@ let parseOnlySafeAnalyzers =
 let private analyzerName (m: MethodInfo) =
     (m.GetCustomAttributes(typeof<CliAnalyzerAttribute>, false).[0] :?> CliAnalyzerAttribute).Name
 
-/// The encoding a source file is written in, judged by its BOM — so an
-/// edit does not silently strip a UTF-8 BOM or re-encode a UTF-16 file.
-let private encodingOf (path: string) : System.Text.Encoding =
-    let bom =
-        try
-            use fs = File.OpenRead path
-            let buffer = Array.zeroCreate 3
-            let n = fs.Read(buffer, 0, 3)
-            Array.truncate n buffer
-        with
-        | :? IOException
-        | :? UnauthorizedAccessException -> [||]
+/// The code page a source file that is not UTF-8 is read in: the system's
+/// ANSI page on Windows, Windows-1252 where the platform has none (Linux
+/// and macOS answer UTF-8 to `GetEncoding 0`, which would put U+FFFD back
+/// in) - a legacy file came from a Windows machine. CSharp.Refactor's
+/// Workspace.legacyEncoding, the same answer on both sides.
+let private legacyEncoding () : System.Text.Encoding =
+    System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance
+    let system = System.Text.Encoding.GetEncoding 0
 
-    match bom with
-    | [| 0xEFuy; 0xBBuy; 0xBFuy |] -> System.Text.UTF8Encoding true
-    | _ when bom.Length >= 2 && bom.[0] = 0xFFuy && bom.[1] = 0xFEuy -> System.Text.Encoding.Unicode
-    | _ when bom.Length >= 2 && bom.[0] = 0xFEuy && bom.[1] = 0xFFuy -> System.Text.Encoding.BigEndianUnicode
-    | _ -> System.Text.UTF8Encoding false
+    if system.CodePage = 65001 then
+        System.Text.Encoding.GetEncoding 1252
+    else
+        system
+
+/// The encoding a source file is written in, judged from its bytes, and
+/// the length of the byte order mark it opens with: a BOM decides - so
+/// an edit does not silently strip a UTF-8 BOM or re-encode a UTF-16
+/// file - else UTF-8 where the bytes ARE valid UTF-8, else the legacy
+/// code page (see legacyEncoding).
+///
+/// Judged by the BOM alone, a Windows-1252 file with `ä` in a comment
+/// and no BOM was decoded as UTF-8: every such byte came back as U+FFFD,
+/// and ANY fix to the file then rewrote the whole of it as UTF-8, each
+/// `ä` now EF BF BD - a put-back too, since the original was held as that
+/// decoded text. And UTF-32LE's mark (FF FE 00 00) begins with UTF-16LE's
+/// (FF FE), so it is tested first; UTF-16 was the answer it got.
+let private sourceEncoding (bytes: byte array) : System.Text.Encoding * int =
+    let startsWith (mark: byte list) =
+        bytes.Length >= mark.Length
+        && List.forall2 (fun i b -> bytes.[i] = b) [ 0 .. mark.Length - 1 ] mark
+
+    if startsWith [ 0xEFuy; 0xBBuy; 0xBFuy ] then
+        System.Text.UTF8Encoding true, 3
+    elif startsWith [ 0xFFuy; 0xFEuy; 0uy; 0uy ] then
+        System.Text.UTF32Encoding(false, true), 4
+    elif startsWith [ 0uy; 0uy; 0xFEuy; 0xFFuy ] then
+        System.Text.UTF32Encoding(true, true), 4
+    elif startsWith [ 0xFFuy; 0xFEuy ] then
+        System.Text.Encoding.Unicode, 2
+    elif startsWith [ 0xFEuy; 0xFFuy ] then
+        System.Text.Encoding.BigEndianUnicode, 2
+    else
+        try
+            System.Text.UTF8Encoding(false, true).GetString bytes |> ignore
+            System.Text.UTF8Encoding false, 0
+        with :? System.Text.DecoderFallbackException ->
+            legacyEncoding (), 0
+
+/// A source file's bytes as text, in the encoding sourceEncoding finds.
+let private decodeSource (bytes: byte array) =
+    let encoding, mark = sourceEncoding bytes
+    encoding.GetString(bytes, mark, bytes.Length - mark)
+
+/// A source file's text - the one reader of every file the run may write:
+/// `File.ReadAllText` decodes a file without a BOM as UTF-8 and replaces
+/// each invalid byte with U+FFFD, so a legacy file's text was lost the
+/// moment it was read (see sourceEncoding).
+let internal readSource (path: string) = decodeSource (File.ReadAllBytes path)
+
+/// The encoding a source file is written in (see sourceEncoding).
+let internal encodingOf (path: string) : System.Text.Encoding =
+    try
+        fst (sourceEncoding (File.ReadAllBytes path))
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException -> System.Text.UTF8Encoding false
 
 /// The typecheck of a multi-targeted project's NEXT framework, started
 /// while the current one is swept (see prefetchNextFramework). FCS runs
@@ -1870,10 +1917,45 @@ let private awaitSpeculation () =
         with _ -> // its failure is reported by the framework's own check; fsharpanalyzer: ignore-line FR0055
             ()
 
-/// Write a source file back in the encoding it already had.
+/// The BYTES every file had before the run first wrote it (or first
+/// snapshotted it, takeSnapshot): what a put-back writes, byte for byte,
+/// when the text it puts back is the text those bytes decode to. Holding
+/// the original as decoded text alone made a put-back only as exact as
+/// the decode-encode round trip - a byte the legacy page has no character
+/// for came back changed from a run that kept none of its fixes. Cleared
+/// per run, beside runOriginals.
+let internal originalBytes =
+    System.Collections.Generic.Dictionary<string, byte array>(StringComparer.OrdinalIgnoreCase)
+
+/// Keep a file's bytes as the run's original, unless it has them already.
+let internal keepOriginalBytes (path: string) (bytes: byte array) =
+    lock originalBytes (fun () -> originalBytes.TryAdd(Path.GetFullPath path, bytes) |> ignore)
+
+/// Write a source file back in the encoding it had when the run first
+/// saw it - or, when `text` is exactly that original's text, as its
+/// original bytes.
 let private writeSource (path: string) (text: string) =
     awaitSpeculation ()
-    File.WriteAllText(path, text, encodingOf path)
+
+    let original =
+        lock originalBytes (fun () ->
+            match originalBytes.TryGetValue(Path.GetFullPath path) with
+            | true, bytes -> Some bytes
+            | false, _ ->
+                // the run's first write: what is on disk now is the
+                // original, since nothing but this function writes sources
+                try
+                    let bytes = File.ReadAllBytes path
+                    originalBytes.[Path.GetFullPath path] <- bytes
+                    Some bytes
+                with
+                | :? IOException
+                | :? UnauthorizedAccessException -> None)
+
+    match original with
+    | Some bytes when decodeSource bytes = text -> File.WriteAllBytes(path, bytes)
+    | Some bytes -> File.WriteAllText(path, text, fst (sourceEncoding bytes))
+    | None -> File.WriteAllText(path, text, encodingOf path)
 
 /// Set for the run by executeRun. In --parse-only mode nothing resolves,
 /// so only PARSE-phase diagnostics are meaningful: a fix that spells a
@@ -2118,7 +2200,7 @@ let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOp
         |> List.toArray
         |> Array.collect (fun path ->
             try
-                let text = FSharp.Compiler.Text.SourceText.ofString (File.ReadAllText path)
+                let text = FSharp.Compiler.Text.SourceText.ofString (readSource path)
 
                 let _, answer =
                     checker.ParseAndCheckFileInProject(path, 0, text, options)
@@ -2200,6 +2282,46 @@ let internal extraSnapshot =
 let internal runOriginals =
     System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 
+/// Every set of files one suggestion edited together, across the RUN: a
+/// definition and the call sites --api-changes rewrote with it, in a
+/// sibling project or a script. The per-compilation ties (runTarget's
+/// `ties`) serve that compilation's bisection; these serve
+/// putBackRunEdits, where a LATER compilation's build fails on the
+/// definition's file and the file goes back to its run original - its
+/// tied call sites with it, or they are left calling a shape that is no
+/// longer there. Full paths, compared ignoring case.
+let private runTies = ResizeArray<string list>()
+
+/// One suggestion's edits landed in all of `files`.
+let internal recordRunTie (files: string seq) =
+    let files = files |> Seq.map Path.GetFullPath |> Seq.distinct |> List.ofSeq
+
+    if files.Length > 1 then
+        lock runTies (fun () -> runTies.Add files)
+
+let internal clearRunTies () = lock runTies runTies.Clear
+
+/// `files` and every file a run tie reaches from them, transitively.
+let private runTiedTo (files: string list) =
+    let reached =
+        System.Collections.Generic.HashSet<string>(files, StringComparer.OrdinalIgnoreCase)
+
+    let ordered = ResizeArray<string>(files)
+    let ties = lock runTies (fun () -> List.ofSeq runTies)
+    let mutable grew = true
+
+    while grew do
+        grew <- false
+
+        for tie in ties do
+            if tie |> List.exists reached.Contains then
+                for file in tie do
+                    if reached.Add file then
+                        ordered.Add file
+                        grew <- true
+
+    List.ofSeq ordered
+
 /// A file is about to be written over `before`: keep that text when the
 /// file is outside the snapshot and not seen yet.
 let internal recordExtra (file: string) (before: string) =
@@ -2240,7 +2362,7 @@ let private applyEditGroups
         [
             for kv in editsByFile do
                 let file = kv.Key
-                let text = File.ReadAllText file
+                let text = readSource file
 
                 // bottom-up, so earlier splices never shift later ranges
                 let edits =
@@ -2526,7 +2648,7 @@ let private readScriptUnguarded (checker: FSharpChecker) (script: string) =
         let info =
             let text =
                 try
-                    Some(File.ReadAllText script)
+                    Some(readSource script)
                 with _ -> // fsharpanalyzer: ignore-line FR0055
                     None
 
@@ -2692,7 +2814,7 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
     | false, _ ->
         let read =
             try
-                let text = File.ReadAllText script
+                let text = readSource script
                 let sourceText = SourceText.ofString text
                 let outputFile = outputFileNameOf project
 
@@ -3403,7 +3525,7 @@ let private readSibling
                         let contexts =
                             [
                                 for file in options.SourceFiles |> Array.filter (Path.GetFullPath >> own.Contains) do
-                                    let sourceText = SourceText.ofString (File.ReadAllText file)
+                                    let sourceText = SourceText.ofString (readSource file)
 
                                     let parsed =
                                         checker.ParseFile(file, sourceText, parsingOptions) |> Async.RunSynchronously
@@ -3737,7 +3859,7 @@ let private runApiPass
             System.Collections.Generic.Dictionary<string, Text.FileContext>(StringComparer.OrdinalIgnoreCase)
 
         for file in options.SourceFiles do
-            let sourceText = SourceText.ofString (File.ReadAllText file)
+            let sourceText = SourceText.ofString (readSource file)
 
             let parsed =
                 checker.ParseFile(file, sourceText, parsingOptions) |> Async.RunSynchronously
@@ -3918,7 +4040,12 @@ let private runApiPass
                 if wanted file "FR0157" "StringUnion" && StringUnion.hasCandidates ctx.ParseTree then
                     for s in
                         StringUnion.find stringUnionWorld.Value ctx.ParseTree ctx.Source
-                        |> List.filter (fun s -> not (inUnreadShared file) && s.Reshaped |> List.forall notTemplated) do
+                        // a record field's retyping changes the record's printed
+                        // text and order: the editor offers it, a sweep does not
+                        |> List.filter (fun s ->
+                            not s.FieldSlot
+                            && not (inUnreadShared file)
+                            && s.Reshaped |> List.forall notTemplated) do
                         suggestions.Add
                             {
                                 Code = "FR0157"
@@ -5319,7 +5446,7 @@ let private runPass
     // edits are applied afterwards, sequentially.
     let analyzeFile (file: string) =
         async {
-            let sourceText = SourceText.ofString (File.ReadAllText file)
+            let sourceText = SourceText.ofString (readSource file)
             let checkSw = Stopwatch.StartNew()
 
             let! parseResults, checkAnswer =
@@ -6141,7 +6268,7 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
 /// as missing and every file the script `#load`s is written off. Callers try
 /// Core and retry as Framework.
 let private scriptProjectOptions (checker: FSharpChecker) (path: string) (assumeDotNetFramework: bool) =
-    let sourceText = SourceText.ofString (File.ReadAllText path)
+    let sourceText = SourceText.ofString (readSource path)
 
     let options, diagnostics =
         // useFsiAuxLib: scripts run under fsi get the fsi object
@@ -6328,6 +6455,28 @@ let private frameworksOf (target: Target) =
     | Target.Script _ -> []
     | Target.Project(project, _) -> targetFrameworksOf project
 
+/// Every build of a verification, each run whatever the ones before it
+/// said, their failures as ONE list of lines. Stopping at the first
+/// failure left the rest unbuilt: a library whose Release build fails on
+/// a signing step - with this run's fixes and without them - never had
+/// its C# consumer built at all, the identical tooling failure read as
+/// pre-existing breakage (judgeAgainstBaseline), and a `[<Struct>]` the
+/// consumer cannot compile against was kept. Built together, the
+/// consumer's CS error is among the lines, seen only with the fixes, and
+/// blames them.
+let internal buildEach (builds: (unit -> Result<unit, string array>) list) : Result<unit, string array> =
+    let failures =
+        builds
+        |> List.map (fun build -> build ())
+        |> List.choose (function
+            | Error lines -> Some lines
+            | Ok() -> None)
+
+    if failures.IsEmpty then
+        Ok()
+    else
+        Error(failures |> Array.concat |> Array.distinct)
+
 /// The lines a failed build is judged by: every distinct line naming an
 /// error — or, when it reported none, the tail of what it did say. A build
 /// stopped at the time cap (runProcessIn's `TimeCapMark` line), one whose
@@ -6351,9 +6500,34 @@ let internal buildFailureLines (stdout: string) (stderr: string) =
 
 /// A compiler's error line: F#'s `error FS1234`, or — from a referencing
 /// C# or VB project built with the verification — `error CS0426`,
-/// `error BC30002`. Tooling (MSB*, NETSDK*, NU*) is deliberately not one.
+/// `error BC30002`. An analyzer's diagnostic the referencing project turns
+/// into an error (TreatWarningsAsErrors, a `severity = error`) is one too —
+/// `error CA1859`, `error IDE0005`: it is about the code, and a fix can raise
+/// it. Tooling (MSB*, NETSDK*, NU*) is deliberately not one.
 let private compilerErrorRegex =
-    Text.RegularExpressions.Regex(@"error (?:FS|CS|BC)\d+", Text.RegularExpressions.RegexOptions.Compiled)
+    Text.RegularExpressions.Regex(@"error (?:FS|CS|BC|CA|IDE)\d+", Text.RegularExpressions.RegexOptions.Compiled)
+
+let private escalatedAnalyzerRegex =
+    Text.RegularExpressions.Regex(@"error ((?:CA|IDE)\d+)", Text.RegularExpressions.RegexOptions.Compiled)
+
+/// The analyzer IDs this run has explained already: once each.
+let private advisedIds = System.Collections.Generic.HashSet<string>()
+
+/// What to do about an analyzer error (a C# project built with this run's
+/// verification turns CA/IDE warnings into errors) that a fix raised. The
+/// tool never overrides a project's warnings-as-errors - its build is the
+/// one that has to pass - so the project's settings decide, and this says
+/// which setting to change.
+let internal adviseEscalated (errors: string array) =
+    let ids =
+        errors
+        |> Seq.collect (fun line -> escalatedAnalyzerRegex.Matches line |> Seq.map (fun m -> m.Groups.[1].Value))
+        |> Seq.distinct
+
+    for id in ids do
+        if advisedIds.Add id then
+            eprintfn
+                $"  ({id} is an error in a build this run verifies (TreatWarningsAsErrors, WarningsAsErrors or `severity = error`), so the fixes that raise it do not stay: the project's settings decide. To take them, keep {id} from failing the build - <WarningsNotAsErrors>{id}</WarningsNotAsErrors> in that project, or dotnet_diagnostic.{id}.severity = suggestion in its .editorconfig.)"
 
 /// Did a failed build say anything about the CODE? Only a compiler error
 /// can be this run's doing — see judgeAgainstBaseline: a source edit
@@ -6399,15 +6573,21 @@ let private buildAllFrameworks (project: string) =
 
     let build (arguments: string) = buildOnce project arguments
 
-    match build "" with
-    | Ok() when hasConfigurationConditionals project ->
+    if hasConfigurationConditionals project then
         // the configuration the analysis did not see: its `#if` branches
-        // hold code no rule read, and a migration's call sites among them
+        // hold code no rule read, and a migration's call sites among them.
+        // Built whatever the first build said (buildEach)
         let other = (defaultConfiguration project).Other
 
-        printfn $"  (the sources branch on the build configuration: building {other} too)"
-        build $" -c {other}"
-    | result -> result
+        buildEach
+            [
+                (fun () -> build "")
+                (fun () ->
+                    printfn $"  (the sources branch on the build configuration: building {other} too)"
+                    build $" -c {other}")
+            ]
+    else
+        build ""
 
 /// Per project and run: the consumers of another language that build here
 /// and the ones that do not (see consumersOf). Asked by every framework
@@ -6590,7 +6770,10 @@ let internal takeSnapshot (files: string array) =
         files
         |> Array.choose (fun f ->
             try
-                Some(f, File.ReadAllText f)
+                // the bytes too: a put-back is then byte-exact (writeSource)
+                let bytes = File.ReadAllBytes f
+                keepOriginalBytes f bytes
+                Some(f, decodeSource bytes)
             with
             | :? IOException
             | :? UnauthorizedAccessException -> None)
@@ -6608,7 +6791,7 @@ let internal takeSnapshot (files: string array) =
 let internal restoreSnapshot (snapshot: Map<string, string>) =
     let putBack (path: string, original: string) =
         try
-            if File.ReadAllText path <> original then
+            if readSource path <> original then
                 writeSource path original
                 1
             else
@@ -6619,6 +6802,27 @@ let internal restoreSnapshot (snapshot: Map<string, string>) =
 
     (snapshot |> Map.toSeq |> Seq.sumBy putBack)
     + (extraSnapshot |> Seq.sumBy (fun kv -> putBack (kv.Key, kv.Value)))
+
+/// `work` — a pass, its verification, the end-of-run recount — with a
+/// typecheck given up on (checkWithin's TimeoutException) putting back
+/// the WHOLE snapshot before the exception goes on to skip the target.
+/// verifyPass put back its own pass's files, and that was all: the
+/// passes before it had been verified by the per-pass typecheck only, and
+/// the recount and the all-framework, configuration and consumer builds
+/// that were to verify them never ran - their fixes stayed on disk while
+/// the target was reported "skipped". `onTimeout` hears how many files
+/// went back, so the compilation is counted as the failure it is.
+let internal restoreOnTimeout (snapshot: Map<string, string>) (onTimeout: int -> unit) (work: unit -> 'T) : 'T =
+    try
+        work ()
+    with :? TimeoutException ->
+        let restored = restoreSnapshot snapshot
+
+        eprintfn
+            $"  (a typecheck of this compilation was given up on, so the {restored} file(s) it had changed were put back unverified)"
+
+        onTimeout restored
+        reraise ()
 
 let private errorSiteRegex =
     System.Text.RegularExpressions.Regex(
@@ -6636,23 +6840,37 @@ let private errorSiteRegex =
 /// so the caller can load the compilation again - and hand the text back
 /// when that fails too, since the failure was then never ours.
 let internal putBackRunEdits (buildMessage: string) (label: string) =
-    [
-        for m in errorSiteRegex.Matches buildMessage -> m.Groups.["file"].Value.Trim()
-    ]
-    |> List.filter Path.IsPathRooted
-    |> List.map Path.GetFullPath
-    |> List.distinct
-    |> List.choose (fun file ->
+    let named =
+        [
+            for m in errorSiteRegex.Matches buildMessage -> m.Groups.["file"].Value.Trim()
+        ]
+        |> List.filter Path.IsPathRooted
+        |> List.map Path.GetFullPath
+        |> List.distinct
+
+    let isNamed =
+        System.Collections.Generic.HashSet<string>(named, StringComparer.OrdinalIgnoreCase)
+
+    // with the files one suggestion rewrote together with them (a
+    // definition's call sites, --api-changes): putting the definition back
+    // alone leaves those calling a shape that is gone
+    runTiedTo named
+    |> List.map (fun file -> file, isNamed.Contains file)
+    |> List.choose (fun (file, named) ->
         match runOriginals.TryGetValue file with
         | true, original ->
             try
-                let current = File.ReadAllText file
+                let current = readSource file
 
                 if current <> original then
                     writeSource file original
 
-                    eprintfn
-                        $"  put back {Path.GetFileName file}: rewritten by an earlier compilation of this run, and {label} does not build with it"
+                    if named then
+                        eprintfn
+                            $"  put back {Path.GetFileName file}: rewritten by an earlier compilation of this run, and {label} does not build with it"
+                    else
+                        eprintfn
+                            $"  put back {Path.GetFileName file}: rewritten by the same suggestion as a file put back for {label}"
 
                     Some(file, current)
                 else
@@ -6822,7 +7040,7 @@ let private verifyPassChecked
             |> List.map (fun cf ->
                 cf.Path,
                 (try
-                    File.ReadAllText cf.Path
+                    readSource cf.Path
                  with _ -> // unreadable now: the same fixes re-applied to the pre-pass text; fsharpanalyzer: ignore-line FR0055
                      reapplySubset cf.Before cf.Fixes))
             |> Map.ofList
@@ -7042,7 +7260,20 @@ let private verifyPassChecked
                         // the innocent files re-applied without the blamed
                         // ones — clean, or the bisection ran out of budget
                         // and its answer is not to be trusted
-                        let innocentClean = innocent.IsEmpty || not (failsApplying innocent)
+                        //
+                        // With no innocent file left there is nothing to
+                        // check, but the disk still holds the bisection's
+                        // LAST probe, which can have a blamed file applied
+                        // (A and B guilty only together: the last probe
+                        // applied B alone). So they all go back first, and
+                        // the files reported rolled back are the files
+                        // that are.
+                        let innocentClean =
+                            if innocent.IsEmpty then
+                                writeBack rest
+                                true
+                            else
+                                not (failsApplying innocent)
 
                         if not innocentClean then
                             restore rest
@@ -7095,7 +7326,7 @@ let private verifyPassChecked
                     |> List.map (fun cf ->
                         cf.Path,
                         (try
-                            Some(File.ReadAllText cf.Path)
+                            Some(readSource cf.Path)
                          with _ ->
                              None)) // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
 
@@ -7146,8 +7377,10 @@ let private verifyPassChecked
 /// pass has written its files by now; the exception used to pass straight
 /// through to the per-target handler, which printed "skipped" and moved on
 /// with every unverified edit left on disk. The texts each file had before
-/// the pass are in hand, so they go back, and the exception goes on: the
-/// target is still skipped, on a tree the run has not altered.
+/// the pass are in hand, so they go back, and the exception goes on. This
+/// pass's files only: the EARLIER passes' fixes are the caller's to put
+/// back (runTarget's underSnapshot restores the whole snapshot), so that
+/// the target is skipped on a tree this compilation has not altered.
 let internal verifyPass
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
@@ -7449,7 +7682,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
          ProjectSources.configure (
              Some(fun path ->
                  try
-                     let sourceText = SourceText.ofString (File.ReadAllText path)
+                     let sourceText = SourceText.ofString (readSource path)
 
                      let parseResults =
                          checker.ParseFile(path, sourceText, parsingOptions) |> Async.RunSynchronously
@@ -7605,6 +7838,18 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         let ties = ResizeArray<Set<string>>()
         let canonicalPath (p: string) = Path.GetFullPath(p).ToLowerInvariant()
 
+        // a pass, a pass's verification, the end-of-run recount: each
+        // typechecks, and a typecheck given up on puts back EVERY file this
+        // compilation changed, not only the last pass's (restoreOnTimeout)
+        let underSnapshot (work: unit -> 'T) : 'T =
+            restoreOnTimeout
+                snapshot
+                (fun restored ->
+                    failed
+                        $"a typecheck was given up on; the {restored} file(s) this compilation had changed were put back unverified"
+                    |> ignore)
+                work
+
         let recordTies (changedFiles: AppliedFile list) =
             changedFiles
             |> List.collect (fun cf -> cf.Fixes |> List.map (fun (g, _, _) -> g, canonicalPath cf.Path))
@@ -7613,7 +7858,14 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 let files = members |> List.map snd |> Set.ofList
 
                 if files.Count > 1 then
-                    ties.Add files)
+                    ties.Add files
+                    // and for the rest of the run: a later compilation's
+                    // put-back of one of them (putBackRunEdits)
+                    recordRunTie (
+                        changedFiles
+                        |> List.map (fun cf -> cf.Path)
+                        |> List.filter (canonicalPath >> files.Contains)
+                    ))
 
         /// `files` and everything tied to them, transitively
         let rec tiedTo (files: Set<string>) =
@@ -7762,19 +8014,20 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                     printfn $"api pass {apiPass}:"
 
                     let applied, changedFiles =
-                        runApiPass
-                            checker
-                            options
-                            (findScriptCallSites checker opts.Target options)
-                            // the sibling's arguments come from MSBuild the
-                            // way the project's own did, framework chosen
-                            // the same way (its narrowest)
-                            (lazy
-                                (findSiblingCallSites checker opts.Target options (fun sibling ->
-                                    optionsFor checker opts.ParseOnly "" (Target.Project(sibling, None)))))
-                            opts.Codes
-                            opts.DryRun
-                            suppressed
+                        underSnapshot (fun () ->
+                            runApiPass
+                                checker
+                                options
+                                (findScriptCallSites checker opts.Target options)
+                                // the sibling's arguments come from MSBuild the
+                                // way the project's own did, framework chosen
+                                // the same way (its narrowest)
+                                (lazy
+                                    (findSiblingCallSites checker opts.Target options (fun sibling ->
+                                        optionsFor checker opts.ParseOnly "" (Target.Project(sibling, None)))))
+                                opts.Codes
+                                opts.DryRun
+                                suppressed)
 
                     if not opts.DryRun then
                         recordTies changedFiles
@@ -7794,7 +8047,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                     elif apiApplied > 0 then
                         // a cross-file suggestion's edits all land in the
                         // same pass, so a rollback keeps them consistent
-                        verifyPass checker options baselineErrors suppressed changedFiles |> ignore
+                        underSnapshot (fun () -> verifyPass checker options baselineErrors suppressed changedFiles)
+                        |> ignore
 
             let mutable pass = 0
             let mutable lastApplied = -1
@@ -7827,7 +8081,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                             match snapshot.TryFind cf.Path with
                             | Some before ->
                                 (try
-                                    File.ReadAllText(cf.Path).Length > before.Length + 100
+                                    (readSource cf.Path).Length > before.Length + 100
                                  with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                                      false)
                             | None -> false
@@ -7842,17 +8096,18 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 printfn $"pass {pass}:"
 
                 let applied, changedFiles =
-                    runPass
-                        checker
-                        options
-                        analyzers
-                        opts.Codes
-                        opts.DryRun
-                        opts.ApiChanges
-                        opts.Jobs
-                        onlyFile
-                        suppressed
-                        blockedRuleFile
+                    underSnapshot (fun () ->
+                        runPass
+                            checker
+                            options
+                            analyzers
+                            opts.Codes
+                            opts.DryRun
+                            opts.ApiChanges
+                            opts.Jobs
+                            onlyFile
+                            suppressed
+                            blockedRuleFile)
 
                 lastApplied <- applied
                 totalApplied <- totalApplied + applied
@@ -7871,7 +8126,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                     // verify while the pre-pass texts are in hand; a clean
                     // result warms the next pass's project check, so this
                     // REPLACES the end-of-run check rather than adding one
-                    verifyPass checker options baselineErrors suppressed changedFiles |> ignore
+                    underSnapshot (fun () -> verifyPass checker options baselineErrors suppressed changedFiles)
+                    |> ignore
 
             if not opts.DryRun && lastApplied > 0 && pass = opts.MaxPasses then
                 eprintfn
@@ -7888,7 +8144,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 0
             else
                 checker.InvalidateConfiguration options
-                let finalErrors = errorCount checker options
+                let finalErrors = underSnapshot (fun () -> errorCount checker options)
 
                 if finalErrors > baselineErrors then
                     // per-pass verification should have made this
@@ -7951,20 +8207,18 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                         /// the verification build: this project's every
                         /// framework and configuration, where it has more than
                         /// the one analysed, then each consumer that could be
-                        /// built — the first failure is the verdict
+                        /// built — every one of them, however the others
+                        /// went, and all their failures are the verdict
+                        /// (buildEach)
                         let verificationBuild () =
-                            let own = if ownBuildNeeded then buildAllFrameworks project else Ok()
+                            buildEach
+                                [
+                                    if ownBuildNeeded then
+                                        fun () -> buildAllFrameworks project
 
-                            match own with
-                            | Error _ -> own
-                            | Ok() ->
-                                buildableConsumers
-                                |> List.fold
-                                    (fun result consumer ->
-                                        match result with
-                                        | Ok() -> buildOnce consumer ""
-                                        | refused -> refused)
-                                    (Ok())
+                                    for consumer in buildableConsumers do
+                                        fun () -> buildOnce consumer ""
+                                ]
 
                         // a verification switch: a failure that needs the
                         // fixes in place to be studied (the F# compiler's
@@ -8038,7 +8292,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 |> List.ofSeq
                                 |> List.choose (fun (path, _) ->
                                     try
-                                        Some(path, File.ReadAllText path)
+                                        Some(path, readSource path)
                                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                                         None)
 
@@ -8085,6 +8339,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                         $"{subjectCap} was ALREADY broken, but applying broke it further ({introduced.Count} error(s) seen only with this run's fixes), so the {restored} file(s) it changed were put back:"
 
                                     eprintfn $"{report (Array.ofSeq introduced)}"
+                                    adviseEscalated (Array.ofSeq introduced)
 
                                     failed
                                         $"applying broke an already-failing build ({subject}) further ({introduced.Count} new error(s)); its {restored} changed file(s) were put back"
@@ -8121,6 +8376,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 | Error again when stoppedAtTimeCap again ->
                                     notVerified again (fun () -> restoreSnapshot snapshot)
                                 | Error again ->
+                                    adviseEscalated again
                                     // ONE file's fixes can be the whole trouble — the
                                     // F# compiler's sformat.fs is also a source of
                                     // FSharp.Core, compiled there before printf.fs,
@@ -8535,6 +8791,8 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         // the originals of THIS run start empty, or a put-back would
         // hand a file its text from the last run
         runOriginals.Clear()
+        lock originalBytes originalBytes.Clear
+        clearRunTies ()
 
         // `"apiChanges": true` in fsharprefactor.json is the flag as a
         // standing decision, for a repository where it is always the right

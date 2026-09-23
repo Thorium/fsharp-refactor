@@ -108,3 +108,17 @@ let ``an attributed accessor keeps its shape`` () =
         autoPropIn
             "module Test\ntype Person() =\n    let mutable name = \"\"\n    [<System.Obsolete \"use X\">]\n    member this.Name\n        with get () = name\n        and set v = name <- v"
     )
+
+[<Fact>]
+let ``an override or default get-set pair is not an auto-property`` () =
+    // `member val` declares a NEW slot: over an abstract one it hides the
+    // override (FS0864) or fails to implement it
+    Assert.Empty(
+        autoPropIn
+            "module Test\n[<AbstractClass>]\ntype Base() =\n    abstract Name: string with get, set\ntype Person() =\n    inherit Base()\n    let mutable name = \"\"\n    override this.Name\n        with get () = name\n        and set v = name <- v"
+    )
+
+    Assert.Empty(
+        autoPropIn
+            "module Test\ntype Base() =\n    let mutable name = \"\"\n    abstract Name: string with get, set\n    default this.Name\n        with get () = name\n        and set v = name <- v"
+    )

@@ -17,7 +17,10 @@
 ///
 /// Clause order may be reversed. Safety rules mirror the Option analyzer:
 /// two guard-free clauses, single-line parts, Ok/Error must resolve to
-/// FSharp.Core's Result cases, and the file must have no type errors.
+/// FSharp.Core's Result cases, and the file must have no type errors. The
+/// arms move into a lambda, so neither may read a byref-like value or the
+/// enclosing struct's `this` (its fields, its primary-constructor values),
+/// which no closure may capture (FS0406).
 ///
 /// Readability rules: the rewrite is a single line, and it is withheld
 /// when that line would pass 100 columns, when an arm is not a single

@@ -17,9 +17,13 @@
 ///     reorder construction effects
 ///   - neither accessor carries an accessibility modifier (asymmetric
 ///     visibility cannot be expressed with `member val`)
+///   - the pair is a plain `member`: `member val` declares a new slot, so
+///     an `override`/`default` pair would hide (FS0864) or no longer
+///     implement the abstract property
 module FSharp.Refactor.AutoProperty
 
 open FSharp.Compiler.Syntax
+open FSharp.Compiler.SyntaxTrivia
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
 open FSharp.Refactor.Text
@@ -74,10 +78,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         match memberDefn with
                         | SynMemberDefn.GetSetMember(
                             memberDefnForGet = Some(SynBinding(
-                                attributes = getAttrs; headPat = AccessorPat(getProp, _); expr = getBody))
+                                attributes = getAttrs
+                                headPat = AccessorPat(getProp, _)
+                                expr = getBody
+                                trivia = getTrivia))
                             memberDefnForSet = Some(SynBinding(
                                 attributes = setAttrs; headPat = AccessorPat(setProp, [ setArg ]); expr = setBody))) when
                             getProp.idText = setProp.idText
+                            // a plain `member` only: `member val` declares a
+                            // NEW slot, so over an abstract one an `override`
+                            // or `default` pair becomes a hiding member
+                            // (FS0864) or leaves the slot unimplemented
+                            && (match getTrivia.LeadingKeyword with
+                                | SynLeadingKeyword.Member _ -> true
+                                | _ -> false)
                             // the rewrite replaces memberDefn.Range wholesale,
                             // and that range INCLUDES the attribute list — an
                             // [<Obsolete>] or [<JsonIgnore>] would silently

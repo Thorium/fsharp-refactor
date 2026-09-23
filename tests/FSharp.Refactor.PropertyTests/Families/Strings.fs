@@ -209,7 +209,7 @@ let private shapes =
             $"let f{i} (xs: string list) =\n    for x in xs do\n        let r = Regex \"{w}+\"\n        r.IsMatch x |> ignore")
         // FR0015: a construction with constant options inside a lambda
         withFree "RegexOptionsInLambda" [ "FR0015" ] genWord (fun w i ->
-            $"let f{i} (xs: string list) =\n    xs |> List.map (fun x -> Regex(\"{w}+\", RegexOptions.IgnoreCase).IsMatch x)")
+            $"let f{i} (xs: string list) =\n    xs |> List.map (fun x -> Regex(\"{w}+\", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant).IsMatch x)")
         // FR0122: a pattern that does not compile
         withFree "RegexUnclosedGroup" [ "FR0122" ] genWord (fun w i ->
             $"let f{i} (s: string) = Regex.IsMatch(s, \"({w}\")")
@@ -327,7 +327,7 @@ let family: Family =
                             yield "FR0138", [ edit "FR0138" s.Range s.ReplacementText ]
                     for s in ByteStringLiteral.find c.Tree c.Source do
                         yield "FR0171", [ edit "FR0171" s.Range s.ReplacementText ]
-                    for s in InterpToString.find c.Tree c.Source do
+                    for s in InterpToString.find (Some c.Check) c.Tree c.Source do
                         yield "FR0021", [ edit "FR0021" s.Range s.ReplacementText ]
                     for s in RegexUsage.find c.Tree c.Source do
                         if not s.Edits.IsEmpty then

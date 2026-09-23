@@ -206,3 +206,20 @@ let ``a multi-line string inside a branch is never re-indented`` () =
         optionMatchIn
             "let f (x: string option) =\n    if x.IsSome then\n        let s = \"\"\"a\n  b\"\"\"\n        s + x.Value\n    else\n        \"\""
     )
+
+[<Fact>]
+let ``a struct member's primary-constructor value keeps the exists form out`` () =
+    // `x` is a field of the struct's `this`, which no closure may capture: FS0406
+    Assert.Empty(
+        optionMatchIn
+            "module Test\n[<Struct>]\ntype S(x: int) =\n    member _.M(o: int option) = o.IsSome && o.Value > x"
+    )
+
+[<Fact>]
+let ``a mutable receiver reassigned in the Some arm is left alone`` () =
+    // the match binds the payload once; after `best <- ...` the original
+    // reads the NEW value through best.Value and the binder the old one
+    Assert.Empty(
+        optionMatchIn
+            "let f () =\n    let mutable best = Some 1\n    if best.IsSome then\n        best <- Some (best.Value + 10)\n        printfn \"%d\" best.Value"
+    )

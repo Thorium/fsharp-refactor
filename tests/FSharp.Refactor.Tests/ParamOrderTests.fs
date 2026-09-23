@@ -77,3 +77,17 @@ let ``pipe into the function suppresses the suggestion`` () =
         paramOrderIn
             "let private scale (x: float) (k: int) = x * float k\nlet b (n: float) = n |> scale 4\nlet doubled (xs: float list) = xs |> List.map (fun x -> scale x 2)"
     )
+
+[<Fact>]
+let ``a captured mutable is read per call and keeps its lambda`` () =
+    // `fun x -> scale x factor` reads `factor` on every call; `scale factor`
+    // reads it once, where the partial application is built
+    Assert.Empty(
+        paramOrderIn
+            "let private scale (x: float) (k: int) = x * float k\nlet mutable factor = 2\nlet doubled (xs: float list) = xs |> Seq.map (fun x -> scale x factor)"
+    )
+
+    Assert.Empty(
+        paramOrderIn
+            "module M\nlet private scale (x: float) (k: int) = x * float k\ntype Scaler() =\n    let mutable factor = 2\n    member _.Set v = factor <- v\n    member _.Apply(xs: float list) = xs |> Seq.map (fun x -> scale x factor)"
+    )

@@ -149,3 +149,8 @@ let ``semicolons holding a misindented list together are kept`` () =
     // verified against fsi: with the semicolons this is [1; 2; 3; 4]; without
     // them the misaligned lines read as function application (FS0003)
     assertNoSuggestion "module Test\nlet a, b, c, d = 1, 2, 3, 4\nlet items = [ a;\n    b; c;\n  d ]"
+
+[<Fact>]
+let ``a semicolon before a more indented line stays`` () =
+    // without the `;` the deeper line continues the application: printf "a" printf "b"
+    assertNoSuggestion "module Test\nlet f () =\n    printf \"a\";\n      printf \"b\""

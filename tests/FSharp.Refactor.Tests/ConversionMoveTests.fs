@@ -5,8 +5,8 @@ open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 
 let private findIn (source: string) =
-    let tree, sourceText = parse source
-    ConversionMove.find tree sourceText
+    let tree, sourceText, check = parseAndCheck source
+    ConversionMove.findWith (Some check) tree sourceText
 
 /// Expect one suggestion; verify the fully patched source text and that it
 /// still parses.
@@ -35,14 +35,14 @@ let ``a size-reducing operation still moves into Seq`` () =
     // filter's output is smaller than its input, and that saving covers the
     // enumerator cost: -4% time, -13% allocation
     assertPatched
-        "module Test\nlet f g xs = xs |> Seq.toList |> List.filter g"
-        "module Test\nlet f g xs = xs |> Seq.filter g |> Seq.toList"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.toList |> List.filter g"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.filter g |> Seq.toList"
 
 [<Fact>]
 let ``ofSeq spelling is preserved when moved`` () =
     assertPatched
-        "module Test\nlet f g xs = xs |> List.ofSeq |> List.filter g"
-        "module Test\nlet f g xs = xs |> Seq.filter g |> List.ofSeq"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> List.ofSeq |> List.filter g"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.filter g |> List.ofSeq"
 
 [<Fact>]
 let ``seq-to-array does not move a map into Seq either`` () =
@@ -67,8 +67,8 @@ let ``an Array operation still moves into Seq where laziness removes the array``
     // the seq is enumerated once either way; filtering first means the
     // unfiltered n-element array is never built at all
     assertPatched
-        "module Test\nlet f g (xs: int seq) = xs |> Seq.toArray |> Array.filter g"
-        "module Test\nlet f g (xs: int seq) = xs |> Seq.filter g |> Seq.toArray"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.toArray |> Array.filter g"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.filter g |> Seq.toArray"
 
 [<Fact>]
 let ``a consuming operation still drops a list-to-array conversion`` () =
@@ -90,20 +90,20 @@ let ``conversion before length is dropped`` () =
 [<Fact>]
 let ``conversion before iter is dropped`` () =
     assertPatched
-        "module Test\nlet f g xs = xs |> Seq.toList |> List.iter g"
-        "module Test\nlet f g xs = xs |> Seq.iter g"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.toList |> List.iter g"
+        "module Test\nlet f g (xs: ResizeArray<int>) = xs |> Seq.iter g"
 
 [<Fact>]
 let ``mid-pipeline segment is rewritten in place`` () =
     assertPatched
-        "module Test\nlet f g h k xs = xs |> h |> Seq.toList |> List.filter g |> k"
-        "module Test\nlet f g h k xs = xs |> h |> Seq.filter g |> Seq.toList |> k"
+        "module Test\nlet f h k xs = xs |> h |> Seq.toList |> List.filter (fun v -> v > 1) |> k"
+        "module Test\nlet f h k xs = xs |> h |> Seq.filter (fun v -> v > 1) |> Seq.toList |> k"
 
 [<Fact>]
 let ``multi-line pipeline is rewritten and collapses two stages`` () =
     assertPatched
-        "module Test\nlet f g xs =\n    xs\n    |> Seq.toList\n    |> List.filter g"
-        "module Test\nlet f g xs =\n    xs\n    |> Seq.filter g\n    |> Seq.toList"
+        "module Test\nlet f g (xs: ResizeArray<int>) =\n    xs\n    |> Seq.toList\n    |> List.filter g"
+        "module Test\nlet f g (xs: ResizeArray<int>) =\n    xs\n    |> Seq.filter g\n    |> Seq.toList"
 
 [<Fact>]
 let ``lambda argument text is preserved verbatim`` () =
@@ -141,8 +141,8 @@ let ``rev conversion moves`` () =
 [<Fact>]
 let ``conversion before exists is dropped`` () =
     assertPatched
-        "module Test\nlet f (p: int -> bool) xs = xs |> Seq.toList |> List.exists p"
-        "module Test\nlet f (p: int -> bool) xs = xs |> Seq.exists p"
+        "module Test\nlet f (p: int -> bool) (xs: ResizeArray<int>) = xs |> Seq.toList |> List.exists p"
+        "module Test\nlet f (p: int -> bool) (xs: ResizeArray<int>) = xs |> Seq.exists p"
 
 [<Fact>]
 let ``a short-circuiting consumer keeps the conversion over a source whose enumeration runs user code`` () =
@@ -212,8 +212,8 @@ let ``collect is not moved across a List-Array boundary`` () =
 [<Fact>]
 let ``collect moves for Seq-sourced conversions`` () =
     assertPatched
-        "module Test\nlet f (g: int -> int list) xs = xs |> Seq.toList |> List.collect g"
-        "module Test\nlet f (g: int -> int list) xs = xs |> Seq.collect g |> Seq.toList"
+        "module Test\nlet f (g: int -> int list) (xs: ResizeArray<int>) = xs |> Seq.toList |> List.collect g"
+        "module Test\nlet f (g: int -> int list) (xs: ResizeArray<int>) = xs |> Seq.collect g |> Seq.toList"
 
 [<Fact>]
 let ``sort family is not moved across an Array boundary`` () =
@@ -238,8 +238,8 @@ let ``a mutating operation keeps its eager conversion`` () =
 let ``a non-mutating operation still moves`` () =
     // the guard must not cost the ordinary case
     assertPatched
-        "module Test\nlet f (xs: seq<int>) = xs |> Seq.toList |> List.iter (printfn \"%d\")"
-        "module Test\nlet f (xs: seq<int>) = xs |> Seq.iter (printfn \"%d\")"
+        "module Test\nlet f (xs: ResizeArray<int>) = xs |> Seq.toList |> List.iter (printfn \"%d\")"
+        "module Test\nlet f (xs: ResizeArray<int>) = xs |> Seq.iter (printfn \"%d\")"
 
 [<Fact>]
 let ``a module-level collection is never enumerated lazily under a callback`` () =
@@ -327,5 +327,44 @@ let ``a consuming operation over an array-returning method keeps the array`` () 
 [<Fact>]
 let ``a plain identifier source still moves past the operation`` () =
     assertPatched
-        "module Test\nlet f g (xs: seq<int>) = xs |> Seq.toArray |> Array.filter g"
-        "module Test\nlet f g (xs: seq<int>) = xs |> Seq.filter g |> Seq.toArray"
+        "module Test\nlet f (xs: seq<int>) = xs |> Seq.toArray |> Array.filter (fun x -> x > 0)"
+        "module Test\nlet f (xs: seq<int>) = xs |> Seq.filter (fun x -> x > 0) |> Seq.toArray"
+
+[<Fact>]
+let ``a lazy source keeps its conversion under a callback with effects`` () =
+    // `File.ReadLines` is lazy: `Seq.toList` read the whole file before the
+    // first append; `Seq.iter` would interleave the appends with the read
+    // (the file still open), and a filter/choose stage the same
+    let typed (source: string) =
+        let tree, sourceText, check = parseAndCheck source
+        ConversionMove.findWith (Some check) tree sourceText
+
+    Assert.Empty(
+        typed
+            "module Test\nopen System.IO\nlet f (path: string) =\n    let lines = File.ReadLines path\n    lines |> Seq.toList |> List.iter (fun l -> File.AppendAllText(path, l))"
+    )
+
+    Assert.Empty(
+        typed
+            "module Test\nopen System.IO\nlet f (path: string) =\n    let lines = File.ReadLines path\n    lines |> Seq.toArray |> Array.filter (fun l -> File.Exists l)"
+    )
+
+    // parse-only, nothing proves the source materialised or the callback pure
+    assertNoSuggestion
+        "module Test\nlet f (path: string) =\n    let lines = System.IO.File.ReadLines path\n    lines |> Seq.toList |> List.iter (fun l -> System.IO.File.AppendAllText(path, l))"
+
+    // a pure callback over the lazy source still moves
+    match
+        typed
+            "module Test\nopen System.IO\nlet f (path: string) =\n    let lines = File.ReadLines path\n    lines |> Seq.toArray |> Array.filter (fun l -> l.Length > 2)"
+    with
+    | [ s ] -> Assert.Contains("Seq.filter", s.ReplacementText)
+    | other -> failwithf "Expected a pure callback to move, got %A" other
+
+    // a materialised source (typed) keeps the move under an effectful callback
+    match
+        typed
+            "module Test\nopen System.IO\nlet f (path: string) (lines: ResizeArray<string>) =\n    lines |> Seq.toList |> List.iter (fun l -> File.AppendAllText(path, l))"
+    with
+    | [ s ] -> Assert.Contains("Seq.iter", s.ReplacementText)
+    | other -> failwithf "Expected a materialised source to move, got %A" other

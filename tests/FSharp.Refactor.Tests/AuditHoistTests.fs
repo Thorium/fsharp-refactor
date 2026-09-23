@@ -170,8 +170,10 @@ let ``FR0047: a mentioning Dispose closing on a branch offers no fix`` () =
 
 [<Fact>]
 let ``FR0047: an untouched field is still disposed first in Dispose`` () =
+    // independent of what the body disposes (a reader over the stream would
+    // put the stream last: ObjectDesignTests)
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let reader = new StreamReader(stream)\n    interface System.IDisposable with\n        member _.Dispose() =\n            reader.Dispose()"
+        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let log = new FileStream(path + \".log\", FileMode.Open)\n    interface System.IDisposable with\n        member _.Dispose() =\n            log.Dispose()"
 
     let _, _, undisposed = designIn source
 
@@ -180,7 +182,7 @@ let ``FR0047: an untouched field is still disposed first in Dispose`` () =
         Assert.False s.MentionedOnly
         let r, _, replacement = s.Fix.Value
         let patched = applyEdit source r replacement
-        Assert.Contains("stream.Dispose()\n            reader.Dispose()", patched)
+        Assert.Contains("stream.Dispose()\n            log.Dispose()", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 

@@ -125,6 +125,8 @@ let private argumentsOf (source: ISourceText) (parts: SynInterpolatedStringPart 
     else
         None
 
+let private aZazwRegex = Regex @"^[A-Za-z_][\w'.]*$"
+
 /// One argument as F# source: a literal, a bare hole, or an interpolated
 /// string for a mix.
 let private argumentText (pieces: ArgumentPiece list) =
@@ -133,11 +135,7 @@ let private argumentText (pieces: ArgumentPiece list) =
 
     match pieces with
     | [ Literal text ] -> "\"" + escape text + "\""
-    | [ Hole expr ] ->
-        if Regex.IsMatch(expr, @"^[A-Za-z_][\w'.]*$") then
-            expr
-        else
-            $"({expr})"
+    | [ Hole expr ] -> if aZazwRegex.IsMatch expr then expr else $"({expr})"
     | mixed ->
         let body =
             mixed
@@ -212,14 +210,16 @@ let private dmlStatement =
 /// `@name`, `:name`, `?`, `$1` — a parameter marker in any dialect.
 let private parameterMarker = Regex(@"@\w|:\w|\?|\$\d", RegexOptions.Compiled)
 
+[<return: Struct>]
 let private (|Addition|_|) (e: SynExpr) =
     match e with
     // infix + parses its operator as a one-segment LongIdent, not Ident
-    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Addition"; argExpr = l); argExpr = r) -> Some(l, r)
+    | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_Addition"; argExpr = l); argExpr = r) ->
+        ValueSome(l, r)
     | SynExpr.App(
         funcExpr = SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])); argExpr = l)
-        argExpr = r) when op.idText = "op_Addition" -> Some(l, r)
-    | _ -> None
+        argExpr = r) when op.idText = "op_Addition" -> ValueSome(l, r)
+    | _ -> ValueNone
 
 /// The curried arguments of an application, innermost first:
 /// `sprintf fmt a b` gives `[sprintf; fmt; a; b]`.

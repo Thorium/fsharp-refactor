@@ -52,8 +52,8 @@ let private getBytesOf (ids: Ident list) =
             | [ "System"; "Text" ] -> true
             | _ -> false)
         ->
-        Some enc.idText
-    | _ -> None
+        ValueSome enc.idText
+    | _ -> ValueNone
 
 /// A plain ASCII string literal: regular or verbatim, every char below 128.
 let private asciiLiteral (e: SynExpr) =
@@ -92,7 +92,7 @@ let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (so
                 isSingleLine e.Range
                 ->
                 match getBytesOf ids with
-                | Some enc when asciiLiteral arg && isEncodings (List.last ids) ->
+                | ValueSome enc when asciiLiteral arg && isEncodings (List.last ids) ->
                     let literal = stripParens arg
 
                     {

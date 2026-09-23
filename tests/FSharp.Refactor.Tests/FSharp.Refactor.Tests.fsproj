@@ -73,6 +73,7 @@
     <Compile Include="PerfTests.fs" />
     <Compile Include="ListHeadPatternTests.fs" />
     <Compile Include="RangeMapTests.fs" />
+    <Compile Include="QueryCopyTests.fs" />
     <Compile Include="ModernizationTests.fs" />
     <Compile Include="ApiChangesTests.fs" />
     <Compile Include="FileWalkTests.fs" />

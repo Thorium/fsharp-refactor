@@ -159,8 +159,36 @@ let ``isEmpty of filter becomes not exists`` () =
 [<Fact>]
 let ``not isEmpty of filter becomes exists`` () =
     assertSingleSuggestion
-        "module Test\nlet f (p: int -> bool) xs = not (List.isEmpty (List.filter p xs))"
-        "List.exists p xs"
+        "module Test\nlet f (p: int -> bool) xs = not (Seq.isEmpty (Seq.filter p xs))"
+        "Seq.exists p xs"
+
+[<Fact>]
+let ``FR0060: an eager filter probed once keeps running the predicate on every element`` () =
+    // List/Array.filter runs `p` on every element, exists/tryFind stop at
+    // the first match: a printfn or an exception in `p` sees the difference.
+    // A lazy Seq.filter stops at the first match too. The eager forms fire
+    // only on a total predicate: comparisons over reads, nothing to throw
+    for m in [ "List"; "Array" ] do
+        assertNoSuggestion $"module Test\nlet f (p: int -> bool) xs = {m}.isEmpty ({m}.filter p xs)"
+        assertNoSuggestion $"module Test\nlet f (p: int -> bool) xs = not ({m}.isEmpty ({m}.filter p xs))"
+        assertNoSuggestion $"module Test\nlet f (p: int -> bool) xs = {m}.tryHead ({m}.filter p xs)"
+
+        assertNoSuggestion
+            $"module Test\nlet f (xs: string {m.ToLower()}) = {m}.isEmpty ({m}.filter (fun s -> int s > 10) xs)"
+
+        assertNoSuggestion
+            $"module Test\nlet f (xs: int {m.ToLower()}) = {m}.isEmpty ({m}.filter (fun x -> 10 / x > 1) xs)"
+
+        assertNoSuggestion
+            $"module Test\nlet f (xs: int {m.ToLower()}) = {m}.tryHead ({m}.filter (fun x -> printfn \"%%d\" x; x > 0) xs)"
+
+        assertSingleSuggestion
+            $"module Test\nlet f (xs: int {m.ToLower()}) = {m}.isEmpty ({m}.filter (fun x -> x > 0 && x <> 5) xs)"
+            $"not ({m}.exists (fun x -> x > 0 && x <> 5) xs)"
+
+    // `Array.item 0` of an empty array throws IndexOutOfRangeException,
+    // `Array.head` an ArgumentException
+    assertNoSuggestion "module Test\nlet f (xs: int[]) = Array.item 0 xs"
 
 [<Fact>]
 let ``fold plus zero stays a fold: sum adds checked`` () =

@@ -487,3 +487,74 @@ let ``a file whose only directives are INTERACTIVE or COMPILED sweeps once acros
         Assert.True(Program.isDirectiveFree plain)
     finally
         cleanup root
+
+// ---- the bisection's report matches the disk ----
+
+[<Fact>]
+let ``files the bisection blames are back on disk, not only in the report`` () =
+    // A and B each drop a `value` the other still provides, so only the
+    // two together break N (which the errors name, and whose own fix is
+    // innocent). The bisection blames both — but its last probe had B
+    // applied, and with nothing innocent left to re-apply nothing wrote
+    // B back: reported rolled back and suppressed, left applied on disk
+    let root = tempRoot "fsref-driver-bisect-disk-"
+
+    try
+        let a = Path.Combine(root, "A.fs")
+        let b = Path.Combine(root, "B.fs")
+        let n = Path.Combine(root, "N.fs")
+
+        let aBefore = "module A\n\nlet value = 1\n"
+        let aAfter = "module A\n\nlet valueA = 1\n"
+        let bBefore = "module B\n\nlet value = 2\n"
+        let bAfter = "module B\n\nlet valueB = 2\n"
+        let nBefore = "module N\n\nopen A\nopen B\n\nlet r : int = value + 0\n"
+        let nAfter = "module N\n\nopen A\nopen B\n\nlet r : int = value\n"
+
+        File.WriteAllText(a, aAfter)
+        File.WriteAllText(b, bAfter)
+        File.WriteAllText(n, nAfter)
+
+        let options = projectOptions (Path.Combine(root, "Tests.fsproj")) [ a; b; n ]
+
+        let aFix = fix 3 4 9 "value" "valueA"
+        let bFix = fix 3 4 9 "value" "valueB"
+        let nFix = fix 6 14 23 "value + 0" "value"
+
+        let changed: Program.AppliedFile list =
+            [
+                {
+                    Path = a
+                    Before = aBefore
+                    Fixes = [ 1, "FR0998", aFix ]
+                }
+                {
+                    Path = b
+                    Before = bBefore
+                    Fixes = [ 2, "FR0998", bFix ]
+                }
+                {
+                    Path = n
+                    Before = nBefore
+                    Fixes = [ 3, "FR0012", nFix ]
+                }
+            ]
+
+        let suppressed = Collections.Generic.HashSet<string * string * string * string>()
+
+        Assert.False(quietly (fun () -> Program.verifyPass checker options 0 suppressed changed))
+
+        // both blamed, both suppressed...
+        Assert.Contains(("FR0998", a, aFix.FromText, aFix.ToText), suppressed)
+        Assert.Contains(("FR0998", b, bFix.FromText, bFix.ToText), suppressed)
+        // ...and both back on disk, as the report says
+        Assert.Equal(aBefore, File.ReadAllText a)
+        Assert.Equal(bBefore, File.ReadAllText b)
+        // the innocent fix in the named file stays
+        Assert.Equal(nAfter, File.ReadAllText n)
+
+        checker.InvalidateConfiguration options
+        let after = Program.checkProject checker options |> errorsOf
+        Assert.True(after.Length = 0, $"the tree left behind should check clean: %A{after}")
+    finally
+        cleanup root

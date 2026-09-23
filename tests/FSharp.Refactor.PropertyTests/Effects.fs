@@ -49,6 +49,7 @@ open FsCheck.FSharp
 /// `Sequential`, and a rule walking the first and not the second (as
 /// FR0071 did) behaves differently on the two. Every index is drawn
 /// below its own collection's length, so no generated program throws.
+[<Literal>]
 let private maxElements = 3
 
 type private Tape(choices: int list) =
@@ -155,6 +156,7 @@ let private words = [| "a"; "ab"; "key"; "x1"; "-"; "" |]
 
 /// Spliced rather than written inline: a `%` in an interpolated string is
 /// a format specifier, and `% 2` does not compile.
+[<Literal>]
 let private percent = "%"
 
 /// A `string`-valued expression. `string` of an int and `+` of two

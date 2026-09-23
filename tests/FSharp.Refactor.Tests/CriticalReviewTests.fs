@@ -46,15 +46,17 @@ let ``FR0035: a per-iteration collection is not loop-invariant`` () : unit =
 [<Fact>]
 let ``FR0021: ToString under a typed hole pins the type and stays`` () : unit =
     // %s requires a string; dropping .ToString() would not typecheck
-    let tree, sourceText = parse "module Test\nlet f (x: int) = $\"%s{x.ToString()}\""
-    Assert.Empty(InterpToString.find tree sourceText)
+    let tree, sourceText, check =
+        parseAndCheck "module Test\nlet f (x: int) = $\"%s{x.ToString()}\""
+
+    Assert.Empty(InterpToString.find (Some check) tree sourceText)
 
 [<Fact>]
 let ``FR0021: ToString in an untyped hole is still simplified`` () : unit =
-    let tree, sourceText =
-        parse "module Test\nlet f (x: int) = $\"{x.ToString()} items\""
+    let tree, sourceText, check =
+        parseAndCheck "module Test\nlet f (x: int) = $\"{x.ToString()} items\""
 
-    match InterpToString.find tree sourceText with
+    match InterpToString.find (Some check) tree sourceText with
     | [ s ] -> Assert.Equal("x", s.ReplacementText)
     | other -> failwithf "Expected exactly one ToString suggestion, got %A" other
 
@@ -215,14 +217,18 @@ let ``a struct DU needs same-named fields to agree on type`` () : unit =
     Assert.Empty(StructDu.find false tree sourceText)
 
 [<Fact>]
-let ``same-named fields of one type still take the attribute`` () : unit =
+let ``same-named fields of one type take the attribute only from F# 9`` () : unit =
+    // before F# 9 a struct union's fields must be unique across its cases
+    // (FS3204); F# 9 allows a shared name whose types agree
     let tree, sourceText =
         parse
             "module Test\nmodule private Impl =\n    type Same =\n        | A of value: int\n        | B of value: int"
 
-    match StructDu.find false tree sourceText with
+    Assert.Empty(StructDu.find false tree sourceText)
+
+    match StructDu.findWith None true false tree sourceText with
     | [ s ] -> Assert.Equal("Same", s.TypeName)
-    | other -> failwithf "Expected exactly one struct suggestion, got %A" other
+    | other -> failwithf "Expected exactly one struct suggestion under F# 9, got %A" other
 
 [<Fact>]
 let ``FR0008: an active pattern's tuple input is not curried`` () : unit =

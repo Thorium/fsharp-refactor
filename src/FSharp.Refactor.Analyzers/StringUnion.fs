@@ -39,18 +39,31 @@
 /// case it now covers. A variable pattern that spells the name of a
 /// module-level string constant — `| us -> 2` beside `let us = "..."`,
 /// which binds a fresh `us` and matches every value — is treated as the
-/// comparison the author meant, and the message says so.
+/// comparison the author meant, and the message says so. A `| null ->`
+/// arm, top-level or nested (`| Some null ->`), goes with the dead
+/// catch-alls; a live one has no spelling on the union and stands the rule
+/// down.
 ///
 /// What stands the rule down: a slot fed from anything but a literal or a
 /// slot (a parameter with a call site the host cannot see, a value read
 /// from input, a function used as a value or partially applied, a lambda
 /// parameter, a member or property, a tuple-bound name), a use the union
 /// cannot serve (a `%s` format hole, string concatenation, a method call
-/// on the string, a comparison with a non-literal), fewer than two
-/// distinct literals matched, a literal that makes no identifier, a
-/// wildcard the proof leaves dead but cannot delete whole, a name the
+/// on the string, a comparison with a non-literal), a use the rule cannot
+/// place at all (a field read off a call's result, `(mk b).Kind`, or an
+/// assignment to it: unknown is unsafe), fewer than two distinct literals
+/// matched, a literal that makes no identifier or no legal case name (a
+/// `.` or `/` in it, FS0883) or one clashing with a member the union
+/// generates or declares (`ToString`, `Tag`, `IsEu` beside `Eu`, FS0023),
+/// a wildcard the proof leaves dead but cannot delete whole, a name the
 /// project already uses for a type, a signature file beside any file
-/// touched, a record a serializer fills, and a set no producer feeds.
+/// touched, a record a serializer fills, a record whose field is a slot
+/// seen printed whole or ordered (`%A`, `string r`, `$"{r}"`, `compare`,
+/// `<`, a sort, a Set element or Map key: the field's new type changes
+/// its text and its order, cases comparing by declaration), and a set no
+/// producer feeds. That last scan is syntactic and cannot see a generic
+/// helper doing the same, so a rewrite retyping a record field is offered
+/// by the editor alone; a sweep reports it without a fix.
 ///
 /// A `Result<_, string>` is a slot like the others, its `Error "..."` exits
 /// the sources and its `Error "..."` arms the consumer; the Ok side is not
@@ -91,6 +104,12 @@ type Suggestion =
         /// A slot the assembly exports is among them: the change reshapes
         /// the public surface.
         Exported: bool
+        /// A record field is among the slots: the record's text (`%A`,
+        /// `string r`) and structural order change with the field's type in
+        /// ways no syntactic scan fully rules out (a generic helper printing
+        /// or sorting it), so only the editor, where the author reviews the
+        /// change, offers the rewrite; a sweep reports it without a fix.
+        FieldSlot: bool
         /// The `| name ->` arms that were binding a variable, now the
         /// constant comparison they read as.
         ShadowedConstants: string list
@@ -434,6 +453,31 @@ let private nodeAt (index: AstIndex.Index) (r: range) =
             sameSpan e.Range r || ids |> List.exists (fun id -> sameSpan id.idRange r)
         | _ -> false)
 
+/// Does a record field use at this range name the field in a construction
+/// (`{ Kind = ... }`, `{ r with Kind = ... }`) or a record pattern
+/// (`{ Kind = k }`)? Those are the field's sources and binders, not reads;
+/// any other use nodeAt cannot place - a read through a DotGet off a call,
+/// `(mk b).Kind`, an assignment `r.Kind <- v` - is a use the rule cannot
+/// see through.
+let private namesFieldInRecord (index: AstIndex.Index) (r: range) =
+    let named (ids: Ident list) =
+        ids |> List.exists (fun id -> sameSpan id.idRange r)
+
+    index.Exprs
+    |> Array.exists (fun (_, e) ->
+        match e with
+        | SynExpr.Record(recordFields = fields) ->
+            fields
+            |> List.exists (fun (SynExprRecordField(fieldName = (SynLongIdent(id = ids), _))) -> named ids)
+        | _ -> false)
+    || index.Pats
+       |> Array.exists (fun (_, p) ->
+           match p with
+           | SynPat.Record(fieldPats = fs) ->
+               fs
+               |> List.exists (fun (NamePatPairField(fieldName = SynLongIdent(id = ids))) -> named ids)
+           | _ -> false)
+
 /// The pattern node a symbol's definition IS, with its ancestors.
 let private patAt (index: AstIndex.Index) (r: range) =
     index.Pats
@@ -604,6 +648,29 @@ let private caseNameOf (literal: string) : string option =
             backticked literal
         else
             Some name
+
+/// A case name without its double backticks.
+let private bareCaseName (name: string) =
+    if name.Length > 4 && name.StartsWith "``" && name.EndsWith "``" then
+        name.Substring(2, name.Length - 4)
+    else
+        name
+
+/// Can these names be the cases of one generated union? A union case name
+/// takes none of the characters F# bars from type and case names (FS0883:
+/// `1.0`, `1/2`), and none may clash with a member the compiler generates
+/// or the union declares (FS0023): `Tags`, `Tag`, the `ToString` override,
+/// the object members, and the `IsX` tester of another case `X` (`IsEu`
+/// beside `Eu`).
+let private caseNamesLegal (names: string list) =
+    let illegal = [| '.'; '+'; '$'; '&'; '['; ']'; '/'; '\\'; '*'; '"'; '`' |]
+
+    let reserved =
+        set [ "Tags"; "Tag"; "ToString"; "Equals"; "GetHashCode"; "CompareTo"; "GetType" ]
+
+    names
+    |> List.forall (fun n -> n <> "" && n.IndexOfAny illegal < 0 && not (reserved.Contains n))
+    && not (names |> List.exists (fun n -> names |> List.exists (fun m -> n = "Is" + m)))
 
 let private pascal (name: string) =
     if name = "" then
@@ -1354,8 +1421,9 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     match nodeAt useIndex u.Range with
                     | None ->
                         // a record field named in a construction or a pattern
-                        // is a source, not a read
-                        if slot.Kind = "field" then
+                        // is a source, not a read; any other use nodeAt
+                        // cannot place is unknown, and unknown is unsafe
+                        if slot.Kind = "field" && namesFieldInRecord useIndex u.Range then
                             []
                         else
                             [ OpenSink "a use the rule cannot read" ]
@@ -1717,6 +1785,11 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     | [ inner ] ->
                         match inner with
                         | SynPat.Wild _ -> catchAll None false
+                        // `Some null`: the null inside is a catch-all of the
+                        // string-carrying case alone, dead or live like `Some _`;
+                        // a live one has no spelling on the union (`nullPattern`)
+                        | SynPat.Null _ -> catchAll None false
+                        | SynPat.Paren(pat = SynPat.Null _) -> catchAll None false
                         | SynPat.Named(ident = SynIdent(ident = id)) ->
                             match world.SymbolAt file id with
                             | Some u -> catchAll (Some u.Symbol) false
@@ -2212,6 +2285,188 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                 serializationAttribute || asTypeArgument || asArgument
                             | _ -> false)
 
+                    // a record field slot whose RECORD is observed whole: printed
+                    // (`%A`, `string r`, `$"{r}"`, `r.ToString()`, a logger),
+                    // compared or ordered (`compare`, `<`, `List.sort`, `max`, a
+                    // Set element or a Map key). Retyping the field changes the
+                    // record's text (`Kind = File` for `Kind = "file"`) and its
+                    // structural order (cases compare by declaration, not by
+                    // ordinal text). The scan is syntactic and conservative - any
+                    // value whose type holds the record, directly or through a
+                    // record, union or type argument, inside such a site - and it
+                    // cannot see a generic helper doing the same, which is why the
+                    // sweep never applies a field slot's rewrite (`FieldSlot`)
+                    let wholeRecordObserved =
+                        c.Slots
+                        |> List.exists (fun s ->
+                            match s.Symbol with
+                            | :? FSharpField as f ->
+                                let entityName =
+                                    try
+                                        f.DeclaringEntity |> Option.map OptionModule.fullNameOf
+                                    with _ -> // fsharpanalyzer: ignore-line FR0055
+                                        None
+
+                                match entityName with
+                                | None -> true
+                                | Some entityName ->
+                                    let rec holds (seen: Set<string>) (t: FSharpType) =
+                                        try
+                                            let t = OptionModule.stripAbbreviations t
+
+                                            (t.GenericArguments |> Seq.exists (holds seen))
+                                            || (t.HasTypeDefinition
+                                                && (let td = t.TypeDefinition
+                                                    let name = OptionModule.fullNameOf td
+
+                                                    name = entityName
+                                                    || (not (seen.Contains name)
+                                                        && (td.IsFSharpRecord || td.IsFSharpUnion)
+                                                        && (let seen = seen.Add name
+
+                                                            (td.FSharpFields
+                                                             |> Seq.exists (fun fld -> holds seen fld.FieldType))
+                                                            || (td.IsFSharpUnion
+                                                                && td.UnionCases
+                                                                   |> Seq.exists (fun uc ->
+                                                                       uc.Fields
+                                                                       |> Seq.exists (fun fld ->
+                                                                           holds seen fld.FieldType)))))))
+                                        with _ -> // fsharpanalyzer: ignore-line FR0055
+                                            true
+
+                                    let observerName (name: string) =
+                                        let l = name.ToLowerInvariant()
+
+                                        l = "string"
+                                        || l.Contains "printf"
+                                        || l = "failwithf"
+                                        || l = "format"
+                                        || l.StartsWith "write"
+                                        || l.StartsWith "append"
+                                        || l = "tostring"
+                                        || l.Contains "compar"
+                                        || l.StartsWith "sort"
+                                        || l.Contains "sorted"
+                                        || l.StartsWith "max"
+                                        || l.StartsWith "min"
+                                        || name = "set"
+                                        || name = "Set"
+                                        || name = "Map"
+                                        || l.Contains "log"
+
+                                    let observerPath (ids: Ident list) =
+                                        ids |> List.exists (fun id -> id.idText = "Set" || id.idText = "Map")
+                                        || (match List.tryLast ids with
+                                            | Some last -> observerName last.idText
+                                            | None -> false)
+
+                                    let rec observer (e: SynExpr) =
+                                        match e with
+                                        | SynExpr.Ident id -> observerName id.idText
+                                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> observerPath ids
+                                        | SynExpr.TypeApp(expr = inner)
+                                        | SynExpr.Paren(expr = inner) -> observer inner
+                                        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) -> observerPath ids
+                                        | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) ->
+                                            observer f || observer a
+                                        | _ -> false
+
+                                    let rec chain (e: SynExpr) (args: SynExpr list) =
+                                        match e with
+                                        | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) ->
+                                            chain f (a :: args)
+                                        | head -> head, args
+
+                                    let comparison =
+                                        set
+                                            [
+                                                "op_LessThan"
+                                                "op_GreaterThan"
+                                                "op_LessThanOrEqual"
+                                                "op_GreaterThanOrEqual"
+                                            ]
+
+                                    world.SourceFiles
+                                    |> List.exists (fun file ->
+                                        match analysis.FileOf file with
+                                        | None -> true
+                                        | Some(fi, _) ->
+                                            // the ranges an observer reads whole
+                                            let observed =
+                                                fi.Exprs
+                                                |> Array.toList
+                                                |> List.collect (fun (_, e) ->
+                                                    match e with
+                                                    | SynExpr.InterpolatedString(contents = parts) ->
+                                                        parts
+                                                        |> List.choose (fun p ->
+                                                            match p with
+                                                            | SynInterpolatedStringPart.FillExpr(fillExpr = x) ->
+                                                                Some x.Range
+                                                            | _ -> None)
+                                                    | SynExpr.App(
+                                                        funcExpr = SynExpr.App(
+                                                            isInfix = true; funcExpr = IdentName op; argExpr = lhs)
+                                                        argExpr = rhs) ->
+                                                        if comparison.Contains op then [ lhs.Range; rhs.Range ]
+                                                        elif op = "op_PipeRight" && observer rhs then [ lhs.Range ]
+                                                        elif op = "op_PipeLeft" && observer lhs then [ rhs.Range ]
+                                                        else []
+                                                    | SynExpr.App(isInfix = false) ->
+                                                        let head, args = chain e []
+
+                                                        if observer head || args |> List.exists observer then
+                                                            args |> List.map (fun a -> a.Range)
+                                                        else
+                                                            []
+                                                    // `r.ToString()`, `r.CompareTo x`: the value before it
+                                                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
+                                                        ids.Length > 1 && observerName (List.last ids).idText
+                                                        ->
+                                                        [ (ids.[ids.Length - 2]).idRange ]
+                                                    | SynExpr.DotGet(expr = x; longDotId = SynLongIdent(id = ids)) when
+                                                        ids |> List.exists (fun id -> observerName id.idText)
+                                                        ->
+                                                        [ x.Range ]
+                                                    | _ -> [])
+
+                                            let within (r: range) =
+                                                observed |> List.exists (fun o -> Range.rangeContainsRange o r)
+
+                                            let holdsRecord (id: Ident) =
+                                                match world.SymbolAt file id with
+                                                | Some u ->
+                                                    match u.Symbol with
+                                                    | :? FSharpMemberOrFunctionOrValue as v ->
+                                                        (try
+                                                            holds Set.empty v.FullType
+                                                         with _ -> // fsharpanalyzer: ignore-line FR0055
+                                                             true)
+                                                    | :? FSharpField as fld ->
+                                                        (try
+                                                            holds Set.empty fld.FieldType
+                                                         with _ -> // fsharpanalyzer: ignore-line FR0055
+                                                             true)
+                                                    | _ -> false
+                                                | None -> false
+
+                                            not observed.IsEmpty
+                                            && fi.Exprs
+                                               |> Array.exists (fun (_, e) ->
+                                                   match e with
+                                                   | SynExpr.Ident id -> within id.idRange && holdsRecord id
+                                                   | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+                                                       // the path's value is its last name's; a
+                                                       // `r.ToString` names `r` on its own
+                                                       ids |> List.exists (fun id -> within id.idRange)
+                                                       && (holdsRecord (List.last ids)
+                                                           || (ids.Length > 1
+                                                               && observerName (List.last ids).idText
+                                                               && holdsRecord ids.[ids.Length - 2]))
+                                                   | _ -> false))
+                            | _ -> false)
+
                     let signatureBound =
                         c.Slots
                         |> List.exists (fun s ->
@@ -2313,6 +2568,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                         || subjectName.IsNone
                         || signatureBound
                         || serialized
+                        || wholeRecordObserved
                         || adapters.IsNone
                         || declFiles.Length <> c.Slots.Length
                         || declFiles |> List.exists (fun (f, _) -> (analysis.FileOf f).IsNone)
@@ -2371,10 +2627,14 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                         let caseOf (text: string) =
                             caseNames |> List.tryPick (fun (t, n) -> if t = text then n else None)
 
+                        // ``Eu`` and Eu are one identifier: names compare bare
+                        let bareNames = caseNames |> List.choose snd |> List.map bareCaseName
+
                         let namesValid =
                             unionName.IsSome
                             && caseNames |> List.forall (fun (_, n) -> n.IsSome)
-                            && (caseNames |> List.choose snd |> List.distinct |> List.length) = caseNames.Length
+                            && (bareNames |> List.distinct |> List.length) = caseNames.Length
+                            && caseNamesLegal bareNames
 
                         if not namesValid then
                             None
@@ -2759,6 +3019,8 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                     match p with
                                     | SynPat.Null _ -> true
                                     | SynPat.Paren(pat = inner) -> nullPattern inner
+                                    // `Some null`, `Error null`: nested like top-level
+                                    | SynPat.LongIdent(argPats = SynArgPats.Pats [ inner ]) -> nullPattern inner
                                     | _ -> false
 
                                 let liveNamesOk =
@@ -2850,6 +3112,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                             Range = matchExpr.Range
                                             Literals = distinct
                                             Exported = isExported
+                                            FieldSlot = c.Slots |> List.exists (fun s -> s.Kind = "field")
                                             ShadowedConstants =
                                                 c.Shadowed |> List.map (fun (_, _, _, n) -> n) |> List.distinct
                                             Reshaped =

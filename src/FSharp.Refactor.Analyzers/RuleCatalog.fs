@@ -179,6 +179,9 @@ let private categories =
         "FR0173",
         Category.Performance,
         "a range built only to be mapped over allocates a second collection the size of the result; init builds the result alone"
+        "FR0174",
+        Category.Performance,
+        "a query copied before Where/Select (or filter/map) loads every row; the query runs them and the copy follows"
 
         // --- idiom: same behaviour, written the way F# writes it
         "FR0001", Category.Idiom, "Boolean match => if-else"
@@ -389,6 +392,7 @@ let describe (code: string) =
     |> Option.defaultValue $"{name (categoryOf code)} rule {code}"
 
 /// The rule table on GitHub.
+[<Literal>]
 let RulesUrl = "https://github.com/Thorium/fsharp-refactor/blob/main/Rules.md"
 
 /// The GitHub anchor of a rule's section in Rules.md. Every section heads
@@ -576,6 +580,13 @@ let knobs: (string * Knob list) list =
         "FR0159",
         [
             flag "all" false "note the literal-operand and product-dividend divisions on a sweep too"
+        ]
+        "FR0174",
+        [
+            flag
+                "pipelines"
+                false
+                "take the `q |> Seq.toList |> List.filter f` pipeline too, not only the LINQ method chain"
         ]
     ]
 

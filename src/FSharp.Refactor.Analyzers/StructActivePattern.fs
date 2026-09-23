@@ -87,7 +87,8 @@ let rec private collectResultsLoop (acc: ResizeArray<range * string>) (pending: 
 
 let private collectResults (acc: ResizeArray<range * string>) (e: SynExpr) : bool = collectResultsLoop acc [ e ]
 
-let private isPartialActivePatternName (name: string) = Regex.IsMatch(name, @"^\|.+\|_\|$")
+let private compiledRegex = Regex @"^\|.+\|_\|$"
+let private isPartialActivePatternName (name: string) = compiledRegex.IsMatch name
 
 /// Find trivial partial active patterns that can get [<return: Struct>].
 /// Requires typed check results for the Some/None gate.

@@ -240,7 +240,7 @@ let ``every catalogued rule has a generated shape or a stated reason`` () =
 
     let unshaped =
         FSharp.Refactor.RuleCatalog.known
-        |> Set.filter (fun code -> not (shaped.Contains code) && not (excused.Contains code))
+        |> Set.filter (fun code -> not (shaped.Contains code || excused.Contains code))
 
     let excusedButShaped = Set.intersect shaped excused
 

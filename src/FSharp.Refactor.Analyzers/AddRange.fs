@@ -21,6 +21,9 @@
 ///   - `Add` must resolve (typed check results) to
 ///     System.Collections.Generic.List`1.Add: HashSet.Add and friends have
 ///     different semantics and often no AddRange
+///   - the loop variable's type is exactly the list's element type
+///     (typed): `Add` upcasts one element, `AddRange` coerces no
+///     collection, so a `string list` into a `ResizeArray<obj>` is FS0001
 ///   - source, receiver, and argument are single-line
 ///   - the file must have no type errors
 module FSharp.Refactor.AddRange
@@ -63,7 +66,8 @@ let private (|AddCall|_|) (e: SynExpr) =
         ValueSome(addIdent, receiver.Range, arg)
     | _ -> ValueNone
 
-/// Does the Add identifier resolve to List<'T>.Add?
+/// Does the Add identifier resolve to List<'T>.Add? Its parameter type as
+/// instantiated here (the list's 'T) when it does.
 let private resolvesToListAdd (check: FSharpCheckFileResults) (source: ISourceText) (addIdent: Ident) =
     let r = addIdent.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
@@ -71,10 +75,35 @@ let private resolvesToListAdd (check: FSharpCheckFileResults) (source: ISourceTe
     match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ addIdent.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
-        | :? FSharpMemberOrFunctionOrValue as value ->
+        | :? FSharpMemberOrFunctionOrValue as value when
             (OptionModule.enclosingFullName value).StartsWith "System.Collections.Generic.List`"
-        | _ -> false
-    | None -> false
+            ->
+            try
+                match value.CurriedParameterGroups |> Seq.concat |> List.ofSeq with
+                | [ p ] -> Some p.Type
+                | _ -> None
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                None
+        | _ -> None
+    | None -> None
+
+/// Is the loop variable's type EXACTLY the list's element type? `acc.Add n`
+/// upcasts a string into a `ResizeArray<obj>`, but `AddRange` takes a
+/// `seq<obj>` and a `string list` is not one (FS0001): F# does not coerce
+/// the collection. A type FCS cannot give answers no.
+let private sameElementType
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (elementType: FSharpType)
+    (loopVar: Ident)
+    =
+    match OptionModule.symbolOfIdent check source loopVar with
+    | Some(:? FSharpMemberOrFunctionOrValue as v) ->
+        try
+            (OptionModule.stripAbbreviations v.FullType).Equals(OptionModule.stripAbbreviations elementType)
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+    | _ -> false
 
 /// Find accumulate-only loops over List<'T>. Requires typed check results.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
@@ -95,7 +124,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     match body with
                     | AddCall(addIdent, receiverRange, arg) when
                         isSingleLine arg.Range
-                        && resolvesToListAdd check source addIdent
+                        // List<'T>.Add of the loop variable, whose type is
+                        // exactly 'T: AddRange coerces no collection
+                        && (match resolvesToListAdd check source addIdent, stripParens arg, pat with
+                            | Some elementType, SynExpr.Ident v, SynPat.Named(ident = SynIdent(ident = loopVar)) when
+                                v.idText = loopVar.idText
+                                ->
+                                sameElementType check source elementType loopVar
+                            | _ -> false)
                         // the RECEIVER must be the same list on every
                         // iteration: `columns[tile.Position.X].Add tile` picks
                         // a list PER element, and `columns[tile.Position.X]

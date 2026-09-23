@@ -7,7 +7,7 @@
 /// written in — a newline already separates expressions, so a `;` before one
 /// is left over from another language.
 ///
-/// It is NOT left over in three places, and none of them are touched:
+/// It is NOT left over in four places, and none of them are touched:
 ///
 ///   - inside a list, array, record or anonymous record. There `;` is the
 ///     element separator doing its job, whether or not a newline follows:
@@ -18,6 +18,17 @@
 ///
 ///   - anywhere in a file that turns light syntax off with `#light "off"`,
 ///     where `;` is significant and removing one changes the parse.
+///
+///   - before a line indented deeper than the expression the `;` ends
+///     (that expression's own start where a sequence says so, else its
+///     line's indentation). There the `;` is what ends the expression:
+///
+///         printf "a";
+///           printf "b"
+///
+///     without it the deeper line continues the application, `printf "a"
+///     printf "b"`. The same holds inside a computation expression, which
+///     is protected as a whole anyway.
 ///
 /// `;;` is left alone too. It terminates an interaction in F# Interactive,
 /// which is a different thing from separating two expressions.
@@ -186,6 +197,25 @@ let private lastMeaningfulToken (tokenizer: FSharpSourceTokenizer) (line: string
 
     last, current
 
+/// The indentation of the first line of code after `lineIndex` (blank and
+/// `//` lines skipped), or None at the end of the file.
+let private nextCodeIndent (source: ISourceText) (lineIndex: int) =
+    let count = source.GetLineCount()
+
+    let rec probe i =
+        if i >= count then
+            None
+        else
+            let text = source.GetLineString i
+            let trimmed = text.TrimStart()
+
+            if trimmed = "" || trimmed.StartsWith "//" then
+                probe (i + 1)
+            else
+                Some(text.Length - trimmed.Length)
+
+    probe (lineIndex + 1)
+
 /// Find semicolons that end a line for no reason.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     if not (worthLexing source) then
@@ -194,6 +224,25 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
         let protectedRanges = separatorRanges parseTree
         let fileName = parseTree.FileName
+
+        // where each sequence's first expression starts, by the line it ends
+        // on: a `;` that ends a statement laid out over lines ends the WHOLE
+        // statement, whose start is left of its last line's indentation
+        let sequenceStarts =
+            lazy
+                (let starts = System.Collections.Generic.Dictionary<int, int>()
+
+                 for _, expr in (AstIndex.ofTree parseTree).Exprs do
+                     match expr with
+                     | SynExpr.Sequential(expr1 = first) ->
+                         let line = first.Range.EndLine
+
+                         match starts.TryGetValue line with
+                         | true, column when column <= first.Range.StartColumn -> ()
+                         | _ -> starts.[line] <- first.Range.StartColumn
+                     | _ -> ()
+
+                 starts)
 
         // conditional defines do not matter here: an inactive `#if` branch is
         // tokenized as inactive code, and we only act on real semicolon tokens
@@ -233,7 +282,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // earlier one, makes the `;` a separator
                         let insideAttribute = depthEnteringLine > 0 || opened > closed
 
-                        if not (insideSeparatorList || insideAttribute) then
+                        // the next line of code, deeper than the expression the
+                        // `;` ends, would continue it once the `;` is gone
+                        let endsBeforeDeeperLine =
+                            match nextCodeIndent source lineIndex with
+                            | Some next ->
+                                let indent = lineText.Length - lineText.TrimStart().Length
+
+                                let start =
+                                    match sequenceStarts.Value.TryGetValue lineNumber with
+                                    | true, column -> min column indent
+                                    | _ -> indent
+
+                                next > start
+                            | None -> false
+
+                        if not (insideSeparatorList || insideAttribute || endsBeforeDeeperLine) then
                             let span =
                                 Range.mkRange fileName (Position.mkPos lineNumber blankStartedAt) semicolonEnd
 

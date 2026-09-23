@@ -13,7 +13,10 @@
 ///     parameters, so the typed check results enumerate every call site
 ///   - at least one call site is `fun x -> f x k` (otherwise the swap is
 ///     churn); the captured `k` must be a pure atom, because the rewrite
-///     `f k` evaluates it once instead of per call
+///     `f k` evaluates it once instead of per call — and for the same
+///     reason not a mutable (a `let mutable` of that name in the file, or
+///     typed IsMutable; under --api-changes, where the use's file has no
+///     typed results, a name that file does not bind at all)
 ///   - every other use is a direct application `f a b` where at least one
 ///     argument is a pure atom (swapping argument evaluation order must be
 ///     unobservable); anything else — partial application, pipe, use as a
@@ -118,9 +121,33 @@ let private (|FuncRange|_|) (e: SynExpr) =
     | SynExpr.LongIdent _ -> ValueSome e.Range
     | _ -> ValueNone
 
+/// The names a file binds `mutable` (module, local or class `let
+/// mutable`), and every name it binds at all.
+let private bindingNames (index: AstIndex.Index) =
+    let mutables = HashSet<string>()
+    let all = HashSet<string>()
+
+    for path, pat in index.Pats do
+        match pat with
+        | SynPat.Named(ident = SynIdent(ident = id)) ->
+            all.Add id.idText |> ignore
+
+            match path with
+            | SyntaxNode.SynBinding(SynBinding(isMutable = true)) :: _ -> mutables.Add id.idText |> ignore
+            | _ -> ()
+        | _ -> ()
+
+    mutables, all
+
 /// Every `f ...` application in the file, keyed by the end position of the
 /// function identifier so each typed use resolves with one lookup.
-let private collectApplications (parseTree: ParsedInput) =
+///
+/// `mayBeMutable` decides a captured identifier of `fun x -> f x k`: the
+/// lambda reads `k` on every call, the collapsed `f k` once, so a `k` that
+/// may be a `let mutable` (a same-file mutable binding of that name, or
+/// whatever the caller's typed or scope proof cannot clear) keeps its
+/// lambda.
+let private collectApplications (mayBeMutableIn: AstIndex.Index -> Ident -> bool) (parseTree: ParsedInput) =
     let apps = Dictionary<int * int, AppSite>()
     // `fun x -> f x k` sites: lambda range, the function's own range (so the
     // collapsed call keeps whatever qualification it was written with), and
@@ -130,6 +157,7 @@ let private collectApplications (parseTree: ParsedInput) =
     let key (r: range) = r.EndLine, r.EndColumn
 
     let index = AstIndex.ofTree parseTree
+    let mayBeMutable = mayBeMutableIn index
 
     // does any identifier expression inside `r` refer to `name`?
     let mentions (name: string) (r: range) =
@@ -171,6 +199,12 @@ let private collectApplications (parseTree: ParsedInput) =
                         dataArg.idText = x.idText
                         && isPureAtom captured
                         && not (mentions x.idText captured.Range)
+                        // read per call in the lambda, once in `f k`
+                        && not (
+                            match stripParens captured with
+                            | SynExpr.Ident k -> mayBeMutable k
+                            | _ -> false
+                        )
                         ->
                         lambdas.[key funcRange] <- (expr.Range, funcRange, captured)
                     | _ -> ()
@@ -380,7 +414,16 @@ let findApiChanges
                     let built =
                         fileLookup fileName
                         |> Option.map (fun ctx ->
-                            let apps, lambdas = collectApplications ctx.ParseTree
+                            // no typed results for the use's file here: a
+                            // captured name must be bound in that file, and
+                            // never `mutable`
+                            let apps, lambdas =
+                                collectApplications
+                                    (fun index ->
+                                        let mutables, all = bindingNames index
+                                        fun k -> mutables.Contains k.idText || not (all.Contains k.idText))
+                                    ctx.ParseTree
+
                             apps, lambdas, ctx.Source)
 
                     byFile.[fileName] <- built
@@ -417,7 +460,27 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         | candidates ->
 
             // collected only when the file actually has candidates
-            let apps, lambdas = collectApplications parseTree
+            let apps, lambdas =
+                collectApplications
+                    (fun index ->
+                        let mutables, _ = bindingNames index
+
+                        fun k ->
+                            mutables.Contains k.idText
+                            || (match OptionModule.symbolOfIdent check source k with
+                                | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+                                    (try
+                                        value.IsMutable
+                                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                         true)
+                                | Some(:? FSharpField as field) ->
+                                    (try
+                                        field.IsMutable
+                                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                         true)
+                                | _ -> false))
+                    parseTree
+
             let artifactsFor _ = Some(apps, lambdas, source)
 
             candidates

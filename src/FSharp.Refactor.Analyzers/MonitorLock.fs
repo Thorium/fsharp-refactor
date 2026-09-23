@@ -15,7 +15,10 @@
 /// Gates: single-argument Enter (the `(x, &taken)` overload carries
 /// protocol this rewrite would erase), the SAME lock expression text in
 /// Enter and Exit, the finally holding nothing but the Exit, own-line
-/// statements, and the Monitor entity typed-verified. A bare
+/// statements, the Monitor entity typed-verified, and a body a lambda can
+/// hold: no computation bind, no enclosing local mutable (FS0407), no
+/// `base` (FS0405), and no byref — an assigned byref/out parameter —
+/// Span or struct `this` (typed; FS0406). A bare
 /// Monitor.Enter with no try/finally at all is the note: the lock leaks
 /// on the first exception.
 ///
@@ -105,6 +108,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let containsBindLike (r: range) =
             bindLikeRanges |> Array.exists (fun b -> Range.rangeContainsRange r b)
 
+        // `base` inside the stretch: a closure cannot use it (FS0405)
+        let usesBase (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                Range.rangeContainsRange r e.Range
+                && (match e with
+                    | SynExpr.Ident id
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = id :: _)) -> id.idText = "base"
+                    | _ -> false))
+
         let localMutables =
             index.Exprs
             |> Array.collect (fun (_, e) ->
@@ -182,6 +195,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 && body.Range.EndLine < finallyLine
                                 && lineTailBlank body.Range
                                 && not (containsBindLike body.Range)
+                                // the body becomes a lambda: no `base` (FS0405),
+                                // and no byref, Span or struct `this` it would
+                                // capture — an assigned byref/out parameter
+                                // included (FS0406)
+                                && not (usesBase body.Range)
+                                && not (OptionModule.capturesByRefLike check index source body.Range)
                                 && not (spansDirective source e.Range)
                             then
                                 let indent = String.replicate enterExpr.Range.StartColumn " "

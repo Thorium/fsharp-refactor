@@ -15,6 +15,13 @@
 ///   - a literal containing `{`, `}`, or `%` leaves the chain alone: the
 ///     doubled escapes an interpolated string would need (`{{`, `%%`) read
 ///     worse than the concatenation they replace
+///   - not in a `[<Literal>]` binding (FS0267) or an attribute argument
+///     (FS0837): a `+` of literals is a constant there, an interpolated
+///     string is not
+///   - an identifier bound as a parameter without an annotation — curried,
+///     inside a tuple, a lambda's or a primary constructor's — keeps the
+///     chain: only the `+` types it as a string, and a hole would let it
+///     generalise (FS0034 against a signature file)
 ///
 /// Performance note: F# 8+ lowers a specifier-free interpolation with
 /// string-typed holes — the only shape this rule emits — to a single n-ary
@@ -52,21 +59,35 @@ type private Piece =
     /// `qualifiedMangledNameOfTyconRef tcref nm`). `%s` keeps the constraint.
     | TypedHole of string
 
-/// The parameters bound WITHOUT an annotation by the bindings and lambdas
-/// around a node: names whose string type may come from the chain alone.
+/// The parameters bound WITHOUT an annotation by the bindings, lambdas and
+/// primary constructors around a node: names whose string type may come
+/// from the chain alone. A tupled parameter list counts element by
+/// element — `(tcref: string, nm)` leaves `nm` as open as a curried one —
+/// and so does a primary constructor's (`type T(nm) = ...`).
 let private unannotatedParameters (path: SyntaxNode list) =
-    let bare (p: SynPat) =
+    let rec bare (p: SynPat) =
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-        | SynPat.Paren(SynPat.Named(ident = SynIdent(ident = id)), _) -> Some id.idText
-        | _ -> None
+        | SynPat.Named(ident = SynIdent(ident = id)) -> [ id.idText ]
+        | SynPat.Paren(pat = inner) -> bare inner
+        | SynPat.Tuple(elementPats = elements) -> elements |> List.collect bare
+        | _ -> []
+
+    let ofImplicitCtor (ctor: SynMemberDefn) =
+        match ctor with
+        | SynMemberDefn.ImplicitCtor(ctorArgs = args) -> bare args
+        | _ -> []
 
     path
     |> List.collect (fun node ->
         match node with
         | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats pats))) ->
-            pats |> List.choose bare
-        | SyntaxNode.SynExpr(SynExpr.Lambda(parsedData = Some(pats, _))) -> pats |> List.choose bare
+            pats |> List.collect bare
+        | SyntaxNode.SynExpr(SynExpr.Lambda(parsedData = Some(pats, _))) -> pats |> List.collect bare
+        | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = repr; implicitConstructor = ctor)) ->
+            (ctor |> Option.toList |> List.collect ofImplicitCtor)
+            @ (match repr with
+               | SynTypeDefnRepr.ObjectModel(members = members) -> members |> List.collect ofImplicitCtor
+               | _ -> [])
         | _ -> [])
     |> Set.ofList
 
@@ -126,6 +147,29 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
+        // attribute arguments must be constants, and an interpolated string
+        // is not one (FS0837)
+        let attributeArgs =
+            lazy
+                (index.Attributes
+                 |> Array.map (fun (_, attr: SynAttribute) -> attr.ArgExpr.Range))
+
+        // ...nor is it a [<Literal>]'s value (FS0267)
+        let insideLiteral (path: SyntaxNode list) =
+            path
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynBinding(SynBinding(attributes = attrs)) ->
+                    attrs
+                    |> List.exists (fun list ->
+                        list.Attributes
+                        |> List.exists (fun a ->
+                            match (List.last a.TypeName.LongIdent).idText with
+                            | "Literal"
+                            | "LiteralAttribute" -> true
+                            | _ -> false))
+                | _ -> false)
+
         [
             for path, expr in index.Exprs do
                 match expr with
@@ -135,6 +179,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     // string + translates in queries; String.Concat may not
                     && not (insideQuotedCode path)
                     && isSingleLine expr.Range
+                    && not (insideLiteral path)
+                    && not (
+                        attributeArgs.Value
+                        |> Array.exists (fun r -> Range.rangeContainsRange r expr.Range)
+                    )
                     ->
                     let operands = collectOperands [] expr
 

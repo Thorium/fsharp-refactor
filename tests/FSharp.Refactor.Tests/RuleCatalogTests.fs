@@ -173,6 +173,7 @@ let ``Rules.md priority column matches the catalog's priority set`` () =
     Assert.True(missing.IsEmpty, $"the catalog marks as priority but Rules.md does not: %A{missing}")
     Assert.True(extra.IsEmpty, $"Rules.md marks as priority but the catalog does not: %A{extra}")
 
+let private pLpNRegex = Regex @"[^\p{L}\p{N} -]"
 // ---- Rules.md: the section anchors ----
 
 /// GitHub's heading slug: lowercase, every character that is neither a
@@ -181,7 +182,7 @@ let ``Rules.md priority column matches the catalog's priority set`` () =
 /// `### FR0103 — idiom` heading answers to `#fr0103--idiom`, never to
 /// `#fr0103`.
 let private githubSlug (heading: string) =
-    Regex.Replace(heading.ToLowerInvariant(), @"[^\p{L}\p{N} -]", "").Replace(' ', '-')
+    pLpNRegex.Replace(heading.ToLowerInvariant(), "").Replace(' ', '-')
 
 [<Fact>]
 let ``the help link of every rule lands on its Rules.md section`` () =

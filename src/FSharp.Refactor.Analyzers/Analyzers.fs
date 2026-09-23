@@ -1232,8 +1232,12 @@ let conversionMoveCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0005 CeStrip ----
 
-let private ceStripMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    CeStrip.find parseTree source
+let private ceStripMessages
+    (check: FSharpCheckFileResults option)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
+    CeStrip.findWith check parseTree source
     |> List.map (fun s ->
         let message =
             match s.Kind with
@@ -1251,12 +1255,12 @@ let private ceStripMessages (parseTree: ParsedInput) (source: ISourceText) : Mes
 [<EditorAnalyzer("CeStrip", "Strip computation-expression wrapping that does nothing", HelpBase)>]
 let ceStripEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0005" "CeStrip" (fun () ->
-        ceStripMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        ceStripMessages ctx.CheckFileResults ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("CeStrip", "Strip computation-expression wrapping that does nothing", HelpBase)>]
 let ceStripCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0005" "CeStrip" (fun () ->
-        ceStripMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        ceStripMessages (Some ctx.CheckFileResults) ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0006 ActivePattern ----
 
@@ -1343,10 +1347,20 @@ let tupleParamsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 /// `Result.defaultValue`, `defaultWith`, `isOk` and `isError` arrived in
 /// FSharp.Core 9: on Giraffe's example project (FSharp.Core 6) every such
 /// rewrite was "The value, constructor, namespace or type 'defaultValue'
-/// is not defined" and rolled back. `map`, `bind`, `mapError` and `iter`
-/// are older and stay.
+/// is not defined" and rolled back. `iter` (ResultModule.Iterate) is one of
+/// the same set: FSharp.Core 6.0.0-6.0.5 have only `map`, `bind` and
+/// `mapError`, and the set landed in 6.0.6 — which shares its assembly
+/// version 6.0.0.0 with them, so the major-version gate cannot tell them
+/// apart and holds `iter` to the same threshold. `map`, `bind` and
+/// `mapError` are older and stay.
 let private needsCore9 (target: string) =
-    [ "Result.defaultValue"; "Result.defaultWith"; "Result.isOk"; "Result.isError" ]
+    [
+        "Result.defaultValue"
+        "Result.defaultWith"
+        "Result.isOk"
+        "Result.isError"
+        "Result.iter"
+    ]
     |> List.exists target.Contains
 
 let private resultModuleMessages
@@ -1753,12 +1767,13 @@ let regexValidityCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private structDuMessages
     (check: FSharpCheckFileResults option)
+    (sharedFieldNames: bool)
     (scopeOpen: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     : Message list =
     widened scopeOpen (fun scope ->
-        StructDu.findWith check scope parseTree source
+        StructDu.findWith check sharedFieldNames scope parseTree source
         |> List.map (fun s ->
             hint
                 "FR0016"
@@ -1775,6 +1790,7 @@ let structDuEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0016" "StructDu" (fun () ->
         structDuMessages
             ctx.CheckFileResults
+            (langVersionAtLeast 9.0 ctx.ProjectOptions)
             (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
@@ -1784,6 +1800,7 @@ let structDuCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0016" "StructDu" (fun () ->
         structDuMessages
             (Some ctx.CheckFileResults)
+            (langVersionAtLeast 9.0 ctx.ProjectOptions)
             (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
@@ -2491,8 +2508,17 @@ let stringUnionApiWorld
         SourceFiles = List.ofArray sourceFiles
     }
 
-/// The FR0157 messages for a file, from a world the host built.
-let stringUnionMessagesIn (world: StringUnion.World) (parseTree: ParsedInput) (source: ISourceText) : Message list =
+/// The FR0157 messages for a file, from a world the host built. A rewrite
+/// that retypes a record field carries its fixes only where
+/// `offerFieldSlots` (the editor): the record's `%A` text and structural
+/// order change with the field, which no scan fully rules out, so a sweep
+/// reports it without a fix.
+let stringUnionMessagesIn
+    (offerFieldSlots: bool)
+    (world: StringUnion.World)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
     // the cheap syntactic question first: most files hold no match on two
     // string literals, and the world's index is not built for them
     (if StringUnion.hasCandidates parseTree then
@@ -2515,11 +2541,22 @@ let stringUnionMessagesIn (world: StringUnion.World) (parseTree: ParsedInput) (s
 
         let crossFile = if files > 1 then $" ({files} files)" else ""
 
+        let withheld = s.FieldSlot && not offerFieldSlots
+
+        let fieldNote =
+            if withheld then
+                " A record field changes type, and with it the record's printed text and sort order: the editor offers the rewrite, a sweep does not apply it."
+            else
+                ""
+
         hint
             "FR0157"
-            $"This value can only ever be one of {cases}: a union '{s.Name}' with a case for each, and a ToString returning the original text, names them and makes the match exhaustive{crossFile}.{shadowed}"
+            $"This value can only ever be one of {cases}: a union '{s.Name}' with a case for each, and a ToString returning the original text, names them and makes the match exhaustive{crossFile}.{shadowed}{fieldNote}"
             s.Range
-            (s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
+            (if withheld then
+                 []
+             else
+                 s.Edits |> List.map (fun e -> fix e.Range e.Original e.Replacement)))
 
 
 [<EditorAnalyzer("StringUnion", "Turn a closed set of matched string literals into a union", HelpBase)>]
@@ -2536,7 +2573,7 @@ let stringUnionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
                     ctx.ProjectOptions
                     (leafScopeOpen ctx.FileName ctx.ProjectOptions)
 
-            stringUnionMessagesIn world ctx.ParseFileResults.ParseTree ctx.SourceText
+            stringUnionMessagesIn true world ctx.ParseFileResults.ParseTree ctx.SourceText
             // the editor applies a fix to the file in the buffer: a
             // rewrite that reaches another file is reported without it
             |> List.map (fun m ->
@@ -2568,7 +2605,7 @@ let stringUnionCliAnalyzer (ctx: CliContext) : Async<Message list> =
                     ctx.ProjectOptions
                     (leafScopeOpen ctx.FileName ctx.ProjectOptions)
 
-            stringUnionMessagesIn world ctx.ParseFileResults.ParseTree ctx.SourceText)
+            stringUnionMessagesIn false world ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0158 IndexScan ----
 
@@ -5812,8 +5849,8 @@ let patternCleanupsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0021 InterpToString ----
 
-let private interpToStringMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    InterpToString.find parseTree source
+let private interpToStringMessages check (parseTree: ParsedInput) (source: ISourceText) : Message list =
+    InterpToString.find check parseTree source
     |> List.map (fun s ->
         hint
             "FR0021"
@@ -5824,12 +5861,12 @@ let private interpToStringMessages (parseTree: ParsedInput) (source: ISourceText
 [<EditorAnalyzer("InterpToString", "Drop redundant ToString() in interpolated strings", HelpBase)>]
 let interpToStringEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0021" "InterpToString" (fun () ->
-        interpToStringMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        interpToStringMessages ctx.CheckFileResults ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("InterpToString", "Drop redundant ToString() in interpolated strings", HelpBase)>]
 let interpToStringCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0021" "InterpToString" (fun () ->
-        interpToStringMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        interpToStringMessages (Some ctx.CheckFileResults) ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0101 IndexedLoop ----
 
@@ -5837,8 +5874,13 @@ let private indexedLoopMessages
     (parseTree: ParsedInput)
     (source: ISourceText)
     (gate: IndexedLoop.SourceGate)
+    (check: FSharpCheckFileResults option)
     : Message list =
-    IndexedLoop.findWith parseTree source gate
+    // the source must be PROVEN to enumerate in index order: without
+    // check results nothing is
+    (match check with
+     | Some check -> IndexedLoop.findChecked parseTree source gate check
+     | None -> [])
     |> List.map (fun s ->
         hint
             "FR0101"
@@ -5861,7 +5903,8 @@ let indexedLoopEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
         indexedLoopMessages
             ctx.ParseFileResults.ParseTree
             ctx.SourceText
-            (indexedLoopGate ctx.ProjectOptions ctx.CheckFileResults))
+            (indexedLoopGate ctx.ProjectOptions ctx.CheckFileResults)
+            ctx.CheckFileResults)
 
 [<CliAnalyzer("IndexedLoop", "Index-based loops that only ever index the bound collection", HelpBase)>]
 let indexedLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
@@ -5869,7 +5912,8 @@ let indexedLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
         indexedLoopMessages
             ctx.ParseFileResults.ParseTree
             ctx.SourceText
-            (indexedLoopGate ctx.ProjectOptions (Some ctx.CheckFileResults)))
+            (indexedLoopGate ctx.ProjectOptions (Some ctx.CheckFileResults))
+            (Some ctx.CheckFileResults))
 
 // ---- FR0102 ListIndexing ----
 
@@ -6462,6 +6506,65 @@ let rangeMapEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let rangeMapCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0173" "RangeMap" (fun () ->
         rangeMapMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+// ---- FR0174 QueryCopy ----
+
+let private queryCopyMessages
+    (offerFixes: bool)
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    // the pipeline shape is the author's visible choice of where the rows
+    // come into memory; a knob takes it too:
+    //     { "FR0174": { "pipelines": true } }
+    let pipelines =
+        Configuration.parameterBool fileName "FR0174" "QueryCopy" "pipelines" false
+
+    QueryCopy.find pipelines parseTree source checkResults
+    |> List.map (fun (s: QueryCopy.Suggestion) ->
+        // a string, decimal, date or nullable comparison is translated but
+        // answered under the server's rules (collation, scale, NULL): the
+        // editor offers the move, a sweep leaves the note
+        // a chain whose new type (List where it was IEnumerable) could bind
+        // differently is the editor's offer too
+        let fixes =
+            if s.Fixable && ((s.Fidelity = QueryCopy.Exact && s.TypeStable) || offerFixes) then
+                [ fix s.Range s.OriginalText s.ReplacementText ]
+            else
+                []
+
+        let caveat =
+            (match s.Fidelity, s.Fixable with
+             | QueryCopy.Near, _ ->
+                 " The query compares a string, decimal, date or nullable column under its own rules (collation, scale, NULL), so check the translation first; a sweep leaves this one alone."
+             | QueryCopy.Exact, false -> " (`open System.Linq` spells the query's `Where`/`Select`.)"
+             | QueryCopy.Exact, true -> "")
+            + (if s.TypeStable then
+                   ""
+               else
+                   " The chain becomes a List where it was an IEnumerable, so check what it binds to; a sweep leaves this one alone.")
+
+        hint
+            "FR0174"
+            $"'{s.CopyName}' loads every row of the query before '{s.Stages}' runs in memory: run it in the query and copy after, so the database filters and sends only what is asked for.{caveat}"
+            s.Range
+            fixes)
+
+// the rewrite moves the stages' own text, so a comment inside the moved
+// span would move with it - but one between the copy and the stages goes
+[<EditorAnalyzer("QueryCopy", "A query copied before Where/Select runs them in the query", HelpBase)>]
+let queryCopyEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0174" "QueryCopy" (fun () ->
+        whenChecked ctx (queryCopyMessages true ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("QueryCopy", "A query copied before Where/Select runs them in the query", HelpBase)>]
+let queryCopyCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0174" "QueryCopy" (fun () ->
+        queryCopyMessages false ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0169 SeqEnumeratedTwice ----

@@ -78,6 +78,7 @@ let private sizeOf (t: SynType) =
     | _ -> lastName t |> Option.bind sizes.TryFind
 
 /// CR0081's cap: a struct bigger than this copies slower than it allocates.
+[<Literal>]
 let inlineByteCap = 32
 
 /// Do these field types fit the cap? A type the table does not know
@@ -94,10 +95,10 @@ let rec private operandIdent (e: SynExpr) =
     match e with
     | SynExpr.Paren(expr = inner)
     | SynExpr.Typed(expr = inner) -> operandIdent inner
-    | SynExpr.Ident id -> Some id
+    | SynExpr.Ident id -> ValueSome id
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-    | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
-    | _ -> None
+    | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
+    | _ -> ValueNone
 
 /// The operands the hostile shapes put a value in: `box e`, `lock e`,
 /// `isNull e`, `e :> T`, `e = null`, `null = e`, `ReferenceEquals(a, b)`.
@@ -154,10 +155,10 @@ let private applicationOf (e: SynExpr) =
 /// The identifier a callee spells: `f`, `x.M`, `Console.WriteLine`.
 let private calleeIdent (head: SynExpr) =
     match head with
-    | SynExpr.Ident id -> Some id
+    | SynExpr.Ident id -> ValueSome id
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-    | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
-    | _ -> None
+    | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
+    | _ -> ValueNone
 
 /// The type names a `Unchecked.defaultof<T>` spells anywhere in the file:
 /// null for the class, a zeroed value for the struct - a sentinel the code
@@ -186,7 +187,7 @@ let private hostileTypeNames
     : Set<string> =
     let typeOfOperand (operand: SynExpr) =
         match operandIdent operand with
-        | Some id ->
+        | ValueSome id ->
             match OptionModule.symbolOfIdent check source id with
             | Some(:? FSharpMemberOrFunctionOrValue as value) ->
                 (try
@@ -199,7 +200,7 @@ let private hostileTypeNames
                  with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                      None)
             | _ -> None
-        | None -> None
+        | ValueNone -> None
 
     // the implicit boxing: a value handed to a parameter typed `obj`
     // (`Console.WriteLine p`, `String.Format("{0}", p)`, `x.Equals p`), to
@@ -217,15 +218,15 @@ let private hostileTypeNames
             let head, args = applicationOf e
 
             match calleeIdent head with
-            | Some callee when
+            | ValueSome callee when
                 printfFamily.Contains callee.idText
                 && (match args with
                     | SynExpr.Const(SynConst.String(text = fmt), _) :: _ -> fmt.Contains "%A" || fmt.Contains "%O"
                     | _ -> false)
                 ->
                 List.tail args
-            | Some callee when callee.idText = "string" || callee.idText = "hash" -> args
-            | Some callee ->
+            | ValueSome callee when callee.idText = "string" || callee.idText = "hash" -> args
+            | ValueSome callee ->
                 match OptionModule.symbolOfIdent check source callee with
                 | Some(:? FSharpMemberOrFunctionOrValue as mfv) ->
                     (try
@@ -254,7 +255,7 @@ let private hostileTypeNames
                      with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                          [])
                 | _ -> []
-            | None -> []
+            | ValueNone -> []
         | _ -> []
 
     index.Exprs

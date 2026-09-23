@@ -95,6 +95,22 @@ type TryAddSuggestion =
 let private tryAddTypes =
     set [ "System.Collections.Generic.Dictionary`2"; ConcurrentDictionaryType ]
 
+/// Does this compilation's reference set give Dictionary<'K,'V> a TryAdd?
+/// (.NET Core 2.0+ — absent on netstandard2.0/net48, where the fix would
+/// not compile. ConcurrentDictionary has had one since .NET 4.) The same
+/// capability probe as FR0053's toHexStringAvailable.
+let private dictionaryTryAddAvailable (check: FSharpCheckFileResults) =
+    check.ProjectContext.GetReferencedAssemblies()
+    |> Seq.exists (fun assembly ->
+        try
+            match assembly.Contents.FindEntityByPath [ "System"; "Collections"; "Generic"; "Dictionary`2" ] with
+            | Some entity ->
+                entity.MembersFunctionsAndValues
+                |> Seq.exists (fun m -> m.LogicalName = "TryAdd")
+            | None -> false
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false)
+
 /// `container.[key] <- value` or F# 6 `container[key] <- value`.
 [<return: Struct>]
 let private (|IndexerSet|_|) (e: SynExpr) =
@@ -205,6 +221,8 @@ let private containerType (source: ISourceText) (check: FSharpCheckFileResults) 
 let private containerTypeName (source: ISourceText) (check: FSharpCheckFileResults) (containerIds: Ident list) =
     containerType source check containerIds |> Option.bind fullNameOf
 
+let private bvaluebRegex = Regex @"\bvalue\b"
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
     let containerTypeName = containerTypeName source check
@@ -264,7 +282,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 // `value` becomes the found-arm's binder; the fallthrough
                 // arm binds nothing, but the inline emission splices both
                 // texts, so the inline path keeps the historical check
-                Regex.IsMatch(textOfRange source thenExpr.Range, @"\bvalue\b")
+                bvaluebRegex.IsMatch(textOfRange source thenExpr.Range)
                 || (elseIsInline && Regex.IsMatch(textOfRange source elseExpr.Range, @"\bvalue\b"))
 
             if not thenUses.IsEmpty && elseUses.IsEmpty && not mentionsValue then
@@ -385,10 +403,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 /// d.[k] <- v` becomes a single `d.TryAdd(k, v) |> ignore`. On
 /// ConcurrentDictionary the original is a race; on Dictionary it is a double
 /// lookup. The value must be a pure atom — TryAdd evaluates it always, where
-/// the original evaluated it only when the key was absent.
+/// the original evaluated it only when the key was absent. A Dictionary
+/// needs a framework whose Dictionary has TryAdd (not net48 or
+/// netstandard2.0), asked of the compilation's own references.
 let findTryAdd (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : TryAddSuggestion list =
     let suggestions = ResizeArray<TryAddSuggestion>()
     let containerTypeName = containerTypeName source check
+    let dictionaryTryAdd = lazy (dictionaryTryAddAvailable check)
 
     let collector =
         { new SyntaxCollectorBase() with
@@ -409,7 +430,10 @@ let findTryAdd (parseTree: ParsedInput) (source: ISourceText) (check: FSharpChec
                     && textOfRange source setKey.Range = textOfRange source keyExpr.Range
                     ->
                     match containerTypeName containerIds with
-                    | Some typeName when tryAddTypes.Contains typeName ->
+                    | Some typeName when
+                        tryAddTypes.Contains typeName
+                        && (typeName = ConcurrentDictionaryType || dictionaryTryAdd.Value)
+                        ->
                         let replacement =
                             sprintf
                                 "%s.TryAdd(%s, %s) |> ignore"

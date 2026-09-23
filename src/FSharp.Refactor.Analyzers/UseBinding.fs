@@ -31,6 +31,12 @@
 ///     scope: the leak is worth pointing out, the rewrite is the author's
 ///     call, and the note says where the value went
 ///
+/// No fix (a note) when the scope after the binding calls an enclosing
+/// function by name (`let rec pump n = ... pump (n - 1)`, an agent's
+/// `return! loop ()`): `use` puts that call inside try/finally, so it is
+/// no longer a tail call (a stack overflow at depth) and every level keeps
+/// its resource open until the recursion unwinds.
+///
 /// Skips entirely when the scope already calls `x.Dispose()`, `x.Close()`
 /// on a stream, writer or socket, or `(x :> IDisposable).Dispose()` — that
 /// is manual management, not a leak. Skips disposables that own no
@@ -88,6 +94,11 @@ type Destination =
     /// the binding sits in a computation expression whose builder defines
     /// no `Using`, so `use` cannot bind it there (FS0708)
     | NoBuilderUsing
+    /// the scope after the binding calls the enclosing function again
+    /// (`pump (n - 1)`, `return! loop ()`): `use` would put that call in
+    /// a try/finally — no tail call, and every level holds its resource
+    /// until the whole recursion unwinds
+    | RecursiveScope of functionName: string
     /// something this rule cannot read
     | Unknown
 
@@ -127,6 +138,8 @@ let describeEscape (s: Suggestion) =
         $"its token is handed to '%s{callee}', which may start work that outlives this scope (a background Async.Start, a stored task), and disposing the source under it would cancel or fault that work"
     | Some Destination.NoBuilderUsing ->
         "it sits in a computation expression whose builder defines no 'Using', so 'use' cannot bind it there"
+    | Some(Destination.RecursiveScope f) ->
+        $"its scope calls '%s{f}' recursively, and 'use' would wrap that call in try/finally: no tail call any more, and every level keeps its resource open until the recursion unwinds"
     | Some Destination.Unknown
     | None -> "it also escapes this scope (passed, stored, or captured)"
 
@@ -1839,6 +1852,34 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 | Some(Some builder) -> builderDefinesUsing check source builder
                                 | Some None -> false
 
+                            // an enclosing function the scope calls again: the
+                            // recursive call would sit inside `use`'s
+                            // try/finally — no tail call, every level's
+                            // resource held until the recursion unwinds
+                            let recursiveCall =
+                                declPath
+                                |> List.tryPick (fun node ->
+                                    match node with
+                                    | SyntaxNode.SynBinding(SynBinding(
+                                        headPat = SynPat.LongIdent(
+                                            longDotId = SynLongIdent(id = ids); argPats = SynArgPats.Pats(_ :: _)))) when
+                                        not ids.IsEmpty
+                                        ->
+                                        let f = (List.last ids).idText
+
+                                        let called =
+                                            index.Exprs
+                                            |> Array.exists (fun (_, e) ->
+                                                Range.rangeContainsRange body.Range e.Range
+                                                && (match e with
+                                                    | SynExpr.Ident id -> id.idText = f
+                                                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = callIds)) ->
+                                                        (List.last callIds).idText = f
+                                                    | _ -> false))
+
+                                        if called then Some f else None
+                                    | _ -> None)
+
                             let destinations =
                                 escapes
                                 |> List.choose (fun e ->
@@ -1884,6 +1925,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     && inFlight.IsNone
                                     && tokenHanded.IsNone
                                     && builderSupportsUse
+                                    && recursiveCall.IsNone
 
                                 {
                                     Range = letRange
@@ -1902,6 +1944,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             Some(Destination.TokenHanded tokenHanded.Value)
                                         elif inResult then
                                             Some Destination.ReadInResult
+                                        elif recursiveCall.IsSome then
+                                            Some(Destination.RecursiveScope recursiveCall.Value)
                                         else
                                             Some Destination.NoBuilderUsing
                                     Context =

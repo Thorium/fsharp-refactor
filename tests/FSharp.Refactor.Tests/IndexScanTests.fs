@@ -69,3 +69,11 @@ let ``a condition reading a Span parameter cannot move into the local function``
         findIn
             "module T\nopen System\nlet skipBlanks (s: ReadOnlySpan<char>) =\n    let mutable i = 0\n    while i < s.Length && s.[i] = ' ' do\n        i <- i + 1\n    i"
     )
+
+[<Fact>]
+let ``a struct member's primary-constructor value stays out of the local function`` () =
+    // `limit` is a field of the struct's `this`, which the `let rec` cannot capture: FS0406
+    Assert.Empty(
+        findIn
+            "module T\n[<Struct>]\ntype S(limit: int) =\n    member _.Scan(xs: int[]) =\n        let mutable i = 0\n        while i < limit && xs.[i] = 0 do\n            i <- i + 1\n        i"
+    )

@@ -13,11 +13,17 @@
 ///     .MaxValue — and Now and UtcNow never mix on one field (DateTime
 ///     comparisons ignore Kind; mixing was already a bug, and fixing it
 ///     silently is still a behavior change to bail on)
-///   - every read is a parity member (Year..Second, Add*/Subtract,
-///     DayOfWeek...), a comparison against the same field on another
-///     value, or a subtraction of two field reads. `.Date` returns
-///     DateTime (type escapes), and ToString formats differently — both
-///     bail, as does any dataflow the scan cannot follow.
+///   - every read is a scalar parity member (Year..Second, DayOfWeek,
+///     Ticks, TimeOfDay...), a comparison against the same field on
+///     another value, or a subtraction of two field reads. `Equals`,
+///     `CompareTo` and `Subtract` count only with the same field as their
+///     argument (`Equals(DateTime.MinValue)` is always false on a
+///     DateTimeOffset, `CompareTo` throws); an `Add*` result is a
+///     DateTimeOffset now, so it counts only when a scalar member reads
+///     it at once (`r.Seen.AddDays(1.0).Year`), never where it escapes
+///     into `string`, a ToString or a return. `.Date` returns DateTime
+///     (type escapes), and ToString formats differently — both bail, as
+///     does any dataflow the scan cannot follow.
 ///
 /// OFF by default: even inside the envelope this is a modernization with
 /// serialization-shape consequences the repository owner should opt into
@@ -72,6 +78,47 @@ let private parityMembers =
             "CompareTo"
             "Equals"
         ]
+
+/// The parity members whose result is no date: an int, a TimeSpan, a
+/// DayOfWeek - the same value and type on both clocks, wherever it goes.
+let private scalarMembers =
+    set
+        [
+            "Year"
+            "Month"
+            "Day"
+            "Hour"
+            "Minute"
+            "Second"
+            "Millisecond"
+            "DayOfWeek"
+            "DayOfYear"
+            "Ticks"
+            "TimeOfDay"
+        ]
+
+/// The parity members that return the DATE: a DateTimeOffset after the
+/// migration, which prints, formats and types differently from the
+/// DateTime it was - sound only where a scalar member reads it at once.
+let private dateMembers =
+    set
+        [
+            "AddDays"
+            "AddHours"
+            "AddMinutes"
+            "AddSeconds"
+            "AddMilliseconds"
+            "AddTicks"
+            "AddMonths"
+            "AddYears"
+            "Add"
+        ]
+
+/// The parity members that take the other operand as an ARGUMENT whose
+/// type decides the meaning: `Equals(obj)` is false for a boxed DateTime,
+/// `CompareTo(obj)` throws on one, and `Subtract(DateTime)` converts it
+/// through the local offset - sound only against the same field.
+let private operandMembers = set [ "Equals"; "CompareTo"; "Subtract" ]
 
 let private comparisonOps =
     set
@@ -222,22 +269,93 @@ let classifierFor
             match nodeAt u.Range with
             | None -> None
             | Some(path, access) ->
-                // r.Seen.Year — the parity member rides the same LongIdent
-                let viaParityMember =
-                    match access with
-                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
-                        let last = (List.last ids).idText
-                        parityMembers.Contains last && last <> fieldName
+                // the member read right after the field, `memberExpr` the
+                // expression whose value it is, `above` its ancestors: a
+                // scalar goes anywhere, a date only into a scalar read at
+                // once, an operand member only against the same field
+                let memberUse (m: string) (memberExpr: SynExpr) (above: SyntaxNode list) =
+                    let rec unparen (nodes: SyntaxNode list) =
+                        match nodes with
+                        | SyntaxNode.SynExpr(SynExpr.Paren _) :: rest -> unparen rest
+                        | _ -> nodes
+
+                    if scalarMembers.Contains m then
+                        Some([], [])
+                    else
+                        match above with
+                        | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = arg)) :: rest when
+                            Range.equals f.Range memberExpr.Range
+                            ->
+                            if operandMembers.Contains m then
+                                if isSameFieldRead arg then Some([], []) else None
+                            elif dateMembers.Contains m then
+                                match unparen rest with
+                                | SyntaxNode.SynExpr(SynExpr.DotGet(longDotId = SynLongIdent(id = first :: _))) :: _ when
+                                    scalarMembers.Contains first.idText
+                                    ->
+                                    Some([], [])
+                                | _ -> None
+                            else
+                                None
+                        | _ -> None
+
+                // the field as the ARGUMENT of an operand member on the same
+                // field: `a.Seen.Equals(b.Seen)` vouches for `b.Seen` too
+                let asOperand =
+                    match path with
+                    | SyntaxNode.SynExpr(SynExpr.Paren _) :: SyntaxNode.SynExpr(SynExpr.App(
+                        isInfix = false
+                        funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = fids))
+                        argExpr = arg)) :: _
+                    | SyntaxNode.SynExpr(SynExpr.App(
+                        isInfix = false
+                        funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = fids))
+                        argExpr = arg)) :: _ when
+                        fids.Length >= 3
+                        && Range.rangeContainsRange arg.Range access.Range
+                        && Range.equals (stripParens arg).Range access.Range
+                        ->
+                        let m = List.last fids
+                        let owner = fids.[fids.Length - 2]
+
+                        operandMembers.Contains m.idText
+                        && owner.idText = fieldName
+                        && isFieldUseAt (owner.idRange.StartLine, owner.idRange.StartColumn)
                     | _ -> false
 
-                if viaParityMember then
-                    Some([], [])
-                else
+                // r.Seen.Year — the member rides the same LongIdent, right
+                // after the field
+                let viaMember =
+                    match access with
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                        match
+                            ids
+                            |> List.tryFindIndex (fun id ->
+                                Range.rangeContainsRange u.Range id.idRange && id.idText = fieldName)
+                        with
+                        | Some i when i + 1 < ids.Length ->
+                            let m = ids.[i + 1].idText
+
+                            if i + 2 < ids.Length then
+                                // read further on: only a scalar's value is safe to
+                                // walk (`r.Seen.Ticks.ToString()` is an int64's)
+                                Some(if scalarMembers.Contains m then Some([], []) else None)
+                            else
+                                Some(memberUse m access path)
+                        | _ -> None
+                    | _ -> None
+
+                match viaMember with
+                | Some result -> result
+                | None when asOperand -> Some([], [])
+                | None ->
                     match path with
-                    | SyntaxNode.SynExpr(SynExpr.DotGet(longDotId = SynLongIdent(id = [ m ]))) :: _ when
+                    | SyntaxNode.SynExpr(SynExpr.DotGet(longDotId = SynLongIdent(id = m :: more)) as dotGet) :: above when
                         parityMembers.Contains m.idText
                         ->
-                        Some([], [])
+                        if more.IsEmpty then memberUse m.idText dotGet above
+                        elif scalarMembers.Contains m.idText then Some([], [])
+                        else None
                     // a.Seen < b.Seen / a.Seen - b.Seen: both operands
                     // migrate together, so the comparison stays sound
                     | SyntaxNode.SynExpr(SynExpr.App(funcExpr = opE; argExpr = lhs)) :: rest when

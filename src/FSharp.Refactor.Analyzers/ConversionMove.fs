@@ -24,6 +24,14 @@
 /// (`rs.Remove x`) and a callback that so much as names the source are
 /// refused the same way (see callbackMayWrite).
 ///
+/// A `Seq.*` conversion over a source not proven materialised (a list or
+/// array literal, an eager module stage, or typed as a list, array,
+/// ResizeArray, set, map, dictionary ...) may be LAZY — `File.ReadLines`,
+/// a `seq { }` — and `Seq.toList` ran it to completion before the first
+/// callback. Moved, the source's effects interleave with the callback's,
+/// so a callback (iter, map, filter, choose alike) must then be proven
+/// pure (callsOnlyCore); parse-only, such a shape is refused.
+///
 /// Safety rules: both pipeline stages single-line; the conversion must be a
 /// bare `Module.function`; the operation's head must be exactly the
 /// conversion's target module + a whitelisted operation; argument text is
@@ -459,6 +467,66 @@ let private alreadyMaterialised (targetModule: string) (sourceExpr: SynExpr) =
     | PipeApp(_, lastStage) -> producesTarget (stripParens lastStage)
     | e -> producesTarget e
 
+/// The concrete collections whose enumeration reads memory and runs
+/// nothing: once a value is typed as one of these, `Seq.toList` over it
+/// was a copy, not the point where a lazy source ran.
+let private materialisedTypes =
+    set
+        [
+            "Microsoft.FSharp.Collections.FSharpList`1"
+            "Microsoft.FSharp.Collections.FSharpSet`1"
+            "Microsoft.FSharp.Collections.FSharpMap`2"
+            "System.Collections.Generic.List`1"
+            "System.Collections.Generic.HashSet`1"
+            "System.Collections.Generic.Dictionary`2"
+            "System.Collections.Generic.SortedSet`1"
+            "System.Collections.Generic.SortedDictionary`2"
+            "System.Collections.Generic.Queue`1"
+            "System.Collections.Generic.Stack`1"
+            "System.Collections.Generic.LinkedList`1"
+            "System.Collections.Immutable.ImmutableArray`1"
+            "System.Collections.Immutable.ImmutableList`1"
+            "System.String"
+        ]
+
+/// Is a `Seq.*` conversion's source PROVABLY already materialised — a
+/// list or array literal, an eager module's stage, or (typed) a name whose
+/// type is an array or one of `materialisedTypes`? Anything else may be a
+/// lazy sequence (`File.ReadLines`, a `seq { }`, a `Seq.map` pipeline)
+/// whose enumeration `Seq.toList` ran to completion BEFORE the operation's
+/// callback, and the moved operation would interleave the two.
+let private sourceMaterialised (check: FSharpCheckFileResults option) (source: ISourceText) (sourceExpr: SynExpr) =
+    let typedMaterialised (id: Ident) =
+        match check with
+        | Some c ->
+            match OptionModule.symbolOfIdent c source id with
+            | Some(:? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as value) ->
+                (try
+                    let t = OptionModule.stripAbbreviations value.FullType
+
+                    t.HasTypeDefinition
+                    && (t.TypeDefinition.IsArrayType
+                        || t.TypeDefinition.TryFullName |> Option.exists materialisedTypes.Contains)
+                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                     false)
+            | _ -> false
+        | None -> false
+
+    match stripParens sourceExpr with
+    | SynExpr.ArrayOrList _
+    | SynExpr.ArrayOrListComputed _ -> true
+    | SynExpr.Ident id -> typedMaterialised id
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> typedMaterialised (List.last ids)
+    | PipeApp(_, stage) ->
+        match headModuleFunc stage with
+        | ValueSome(m, _, _) -> m <> "String" && eagerModules.Contains m
+        | ValueNone -> false
+    | SynExpr.App(isInfix = false) as e ->
+        match headModuleFunc e with
+        | ValueSome(m, _, _) -> m <> "String" && eagerModules.Contains m
+        | ValueNone -> false
+    | _ -> false
+
 /// Find pipeline segments `conv |> Module.op args` that can be rewritten.
 /// The check results, where the caller has them, prove a source pure under
 /// a short-circuiting consumer; without them only the syntactic shapes
@@ -498,6 +566,20 @@ let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (so
                                             | ValueNone -> None
 
                                         callbacks |> List.forall (callbackMayWrite source path sourceName >> not))
+                                    // a lazy source ran to completion before the
+                                    // callback; moved, the two interleave
+                                    // (`File.ReadLines` still open while the
+                                    // callback appends to the file), so the
+                                    // callback must be provably pure unless the
+                                    // source is provably materialised
+                                    && (sourceModule <> "Seq"
+                                        || sourceMaterialised check source sourceExpr
+                                        || (match check with
+                                            | Some c ->
+                                                callbacks
+                                                |> List.forall (fun cb ->
+                                                    OptionModule.callsOnlyCore c source index.Value cb.Range)
+                                            | None -> false))
 
                             if
                                 (movable || consuming)

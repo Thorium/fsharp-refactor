@@ -27,7 +27,9 @@
 ///      always asked for, and one this file can sign off only for callers
 ///      it can see: under a public or interface member (or a public
 ///      function) a `let` whose right side may throw stays put, and the
-///      hoist takes only the lets ahead of it that cannot.
+///      hoist takes only the lets ahead of it that cannot. Nor does a let
+///      move whose name is read AFTER the task expression in the enclosing
+///      binding: above the builder it would scope over that code too.
 ///   b) the non-awaiting tail wraps into a LOCAL function defined inside
 ///      the CE and called as its last statement. A nested function's body
 ///      is not resumable code (this rule itself treats lambdas as opaque),
@@ -35,7 +37,9 @@
 ///      scope, closures capture every CE local: no parameters, no type
 ///      annotations, no inference risk.
 ///   c) a body that IS an if/else whose both arms await splits into
-///      `if c then task { .. } else task { .. }` — arm text verbatim.
+///      `if c then task { .. } else task { .. }` — arm text verbatim. The
+///      condition then runs at the call, so under an exposed member it
+///      must be one that cannot throw, as (a) asks of its lets.
 ///      With leading lets present, (a) goes first and the multi-pass loop
 ///      brings (c) around on the next pass. A `match` body is advice only.
 ///
@@ -1043,11 +1047,45 @@ let find
                     // the first that can
                     let exposed = exposedBody index path
 
+                    // hoisted above the builder, a binding scopes over the
+                    // code AFTER the task expression too: `task { let id =
+                    // id.Trim() .. } |> ignore; log id` would log the trimmed
+                    // one. A name read after the task, up to the end of the
+                    // enclosing binding (or file), keeps its let inside
+                    let scopeEnd =
+                        path
+                        |> List.tryPick (fun node ->
+                            match node with
+                            | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs.End
+                            | _ -> None)
+
+                    let readAfterTask (name: string) =
+                        index.Exprs
+                        |> Array.exists (fun (_, e) ->
+                            let at =
+                                match e with
+                                | SynExpr.Ident id when id.idText = name -> Some id.idRange
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = firstId :: _)) when
+                                    firstId.idText = name
+                                    ->
+                                    Some firstId.idRange
+                                | _ -> None
+
+                            match at with
+                            | Some r ->
+                                not (Position.posLt r.Start expr.Range.End)
+                                && (match scopeEnd with
+                                    | Some stop -> not (Position.posGt r.End stop)
+                                    | None -> true)
+                            | None -> false)
+
                     let movable (binding: SynBinding) =
                         hoistable binding
                         && (not exposed
                             || (match binding with
                                 | SynBinding(expr = rhs) -> cannotThrow check source index rhs))
+                        && (match binding with
+                            | SynBinding(headPat = headPat) -> not (patNames headPat |> List.exists readAfterTask))
 
                     let letCount, firstLetRange, rest = peelPlainLets movable 0 None body
 
@@ -1155,6 +1193,12 @@ let find
                                 // the replaced span sits outside the arms
                                 && ifLine = fe.Range.StartLine + 1
                                 && isSingleLine cond.Range
+                                // the condition moves OUT of the task: under a
+                                // public or interface member it must not throw
+                                // (`cache.[key] > 0` would surface at the call
+                                // instead of faulting the Task), the let
+                                // hoist's own gate
+                                && (not exposed || cannotThrow check source index cond)
                                 && (source.GetLineString(cond.Range.EndLine - 1)).TrimEnd().EndsWith "then"
                                 && thenExpr.Range.StartLine > cond.Range.EndLine
                                 && elseKwLine > thenExpr.Range.EndLine

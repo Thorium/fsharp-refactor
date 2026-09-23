@@ -30,6 +30,13 @@
 ///     would take the `| None` clause)
 ///   - the binder name (`v`, falling back to `<x>Value`) must not appear
 ///     anywhere in the expression
+///   - the Some-arm (and the exists/forall predicates) must not assign the
+///     receiver or take its address: a `let mutable` reassigned there
+///     reads the NEW value through a later `x.Value`, the binder the old
+///   - the exists/forall predicates become a lambda, so they read no
+///     mutable local, no byref-like value and nothing of the enclosing
+///     struct's `this` — its fields and primary-constructor values
+///     (typed; FS0407 / FS0406)
 module FSharp.Refactor.OptionMatch
 
 open System.Text.RegularExpressions
@@ -45,12 +52,14 @@ open FSharp.Refactor.Text
 /// a numeric literal).
 let private spelled (source: ISourceText) (x: Ident) = textOfRange source x.idRange
 
+let private aZazAZaz09Regex = Regex @"^[A-Za-z_][A-Za-z0-9_']*$"
+
 /// The payload binder: `v`, else `<x>Value` for a plain name, else `value`
 /// - a backticked option would give the binder its spaces.
 let private binderCandidates (x: Ident) =
     [
         "v"
-        if Regex.IsMatch(x.idText, @"^[A-Za-z_][A-Za-z0-9_']*$") then
+        if aZazAZaz09Regex.IsMatch x.idText then
             $"{x.idText}Value"
         else
             "value"
@@ -184,6 +193,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                     boundPats |> List.exists (fun p -> patBoundNames p |> List.contains name)))
 
+        // an assignment to the option (or its address taken) inside `r`: a
+        // `let mutable` reassigned in the arm. The match binds the payload
+        // ONCE, where every later `x.Value` read the new value
+        let assignedIn (x: string) (r: range) =
+            index.Exprs
+            |> Array.exists (fun (_, e) ->
+                Range.rangeContainsRange r e.Range
+                && (match e with
+                    | SynExpr.LongIdentSet(SynLongIdent(id = [ target ]), _, _)
+                    | SynExpr.Set(SynExpr.Ident target, _, _)
+                    | SynExpr.AddressOf(expr = SynExpr.Ident target) -> target.idText = x
+                    | _ -> false))
+
         // `x.Value` prefixes inside `r`: the sub-range covering `x.Value`
         let valueUses (x: string) (r: range) =
             index.Exprs
@@ -222,6 +244,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         (op.idText = "op_BooleanAnd") = not negated
                         && preds |> List.sumBy (fun p -> (valueUses x.idText p.Range).Length) > 0
                         && preds |> List.forall (fun p -> not (shadowedIn x.idText p.Range))
+                        && preds |> List.forall (fun p -> not (assignedIn x.idText p.Range))
                         // the predicates move into a fabricated lambda, where
                         // capturing a mutable local was FS0407 before F# 10
                         && preds
@@ -327,6 +350,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         armsFit
                         && (valueUses x.idText someExpr.Range).Length > 0
                         && not (shadowedIn x.idText someExpr.Range)
+                        && not (assignedIn x.idText someExpr.Range)
                         && (noneArm |> Option.forall (fun n -> (valueUses x.idText n.Range).Length = 0))
                         ->
                         match caseNamesFor check source x with

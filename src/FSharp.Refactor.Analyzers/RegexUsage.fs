@@ -5,6 +5,10 @@
 ///
 ///        Regex.IsMatch(s, "^abc")   →  s.StartsWith "abc"
 ///
+///    (`s.Contains("abc")` with the argument parenthesised where a member
+///    access continues off the call, which would otherwise bind to the
+///    literal.)
+///
 /// 2. A static Regex call with a literal pattern inside a loop re-parses the
 ///    pattern on every iteration. When the surroundings allow it, the fix
 ///    hoists a compiled-once instance above the enclosing declaration and
@@ -41,7 +45,10 @@
 ///
 ///    Only a literal pattern with, at most, options spelled from
 ///    `RegexOptions.X` flags qualifies: a local in the options could vary
-///    per element. Where this rule declines it stays silent and FR0037
+///    per element. `IgnoreCase` without `CultureInvariant` stays too: its
+///    case folding takes the culture current at construction, per call
+///    where it is, once and for good where it would be hoisted. Where this
+///    rule declines it stays silent and FR0037
 ///    notes the construction; where it fixes, that note stands down.
 module FSharp.Refactor.RegexUsage
 
@@ -162,6 +169,18 @@ let rec private constantOptions (e: SynExpr) =
         funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_BitwiseOr"; argExpr = left)
         argExpr = right) -> constantOptions left && constantOptions right
     | SynExpr.Paren(expr = inner) -> constantOptions inner
+    | _ -> false
+
+/// Does a constant options argument (see constantOptions) name this
+/// `RegexOptions` flag?
+let rec private optionsName (flag: string) (e: SynExpr) =
+    match e with
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> (List.last ids).idText = flag
+    | SynExpr.App(
+        isInfix = false
+        funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_BitwiseOr"; argExpr = left)
+        argExpr = right) -> optionsName flag left || optionsName flag right
+    | SynExpr.Paren(expr = inner) -> optionsName flag inner
     | _ -> false
 
 /// The constructor / method arguments as a list, tuple or single.
@@ -315,13 +334,24 @@ let private hoistedNameIn = Regex(@"let private (\w+) =", RegexOptions.Compiled)
 /// `StartsWith(string)` is current-culture and differs on ligatures,
 /// ignorable characters and Turkish i — the Ordinal overload says what the
 /// regex did. None when the pattern is not literal text.
-let private matchTestText (source: ISourceText) (input: SynExpr) (pattern: string) =
+///
+/// The juxtaposed `s.Contains "abc"` reads best, but a member access
+/// continuing off the end of the replaced `replaced` range would bind to
+/// the literal: `Regex.IsMatch(s, "abc").ToString()` must become
+/// `s.Contains("abc").ToString()`, not `s.Contains "abc".ToString()`.
+let private matchTestText (source: ISourceText) (replaced: range) (input: SynExpr) (pattern: string) =
     match literalPattern pattern with
     | Some("StartsWith", literal) ->
         let prefix = if opensSystemNamespace source then "" else "System."
 
         Some(sprintf "%s.StartsWith(\"%s\", %sStringComparison.Ordinal)" (argumentText source input) literal prefix)
-    | Some(operation, literal) -> Some(sprintf "%s.%s \"%s\"" (argumentText source input) operation literal)
+    | Some(operation, literal) ->
+        let line = source.GetLineString(replaced.EndLine - 1)
+
+        if replaced.EndColumn < line.Length && line.[replaced.EndColumn] = '.' then
+            Some(sprintf "%s.%s(\"%s\")" (argumentText source input) operation literal)
+        else
+            Some(sprintf "%s.%s \"%s\"" (argumentText source input) operation literal)
     | None -> None
 
 /// `a op b` with the operator's one-segment name.
@@ -458,7 +488,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     ->
                     match argsOf arg with
                     | [ input; StringLiteral pattern ] ->
-                        matchTestText source input pattern |> Option.iter (stringOperation expr.Range)
+                        matchTestText source expr.Range input pattern
+                        |> Option.iter (stringOperation expr.Range)
                     | _ -> ()
                 // rule 1a: Matches(input, "literal").Count > 0 (<> 0, >= 1,
                 // and the literal on either side) is Contains; = 0 (< 1,
@@ -468,14 +499,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 | Infix(op, MatchesCount(input, pattern), SynExpr.Const(SynConst.Int32 k, _)) when
                     isSingleLine expr.Range
                     ->
-                    match countTest op k false, matchTestText source input pattern with
+                    match countTest op k false, matchTestText source expr.Range input pattern with
                     | Some true, Some test -> stringOperation expr.Range test
                     | Some false, Some test -> stringOperation expr.Range $"not ({test})"
                     | _ -> ()
                 | Infix(op, SynExpr.Const(SynConst.Int32 k, _), MatchesCount(input, pattern)) when
                     isSingleLine expr.Range
                     ->
-                    match countTest op k true, matchTestText source input pattern with
+                    match countTest op k true, matchTestText source expr.Range input pattern with
                     | Some true, Some test -> stringOperation expr.Range test
                     | Some false, Some test -> stringOperation expr.Range $"not ({test})"
                     | _ -> ()
@@ -488,7 +519,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     // rule 1: IsMatch(input, "literal") -> string operation
                     match methodName, args with
                     | "IsMatch", [ input; StringLiteral pattern ] when isSingleLine input.Range ->
-                        matchTestText source input pattern |> Option.iter (stringOperation expr.Range)
+                        matchTestText source expr.Range input pattern
+                        |> Option.iter (stringOperation expr.Range)
                     // rule 1c: Split(input, "literal") splits at each
                     // occurrence of the text, which is String.Split with
                     // that one separator — spelled with the separator array
@@ -613,12 +645,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 // place; a `let regex = azAZ09Regex` left behind is a
                 // harmless alias and `.Split(v)` after it still reads. A
                 // construction spanning lines would carry its indentation
-                // into the binding, so only a single-line one qualifies
+                // into the binding, so only a single-line one qualifies.
+                // IgnoreCase folds case by the culture current when the
+                // Regex is BUILT: built per call it follows the thread's
+                // culture, hoisted it freezes the module initialiser's —
+                // unless CultureInvariant already fixed the culture
                 | RegexConstruction(qualified, arg) when isSingleLine expr.Range ->
                     let pattern =
                         match argsOf arg with
                         | [ StringLiteral pattern ] -> Some pattern
-                        | [ StringLiteral pattern; options ] when constantOptions options -> Some pattern
+                        | [ StringLiteral pattern; options ] when
+                            constantOptions options
+                            && (not (optionsName "IgnoreCase" options) || optionsName "CultureInvariant" options)
+                            ->
+                            Some pattern
                         | _ -> None
 
                     match pattern, enclosingLet path, runsRepeatedly path with

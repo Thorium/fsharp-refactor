@@ -287,6 +287,8 @@ let private elementTaskArity check source (e: SynExpr) =
         Some t.GenericArguments.[0].GenericArguments.Count
     | _ -> None
 
+let private bAggregateExRegex = Regex @"\bAggregateException\b"
+
 /// `Assert.Throws<E>(fun () -> <blocking>)` and its siblings: the async
 /// spelling with the lambda returning the awaitable as a `Task`.
 /// xUnit's and MSTest's async asserts return a `Task<E>` to bind; NUnit's
@@ -323,9 +325,8 @@ let rec assertThrows (check: FSharpCheckFileResults) (source: ISourceText) (e: S
                 // type argument `<AggregateException>` or the
                 // `typeof<AggregateException>` of the non-generic overload
                 let assertsAggregate =
-                    Regex.IsMatch(
-                        textOfRange source (Range.mkRange e.Range.FileName e.Range.Start lambda.Range.Start),
-                        @"\bAggregateException\b"
+                    bAggregateExRegex.IsMatch(
+                        textOfRange source (Range.mkRange e.Range.FileName e.Range.Start lambda.Range.Start)
                     )
 
                 match blockingOf check source inner with
@@ -496,6 +497,9 @@ and blockingOf (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr
                 }
         | _ -> assertThrows check source other
 
+let private bThreadRegex = Regex @"\bThread\."
+let private bThreadsRegex = Regex @"\bThread\s*\("
+
 /// Is this body choreographed around a THREAD? Code that hands work to a
 /// thread and waits on a signal continues on the same thread after the
 /// wait; `do!` resumes wherever the scheduler posts, so "make it async"
@@ -531,5 +535,5 @@ let threadBound (source: ISourceText) (body: SynExpr) =
     // withheld over it. `\bThread` matches the type and nothing built on
     // its name (ThreadHelper, ThreadPool, ThreadStatic keep their own
     // entries above where they belong).
-    || Regex.IsMatch(text, @"\bThread\s*\(")
-    || Regex.IsMatch(text, @"\bThread\.")
+    || bThreadsRegex.IsMatch text
+    || bThreadRegex.IsMatch text

@@ -23,12 +23,18 @@
 ///   - every blocking site in the body is either the RHS of a simple
 ///     `let x = <blocking>` statement (→ `let! x = receiver`) or a tail
 ///     terminal (→ `return! receiver`); every other tail terminal is
-///     `return`-prefixed. A blocking site inside a lambda, try/with,
-///     nested CE or any other shape vetoes the fix.
+///     `return`-prefixed. A blocking site inside a lambda, a local
+///     function, an object expression, try/with, nested CE or any other
+///     shape vetoes the fix.
+///   - a body draining with `GetAwaiter().GetResult()` (which throws the
+///     task's exception bare) takes no `async { }` caller: its
+///     `Async.AwaitTask` bridge raises AggregateException instead, and the
+///     caller's `with :? IOException` would stop catching.
 ///   - every use is a FULL application forming the RHS of a simple `let`
 ///     (→ `let!`, with Async.AwaitTask in async) or a `return` payload
 ///     (→ `return!`), inside a task/async/backgroundTask CE, outside
-///     lambdas, nested CEs and no-bind zones. One unconvertible caller
+///     lambdas, local functions, object expressions, nested CEs and
+///     no-bind zones. One unconvertible caller
 ///     vetoes everything — the fix is all-or-nothing by suggestion group.
 ///   - no return-type annotation (it would need a Task<_> rewrite), not
 ///     inline, not mutual, no self-recursion.
@@ -87,13 +93,25 @@ let private geographyOf (parseTree: ParsedInput) (source: ISourceText) =
                 Some(builder, body.Range)
             | _ -> None)
 
+    // every closure: a lambda, a LOCAL FUNCTION (a binding with argument
+    // patterns, not a Lambda node) and an object expression's members —
+    // a `let!` injected into any of them lands in a plain function (FS0750)
     let lambdaRanges =
         index.Exprs
-        |> Array.choose (fun (_, e) ->
+        |> Array.collect (fun (_, e) ->
             match e with
             | SynExpr.Lambda _
-            | SynExpr.MatchLambda _ -> Some e.Range
-            | _ -> None)
+            | SynExpr.MatchLambda _
+            | SynExpr.ObjExpr _ -> [| e.Range |]
+            | LetOrUseE lou when not lou.IsBang ->
+                lou.Bindings
+                |> List.choose (fun b ->
+                    match b with
+                    | SynBinding(headPat = SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _))) ->
+                        Some b.RangeOfBindingWithRhs
+                    | _ -> None)
+                |> Array.ofList
+            | _ -> [||])
 
     let ceRanges =
         index.Exprs
@@ -162,7 +180,7 @@ let private geographyOf (parseTree: ParsedInput) (source: ISourceText) =
 let private classifierFor (parseTree: ParsedInput) (source: ISourceText) =
     let geo = geographyOf parseTree source
 
-    fun (arity: int) (useRange: range) ->
+    fun (bareFaults: bool) (arity: int) (useRange: range) ->
         // the full application this use heads
         let app =
             geo.Index.Exprs
@@ -192,6 +210,11 @@ let private classifierFor (parseTree: ParsedInput) (source: ISourceText) =
                     && Range.rangeContainsRange other app.Range)
             )
             && not (geo.InsideAny geo.NoBindRanges app.Range)
+            // a body that drained with GetAwaiter().GetResult() threw the
+            // task's exception bare; `Async.AwaitTask` raises it wrapped in
+            // an AggregateException, and the async caller's `with :? IOException`
+            // would stop catching it
+            && not (bareFaults && builder = "async")
             ->
             let appText = textOfRange source app.Range
 
@@ -480,6 +503,12 @@ let find
                                 // ---- the call sites ----
                                 let arity = pats.Length
 
+                                // a GetResult drain threw bare; an async
+                                // caller's AwaitTask bridge would not
+                                let bareFaults =
+                                    sitesInBody
+                                    |> List.exists (fun s -> s.Kind = SyncOverAsync.BlockKind.AwaiterGetResult)
+
                                 let useEdits = ResizeArray<range * string * string>()
 
                                 let thisFile = System.IO.Path.GetFullPath(fid.idRange.FileName).ToLowerInvariant()
@@ -487,7 +516,7 @@ let find
                                 let siblingClassifiers =
                                     System.Collections.Generic.Dictionary<
                                         string,
-                                        (int -> range -> (range * string * string) list option) option
+                                        (bool -> int -> range -> (range * string * string) list option) option
                                      >()
 
                                 let classifierForFile (path: string) =
@@ -554,7 +583,7 @@ let find
                                                else
                                                    match classifierForFile u.Range.FileName with
                                                    | Some classify ->
-                                                       match classify arity u.Range with
+                                                       match classify bareFaults arity u.Range with
                                                        | Some edits ->
                                                            useEdits.AddRange edits
                                                            true

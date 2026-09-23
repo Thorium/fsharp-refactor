@@ -16,12 +16,15 @@
 ///     results enumerate every call site
 ///   - every result position of the body is a `Some ...`/`None`
 ///     constructor (typed-gated to FSharp.Core's option) or a recursive
-///     self-call; an explicit return-type annotation skips the candidate
-///   - every external use is a fully applied call sitting directly as a
-///     `match` scrutinee whose clauses use only Some/None/wildcard
-///     patterns — a use as a first-class value (List.tryPick f), an
-///     argument to an Option-taking API, or a `let`-bound result keeps
-///     the option type load-bearing and suppresses the suggestion
+///     self-call; an explicit return-type annotation skips the candidate,
+///     and so does an annotated result (`(Some n : int option)`)
+///   - every other use — external, or a self-call inside the body that is
+///     not in result position — is a fully applied call sitting directly
+///     as a `match` scrutinee whose clauses use only Some/None/wildcard
+///     patterns, and those patterns move too; a use as a first-class value
+///     (List.tryPick f), an argument to an Option-taking API, or a
+///     `let`-bound result keeps the option type load-bearing and
+///     suppresses the suggestion
 module FSharp.Refactor.StructOption
 
 open FSharp.Compiler.CodeAnalysis
@@ -83,14 +86,16 @@ let private findCandidates (parseTree: ParsedInput) : Candidate list =
     List.ofSeq candidates
 
 /// All result-position expressions of a body (worklist over the tails).
+/// A type annotation is NOT looked through: `(Some n : int option)` is a
+/// result the rewrite cannot move (`ValueSome n : int option` is FS0001),
+/// so it stays a result of its own that matches no constructor.
 [<TailCall>]
 let rec private resultsLoop (acc: SynExpr list) (pending: SynExpr list) =
     match pending with
     | [] -> acc
     | e :: rest ->
         match e with
-        | SynExpr.Paren(expr = inner)
-        | SynExpr.Typed(expr = inner) -> resultsLoop acc (inner :: rest)
+        | SynExpr.Paren(expr = inner) -> resultsLoop acc (inner :: rest)
         | LetOrUseE lou when not lou.IsBang -> resultsLoop acc (lou.Body :: rest)
         | SynExpr.Sequential(expr2 = e2) -> resultsLoop acc (e2 :: rest)
         | SynExpr.IfThenElse(thenExpr = t; elseExpr = els) -> resultsLoop acc (t :: (Option.toList els) @ rest)
@@ -213,12 +218,27 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     with
                     | None -> None
                     | Some symbolUse ->
+                        // a self-call in RESULT position returns the same
+                        // type and needs no edit; any other self-call inside
+                        // the body is a use like an external one — `match
+                        // depth (n - 1) with | Some d -> ...` must move its
+                        // patterns too, or it is FS0001 against the voption
+                        let tailCalls =
+                            results
+                            |> List.choose (fun result ->
+                                match spineLoop 0 (stripParens result) with
+                                | ValueSome(headId, _) when headId.idText = candidate.Ident.idText ->
+                                    Some headId.idRange
+                                | _ -> None)
+
                         let uses =
                             check.GetUsesOfSymbolInFile symbolUse.Symbol
                             |> Array.filter (fun u ->
-                                not u.IsFromDefinition
-                                // self-calls inside the body keep the type
-                                && not (Range.rangeContainsRange candidate.DefRange u.Range))
+                                not (u.IsFromDefinition || tailCalls |> List.exists (Range.equals u.Range)))
+
+                        let externalUses =
+                            uses
+                            |> Array.filter (fun u -> not (Range.rangeContainsRange candidate.DefRange u.Range))
 
                         let useEdits =
                             uses
@@ -234,7 +254,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         Some(perClause |> List.choose id |> List.concat)
                                 | _ -> None)
 
-                        if useEdits |> Array.exists Option.isNone || uses.Length = 0 then
+                        if useEdits |> Array.exists Option.isNone || externalUses.Length = 0 then
                             None
                         else
                             let edits =

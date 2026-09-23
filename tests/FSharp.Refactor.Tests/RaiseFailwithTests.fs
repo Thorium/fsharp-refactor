@@ -41,6 +41,12 @@ let ``interpolated message stays bare`` () =
     assertRaiseFix "module Test\nopen System\nlet f (n: int) = raise (Exception $\"bad {n}\")" "failwith $\"bad {n}\""
 
 [<Fact>]
+let ``property on a method-call result is parenthesized`` () =
+    assertRaiseFix
+        "module Test\nopen System\nlet f (ex: exn) = raise (Exception(ex.GetType().Name))"
+        "failwith (ex.GetType().Name)"
+
+[<Fact>]
 let ``exception subclasses are left alone`` () =
     Assert.Empty(raiseIn "module Test\nopen System\nlet f () = raise (ArgumentException \"boom\")")
 

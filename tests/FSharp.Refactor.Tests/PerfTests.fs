@@ -169,6 +169,21 @@ let ``a Substring fed to Parse becomes AsSpan`` () =
     | other -> failwithf "Expected exactly one AsSpan suggestion, got %A" other
 
 [<Fact>]
+let ``FR0106: a file that does not open System cannot see AsSpan and keeps its Substring`` () =
+    // the tool's own SprintfInterpolation.fs opened only
+    // System.Text.RegularExpressions: the swept `.AsSpan` did not resolve
+    let source =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (fmt: string) (cursor: int) =\n    let builder = System.Text.StringBuilder()\n    builder.Append(fmt.Substring cursor) |> ignore\n    builder.ToString()"
+
+    Assert.Empty(substringSpansIn source)
+    // with the open, the same text is fixed and typechecks
+    let opened = source.Replace("open System.Text.RegularExpressions", "open System")
+
+    match substringSpansIn opened with
+    | [ sug ] -> Assert.True(typechecksCleanly (applyEdit opened sug.Range "AsSpan"))
+    | other -> failwithf "Expected exactly one AsSpan suggestion, got %A" other
+
+[<Fact>]
 let ``a Substring fed to TryParse becomes AsSpan`` () =
     let source =
         "module Test\nopen System\nlet f (s: string) =\n    match Int32.TryParse(s.Substring 6) with\n    | true, v -> v\n    | _ -> 0"
@@ -312,6 +327,18 @@ let ``FR0166: a Substring compared with a literal is exact only under a length g
 
     let patched = patchedWith source found
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+[<Fact>]
+let ``FR0166: an else branch is guarded only when the failed condition proves Length at least the cut`` () =
+    // the else branch of `if s.Length < k` knows Length >= k: exact only
+    // for k >= 6; `<= k` gives Length >= k + 1
+    let source =
+        "module Test\nlet f (s: string) =\n    let a = if s.Length < 3 then false else s.Substring(0, 6) = \"ORDER-\"\n    let b = if s.Length <= 3 then false else s.Substring(0, 6) = \"ORDER-\"\n    let c = if 3 > s.Length then false else s.Substring(0, 6) = \"ORDER-\"\n    let d = if 3 >= s.Length then false else s.Substring(0, 6) = \"ORDER-\"\n    let e = if s.Length < 6 then false else s.Substring(0, 6) = \"ORDER-\"\n    let g = if s.Length <= 5 then false else s.Substring(0, 6) = \"ORDER-\"\n    let h = if 6 > s.Length then false else s.Substring(0, 6) = \"ORDER-\"\n    let i = if 5 >= s.Length then false else s.Substring(0, 6) = \"ORDER-\"\n    let j = if s.Length <= 4 then false else s.Substring(0, 6) = \"ORDER-\"\n    a, b, c, d, e, g, h, i, j"
+
+    Assert.Equal<bool list>(
+        [ false; false; false; false; true; true; true; true; false ],
+        prefixComparesIn source |> List.map (fun s -> s.Exact)
+    )
 
 [<Fact>]
 let ``FR0166: a literal of another length, a computed right-hand side, another receiver's Length and a non-string are left alone``
@@ -598,6 +625,17 @@ let ``FR0170: a body that rebinds the key keeps the loop`` () =
     let source =
         "module M\nopen System.Collections.Generic\nlet shifted (d: Dictionary<int, int>) =\n    for k in d.Keys do\n        let k = k + 1\n        if d.ContainsKey k then printfn \"%d\" d.[k]\nlet lambda (d: Dictionary<int, int>) (f: (int -> int) -> unit) =\n    for k in d.Keys do\n        f (fun k -> d.[k])"
 
+    Assert.Empty(dictKeysLoopsIn source)
+
+[<Fact>]
+let ``FR0170: a read deferred under a lambda, lazy, computation expression or object expression keeps the loop`` () =
+    // the deferred read sees the dictionary as it is when it runs; the
+    // pair's value is a snapshot taken during the loop
+    let source =
+        "module M\nopen System\nopen System.Collections.Generic\nlet readers (d: Dictionary<int, int>) (acts: ResizeArray<unit -> int>) =\n    for k in d.Keys do\n        acts.Add(fun () -> d.[k])\nlet lazies (d: Dictionary<int, int>) (acc: ResizeArray<Lazy<int>>) =\n    for k in d.Keys do\n        acc.Add(lazy d.[k])\nlet asyncs (d: Dictionary<int, int>) (acc: ResizeArray<Async<int>>) =\n    for k in d.Keys do\n        acc.Add(async { return d.[k] })\nlet objs (d: Dictionary<int, int>) (acc: ResizeArray<obj>) =\n    for k in d.Keys do\n        acc.Add({ new Object() with member _.ToString() = string d.[k] })\nlet matchers (d: Dictionary<int, int>) (acc: ResizeArray<int -> int>) =\n    for k in d.Keys do\n        acc.Add(function 0 -> d.[k] | n -> n)"
+
+    // the rule stands down on a compile error: the source must be clean
+    Assert.True(typechecksCleanly source)
     Assert.Empty(dictKeysLoopsIn source)
 
 [<Fact>]

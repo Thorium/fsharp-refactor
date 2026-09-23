@@ -690,8 +690,8 @@ let ``FR0003: a module-qualified stage still composes`` () =
 // ---- 5: FR0004 ConversionMove: the mutation vocabulary ----
 
 let private conversionsIn (source: string) =
-    let tree, sourceText = parse source
-    ConversionMove.find tree sourceText
+    let tree, sourceText, check = parseAndCheck source
+    ConversionMove.findWith (Some check) tree sourceText
 
 [<Fact>]
 let ``FR0004: a lambda calling AddRange, Sort or UnionWith keeps the eager copy`` () =
@@ -714,7 +714,7 @@ let ``FR0004: a lambda calling AddRange, Sort or UnionWith keeps the eager copy`
 let ``FR0004: a lambda that only queries a collection still drops the conversion`` () =
     match
         conversionsIn
-            "module T\nlet f (xs: seq<int>) (sink: ResizeArray<int>) =\n    xs |> Seq.toList |> List.iter (fun x -> sink.Contains x |> ignore)"
+            "module T\nlet f (xs: ResizeArray<int>) (sink: ResizeArray<int>) =\n    xs |> Seq.toList |> List.iter (fun x -> sink.Contains x |> ignore)"
     with
     | [ s ] -> Assert.Equal("Seq.iter (fun x -> sink.Contains x |> ignore)", s.ReplacementText)
     | other -> failwithf "Expected exactly one suggestion, got %A" other

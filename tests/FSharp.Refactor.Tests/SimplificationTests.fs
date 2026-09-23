@@ -51,9 +51,24 @@ let ``if-then-false-else-true negates the condition`` () =
     assertSuggestion (findParsed src) src "not (x > 3)"
 
 [<Fact>]
+let ``FR0010: a condition in operand position keeps its parentheses`` () =
+    // `flag && a || b` would read as `(flag && a) || b`
+    let src = "module Test\nlet f flag a b = flag && if a || b then true else false"
+    assertSuggestion (findParsed src) src "(a || b)"
+    let atomic = "module Test\nlet f flag a = flag && if a then true else false"
+    assertSuggestion (findParsed atomic) atomic "a"
+
+[<Fact>]
 let ``atomic negated condition needs no parens`` () =
     let src = "module Test\nlet f (b: bool) = if b then false else true"
     assertSuggestion (findParsed src) src "not b"
+
+[<Fact>]
+let ``property on a method-call result is parenthesized under not`` () =
+    let src =
+        "module Test\nlet f (ex: exn) = if ex.GetType().IsPublic then false else true"
+
+    assertCheckedSuggestion (findParsed src) src "not (ex.GetType().IsPublic)"
 
 [<Fact>]
 let ``same constant branches are not simplified`` () =

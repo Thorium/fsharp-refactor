@@ -184,6 +184,18 @@ and re-analyzes until a pass applies nothing - a fix can enable further
 fixes. It refuses a compilation that already has errors, and fails loudly
 if applying ever introduces one.
 
+Warnings as errors: the project's own settings decide, and the tool never
+overrides them - its verification is the build your CI runs. The
+in-memory typecheck takes the compiler's own arguments, so `--warnaserror`
+and `<WarningsAsErrors>` turn an F# warning a fix raises into an error the
+pass rolls back. A C# project that references the F# one and turns an
+analyzer warning into an error (`error CA1859`, `error IDE0005`) fails the
+verification build as code, not as tooling noise, and the run says which
+setting to change if you want such fixes anyway
+(`<WarningsNotAsErrors>CA1859</WarningsNotAsErrors>`, or
+`dotnet_diagnostic.CA1859.severity = suggestion`). `<NoWarn>` works too,
+but silences the analyzer for everyone.
+
 | Flag | |
 |---|---|
 | `--dry-run` | Report only: lists every fix it would make, with file and position, and writes nothing. Rewriting is never implicit - drop the flag to let it edit. |
@@ -291,7 +303,7 @@ Every rule is one of four kinds, shown in the last column of
 | Kind | | Count |
 |---|---|---|
 | `correctness` | The code does something other than what it looks like it does: a race, a swallowed exception, a disposable that leaks, a comparison that never holds | 61 |
-| `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 39 |
+| `performance` | Correct, but doing work it need not: allocations that need not happen, repeated work, a scan where a lookup would do | 40 |
 | `idiom` | The same behaviour written the way F# writes it. Worth doing, and worth agreeing on first - it is a matter of house style as much as anything | 55 |
 | `cosmetic` | The punctuation and spelling of code. Real cleanups, and nobody's idea of a welcome pull request from a stranger | 17 |
 
@@ -515,6 +527,20 @@ hoist, not the FS3511 advice, to `async { }`:
 {
   "rules": {
     "FR0029": { "tailLines": 25, "hoistReturnOnAsync": true }
+  }
+}
+```
+
+FR0174 takes `pipelines` (default false). The rule moves a copy out of a
+C#-style LINQ chain on an `IQueryable` (`q.ToList().Where(f)` →
+`q.Where(f).ToList()`); a pipeline such as `q |> Seq.toList |> List.filter f`
+shows where the rows come into memory as plainly as `query { }` does, so it
+is left alone unless this is set:
+
+```json
+{
+  "rules": {
+    "FR0174": { "pipelines": true }
   }
 }
 ```

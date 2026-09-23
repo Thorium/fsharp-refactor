@@ -476,3 +476,12 @@ let ``FR0169: a local seq inside a generic member of a class is walked twice (SQ
         Assert.Equal(12, s.Range.StartLine)
         Assert.Equal(13, s.SecondLine)
     | other -> failwithf "Expected one finding, got %A" other
+
+[<Fact>]
+let ``FR0160: a one-string constructor taking a parameter name is not the message overload`` () =
+    // ArgumentNullException(paramName) vs (message, innerException): the
+    // appended `, ex` would turn the parameter NAME into the message
+    let source =
+        "module M\nlet a (read: unit -> string) =\n    try read () with ex -> raise (System.ArgumentNullException(\"s\"))\nlet b (read: unit -> string) =\n    try read () with ex -> raise (System.ArgumentOutOfRangeException(\"i\"))\nlet c (read: unit -> string) =\n    try read () with ex -> raise (System.ObjectDisposedException(\"conn\"))"
+
+    Assert.Empty(lostInnersIn source |> List.filter (fun s -> not s.Edits.IsEmpty))

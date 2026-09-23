@@ -82,7 +82,7 @@ let private (|ArrayFunction|_|) (e: SynExpr) =
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when
         m.idText = "Array" && arrayToString.Contains f.idText
         ->
-        ValueSome(f)
+        ValueSome f
     | _ -> ValueNone
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =

@@ -28,7 +28,8 @@
 ///   - the function's name (`advanceV` / `retreatV`) is not in use
 ///   - the loop reads no byref-like value (typed): a `ReadOnlySpan<char>`
 ///     parameter the condition indexes cannot be captured by the local
-///     function (FS0406)
+///     function (FS0406), and neither can the enclosing struct's `this` —
+///     its fields or a primary-constructor value the loop bounds by
 module FSharp.Refactor.IndexScan
 
 open System

@@ -37,7 +37,8 @@ type DisposableFieldSuggestion =
         DisposableBase: string option
         /// The editor's fix, carried by the type's FIRST such field only:
         /// an `interface System.IDisposable` appended to the type whose
-        /// Dispose disposes every created field. Deliberately the plain
+        /// Dispose disposes every created field, in reverse declaration
+        /// order: a wrapper before the field it wraps. Deliberately the plain
         /// form — no Dispose(bool), no finalizer, no GC.SuppressFinalize:
         /// a type holding managed disposables needs none of that.
         Fix: (range * string * string) option
@@ -58,8 +59,12 @@ type UndisposedFieldSuggestion =
         /// author clearly meant to clean up, so the message says which
         /// half is missing rather than claiming nothing was done.
         MentionedOnly: bool
-        /// The editor's fix: `field.Dispose()` as the first statement of
-        /// the type's Dispose body.
+        /// The editor's fix: `field.Dispose()` in the type's Dispose body,
+        /// placed by construction order - a field is built only from the ones
+        /// declared above it, so it goes LAST when the body disposes a field
+        /// built from it (a StreamWriter over the stream flushes on Dispose),
+        /// FIRST otherwise (and when the body disposes the field it was built
+        /// from), and nowhere when the body disposes both kinds.
         Fix: (range * string * string) option
     }
 
@@ -520,6 +525,21 @@ let find
 
                     let membersEnd = members |> List.tryLast |> Option.map (fun m -> m.Range.End)
 
+                    // every instance let field by name, in declaration order,
+                    // with the range its initializer spans
+                    let instanceFields =
+                        members
+                        |> List.collect (fun m ->
+                            match m with
+                            | SynMemberDefn.LetBindings(isStatic = false; bindings = bindings) ->
+                                bindings
+                                |> List.choose (fun binding ->
+                                    match binding with
+                                    | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = var)); expr = rhs) ->
+                                        Some(var.idText, rhs.Range)
+                                    | _ -> None)
+                            | _ -> [])
+
                     if not implementsDisposable then
                         // FR0032: owns a disposable but is not disposable
                         let leaked =
@@ -587,8 +607,12 @@ let find
                         let typeFix =
                             match membersEnd with
                             | Some at when not leaked.IsEmpty && baseAllowsInterface ->
+                                // reverse declaration order: a field can only be
+                                // built from the ones above it, so a StreamWriter
+                                // over a stream is disposed (and flushed) before it
                                 let disposeLines =
                                     leaked
+                                    |> List.rev
                                     |> List.map (fun (fieldName, _) -> $"{memberIndent}        {fieldName}.Dispose()")
                                     |> String.concat "\n"
 
@@ -747,6 +771,46 @@ let find
                                         && not (spansDirective source body)
                                     | _ -> false
 
+                                // the order of disposal: a field built from this
+                                // one (`new StreamWriter(stream)`, declared below
+                                // it) must be disposed BEFORE it, one this field is
+                                // built from (declared above) AFTER it. The body
+                                // disposing a wrapper of the field takes the call
+                                // last; one disposing the field's own source takes
+                                // it first; both, and no end of the body is right
+                                let fieldIndex = instanceFields |> List.tryFindIndex (fun (n, _) -> n = fieldName)
+
+                                let rec builtFrom (names: Set<string>) =
+                                    // the fields below whose initializer names one
+                                    // of these, transitively
+                                    let more =
+                                        instanceFields
+                                        |> List.filter (fun (n, r) -> not (names.Contains n) && mentions names r)
+                                        |> List.map fst
+
+                                    if more.IsEmpty then
+                                        names
+                                    else
+                                        builtFrom (names + Set.ofList more)
+
+                                let wrappers = (builtFrom (Set.singleton fieldName)).Remove fieldName
+
+                                let sources =
+                                    match fieldIndex with
+                                    | Some i ->
+                                        instanceFields
+                                        |> List.take i
+                                        |> List.filter (fun (n, _) -> (builtFrom (Set.singleton n)).Contains fieldName)
+                                        |> List.map fst
+                                        |> Set.ofList
+                                    | None -> Set.empty
+
+                                let inBody (names: Set<string>) =
+                                    disposeBodies |> List.exists (fun body -> mentions names body)
+
+                                let wrapperInBody = inBody wrappers
+                                let sourceInBody = inBody sources
+
                                 let fix =
                                     disposeBodies
                                     |> List.tryHead
@@ -756,10 +820,12 @@ let find
 
                                         if bodyText.Trim() = "()" then
                                             Some(body, bodyText, $"{fieldName}.Dispose()")
-                                        elif not mentionedOnly then
+                                        elif wrapperInBody && sourceInBody then
+                                            None
+                                        elif not (mentionedOnly || wrapperInBody) then
                                             let at = Range.mkRange body.FileName body.Start body.Start
                                             Some(at, "", $"{fieldName}.Dispose()\n{indent}")
-                                        elif appendable body then
+                                        elif appendable body && not sourceInBody then
                                             let at = Range.mkRange body.FileName body.End body.End
                                             Some(at, "", $"\n{indent}{fieldName}.Dispose()")
                                         else

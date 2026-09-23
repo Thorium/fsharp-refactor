@@ -165,3 +165,26 @@ let ``a guard under #if yields a pattern under the same #if`` () =
         Assert.StartsWith("#if !FOO\n", s.InsertText)
         Assert.Contains("\n#endif\n", s.InsertText)
     | other -> failwithf "Expected one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0006: a guard function bound by the declaration itself is never extracted`` () =
+    // a parameter on its own line, a nested pattern binder, and a `let
+    // rec ... and` sibling: all bound inside the declaration, none in scope
+    // above it
+    assertNoSuggestion
+        "module Test\nlet f\n    (isOk: int -> bool)\n    x =\n    match x with\n    | n when isOk n -> n\n    | _ -> 0"
+
+    assertNoSuggestion
+        "module Test\nlet f (pair: (int -> bool) * int) =\n    match pair with\n    | (isOk, x) ->\n        match x with\n        | n when isOk n -> n\n        | _ -> 0"
+
+    assertNoSuggestion
+        "module Test\nlet rec f x =\n    match x with\n    | n when isOk n -> n\n    | _ -> 0\nand isOk (n: int) = n > 0"
+
+[<Fact>]
+let ``FR0006: a guard variable ending in a prime is still read by the body`` () =
+    match
+        findIn
+            "module Test\nlet isEven (n: int) = n % 2 = 0\nlet f x =\n    match x with\n    | n' when isEven n' -> n' + 1\n    | _ -> 0"
+    with
+    | [ s ] -> Assert.Equal("IsEven n'", s.ClauseText)
+    | other -> failwithf "Expected one suggestion, got %A" other

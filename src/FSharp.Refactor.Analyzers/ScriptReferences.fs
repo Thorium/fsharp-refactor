@@ -112,9 +112,11 @@ let private rank (original: Framework) (sdkMajor: int option) (candidate: Framew
     | _, NetCoreApp v -> Some(3000 - int (v * 10m))
     | _, NetFramework _ -> None
 
+let private ddRegex = Regex @"^(.+?)\.(\d+(?:\.\d+)+)$"
+
 /// `Name.1.2.3` → (Name, [1;2;3]).
 let private parseVersioned (segment: string) =
-    let m = Regex.Match(segment, @"^(.+?)\.(\d+(?:\.\d+)+)$")
+    let m = ddRegex.Match segment
 
     if m.Success then
         Some(m.Groups.[1].Value, m.Groups.[2].Value.Split '.' |> Array.map int |> List.ofArray)

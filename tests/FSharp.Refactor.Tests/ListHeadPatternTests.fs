@@ -30,7 +30,7 @@ let private appliedTypechecks (source: string) =
                 d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
                 || d.ErrorNumber = 25)
 
-        Assert.True(Array.isEmpty offending, sprintf "%s\n%A" patched offending)
+        Assert.True(Array.isEmpty offending, $"%s{patched}\n%A{offending}")
         patched
     | other -> failwithf "expected one suggestion, got %A" other
 

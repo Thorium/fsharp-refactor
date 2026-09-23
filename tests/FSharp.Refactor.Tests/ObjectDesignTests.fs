@@ -50,6 +50,23 @@ let ``all-literal chain is left alone`` () =
 let ``literal-free chain is left alone`` () =
     Assert.Empty(concatIn "let f (a: string) (b: string) = a + b")
 
+[<Fact>]
+let ``a chain in a literal or an attribute argument is left alone`` () =
+    // an interpolated string is not a constant: FS0267 in a [<Literal>],
+    // FS0837 as an attribute argument
+    Assert.Empty(concatIn "module Test\n[<Literal>]\nlet A = \"a\"\n[<Literal>]\nlet B = \"x\" + A + \"y\"")
+
+    Assert.Empty(
+        concatIn "module Test\n[<Literal>]\nlet A = \"a\"\n[<System.Obsolete(\"x\" + A + \"y\")>]\nlet f () = 1"
+    )
+
+[<Fact>]
+let ``an unannotated name in a tuple or a primary constructor keeps the chain`` () =
+    // like a curried unannotated parameter: only the + types it as a string,
+    // and a plain hole would let it generalise
+    Assert.Empty(concatIn "module Test\nlet q (tcref: string, nm) = tcref + \"-\" + nm + \"!\"")
+    Assert.Empty(concatIn "module Test\ntype T(nm) =\n    member _.Q = \"a\" + nm + \"!\"")
+
 // ---- FR0032 / FR0033 ObjectDesign ----
 
 let private designIn (source: string) =
@@ -233,11 +250,16 @@ let ``FR0032: the editor fix appends a plain IDisposable disposing every created
         Assert.Contains("interface System.IDisposable with", patched)
         Assert.Contains("stream.Dispose()", patched)
         Assert.Contains("reader.Dispose()", patched)
+        // the reader over the stream goes first: reverse declaration order,
+        // since a field can only be built from the ones above it
+        Assert.Contains("reader.Dispose()\n            stream.Dispose()", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two leaked-field findings, got %A" other
 
 [<Fact>]
-let ``FR0047: the editor fix disposes the missed field first in Dispose`` () =
+let ``FR0047: the missed field under a wrapper the body disposes goes after it`` () =
+    // `stream.Dispose()` first would leave the reader (a writer: flushing)
+    // over a closed stream
     let source =
         "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let reader = new StreamReader(stream)\n    interface System.IDisposable with\n        member _.Dispose() =\n            reader.Dispose()"
 
@@ -248,8 +270,40 @@ let ``FR0047: the editor fix disposes the missed field first in Dispose`` () =
         Assert.Equal("stream", s.FieldName)
         let r, _, replacement = s.Fix.Value
         let patched = applyEdit source r replacement
-        Assert.Contains("stream.Dispose()\n            reader.Dispose()", patched)
+        Assert.Contains("reader.Dispose()\n            stream.Dispose()", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one undisposed-field finding, got %A" other
+
+[<Fact>]
+let ``FR0047: a missed wrapper over a field the body disposes goes before it`` () =
+    let source =
+        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let writer = new StreamWriter(stream)\n    interface System.IDisposable with\n        member _.Dispose() =\n            stream.Dispose()"
+
+    let _, _, undisposed = designIn source
+
+    match undisposed with
+    | [ s ] ->
+        Assert.Equal("writer", s.FieldName)
+        let r, _, replacement = s.Fix.Value
+        let patched = applyEdit source r replacement
+        Assert.Contains("writer.Dispose()\n            stream.Dispose()", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one undisposed-field finding, got %A" other
+
+[<Fact>]
+let ``FR0047: a missed field between a wrapper and its own source has no fix`` () =
+    // a buffer over the stream, a writer over the buffer; the body disposes
+    // the writer and the stream: the buffer belongs between them, and a
+    // fix at either end of the body is wrong
+    let source =
+        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let buffered = new BufferedStream(stream)\n    let writer = new StreamWriter(buffered)\n    interface System.IDisposable with\n        member _.Dispose() =\n            writer.Dispose()\n            stream.Dispose()"
+
+    let _, _, undisposed = designIn source
+
+    match undisposed with
+    | [ s ] ->
+        Assert.Equal("buffered", s.FieldName)
+        Assert.True(s.Fix.IsNone, "no end of the body is the right place")
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
 [<Fact>]

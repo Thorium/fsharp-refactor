@@ -9,10 +9,18 @@
 /// cells) into the O(n) the author meant. This is the highest-frequency
 /// first-draft shape LLMs produce when porting Python.
 ///
-/// Safety rules (all syntactic):
+/// Safety rules:
 ///   - the bound is literally `0 .. <xs>.Length - 1` (or an
 ///     `Array/List/Seq.length <xs> - 1` spelling), and <xs> is the SAME
 ///     path the body indexes
+///   - <xs> is proven (typed) an array, an F# list, a string, a
+///     ResizeArray or an IList<'T> — a type enumerated in index order. A
+///     `.Length` and an indexer alone do not make `for item in xs` compile
+///     (StringBuilder has no enumerator)
+///   - the body touches <xs> only through `<xs>.[i]`: the bound was read
+///     once where an enumerator checks every step, so an `xs.Add` in the
+///     body turns into "Collection was modified", and a call handed `xs`
+///     may do the same
 ///   - every use of the index variable in the body is exactly `<xs>.[i]`
 ///     or `<xs>[i]` — an index used as a value wants iteri, which changes
 ///     shape enough to be the author's call
@@ -122,16 +130,54 @@ let private mayBeString (check: FSharpCheckFileResults) (source: ISourceText) (c
              true)
     | _ -> true
 
+/// Does the collection this identifier names enumerate, in index order?
+/// Proven for an array, an F# list, a string, a ResizeArray and an
+/// IList<'T>; a type with `.Length` and an indexer but no enumerator
+/// (StringBuilder) or one of its own enumeration order answers no, as
+/// does a name FCS cannot type.
+let private enumeratesInIndexOrder (check: FSharpCheckFileResults) (source: ISourceText) (collIdent: Ident) =
+    let inOrder (t: FSharpType) =
+        let t = OptionModule.stripAbbreviations t
+
+        t.HasTypeDefinition
+        && (t.TypeDefinition.IsArrayType
+            || (match t.TypeDefinition.TryFullName with
+                | Some("System.String" | "Microsoft.FSharp.Collections.FSharpList`1" | "System.Collections.Generic.List`1" | "System.Collections.Generic.IList`1") ->
+                    true
+                | _ -> false))
+
+    match OptionModule.symbolOfIdent check source collIdent with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        (try
+            inOrder (resultTypeOf value)
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             false)
+    | Some(:? FSharpField as field) ->
+        (try
+            inOrder field.FieldType
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             false)
+    | _ -> false
+
 /// Find index-based loops whose index only ever indexes the bound
-/// collection, over the sources the gate admits.
-let findWith (parseTree: ParsedInput) (source: ISourceText) (gate: SourceGate) : Suggestion list =
+/// collection, over the sources the gate admits — and, given check
+/// results, only over a source proven to enumerate in index order.
+let private findIn
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (gate: SourceGate)
+    (check: FSharpCheckFileResults option)
+    : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
     let admitted (collIdent: Ident) =
-        match gate with
-        | SourceGate.Any -> true
-        | SourceGate.NoStrings(Some check) -> not (mayBeString check source collIdent)
-        | SourceGate.NoStrings None -> false
+        (match gate with
+         | SourceGate.Any -> true
+         | SourceGate.NoStrings(Some check) -> not (mayBeString check source collIdent)
+         | SourceGate.NoStrings None -> false)
+        && (match check with
+            | Some check -> enumeratesInIndexOrder check source collIdent
+            | None -> true)
 
     let suggestions: Suggestion list =
         [
@@ -239,7 +285,25 @@ let findWith (parseTree: ParsedInput) (source: ISourceText) (gate: SourceGate) :
                                        Range.equals useRange (stripParens inner).Range)
                             | _ -> false)
 
-                    let disqualified = mutates || rebinds || addressTaken
+                    // ...nor may the body touch the collection other than
+                    // through `xs.[i]`: the bound was read ONCE, where an
+                    // enumerator checks every step — `xs.Add` inside a `for
+                    // item in xs` throws "Collection was modified", and a
+                    // call handing `xs` on may do the same
+                    let collSegments = collText.Split('.').Length
+
+                    let touchesCollection =
+                        index.Exprs
+                        |> Array.exists (fun (_, e) ->
+                            inBody e.Range
+                            && not (indexedUses |> Array.exists (fun (u, _) -> Range.rangeContainsRange u e.Range))
+                            && (match e with
+                                | SynExpr.Ident id -> id.idText = collText
+                                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+                                    ids.Length >= collSegments && identText (List.take collSegments ids) = collText
+                                | _ -> false))
+
+                    let disqualified = mutates || rebinds || addressTaken || touchesCollection
 
                     if onlyIndexes && not disqualified then
                         let loopText = textOfRange source expr.Range
@@ -344,6 +408,22 @@ let findWith (parseTree: ParsedInput) (source: ISourceText) (gate: SourceGate) :
         ]
 
     suggestions
+
+/// Find index-based loops whose index only ever indexes the bound
+/// collection, over the sources the gate admits. Parse-only: the source's
+/// type is not proven; the analyzers run findChecked.
+let findWith (parseTree: ParsedInput) (source: ISourceText) (gate: SourceGate) : Suggestion list =
+    findIn parseTree source gate None
+
+/// findWith over a source proven (typed) to enumerate in index order —
+/// what the analyzers run, CLI and editor alike.
+let findChecked
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (gate: SourceGate)
+    (check: FSharpCheckFileResults)
+    : Suggestion list =
+    findIn parseTree source gate (Some check)
 
 /// Find index-based loops whose index only ever indexes the bound
 /// collection, over any source (.NET).

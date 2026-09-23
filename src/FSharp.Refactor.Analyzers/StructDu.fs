@@ -25,6 +25,10 @@
 ///     no recursion by construction
 ///   - when more than one case carries fields, all fields must be named
 ///     (unnamed fields collide on the compiled ItemN names in struct unions)
+///   - a field name two cases share needs F# 9 (FS3204 before it: a struct
+///     union's field names must be unique across its cases), and even then
+///     the same type in both (FS3585); the language version comes from the
+///     project, so the parse-only entry holds every name to one case
 module FSharp.Refactor.StructDu
 
 open System
@@ -86,9 +90,11 @@ let private isSmallValueType (t: SynType) =
 /// Find small module-level unions that can carry [<Struct>]. The check
 /// results, where the caller has them, veto a union the file boxes, locks or
 /// null-tests (StructUses.hostileUse); without them only the size cap and
-/// the type-named shapes apply.
+/// the type-named shapes apply. `sharedFieldNames` says the project's
+/// language version is F# 9 or later, where cases may share a field name.
 let findWith
     (check: FSharpCheckFileResults option)
+    (sharedFieldNames: bool)
     (allowApiChanges: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -148,6 +154,9 @@ let findWith
                         // plus `B of value: int` refuses to compile once the
                         // attribute lands. Spelled-type comparison suffices:
                         // the small-value whitelist keeps types to plain names
+                        //
+                        // and before F# 9 they may not share a name at all
+                        // (FS3204): `A of value: int | B of value: int`
                         let sameNameSameType =
                             casesWithFields <= 1
                             || fields
@@ -155,7 +164,10 @@ let findWith
                                    idOpt |> Option.map (fun id -> id.idText, textOfRange source t.Range))
                                |> List.groupBy fst
                                |> List.forall (fun (_, group) ->
-                                   group |> List.map snd |> List.distinct |> List.length <= 1)
+                                   if sharedFieldNames then
+                                       group |> List.map snd |> List.distinct |> List.length <= 1
+                                   else
+                                       group.Length <= 1)
 
                         // every case's fields sit side by side in a struct union
                         // (no overlap), so the cap is over all of them
@@ -193,6 +205,8 @@ let findWith
     AstIndex.replay collector parseTree
     List.ofSeq suggestions
 
-/// `findWith` without check results: the parse-only entry.
+/// `findWith` without check results or a language version: the parse-only
+/// entry, which cannot know F# 9 is on and so holds every field name to
+/// one case.
 let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
-    findWith None allowApiChanges parseTree source
+    findWith None false allowApiChanges parseTree source

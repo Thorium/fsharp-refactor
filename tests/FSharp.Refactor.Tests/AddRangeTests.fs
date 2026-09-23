@@ -141,3 +141,12 @@ let ``an already parenthesised source is not wrapped again`` () =
     assertAddRange
         "let f (acc: ResizeArray<int>) (xs: int list) =\n    for x in (List.rev xs) do\n        acc.Add x"
         "acc.AddRange (List.rev xs)"
+
+[<Fact>]
+let ``a source whose element type differs from the list's is left alone`` () =
+    // `acc.Add n` upcasts each string to obj; `acc.AddRange names` wants a
+    // seq<obj> and a string list is not one (FS0001)
+    Assert.Empty(
+        addRangeIn
+            "let f (names: string list) =\n    let acc = ResizeArray<obj>()\n    for n in names do\n        acc.Add n\n    acc"
+    )

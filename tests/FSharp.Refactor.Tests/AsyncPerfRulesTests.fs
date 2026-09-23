@@ -1283,8 +1283,9 @@ let ``a private boundary drain becomes a task and its caller awaits`` () =
 
 [<Fact>]
 let ``an async caller bridges with Async.AwaitTask`` () =
+    // `.Result` raised AggregateException already, as `Async.AwaitTask` does
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
+        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.Result\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
 
     match taskifyIn source with
     | [ s ] ->
@@ -2075,6 +2076,41 @@ let ``FR0049: a Result read under its own completion probe never waits`` () =
     )
 
 [<Fact>]
+let ``FR0049: a Result read behind a probe in the same condition, or on a WhenAny winner, never waits`` () =
+    // the right operand of && runs only when the probe held
+    Assert.Empty(
+        blockingIn "module Test\nopen System.Threading.Tasks\nlet read (t: Task<bool>) =\n    t.IsCompleted && t.Result"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet read (t: Task<bool>) =\n    not t.IsCompleted || t.Result"
+    )
+
+    // the WhenAny race: the task compared equal to the winner is complete,
+    // and the && keeps the read from running when the timer won
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet race (work: Task<bool>) (timer: Task) = task {\n    let! winner = Task.WhenAny(work, timer)\n    if winner = work && work.IsCompleted && work.Result then return 1 else return 0\n}"
+    )
+
+    Assert.Empty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet race (work: Task<bool>) (timer: Task) = task {\n    let! winner = Task.WhenAny(work, timer)\n    return winner = work && work.Result\n}"
+    )
+
+    // `<>` proves nothing in the right operand, and || runs it when the
+    // probe held, not when it failed
+    Assert.NotEmpty(
+        blockingIn
+            "module Test\nopen System.Threading.Tasks\nlet race (work: Task<bool>) (timer: Task) = task {\n    let! winner = Task.WhenAny(work, timer)\n    return winner <> work && work.Result\n}"
+    )
+
+    Assert.NotEmpty(
+        blockingIn "module Test\nopen System.Threading.Tasks\nlet read (t: Task<bool>) =\n    t.IsCompleted || t.Result"
+    )
+
+[<Fact>]
 let ``FR0049: the antecedent of a ContinueWith continuation is complete by definition`` () =
     // suave's ConnectionFacade and fantomas' LSPFantomasService: the lambda
     // form; suave's AsyncExtensions and FCS's AsyncMemoize: a named function
@@ -2440,3 +2476,99 @@ let ``FR0168: a try in the middle of a line rewrites to a match whose arms compi
 
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two findings, got %A" other
+
+// ---- FR0119 AwaitableOverload: AwaitTask raises AggregateException ----
+
+[<Fact>]
+let ``FR0119 inside async a site under try-with keeps its blocking call`` () =
+    // `Async.AwaitTask` surfaces a faulted task as AggregateException, so
+    // `with :? IOException` would stop catching what ReadLine threw bare
+    let source =
+        "open System.IO\nlet head (reader: TextReader) = async {\n    try\n        let line = reader.ReadLine()\n        return line\n    with :? IOException -> return \"\"\n}"
+
+    Assert.Empty(awaitableIn source)
+
+    // a try/with around the run of the computation catches the same way
+    let outer =
+        "open System.IO\nlet head (reader: TextReader) =\n    try\n        async {\n            let line = reader.ReadLine()\n            return line\n        }\n        |> Async.RunSynchronously\n    with :? IOException -> \"\""
+
+    Assert.Empty(awaitableIn outer)
+
+    // task { } awaits the bare exception: still fixed there
+    let inTask =
+        "open System.IO\nlet head (reader: TextReader) = task {\n    try\n        let line = reader.ReadLine()\n        return line\n    with :? IOException -> return \"\"\n}"
+
+    Assert.Single(awaitableIn inTask) |> ignore
+
+// ---- FR0049 Taskify: closures in the body, AggregateException in async callers ----
+
+[<Fact>]
+let ``FR0049 taskify leaves a drain inside a local function or object expression alone`` () =
+    // `let!` inside `let g () = ...` lands in a plain function — FS0750
+    Assert.Empty(
+        taskifyIn
+            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    let g () =\n        let r = t.Result\n        r + 1\n    g ()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+    )
+
+    Assert.Empty(
+        taskifyIn
+            "module Test\nopen System\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    let o =\n        { new Object() with\n            member _.ToString() =\n                let r = t.Result\n                string r }\n    o.ToString()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+    )
+
+    // a caller inside a local function of the CE cannot bind either
+    Assert.Empty(
+        taskifyIn
+            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let h () =\n        let s = fetch 1\n        s\n    return h ()\n}"
+    )
+
+[<Fact>]
+let ``FR0049 taskify keeps a GetResult drain whose caller is async`` () =
+    // GetResult threw the task's exception bare; `Async.AwaitTask` raises
+    // AggregateException, so the caller's `with :? IOException` stops catching
+    Assert.Empty(
+        taskifyIn
+            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
+    )
+
+// ---- FR0118 CancellationOverload: cleanup callbacks, handlers, shadowed names ----
+
+[<Fact>]
+let ``FR0118 no token is handed to a call inside the token's Register callback`` () =
+    // the callback runs BECAUSE the token was cancelled: the call would
+    // throw OperationCanceledException instead of cleaning up
+    let source =
+        "open System.IO\nopen System.Threading\nlet watch (s: Stream) (ct: CancellationToken) =\n    ct.Register(fun () -> s.FlushAsync() |> ignore) |> ignore\n    0"
+
+    Assert.Empty(cancellationIn source)
+
+[<Fact>]
+let ``FR0118 a name shadowing the token is not taken for it`` () =
+    // `ct` inside the comprehension is the string, not the token
+    let source =
+        "open System.Net.Http\nopen System.Threading\nlet fetch (client: HttpClient) (ct: CancellationToken) =\n    [ for ct in [ \"a\" ] -> client.GetStringAsync(\"u\") ]"
+
+    Assert.Empty(cancellationIn source)
+
+[<Fact>]
+let ``FR0118 a loop inside a with handler gets no cancellation check`` () =
+    // the handler is cleanup: a check there throws on the way out
+    let source =
+        "open System.Threading\nopen System.Threading.Tasks\nlet f (ct: CancellationToken) (handle: int -> Task) = task {\n    try\n        return 1\n    with _ ->\n        let mutable i = 0\n        while i < 3 do\n            do! handle i\n            i <- i + 1\n        return 0\n}"
+
+    Assert.Empty(unobservedLoopsIn source)
+
+// ---- FR0053 HexString: an indexer or slice right after the chain ----
+
+[<Fact>]
+let ``FR0053 a trailing slice or indexer keeps the call parenthesised`` () =
+    // the space form left `ToHexString hash[..7]`: the slice OF THE BYTES
+    for tail in [ "[..7]"; ".[..7]"; "[0]"; ".[0]" ] do
+        let source =
+            $"module Test\nlet f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\"){tail}"
+
+        match hexIn source with
+        | [ s ] ->
+            Assert.Equal("(System.Convert.ToHexString bytes)", s.ReplacementText)
+            let patched = applyEdit source s.Range s.ReplacementText
+            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        | other -> failwithf "Expected exactly one hex suggestion for %s, got %A" tail other

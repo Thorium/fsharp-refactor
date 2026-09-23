@@ -263,6 +263,20 @@ let ``FR0009 withholds the FSharp.Core 9 rewrite from the restore's own record o
     Assert.DoesNotContain("r |> Result.isOk", fixes)
     Assert.Contains("r |> Result.map (fun v -> v + 1)", fixes)
 
+[<Fact>]
+let ``FR0009 withholds Result.iter when a narrower framework's FSharp.Core predates 6.0.6`` () =
+    // ResultModule.Iterate shipped with the rest of the Result/Option
+    // parity set in FSharp.Core 6.0.6; 6.0.0-6.0.5 share its assembly
+    // version 6.0.0.0 and have only map, bind and mapError
+    let ctx =
+        scriptContext
+            "let show (r: Result<int, string>) =\n    match r with\n    | Ok v -> printfn \"%d\" v\n    | Error _ -> ()\n"
+
+    let fixes =
+        withMinCore "6.0.0.0" (fun () -> Analyzers.resultModuleCliAnalyzer ctx |> Async.RunSynchronously |> fixTexts)
+
+    Assert.DoesNotContain(fixes, fun t -> t.Contains "Result.iter")
+
 [<Literal>]
 let private tailRecursiveSource =
     "module M\nlet rec sum (acc: int) (xs: int list) =\n    match xs with\n    | [] -> acc\n    | h :: t -> sum (acc + h) t"

@@ -190,6 +190,15 @@ let private shapes =
         // map over a collection that is not a range
         withFree "RangeMapKept" [ "!FR0173" ] genSmall (fun n i ->
             $"let f{i} (count: int) (xs: int[]) =\n    Array.append ([| 1 .. count |] |> Array.map (fun x -> x + {n})) (xs |> Array.map (fun x -> x - {n}))")
+        // FR0174: a query copied before a trivial filter and projection (the
+        // generated module opens no System.Linq, so the shape's own module does)
+        withFree "QueryCopiedChain" [ "FR0174" ] genSmall (fun n i ->
+            $"module Q{i} =\n    open System.Linq\n    type Row{i} = {{ Id{i}: int; State{i}: int }}\n    let f{i} (q: IQueryable<Row{i}>) = q.ToList().Where(fun r -> r.Id{i} > {n} || r.State{i} = 0).Select(fun r -> r.State{i})")
+        // FR0174 must stay quiet: a call inside the filter, a list that is no
+        // query, and a pipeline - the F# modules' copy is the author's visible
+        // choice, taken only under the default-off `pipelines` knob
+        withFree "QueryCopyKept" [ "!FR0174" ] genSmall (fun n i ->
+            $"module Q{i} =\n    open System.Linq\n    type Row{i} = {{ Id{i}: int; Name{i}: string }}\n    let f{i} (q: IQueryable<Row{i}>) (xs: ResizeArray<Row{i}>) =\n        q.ToList().Where(fun r -> r.Name{i}.Contains \"{n}\"), xs.ToList().Where(fun r -> r.Id{i} > {n}), (q |> Seq.toList |> List.filter (fun r -> r.Id{i} <> {n}))")
     ]
 
 let family: Family =
@@ -209,6 +218,11 @@ let family: Family =
                         "FR0170", [ for r, _, t in s.Edits -> edit "FR0170" r t ]
                     for s in RangeMap.find c.Tree c.Source c.Check ->
                         "FR0173", [ edit "FR0173" s.Range s.ReplacementText ]
+                    // the sweep applies the exact translations, pipelines left
+                    // to their default (off)
+                    for s in QueryCopy.find false c.Tree c.Source c.Check do
+                        if s.Fidelity = QueryCopy.Exact then
+                            yield "FR0174", [ edit "FR0174" s.Range s.ReplacementText ]
                     for s in SeqOnArray.find c.Tree c.Source c.Check ->
                         match s.LinqSpelling with
                         | None -> "FR0139", [ edit "FR0139" s.Range "Array" ]

@@ -16,8 +16,13 @@
 ///   - a single lowercase identifier `f` is rejected when the enclosing
 ///     declaration appears to bind it locally (let/fun/for/pattern binding —
 ///     checked conservatively on the declaration text), because the generated
-///     binding would sit outside that scope; a dotted `Module.func` must
-///     start with an uppercase segment
+///     binding would sit outside that scope; and it must resolve (typed) to
+///     a value of a module declared OUTSIDE the enclosing declaration,
+///     which catches what the text scan misses (a parameter on its own
+///     line, a nested pattern binder, a `let rec ... and` sibling); a
+///     dotted `Module.func` must start with an uppercase segment
+///   - the clause variable is kept when the body reads it (matched as an
+///     identifier, primes included: `n'`), `_` otherwise
 ///   - skipped when the file already contains an active pattern of the same
 ///     name
 module FSharp.Refactor.ActivePattern
@@ -80,6 +85,8 @@ let private locallyBound (declText: string) (name: string) =
 let private capitalize (name: string) =
     string (Char.ToUpperInvariant name.[0]) + name.Substring 1
 
+let private ssnullbRegex = Regex @"\s*\|\s*null\b"
+
 /// The generated pattern's `input` parameter, annotated when it must be.
 /// The original guard `Path.IsPathRooted p` infers from the match variable;
 /// the extracted pattern's `input` has no such context, and a .NET method
@@ -117,8 +124,7 @@ let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText)
                         // net9.0). The annotation is optional, the pattern
                         // body is the same, and a guard accepting null takes
                         // a plain `string` just as well: drop it always
-                        let formatted =
-                            Regex.Replace(t.Format symbolUse.DisplayContext, @"\s*\|\s*null\b", "")
+                        let formatted = ssnullbRegex.Replace(t.Format symbolUse.DisplayContext, "")
 
                         ValueSome $"(input: {formatted})"
                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
@@ -138,6 +144,34 @@ let find
     (check: FSharpCheckFileResults)
     : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+
+    // the typed proof that a bare guard function is in scope where the
+    // pattern lands: a value of a MODULE, declared outside the enclosing
+    // declaration. The text scan misses a parameter on its own line, a
+    // nested pattern binder, and a `let rec ... and` sibling; the symbol
+    // does not
+    let moduleLevel (declRange: range) (fnExpr: SynExpr) =
+        match fnExpr with
+        | SynExpr.Ident id ->
+            let r = id.idRange
+            let lineText = source.GetLineString(r.EndLine - 1)
+
+            try
+                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                | Some symbolUse ->
+                    match symbolUse.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as v ->
+                        let declared = v.DeclarationLocation
+
+                        v.IsModuleValueOrMember
+                        && (v.DeclaringEntity |> Option.exists (fun e -> e.IsFSharpModule))
+                        && (declared.FileName <> declRange.FileName
+                            || not (Range.rangeContainsRange declRange declared))
+                    | _ -> false
+                | None -> false
+            with _ -> // unresolved is unproven; fsharpanalyzer: ignore-line FR0055
+                false
+        | _ -> false
 
     // only consulted when a candidate guard is found, which is rare
     let fileText =
@@ -192,7 +226,8 @@ let find
                                   funcExpr = GuardFunction(fnName, fnExpr, isDotted); argExpr = SynExpr.Ident arg) as guard) when
                                 arg.idText = var.idText
                                 && isSingleLine guard.Range
-                                && (isDotted || not (locallyBound declText.Value fnName))
+                                && (isDotted
+                                    || (not (locallyBound declText.Value fnName) && moduleLevel decl.Range fnExpr))
                                 ->
                                 let patternName = capitalize fnName
 
@@ -251,11 +286,9 @@ let find
                                         // for the guard, and `| IsDigit c -> Decimal` left
                                         // it unused — FS1182, an error under
                                         // FsAutoComplete's warnings-as-errors
-                                        let bodyReads =
-                                            Regex.IsMatch(
-                                                textOfRange source body.Range,
-                                                $@"\b{Regex.Escape var.idText}\b"
-                                            )
+                                        // (identifierPattern, not \b: `n'` ends
+                                        // in a prime, where \b finds no boundary)
+                                        let bodyReads = mentionsIdentifier (textOfRange source body.Range) var.idText
 
                                         let binder = if bodyReads then var.idText else "_"
 

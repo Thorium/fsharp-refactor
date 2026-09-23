@@ -40,6 +40,10 @@
 ///     with a span overload of its own devising is not assumed identical
 ///   - byref TryParse spellings (`TryParse(sub, &r)`) are left alone:
 ///     the tuple argument shape does not match, deliberately
+///   - the file opens `System`: `AsSpan` is an extension method of
+///     `System.MemoryExtensions`, and a file that opens only
+///     `System.Text.RegularExpressions` cannot see it (the tool's own
+///     SprintfInterpolation.fs, rolled back when the rule swept it)
 module FSharp.Refactor.SubstringSpan
 
 open FSharp.Compiler.CodeAnalysis
@@ -167,7 +171,8 @@ let private (|ConsumerCall|_|) (e: SynExpr) =
 /// Find Substring calls whose only consumer is a span-capable reader.
 /// Requires typed check results.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
-    if OptionModule.hasErrors check then
+    // `AsSpan` is MemoryExtensions': without `open System` it does not resolve
+    if OptionModule.hasErrors check || not (opensNamespace source "System") then
         []
     else
         let index = AstIndex.ofTree parseTree

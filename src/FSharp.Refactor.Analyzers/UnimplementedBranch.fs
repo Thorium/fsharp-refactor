@@ -33,6 +33,12 @@
 /// `| [] -> Unchecked.defaultof<'T>` is the entire contract of a
 /// SingleOrDefault, and `| null -> null` passes a sentinel through.
 ///
+/// Two answers never accuse, whatever the comment: a boolean (`false //
+/// not supported on this platform` IS the answer to "is it supported?"),
+/// and any value under a bare "not supported"/"unsupported" with nothing
+/// saying the gap is temporary ("yet", "for now", "TODO"): that comment
+/// documents the platform, not the code.
+///
 /// The fix is safe to apply here in a way it would not be for a whole
 /// function body: the sibling branches already fix the type, so substituting
 /// `raise` (which returns `'a`) disturbs no inference.
@@ -62,14 +68,20 @@ let private stubPhrases =
         "not yet implemented"
         "notimplemented"
         "unimplemented"
-        "not supported"
         "not yet supported"
-        "unsupported"
         "not finished"
         "not done yet"
         "todo: implement"
         "fixme: implement"
     ]
+
+/// "Not supported" alone describes the WORLD as often as the code: `//
+/// not supported on this platform` above `None` is the documented answer
+/// for that platform, and a raise would crash every caller there. It says
+/// "unfinished" only beside a word that makes the gap temporary.
+let private supportPhrases = [ "not supported"; "unsupported" ]
+
+let private temporaryMarkers = [ "yet"; "for now"; "todo"; "fixme"; "later" ]
 
 /// Commented-OUT code is not a note about the branch. The F# compiler's
 /// ServiceInterfaceStubGenerator.fs had
@@ -84,18 +96,26 @@ let private stubPhrases =
 /// call, reads as code.
 let private codeMarkers = [ "%a"; "printf"; "debug" ]
 
+let private aZazwsRegex = Regex @"^[A-Za-z_][\w.]*(\s*""|\()"
+
 let private looksLikeCode (comment: string) =
     let body =
         comment.Trim().TrimStart('/').TrimStart('(').TrimStart('*').TrimEnd(')').TrimEnd('*').Trim()
 
     let lower = body.ToLowerInvariant()
 
-    codeMarkers |> List.exists lower.Contains
-    || Regex.IsMatch(body, @"^[A-Za-z_][\w.]*(\s*""|\()")
+    codeMarkers |> List.exists lower.Contains || aZazwsRegex.IsMatch body
 
 let private saysUnfinished (comment: string) =
     let text = comment.ToLowerInvariant()
-    stubPhrases |> List.exists text.Contains && not (looksLikeCode comment)
+
+    let temporary =
+        temporaryMarkers
+        |> List.exists (fun marker -> Regex.IsMatch(text, $@"\b{Regex.Escape marker}\b"))
+
+    (stubPhrases |> List.exists text.Contains
+     || temporary && (supportPhrases |> List.exists text.Contains))
+    && not (looksLikeCode comment)
 
 /// Values that stand in for a result. All of them are ordinary values that
 /// only a comment turns into evidence — `null` and `Unchecked.defaultof`
@@ -118,9 +138,9 @@ let private isPlaceholder (e: SynExpr) =
         | SynConst.Int32 0
         | SynConst.Int64 0L
         | SynConst.Double 0.0 -> true
-        // `| X -> false // Not supported yet` — the comment gate keeps
-        // ordinary boolean tables quiet, so both literals may accuse
-        | SynConst.Bool _ -> true
+        // never a Bool: `| X -> false // not supported on this platform`
+        // answers "is it supported?" - the comment documents the answer,
+        // and a raise would turn a capability query into a crash
         | _ -> false
     // a qualified spelling — `Option.None`, `ValueOption.ValueNone`
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
@@ -159,6 +179,8 @@ let private accusedBy (comments: (range * string) list) (arrow: range) (body: ra
 
         afterArrow && beforeBody && saysUnfinished text)
 
+let private boptionvoptiRegex = Regex(@"\b(option|voption|Option|ValueOption)\b")
+
 /// Find match branches whose whole body is a stand-in result.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
@@ -174,7 +196,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // (or the active-pattern name) is the evidence; inferred option
     // returns stay eligible — that is the rule's own example shape.
     let optionByContract (path: SyntaxNode list) (matchRange: range) =
-        let optionType = Regex(@"\b(option|voption|Option|ValueOption)\b")
+        let optionType = boptionvoptiRegex
 
         path
         |> List.choose (fun node ->

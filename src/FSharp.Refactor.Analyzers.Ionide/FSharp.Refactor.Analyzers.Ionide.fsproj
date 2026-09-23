@@ -66,6 +66,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\AutoProperty.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ClosureCapture.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\QueryInLoop.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\QueryCopy.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\TaskStateMachine.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\AddRange.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\AccumulatorLoop.fs" />

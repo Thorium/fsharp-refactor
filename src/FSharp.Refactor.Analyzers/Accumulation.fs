@@ -10,7 +10,8 @@
 ///    the same expression evaluated with the same bindings in the same
 ///    order, so the rewrite is behavior-preserving; `sum`/`sumBy`
 ///    specializations fire when the combine is FSharp.Core's `+` over a
-///    zero initializer on a FLOATING accumulator (sum adds checked; an
+///    zero initializer (a decimal one only as `0m`: `0.00m` keeps its scale
+///    through the loop, `sum` starts from 0m) on a FLOATING accumulator (sum adds checked; an
 ///    integer loop that wraps would throw). The module matches the
 ///    source's RESOLVED kind:
 ///    measured, `List.sum`/`Array.sum` run level with the mutable loop
@@ -107,7 +108,9 @@ let private isZeroLike (e: SynExpr) =
     | SynExpr.Const(SynConst.Int32 0, _)
     | SynExpr.Const(SynConst.Double 0.0, _)
     | SynExpr.Const(SynConst.Single 0.0f, _) -> true
-    | SynExpr.Const(SynConst.Decimal d, _) -> d = 0M
+    // a decimal carries its scale: `0.00m + 1m` is 1.00m where `sum` gives
+    // 1m, so only a zero of scale 0 and no sign (`0m`) starts a sum
+    | SynExpr.Const(SynConst.Decimal d, _) -> d = 0M && System.Decimal.GetBits(d).[3] = 0
     | _ -> false
 
 /// The accumulator types on which `sum`/`sumBy` compute what the loop

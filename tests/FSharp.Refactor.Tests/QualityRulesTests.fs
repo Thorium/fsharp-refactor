@@ -642,7 +642,7 @@ let ``a file-private option field migrates with every use`` () =
         + "    match r.Seen with\n"
         + "    | Some d -> string d\n"
         + "    | None -> \"never\"\n"
-        + "let private year (r: Row) = r.Seen |> Option.map (fun d -> d.Year)\n"
+        + "let private year (r: Row) = r.Seen |> Option.map (fun d -> d.Year) |> Option.defaultValue 0\n"
         + "let private known (r: Row) = r.Seen.IsSome\n"
         + "let private orNow (r: Row) (now: System.DateTime) = defaultArg r.Seen now"
 
@@ -654,7 +654,8 @@ let ``a file-private option field migrates with every use`` () =
         Assert.Contains("{ r with Seen = ValueNone }", patched)
         Assert.Contains("| ValueSome d -> string d", patched)
         Assert.Contains("| ValueNone -> \"never\"", patched)
-        Assert.Contains("r.Seen |> ValueOption.map", patched)
+        // the map's voption flows on into the next stage, which migrates too
+        Assert.Contains("r.Seen |> ValueOption.map (fun d -> d.Year) |> ValueOption.defaultValue 0", patched)
         Assert.Contains("r.Seen.IsSome", patched)
         Assert.Contains("defaultValueArg r.Seen now", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
@@ -674,6 +675,27 @@ let ``a use that binds the option value keeps the note`` () =
     match voptionFixIn source with
     | [ (_, None) ] -> ()
     | other -> failwithf "Expected the migration to bail, got %A" other
+
+[<Fact>]
+let ``an option-valued result that leaves the migrated chain keeps the note`` () =
+    // each consumer's result is still an option somewhere the scan does
+    // not reach: a returned map, a bind whose lambda builds `Some`, a map2
+    // whose other argument stays an option
+    for consumer in
+        [
+            "r.Seen |> Option.map (fun d -> d.Year)"
+            "r.Seen |> Option.bind (fun d -> Some d.Year)"
+            "Option.map2 (fun (a: System.DateTime) b -> a.Year + b) r.Seen other"
+        ] do
+        let source =
+            "module Test\n"
+            + "type private Row = { Seen: System.DateTime option }\n"
+            + "let private mk (d: System.DateTime) = { Seen = Some d }\n"
+            + $"let private use1 (r: Row) (other: int option) = {consumer}"
+
+        match voptionFixIn source with
+        | [ (_, None) ] -> ()
+        | other -> failwithf "Expected the migration of %s to bail, got %A" consumer other
 
 // ---- FR0093 struct-tuple migration ----
 
@@ -1177,6 +1199,26 @@ let ``FR0123 a body touching an enclosing local mutable is not wrapped`` () =
 
     for s in monitorLocksIn source do
         Assert.Equal(None, s.Fix)
+
+[<Fact>]
+let ``FR0123 a body calling base is not wrapped`` () =
+    // `base` cannot be used in a closure (FS0405)
+    let source =
+        "module M =\n    type B() =\n        abstract Run: unit -> int\n        default _.Run() = 1\n    type D() =\n        inherit B()\n        let gate = obj ()\n        override _.Run() =\n            System.Threading.Monitor.Enter gate\n            try\n                base.Run() + 1\n            finally\n                System.Threading.Monitor.Exit gate"
+
+    match monitorLocksIn source with
+    | [ s ] -> Assert.Equal(None, s.Fix)
+    | other -> failwithf "Expected one fix-less suggestion, got %A" other
+
+[<Fact>]
+let ``FR0123 a body assigning a byref parameter is not wrapped`` () =
+    // a closure cannot capture a byref (FS0406)
+    let source =
+        "module M =\n    let gate = obj ()\n    let take (result: byref<int>) =\n        System.Threading.Monitor.Enter gate\n        try\n            result <- 42\n        finally\n            System.Threading.Monitor.Exit gate"
+
+    match monitorLocksIn source with
+    | [ s ] -> Assert.Equal(None, s.Fix)
+    | other -> failwithf "Expected one fix-less suggestion, got %A" other
 
 [<Fact>]
 let ``FR0120 an EventId-first log gets no exception inserted before it`` () =
@@ -1917,7 +1959,8 @@ let ``a UtcNow-fed private DateTime field migrates to DateTimeOffset`` () =
         + "type private Row = { Seen: DateTime; Name: string }\n"
         + "let private mk () = { Seen = DateTime.UtcNow; Name = \"a\" }\n"
         + "let private year (r: Row) = r.Seen.Year\n"
-        + "let private later (r: Row) = r.Seen.AddDays 1.0\n"
+        + "let private later (r: Row) = r.Seen.AddDays(1.0).Year\n"
+        + "let private same (a: Row) (b: Row) = a.Seen.Equals(b.Seen)\n"
         + "let private newer (a: Row) (b: Row) = a.Seen > b.Seen\n"
         + "let private gap (a: Row) (b: Row) = a.Seen - b.Seen"
 
@@ -1941,6 +1984,45 @@ let ``a ToString read escapes the envelope`` () =
     match dtoFixIn source with
     | [ (_, None) ] -> ()
     | other -> failwithf "Expected the migration to bail on ToString, got %A" other
+
+[<Fact>]
+let ``an Equals or a CompareTo against anything but the field itself bails`` () =
+    // DateTimeOffset.Equals(obj) is false for every boxed DateTime, and
+    // CompareTo(obj) throws on one
+    for read in
+        [
+            "r.Seen.Equals(DateTime.MinValue)"
+            "r.Seen.CompareTo(DateTime.MinValue)"
+            "r.Seen.Subtract(DateTime.MinValue)"
+        ] do
+        let source =
+            "module Test\nopen System\n"
+            + "type private Row = { Seen: DateTime }\n"
+            + "let private mk () = { Seen = DateTime.UtcNow }\n"
+            + $"let private probe (r: Row) = {read}"
+
+        match dtoFixIn source with
+        | [ (_, None) ] -> ()
+        | other -> failwithf "Expected the migration to bail on %s, got %A" read other
+
+[<Fact>]
+let ``an Add result escaping as a DateTimeOffset bails`` () =
+    // the result would print, format and type differently
+    for read in
+        [
+            "string (r.Seen.AddDays 1.0)"
+            "r.Seen.AddHours(1.0).ToString()"
+            "r.Seen.AddDays 1.0"
+        ] do
+        let source =
+            "module Test\nopen System\n"
+            + "type private Row = { Seen: DateTime }\n"
+            + "let private mk () = { Seen = DateTime.UtcNow }\n"
+            + $"let private probe (r: Row) = {read}"
+
+        match dtoFixIn source with
+        | [ (_, None) ] -> ()
+        | other -> failwithf "Expected the migration to bail on %s, got %A" read other
 
 [<Fact>]
 let ``mixed Now and UtcNow writes bail`` () =
@@ -3034,6 +3116,32 @@ let ``FR0035: a list in a private module converts in place`` () =
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
+[<Fact>]
+let ``FR0035: a companion never snapshots a binding that is still mutated or compares by reference`` () =
+    let probe name =
+        $"let f (xs: string list) =\n    for x in xs do\n        if Seq.contains x {name} then\n            printfn \"%%s\" x"
+
+    let cases =
+        [
+            // a ResizeArray grown later: the snapshot misses the additions
+            "module M\nlet allowed = ResizeArray [ \"a\"; \"b\" ]\nlet add (s: string) = allowed.Add s\n"
+            + probe "allowed"
+            // an array whose element is written later
+            "module M\nlet allowed = [| \"a\"; \"b\" |]\nlet reset () = allowed.[0] <- \"z\"\n"
+            + probe "allowed"
+            // a seq re-reading mutable state on every probe
+            "module M\nlet mutable state = [ \"a\" ]\nlet allowed = seq { yield! state }\nlet count = Seq.length allowed\n"
+            + probe "allowed"
+            // byte[] elements: List.contains compares them structurally, a
+            // HashSet<byte[]> by reference
+            "module M\nlet allowed = [ [| 1uy |]; [| 2uy |] ]\nlet count = List.length allowed\nlet f (xs: byte[] list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%A\" x"
+        ]
+
+    for source in cases do
+        let found = containsIn source
+        Assert.NotEmpty found // still noted
+        Assert.All(found, (fun s -> Assert.Empty s.Fix))
+
 // ---- FR0132 comment and file guards (suave, test fixtures) ----
 
 [<Fact>]
@@ -3482,5 +3590,21 @@ let ``FR0070: a record boxed implicitly at a call, a %A hole or a string keeps i
     Assert.Single(
         typed
             "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = printfn \"%d %s\" p.X (string p.Y)\nlet keep (q: P) = q"
+    )
+    |> ignore
+
+[<Fact>]
+let ``a Seq lambda's binding reading a mutable is not hoisted`` () =
+    // Seq.map's lambda runs at ENUMERATION: hoisted, `k` reads `scale`
+    // before the later `scale <- 5` instead of after it
+    Assert.Empty(
+        invariantsIn
+            "module Test\nlet mutable scale = 1\nlet f (xs: int list) =\n    let ys =\n        xs\n        |> Seq.map (fun x ->\n            let k = scale * 2\n            x * k)\n    scale <- 5\n    Seq.toList ys"
+    )
+
+    // an eager List lambda over the same read still hoists
+    Assert.Single(
+        invariantsIn
+            "module Test\nlet mutable scale = 1\nlet f (xs: int list) =\n    let ys =\n        xs\n        |> List.map (fun x ->\n            let k = scale * 2\n            x * k)\n    scale <- 5\n    ys"
     )
     |> ignore

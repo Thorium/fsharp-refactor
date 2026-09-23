@@ -52,7 +52,7 @@ let ``a block comment accuses just as well`` () =
 [<Fact>]
 let ``an empty string stand-in is reported`` () =
     let source =
-        "module Test\ntype M = A | B | C\nlet name (x: int) = string x\nlet f m =\n    match m with\n    | A -> name 1\n    | B -> name 2\n    | C ->\n        // not supported\n        \"\""
+        "module Test\ntype M = A | B | C\nlet name (x: int) = string x\nlet f m =\n    match m with\n    | A -> name 1\n    | B -> name 2\n    | C ->\n        // not supported yet\n        \"\""
 
     match findIn source with
     | [ s ] -> Assert.Equal("raise (System.NotImplementedException())", s.ReplacementText)
@@ -93,13 +93,20 @@ let ``null with a stub comment is accused`` () =
     | other -> failwithf "Expected one suggestion for null, got %A" other
 
 [<Fact>]
-let ``false with a stub comment is accused`` () =
-    let source =
-        "module Test\ntype M = A | B\nlet f (x: int) = x > 0\nlet g m =\n    match m with\n    | A -> f 1\n    | B ->\n        // Not supported yet\n        false"
+let ``FR0100: a boolean under a stub comment is an answer, not a placeholder`` () =
+    // `// not supported on this platform` above `false` IS the answer to
+    // "is it supported?": a raise there turns a capability query into a crash
+    for comment in [ "Not supported yet"; "not supported on this platform"; "not implemented" ] do
+        for value in [ "false"; "true" ] do
+            assertNoSuggestion
+                $"module Test\ntype M = A | B\nlet f (x: int) = x > 0\nlet g m =\n    match m with\n    | A -> f 1\n    | B ->\n        // {comment}\n        {value}"
 
-    match findIn source with
-    | [ s ] -> Assert.Equal("raise (System.NotImplementedException())", s.ReplacementText)
-    | other -> failwithf "Expected one suggestion for false, got %A" other
+[<Fact>]
+let ``FR0100: a documented platform gap is a real answer`` () =
+    // "not supported" with nothing saying the gap is temporary describes
+    // the platform; "not supported yet" / "for now" describes the code
+    assertNoSuggestion (dispatch "    | Jordan ->\n        // not supported on this platform\n        None")
+    assertNoSuggestion (dispatch "    | Jordan ->\n        // unsupported by the backend\n        None")
 
 [<Fact>]
 let ``false without a comment is an ordinary value`` () =

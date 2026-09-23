@@ -122,6 +122,8 @@ let private commentSaysDeliberate (source: ISourceText) (bindingLine: int) =
 
     commentKeepsMutable.IsMatch trailing || commentKeepsMutable.IsMatch above
 
+let private mutablesRegex = Regex @"mutable\s+"
+
 /// The range of the `mutable` keyword plus its trailing whitespace, located
 /// textually between the start of the let-binding and its head pattern.
 let private mutableKeywordRange (source: ISourceText) (letStart: pos) (patStart: pos) (fileName: string) =
@@ -130,7 +132,7 @@ let private mutableKeywordRange (source: ISourceText) (letStart: pos) (patStart:
     else
         let line = source.GetLineString(letStart.Line - 1)
         let segment = line.Substring(letStart.Column, patStart.Column - letStart.Column)
-        let m = Regex.Match(segment, @"mutable\s+")
+        let m = mutablesRegex.Match segment
 
         if m.Success then
             let startCol = letStart.Column + m.Index

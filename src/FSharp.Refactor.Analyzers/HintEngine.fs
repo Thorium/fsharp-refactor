@@ -90,6 +90,12 @@ type Hint =
             /// g x)`): the fused form interleaves the calls, so both must
             /// bind functions whose calls provably have no effect.
             PureFunctionVars: Set<string>
+            /// Metavariables an EAGER filter ran on every element where the
+            /// right side's `exists`/`tryFind` stops at the first match
+            /// (`List.isEmpty (List.filter f x) ===> not (List.exists f x)`):
+            /// the calls after the match no longer happen, so the binding
+            /// must be a total predicate - no effect and no exception.
+            TotalFunctionVars: Set<string>
             /// Metavariables the left side compares against a bool LITERAL.
             /// `x = true` type-checks with x : obj too (the literal subsumes
             /// to obj), so dropping the comparison demands typed proof that
@@ -489,6 +495,17 @@ let parseRule (rule: string) : Hint option =
                         RhsBoolOperandSpans = boolOperandSpans
                         PureOnlyVars = pureOnly
                         PureFunctionVars = pureFunctions
+                        TotalFunctionVars =
+                            // `List.filter f` / `Array.filter f` on the left, a
+                            // short-circuiting `exists`/`tryFind` on the right
+                            if
+                                Text.RegularExpressions.Regex.IsMatch(rhsText, @"\b(List|Array)\.(exists|tryFind)\b")
+                            then
+                                Text.RegularExpressions.Regex.Matches(lhsText, @"\b(?:List|Array)\.filter\s+([a-z])\b")
+                                |> Seq.map (fun (m: Text.RegularExpressions.Match) -> m.Groups.[1].Value)
+                                |> Set.ofSeq
+                            else
+                                Set.empty
                         BoolTypedVars = boolTyped
                         NotFloatVars = notFloat
                         RhsNames = collectNames rhs |> List.distinct
@@ -540,7 +557,12 @@ let defaultRules =
         "Seq.concat (Seq.map f x) ===> Seq.collect f x"
         // one-element-of-transformed shapes: same result, no full scan/sort.
         // head-of-filter → find is deliberately absent: the empty-input
-        // exception types differ (ArgumentException vs KeyNotFoundException)
+        // exception types differ (ArgumentException vs KeyNotFoundException).
+        // An EAGER List/Array filter runs `f` on every element where
+        // tryFind/exists stop at the first match, so a printfn or an
+        // exception in `f` after the match happened before and would not
+        // after: those forms fire only on a total predicate
+        // (TotalFunctionVars). A lazy Seq.filter stops at the first match too
         "List.tryHead (List.filter f x) ===> List.tryFind f x"
         "Array.tryHead (Array.filter f x) ===> Array.tryFind f x"
         "Seq.tryHead (Seq.filter f x) ===> Seq.tryFind f x"
@@ -558,7 +580,9 @@ let defaultRules =
         "Array.head (Array.rev x) ===> Array.last x"
         "List.item 0 x ===> List.head x"
         "Seq.item 0 x ===> Seq.head x"
-        "Array.item 0 x ===> Array.head x"
+        // `Array.item 0 x ===> Array.head x` is absent: on an empty array
+        // the first throws IndexOutOfRangeException, the second
+        // ArgumentException, and a handler for one misses the other
         "List.isEmpty (List.filter f x) ===> not (List.exists f x)"
         "Array.isEmpty (Array.filter f x) ===> not (Array.exists f x)"
         "Seq.isEmpty (Seq.filter f x) ===> not (Seq.exists f x)"
@@ -1065,6 +1089,42 @@ let private inPlaceArrayOps =
 /// assignment, loop, handler, constructor or object expression. FSharpLint
 /// fuses the two maps unconditionally; this is the guard that keeps the
 /// rule and drops the reordering.
+let private totalOperators =
+    set
+        [
+            "op_Equality"
+            "op_Inequality"
+            "op_LessThan"
+            "op_LessThanOrEqual"
+            "op_GreaterThan"
+            "op_GreaterThanOrEqual"
+            "op_BooleanAnd"
+            "op_BooleanOr"
+        ]
+
+/// A predicate that cannot throw: a one-parameter lambda whose body is
+/// comparisons, `&&`, `||` and `not` over literals, names and dotted reads
+/// - no call, no arithmetic (`10 / x` divides by zero, `int s` fails to
+/// parse), no indexer. `isPureFunction` rules out effects; this rules out
+/// the exception an eager filter raised on an element after the first match.
+let private isTotalPredicate (e: SynExpr) =
+    let rec total (e: SynExpr) =
+        match stripParens e with
+        | SynExpr.Const _
+        | SynExpr.Null _
+        | SynExpr.Ident _
+        | SynExpr.LongIdent _ -> true
+        | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = a); argExpr = b) when
+            totalOperators.Contains op.idText
+            ->
+            total a && total b
+        | SynExpr.App(isInfix = false; funcExpr = SingleIdent n; argExpr = a) when n.idText = "not" -> total a
+        | _ -> false
+
+    match e with
+    | SynExpr.Lambda(parsedData = Some([ _ ], body)) -> total body
+    | _ -> false
+
 let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText) (index: AstIndex.Index) (e: SynExpr) =
     let r = e.Range
 
@@ -1335,9 +1395,25 @@ let find
                                 | false, _ -> false)
                         | None -> false)
 
+                // an eager filter's predicate that the short-circuiting right
+                // side stops calling: total (pure, and nothing in it can throw)
+                let totalFunctionsOk =
+                    hint.TotalFunctionVars.IsEmpty
+                    || (match typedCheck with
+                        | Some c ->
+                            hint.TotalFunctionVars
+                            |> Set.forall (fun v ->
+                                match bindings.TryGetValue v with
+                                | true, bound ->
+                                    let bound = stripParens bound
+                                    isTotalPredicate bound && isPureFunction c source fileIndex.Value bound
+                                | false, _ -> false)
+                        | None -> false)
+
                 if
                     pureOk
                     && pureFunctionsOk
+                    && totalFunctionsOk
                     && boolTypedOk
                     && not movesOverloadedMethodGroup
                     && not namedArgumentPosition

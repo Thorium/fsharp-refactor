@@ -17,7 +17,9 @@
 /// Safety rules: both stages must head the SAME module's `map` (a
 /// Seq-to-Array boundary is FR0004's business, not ours); the first mapper
 /// is a bare `fst`/`snd`/`id` identifier, parenthesized or not; both
-/// stages single-line so the fused text stays a line.
+/// stages single-line so the fused text stays a line. The second mapper
+/// keeps its parentheses unless it is atomic, a lambda or a `>>` chain:
+/// `(f << g)` spliced bare after `fst >>` would compose the other way.
 module FSharp.Refactor.MapFusion
 
 open FSharp.Compiler.Syntax
@@ -73,9 +75,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             // `id >> g` is `g`: the first pass only copied
                             textOfRange source gStage.Range
                         else
+                            // the parentheses go only where `>>` cannot take
+                            // the mapper apart: an atom, a lambda (it runs to
+                            // the closing paren), or a `>>` chain of its own.
+                            // `f << g` spliced bare is `(fst >> f) << g`
                             let gText =
                                 match gArg with
-                                | SynExpr.Paren(expr = inner) -> textOfRange source inner.Range
+                                | SynExpr.Paren(expr = inner) when
+                                    isAtomic inner
+                                    || (match inner with
+                                        | SynExpr.Lambda _ -> true
+                                        | SynExpr.App(funcExpr = SynExpr.App(funcExpr = IdentName "op_ComposeRight")) ->
+                                            true
+                                        | _ -> false)
+                                    ->
+                                    textOfRange source inner.Range
                                 | _ -> textOfRange source gArg.Range
 
                             $"%s{m1}.map (%s{projection} >> %s{gText})"

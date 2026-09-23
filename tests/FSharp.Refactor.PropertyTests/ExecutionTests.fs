@@ -34,7 +34,10 @@ let private families = Families.All.all
 /// program with many fixes; the list is rotated by the program's own tape
 /// first, which spreads the cap over all of them and stays reproducible
 /// from the seed.
+[<Literal>]
 let private maxPerRule = 2
+
+[<Literal>]
 let private maxFixesPerProgram = 8
 
 /// A run-wide budget, because the fixes are wildly unevenly distributed:
@@ -95,7 +98,7 @@ let private insideBody (p: Effects.Program) (edits: Edit list) =
     edits
     |> List.forall (fun e -> e.Range.StartLine >= p.BodyStart && e.Range.EndLine <= p.BodyEnd)
 
-let private describe (code: string, edits: Edit list) =
+let private describe (code: string) (edits: Edit list) =
     let texts =
         edits
         |> List.map (fun e -> $"{Interpreter.rangeText e.Range} -> {e.Replacement}")
@@ -130,7 +133,7 @@ let ``a fix keeps what the program does`` () =
     // and returns, which would leave this test passing while the property
     // was false
     let configuration =
-        Config.QuickThrowOnFailure.WithMaxTest(runs).WithStartSize(15).WithEndSize(32).WithQuietOnSuccess(true)
+        Config.QuickThrowOnFailure.WithMaxTest(runs).WithStartSize(15).WithEndSize(32).WithQuietOnSuccess true
 
     Check.One(
         configuration,
@@ -197,14 +200,14 @@ let ``a fix keeps what the program does`` () =
                     | Error e ->
                         failwithf
                             "%s leaves a program that does not run:\n--- before\n%s\n--- after\n%s\n--- %s"
-                            (describe (code, edits))
+                            (describe code edits)
                             source
                             patched
                             e
                     | Ok after when after <> before ->
                         failwithf
                             "%s CHANGES WHAT THE PROGRAM DOES:\n  before: %s\n  after:  %s\n--- before\n%s\n--- after\n%s"
-                            (describe (code, edits))
+                            (describe code edits)
                             before
                             after
                             source

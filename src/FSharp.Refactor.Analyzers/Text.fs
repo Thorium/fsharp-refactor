@@ -159,13 +159,18 @@ let rec stripParens (e: SynExpr) =
 
 /// Expressions that need no parentheses when used as a pipe source or a
 /// function argument.
-let isAtomic (e: SynExpr) =
+[<TailCall>]
+let rec isAtomic (e: SynExpr) =
     match e with
     | SynExpr.Ident _
     | SynExpr.LongIdent _
     | SynExpr.Const _
-    | SynExpr.Paren _
-    | SynExpr.DotGet _ -> true
+    | SynExpr.Paren _ -> true
+    // a property chain is atomic only as far as its receiver is: `(x).P`
+    // and `a.B.P` are, but `ex.GetType().Name` hangs `.Name` off an
+    // application, and `failwith ex.GetType().Name` is FS0597 exactly as
+    // the bare call below is
+    | SynExpr.DotGet(expr = receiver) -> isAtomic receiver
     // NOT a high-precedence application. `f(x)` and `X.Y(x)` carry
     // ExprAtomicFlag.Atomic, but F# still rejects them unparenthesised in
     // argument position: `isNull Environment.GetEnvironmentVariable("CI")`
@@ -287,11 +292,13 @@ let (|SingleIdent|_|) (e: SynExpr) =
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ ident ])) -> ValueSome ident
     | _ -> ValueNone
 
+let private compiledRegex = Regex @"%[-+0# ]*[0-9]*(\.[0-9]+)?[a-zA-Z]$"
+
 /// True when the text ends in a printf format specifier whose leading `%`
 /// is not itself escaped (`%%`) — the shape a typed interpolation hole has
 /// in the literal part preceding its `{`.
 let endsWithFormatSpecifier (text: string) =
-    Regex.IsMatch(text, @"%[-+0# ]*[0-9]*(\.[0-9]+)?[a-zA-Z]$")
+    compiledRegex.IsMatch text
     && (let idx = text.LastIndexOf '%'
         let mutable run = 0
         let mutable i = idx - 1

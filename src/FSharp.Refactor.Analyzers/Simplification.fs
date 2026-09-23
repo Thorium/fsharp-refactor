@@ -3,6 +3,7 @@
 ///
 ///     if c then true else false        →  c
 ///     if c then false else true        →  not c
+///     (the condition keeps parentheses when the `if` is an infix operand)
 ///     x = None      /  None = x        →  x.IsNone                (typed-gated)
 ///     x <> None                        →  x.IsSome
 ///     x = ValueNone                    →  x.IsNone
@@ -273,8 +274,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     && isSingleLine cond.Range
                     && isSafeInline cond
                     ->
+                    // the `if` may sit unparenthesized as an infix operand
+                    // (`flag && if a || b then true else false`): the bare
+                    // condition there would regroup as `(flag && a) || b`
+                    let inOperandPosition =
+                        match path with
+                        | SyntaxNode.SynExpr(SynExpr.App(argExpr = arg)) :: _ -> arg.Range = expr.Range
+                        | _ -> false
+
                     let replacement =
-                        if thenValue then
+                        if thenValue && inOperandPosition then
+                            atomicText source cond
+                        elif thenValue then
                             textOfRange source cond.Range
                         else
                             "not " + atomicText source cond

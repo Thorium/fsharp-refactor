@@ -408,6 +408,15 @@ let ``only a compiler error line counts as a compiler error`` () =
     Assert.True(
         Program.hasCompilerErrors [| @"C:\src\Use.vb(9,40): error BC30002: Type 'Shape.Circle' is not defined." |]
     )
+    // an analyzer warning the referencing project treats as an error
+    Assert.True(
+        Program.hasCompilerErrors
+            [|
+                @"C:\src\Use.cs(4,9): error CA1859: Change type of variable 'xs' from 'IList<int>' to 'List<int>' for improved performance"
+            |]
+    )
+
+    Assert.True(Program.hasCompilerErrors [| @"C:\src\Use.cs(1,1): error IDE0005: Using directive is unnecessary." |])
     // tooling, not code
     Assert.False(Program.hasCompilerErrors [| "error NETSDK1005: Assets file doesn't have a target for 'net8.0'" |])
     Assert.False(Program.hasCompilerErrors [| "error MSB4019: The imported project was not found" |])
@@ -851,3 +860,243 @@ let ``the configuration probe reads a compile item by the name the project spell
             Directory.Delete(dir, true)
         with _ ->
             ()
+
+// ---- a source file that is not UTF-8 keeps its bytes ----
+
+/// Windows-1252 — the page a legacy Finnish source was saved in, no BOM.
+let private windows1252 () =
+    Text.Encoding.RegisterProvider Text.CodePagesEncodingProvider.Instance
+    Text.Encoding.GetEncoding 1252
+
+[<Fact>]
+let ``a put-back of a Windows-1252 file writes its original bytes, not U+FFFD`` () =
+    let root = tempRoot "fsref-audit-ansi-"
+
+    try
+        let file = Path.Combine(root, "Library.fs")
+
+        let original =
+            (windows1252 ()).GetBytes "module Lib\n\n// Käyttäjän nimi, pöytä\nlet x = 1\n"
+
+        File.WriteAllBytes(file, original)
+
+        let snapshot = Program.takeSnapshot [| file |]
+        File.WriteAllText(file, "module Lib\n\nlet x = 2\n")
+
+        Assert.Equal(1, Program.restoreSnapshot snapshot)
+        Assert.Equal<byte[]>(original, File.ReadAllBytes file)
+    finally
+        Program.takeSnapshot [||] |> ignore
+        cleanup root
+
+[<Fact>]
+let ``a source file that is not valid UTF-8 is read in the legacy code page`` () =
+    let root = tempRoot "fsref-audit-ansi-"
+
+    try
+        let file = Path.Combine(root, "Library.fs")
+        File.WriteAllBytes(file, (windows1252 ()).GetBytes "// pöytä\nlet x = 1\n")
+        Assert.Equal("// pöytä\nlet x = 1\n", Program.readSource file)
+        Assert.Equal(1252, (Program.encodingOf file).CodePage)
+
+        // valid UTF-8 without a BOM stays UTF-8
+        File.WriteAllText(file, "// pöytä\n", Text.UTF8Encoding false)
+        Assert.Equal("// pöytä\n", Program.readSource file)
+        Assert.Equal(65001, (Program.encodingOf file).CodePage)
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a UTF-32LE byte order mark is not read as UTF-16`` () =
+    let root = tempRoot "fsref-audit-utf32-"
+
+    try
+        let file = Path.Combine(root, "Library.fs")
+        File.WriteAllText(file, "let x = 1\n", Text.UTF32Encoding(false, true))
+        Assert.Equal(12000, (Program.encodingOf file).CodePage)
+        Assert.Equal("let x = 1\n", Program.readSource file)
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a fix in a Windows-1252 file leaves every other byte as it was`` () : unit =
+    let root = tempRoot "fsref-audit-ansi-fix-"
+
+    try
+        let project = Path.Combine(root, "Lib", "Lib.fsproj")
+        let library = Path.Combine(root, "Lib", "Library.fs")
+        Directory.CreateDirectory(Path.GetDirectoryName project) |> ignore
+
+        File.WriteAllText(
+            project,
+            $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Library.fs\" />\n  </ItemGroup>\n</Project>\n"
+        )
+
+        let before =
+            "module Lib\n\n// Käyttäjän yhteysnimi: älä muuta\nlet private Retries = 3\n\nlet describe () = string Retries\n"
+
+        File.WriteAllBytes(library, (windows1252 ()).GetBytes before)
+
+        let code, output = runTool [| project; "--codes"; "FR0130"; "--no-color" |]
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+
+        let bytes = File.ReadAllBytes library
+        // the fix landed...
+        Assert.Equal(
+            before.Replace("let private Retries", "[<Literal>]\nlet private Retries"),
+            (windows1252 ()).GetString bytes
+        )
+        // ...and not a U+FFFD (EF BF BD) came with it
+        Assert.DoesNotContain(0xEFuy, bytes)
+    finally
+        cleanup root
+
+// ---- the verification builds everything it answers for ----
+
+[<Fact>]
+let ``every verification build runs, however the first one fails`` () =
+    let ran = ResizeArray<string>()
+
+    let signing =
+        "Lib.fsproj(40,5): error MSB3073: The command \"sign.cmd\" exited with code 1."
+
+    let result =
+        Program.buildEach
+            [
+                (fun () ->
+                    ran.Add "own"
+                    Error [| signing |])
+                (fun () ->
+                    ran.Add "consumer"
+
+                    Error
+                        [|
+                            "Use.cs(9,40): error CS0426: The type name 'Circle' does not exist in the type 'Shape'"
+                        |])
+            ]
+
+    Assert.Equal<string list>([ "own"; "consumer" ], List.ofSeq ran)
+
+    // and the consumer's error, seen only with the fixes, blames them —
+    // the own build's tooling failure alone read as pre-existing
+    let baseline =
+        Program.buildEach [ (fun () -> Error [| signing |]); (fun () -> Ok()) ]
+
+    match result, baseline with
+    | Error withFixes, Error without ->
+        Assert.Equal(2, withFixes.Length)
+
+        match Program.judgeAgainstBaseline (fun () -> Error without) withFixes without with
+        | Program.Blame.Introduced errors -> Assert.Single errors |> ignore
+        | other -> failwithf "expected Introduced, got %A" other
+    | _ -> failwith "expected both to fail"
+
+[<Fact>]
+let ``a consumer is verified even when the other configuration fails on its tooling`` () : unit =
+    // the Release build of the library fails on a signing step with the
+    // fixes and without them; the verification stopped there, never built
+    // the C# consumer, judged the identical tooling failure pre-existing
+    // and kept the [<Struct>] that the consumer cannot compile against
+    let root = tempRoot "fsref-audit-consumer-config-"
+
+    try
+        let solution = writeConsumerSolution root framework
+        let dir = Path.GetDirectoryName solution
+        let libProject = Path.Combine(dir, "src", "Lib", "Lib.fsproj")
+        let libSource = Path.Combine(dir, "src", "Lib", "Library.fs")
+
+        let signing =
+            "  <Target Name=\"SignRelease\" AfterTargets=\"Build\" Condition=\"'$(Configuration)' == 'Release'\">\n    <Exec Command=\"exit 1\" />\n  </Target>\n</Project>"
+
+        File.WriteAllText(libProject, File.ReadAllText(libProject).Replace("</Project>", signing))
+
+        File.AppendAllText(libSource, "\n#if DEBUG\nlet mode = \"debug\"\n#else\nlet mode = \"release\"\n#endif\n")
+
+        let _code, output =
+            runTool [| solution; "--api-changes"; "--codes"; "FR0016"; "--no-color" |]
+
+        let library = File.ReadAllText libSource
+
+        Assert.True(
+            output.Contains "verifying every target framework and configuration, and the referencing",
+            $"expected the configuration and consumer verification:\n{output}"
+        )
+
+        Assert.True(not (library.Contains "[<Struct>]"), $"the struct should have been put back:\n{output}")
+    finally
+        cleanup root
+
+// ---- a typecheck given up on puts back the whole compilation ----
+
+[<Fact>]
+let ``a timeout in a later pass puts back the earlier passes' fixes too`` () =
+    let root = tempRoot "fsref-audit-timeout-"
+
+    try
+        let first = Path.Combine(root, "First.fs")
+        let second = Path.Combine(root, "Second.fs")
+        File.WriteAllText(first, "let a = 1\n")
+        File.WriteAllText(second, "let b = 2\n")
+
+        let snapshot = Program.takeSnapshot [| first; second |]
+        // pass 1 rewrote First.fs and was verified; pass 2 rewrote Second.fs
+        File.WriteAllText(first, "let a = 10\n")
+        File.WriteAllText(second, "let b = 20\n")
+
+        let reported = ref -1
+
+        let thrown =
+            Assert.Throws<TimeoutException>(fun () ->
+                quietly (fun () ->
+                    Program.restoreOnTimeout snapshot (fun n -> reported.Value <- n) (fun () ->
+                        raise (TimeoutException "the typecheck had not finished")))
+                |> ignore)
+
+        Assert.Equal("the typecheck had not finished", thrown.Message)
+        Assert.Equal("let a = 1\n", File.ReadAllText first)
+        Assert.Equal("let b = 2\n", File.ReadAllText second)
+        Assert.Equal(2, reported.Value)
+
+        // no timeout, no put-back
+        Assert.Equal(7, Program.restoreOnTimeout snapshot (fun _ -> failwith "no timeout") (fun () -> 7))
+    finally
+        Program.takeSnapshot [||] |> ignore
+        cleanup root
+
+// ---- a put-back takes the files a suggestion tied to it ----
+
+[<Fact>]
+let ``a later compilation's put-back takes the tied call-site file with the definition`` () =
+    let root = tempRoot "fsref-audit-runtie-"
+
+    try
+        let shared = Path.Combine(root, "Library.fs")
+        let tied = Path.Combine(root, "Tests.fs")
+        let later = Path.Combine(root, "Other.fs")
+        File.WriteAllText(shared, "let add (a: int, b: int) = a + b\n")
+        File.WriteAllText(tied, "let three () = Lib.add (1, 2)\n")
+        File.WriteAllText(later, "let t = 2\n")
+
+        // the first compilation: one --api-changes suggestion rewrote both
+        Program.takeSnapshot [| shared |] |> ignore
+        Program.recordExtra tied (File.ReadAllText tied)
+        File.WriteAllText(shared, "let add (a: int) (b: int) = a + b\n")
+        File.WriteAllText(tied, "let three () = Lib.add 1 2\n")
+        Program.recordRunTie [ shared; tied ]
+
+        // a later compilation fails to build on the definition's file only
+        Program.takeSnapshot [| later |] |> ignore
+
+        let message =
+            $"dotnet build failed - fix the build before applying fixes:\n{shared}(1,9): error FS0001: This expression was expected to have type"
+
+        let putBack = quietly (fun () -> Program.putBackRunEdits message "Other.fsproj")
+
+        Assert.Equal(2, putBack.Length)
+        Assert.Equal("let add (a: int, b: int) = a + b\n", File.ReadAllText shared)
+        Assert.Equal("let three () = Lib.add (1, 2)\n", File.ReadAllText tied)
+    finally
+        Program.takeSnapshot [||] |> ignore
+        Program.runOriginals.Clear()
+        Program.clearRunTies ()
+        cleanup root

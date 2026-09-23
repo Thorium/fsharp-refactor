@@ -151,3 +151,9 @@ let ``a multi-line match still rewrites when the line stays short`` () =
         "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v * 2\n    | Error _ -> 0"
         "Result.map + Result.defaultValue"
         "r |> Result.map (fun v -> v * 2) |> Result.defaultValue 0"
+
+[<Fact>]
+let ``a struct member's primary-constructor value stays out of the lambda`` () =
+    // `x` is a field of the struct's `this`, which no closure may capture: FS0406
+    assertNoSuggestion
+        "module Test\n[<Struct>]\ntype S(x: int) =\n    member _.M(r: Result<int, string>) = match r with Ok v -> Ok (v + x) | Error e -> Error e"

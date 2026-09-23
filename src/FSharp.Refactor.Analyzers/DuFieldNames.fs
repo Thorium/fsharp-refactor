@@ -50,7 +50,8 @@ type Suggestion =
     }
 
 /// Words that spell TYPES or syntax, not field names — `// string * int`
-/// is a type note, and a keyword would not compile as a field name.
+/// is a type note, and a keyword (reserved words included) would not
+/// compile as a field name.
 let private notFieldNames =
     set
         [
@@ -145,6 +146,14 @@ let private notFieldNames =
             "downcast"
             "upcast"
         ]
+    // ...and every other word the compiler reserves, from its own list
+    // rather than by hand: `| ModAndKey of mod: int * key: int` does not
+    // parse, and neither do `inline`, `const`, `sig`, `downto`, `params`,
+    // `process` or the other reserved-for-future words. The OCaml infix
+    // operators `asr`/`land`/`lor`/`lsl`/`lsr`/`lxor` are not in that list
+    // but are no field names either
+    |> Set.union (set FSharp.Compiler.Tokenization.FSharpKeywords.KeywordNames)
+    |> Set.union (set [ "asr"; "land"; "lor"; "lsl"; "lsr"; "lxor" ])
 
 /// Names from the case's own name: `InterestAndRate` -> [interest; rate],
 /// `StartDateAndEndDate` -> [startDate; endDate]. The `And` must sit at a

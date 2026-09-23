@@ -259,6 +259,8 @@ let private taskRunOfRunSync (check: FSharpCheckFileResults) (source: ISourceTex
         | _ -> ValueNone
     | _ -> ValueNone
 
+let private aZazwRegex = Regex @"^[A-Za-z_][\w'.]*$"
+
 /// Wrap an expression's text in parentheses unless it is a bare
 /// identifier path — `Async.AwaitTask client.GetAsync(u)` would apply to
 /// the wrong thing.
@@ -281,7 +283,7 @@ let private asArgument (text: string) =
 
             not closedEarly)
 
-    if parenthesized || Regex.IsMatch(text, @"^[A-Za-z_][\w'.]*$") then
+    if parenthesized || aZazwRegex.IsMatch(text) then
         text
     else
         $"({text})"
@@ -362,7 +364,8 @@ let private syncSiblingFix
 /// The completion probes a `.Result` read is legitimately guarded by: the
 /// ValueTask synchronous fast path (`if vt.IsCompletedSuccessfully then
 /// vt.Result else task { let! r = vt ... }`) never blocks.
-let private completionTestNames = set [ "IsCompleted"; "IsCompletedSuccessfully" ]
+let private completionTestNames =
+    set [ "IsCompleted"; "IsCompletedSuccessfully"; "IsFaulted"; "IsCanceled" ]
 
 /// Blocking waits on synchronisation primitives, by method name and the
 /// entity that declares the method (`WaitOne` lives on WaitHandle, so
@@ -395,6 +398,16 @@ let private (|BoolOr|_|) (e: SynExpr) =
     match e with
     | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_BooleanOr"; argExpr = l); argExpr = r) ->
         ValueSome(l, r)
+    | _ -> ValueNone
+
+/// `l = r` / `l <> r`: whether it is the equality, and the two sides.
+[<return: Struct>]
+let private (|Compare|_|) (e: SynExpr) =
+    match e with
+    | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_Equality"; argExpr = l); argExpr = r) ->
+        ValueSome(true, l, r)
+    | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_Inequality"; argExpr = l); argExpr = r) ->
+        ValueSome(false, l, r)
     | _ -> ValueNone
 
 /// The value a binding body ends in.
@@ -622,10 +635,59 @@ let findWith
                 ValueSome recv.Range
             | _ -> ValueNone
 
+        // `winner` of `let! winner = Task.WhenAny(a, b)` around the site:
+        // the tasks it was chosen from, whose text `winner = a` names
+        let whenAnyArguments (winner: SynExpr) (site: range) =
+            let rec whenAnyCall (e: SynExpr) =
+                match stripParens e with
+                // `Task.WhenAny(a, b) |> Async.AwaitTask`
+                | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_PipeRight"; argExpr = l)) ->
+                    whenAnyCall l
+                | SynExpr.App(
+                    isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
+                    ids.Length >= 2
+                    && (List.last ids).idText = "WhenAny"
+                    && (List.item (ids.Length - 2) ids).idText = "Task"
+                    ->
+                    match stripParens arg with
+                    | SynExpr.Tuple(exprs = exprs) -> exprs
+                    | SynExpr.ArrayOrListComputed(expr = inner) ->
+                        let rec items (e: SynExpr) =
+                            match e with
+                            | SynExpr.Sequential(expr1 = a; expr2 = b) -> a :: items b
+                            | e -> [ e ]
+
+                        items inner
+                    | SynExpr.ArrayOrList(exprs = exprs) -> exprs
+                    | single -> [ single ]
+                    |> List.map (fun a -> textOfRange source a.Range)
+                | _ -> []
+
+            match stripParens winner with
+            | SynExpr.Ident w ->
+                index.Exprs
+                |> Array.tryPick (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou when lou.IsBang && Range.rangeContainsRange lou.Range site ->
+                        lou.Bindings
+                        |> List.tryPick (fun b ->
+                            match b with
+                            | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs) when
+                                id.idText = w.idText
+                                ->
+                                Some(whenAnyCall rhs)
+                            | _ -> None)
+                    | _ -> None)
+                |> Option.defaultValue []
+            | _ -> []
+
         // the receivers a condition proves complete — in its then branch,
-        // and in its else branch: `vt.IsCompletedSuccessfully`, conjoined
-        // with anything, or negated
-        let rec completionTests (cond: SynExpr) : string list * string list =
+        // and in its else branch: `vt.IsCompletedSuccessfully`, a WhenAny
+        // winner compared equal to the task, conjoined with anything, or
+        // negated
+        let rec completionTests (site: range) (cond: SynExpr) : string list * string list =
+            let completionTests = completionTests site
+
             match stripParens cond with
             | BoolAnd(l, r) ->
                 let tl, _ = completionTests l
@@ -638,6 +700,19 @@ let findWith
             | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
                 let t, e = completionTests inner
                 e, t
+            | Compare(equal, l, r) ->
+                let lText = textOfRange source l.Range
+                let rText = textOfRange source r.Range
+
+                let compared =
+                    [
+                        if List.contains rText (whenAnyArguments l site) then
+                            rText
+                        if List.contains lText (whenAnyArguments r site) then
+                            lText
+                    ]
+
+                if equal then compared, [] else [], compared
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) as e when
                 ids.Length >= 2 && completionTestNames.Contains (List.last ids).idText
                 ->
@@ -653,11 +728,20 @@ let findWith
             |> List.exists (fun node ->
                 match node with
                 | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenExpr; elseExpr = elseExpr)) ->
-                    let thenTests, elseTests = completionTests cond
+                    let thenTests, elseTests = completionTests r cond
 
                     (Range.rangeContainsRange thenExpr.Range r && List.contains recvText thenTests)
                     || (elseExpr |> Option.exists (fun e -> Range.rangeContainsRange e.Range r)
                         && List.contains recvText elseTests)
+                // `t.IsCompleted && t.Result`: the right operand runs only
+                // when the left held, `not t.IsCompleted || t.Result` only
+                // when it failed
+                | SyntaxNode.SynExpr(BoolAnd(cond, right)) ->
+                    Range.rangeContainsRange right.Range r
+                    && List.contains recvText (fst (completionTests r cond))
+                | SyntaxNode.SynExpr(BoolOr(cond, right)) ->
+                    Range.rangeContainsRange right.Range r
+                    && List.contains recvText (snd (completionTests r cond))
                 | _ -> false)
 
         // a task complete from birth: `Task.FromResult x`, `Task.CompletedTask`,

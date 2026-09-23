@@ -76,8 +76,8 @@ let ``non-abstract self call during construction is fine`` () =
 // ---- FR0021 redundant ToString in interpolation ----
 
 let private interpIn (source: string) =
-    let tree, sourceText = parse source
-    InterpToString.find tree sourceText
+    let tree, sourceText, check = parseAndCheck source
+    InterpToString.find (Some check) tree sourceText
 
 let private assertInterp (source: string) (expectedReplacement: string) =
     match interpIn source with
@@ -108,3 +108,23 @@ let ``ToString with an argument is culture-sensitive and stays`` () =
 [<Fact>]
 let ``ToString outside interpolation is not touched`` () =
     Assert.Empty(interpIn "module Test\nlet f (x: int) = x.ToString()")
+
+[<Fact>]
+let ``FR0021: a FormattableString or a format after the fill keeps the ToString`` () =
+    // Invariant formats `{x}` with the invariant culture, `x.ToString()`
+    // with the current one; `:N2` formats an int, but not a string
+    let cases =
+        [
+            "module Test\nopen System\nlet f (x: float) = FormattableString.Invariant $\"{x.ToString()}\""
+            "module Test\nopen System\nlet f (x: float) : FormattableString = $\"{x.ToString()}\""
+            "module Test\nopen System\nlet f (x: float) =\n    let s: FormattableString = $\"{x.ToString()}\"\n    s"
+            "module Test\nopen System\ntype R = { Msg: FormattableString }\nlet f (x: float) = { Msg = $\"{x.ToString()}\" }"
+            "module Test\nlet f (x: int) = $\"{x.ToString():N2}\""
+        ]
+
+    for source in cases do
+        Assert.Empty(interpIn source)
+
+    // a string-typed hole in a lambda or a plain call still goes
+    assertInterp "module Test\nlet f (xs: int list) = xs |> List.map (fun x -> $\"{x.ToString()}!\")" "x"
+    assertInterp "module Test\nlet f (x: int) = printfn \"%s\" $\"{x.ToString()}!\"" "x"

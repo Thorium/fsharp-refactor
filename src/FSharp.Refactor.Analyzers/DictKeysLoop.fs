@@ -14,7 +14,10 @@
 /// two disagree under a writer); the loop variable is a plain name; the
 /// body reads `d.[k]` / `d[k]` at least once and never stores through the
 /// indexer, and never rebinds `k` (a `d.[k]` under a `let k = ...` reads
-/// another key); `k` read as a plain value is fine, `KeyValue(k, v)` binds it;
+/// another key), and no read sits under a lambda, `lazy`, computation
+/// expression or object expression inside the body (it runs later, against
+/// the dictionary as it is then, where `v` is a snapshot); `k` read as a
+/// plain value is fine, `KeyValue(k, v)` binds it;
 /// the value name is `value`, else `v`, else `v1`, unused in the enclosing
 /// binding. Every read converts together with the header.
 module FSharp.Refactor.DictKeysLoop
@@ -117,12 +120,31 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     pat = SynPat.Named(ident = SynIdent(ident = key)); enumExpr = enumExpr; bodyExpr = body) ->
                     match keysOf enumExpr with
                     | Some(receiverIds, receiverText) when isDictionary (List.last receiverIds) ->
-                        let reads =
+                        let readsWithPaths =
                             index.Exprs
                             |> Array.filter (fun (_, inner) ->
                                 Range.rangeContainsRange body.Range inner.Range
                                 && indexerRead receiverText key.idText inner)
-                            |> Array.map snd
+
+                        let reads = readsWithPaths |> Array.map snd
+
+                        // a read under a lambda, `lazy`, computation
+                        // expression or object expression inside the body
+                        // runs LATER, against the dictionary as it is then;
+                        // the pair's value is what it held during the loop
+                        let deferredRead =
+                            readsWithPaths
+                            |> Array.exists (fun (readPath, _) ->
+                                readPath
+                                |> List.exists (fun node ->
+                                    match node with
+                                    | SyntaxNode.SynExpr(SynExpr.Lambda _ as deferring)
+                                    | SyntaxNode.SynExpr(SynExpr.MatchLambda _ as deferring)
+                                    | SyntaxNode.SynExpr(SynExpr.Lazy _ as deferring)
+                                    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _ as deferring)
+                                    | SyntaxNode.SynExpr(SynExpr.ObjExpr _ as deferring) ->
+                                        Range.rangeContainsRange body.Range deferring.Range
+                                    | _ -> false))
 
                         // a store through the indexer, or a key used anywhere
                         // but as the lookup, keeps the loop
@@ -147,8 +169,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             |> Option.defaultValue (source.GetSubTextString(0, source.Length))
 
                         let valueName =
-                            [ "value"; "v"; "v1" ]
-                            |> List.tryFind (fun n -> not (mentionsIdentifier enclosing n))
+                            [ "value"; "v"; "v1" ] |> List.tryFind (mentionsIdentifier enclosing >> not)
 
                         // a `let k = ...`, a lambda or a match arm rebinding
                         // the key inside the body: a `d.[k]` under it reads
@@ -170,7 +191,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                         match valueName with
                         | Some valueName when
-                            reads.Length > 0 && not stores && not keyRebound && isSingleLine enumExpr.Range
+                            reads.Length > 0
+                            && not stores
+                            && not keyRebound
+                            && not deferredRead
+                            && isSingleLine enumExpr.Range
                             ->
                             let headerRange =
                                 Range.mkRange enumExpr.Range.FileName key.idRange.Start enumExpr.Range.End

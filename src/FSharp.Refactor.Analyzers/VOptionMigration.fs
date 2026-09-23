@@ -5,7 +5,8 @@
 ///     { Seen = Some now }                              ValueSome now
 ///     { row with Seen = None }                         ValueNone
 ///     match row.Seen with Some d -> .. | None -> ..    ValueSome/ValueNone
-///     row.Seen |> Option.map f                         ValueOption.map
+///     row.Seen |> Option.defaultValue d                ValueOption.defaultValue
+///     row.Seen |> Option.map f |> Option.get           ValueOption.map, ValueOption.get
 ///     defaultArg row.Seen fallback                     defaultValueArg
 ///     row.Seen.IsSome / .IsNone / .Value               unchanged
 ///
@@ -15,7 +16,11 @@
 /// migration is all-or-nothing: every use must be one of the shapes above
 /// (verified against the typed symbol, never by name), or the suggestion
 /// stays a note. A use that BINDS the option value (`let x = row.Seen`,
-/// `| x -> ..`) starts dataflow this scan does not follow — bail.
+/// `| x -> ..`) starts dataflow this scan does not follow — bail. So does
+/// an Option-module call that returns the voption onward (`map`,
+/// `filter`) unless its result is itself consumed by one of these shapes,
+/// and any call that mixes in an option the migration does not reach:
+/// `bind` (its function returns an option), `orElse`, `map2`, `map3`.
 module FSharp.Refactor.VOptionMigration
 
 open FSharp.Compiler.CodeAnalysis
@@ -25,16 +30,12 @@ open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
 /// Option-module functions whose ValueOption twins have identical
-/// signatures and semantics.
-let private parityFunctions =
+/// signatures and semantics, whose only option is the one migrated, and
+/// whose result is no option: the migrated voption ends in them.
+let private terminalFunctions =
     set
         [
-            "map"
-            "map2"
-            "map3"
-            "bind"
             "iter"
-            "filter"
             "exists"
             "forall"
             "contains"
@@ -50,10 +51,15 @@ let private parityFunctions =
             "toList"
             "toNullable"
             "toObj"
-            "orElse"
-            "orElseWith"
-            "flatten"
         ]
+
+/// Option-module functions that take the migrated option and hand back
+/// another option of the same kind: `ValueOption.map` returns a voption,
+/// so the result has to flow on into a migrated consumer as well. Every
+/// other parity function mixes in an option the migration does not reach
+/// — `bind`'s and `orElseWith`'s function returns one, `orElse`, `map2`
+/// and `map3` take another — and stays out.
+let private passThroughFunctions = set [ "map"; "filter" ]
 
 /// Members voption shares with option — access sites need no edit.
 let private sharedMembers = set [ "IsSome"; "IsNone"; "Value" ]
@@ -175,14 +181,34 @@ let classifierFor
     // a use consumed through an application chain: climb while the
     // head stays a pipe, then classify the head that consumes it
     let rec classifyApp (path: SyntaxNode list) (current: SynExpr) : (range * string * string) list option =
+        // an Option-module consumer of the voption: a terminal one ends
+        // the chain; `map`/`filter` hand a voption on, so their RESULT
+        // (`result`, under `resultPath`) is classified like a use of its
+        // own — `r.Seen |> Option.map f |> Option.defaultValue d` migrates
+        // both stages, and a map result that is returned, bound or passed
+        // anywhere else keeps the whole migration a note
+        let consumer (m: Ident) (f: Ident) (result: SynExpr) (resultPath: SyntaxNode list) =
+            if m.idText <> "Option" then
+                None
+            elif terminalFunctions.Contains f.idText then
+                Some [ m.idRange, "Option", "ValueOption" ]
+            elif passThroughFunctions.Contains f.idText then
+                classifyApp resultPath result
+                |> Option.map (fun onward -> (m.idRange, "Option", "ValueOption") :: onward)
+            else
+                None
+
         match path with
         | SyntaxNode.SynExpr(SynExpr.Paren _ as paren) :: rest -> classifyApp rest paren
         | SyntaxNode.SynExpr(SynExpr.App _ as app) :: rest ->
             match headOf app with
-            | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when
-                m.idText = "Option" && parityFunctions.Contains f.idText
-                ->
-                Some [ m.idRange, "Option", "ValueOption" ]
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) ->
+                // `app` applies the consumer up to the voption: for `map`
+                // and `filter`, whose voption is the last argument, that is
+                // the whole call and its value is the result; a terminal
+                // consumer's further arguments (`Option.foldBack f r.Seen
+                // s`) take no option
+                consumer m f app rest
             | SynExpr.Ident d when d.idText = "defaultArg" -> Some [ d.idRange, "defaultArg", "defaultValueArg" ]
             | IsEqualityOp eqHead ->
                 // `field = None` / `None <> field`: the None literal
@@ -204,13 +230,11 @@ let classifierFor
                 | SynExpr.App(funcExpr = infixPart), c when Range.equals infixPart.Range c.Range ->
                     // we were the piped VALUE: the receiving side is
                     // the full pipe's argExpr — classify its head
+                    // — classify its head; the full pipe is the result
                     match app with
                     | SynExpr.App(argExpr = receiver) ->
                         match headOf receiver with
-                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when
-                            m.idText = "Option" && parityFunctions.Contains f.idText
-                            ->
-                            Some [ m.idRange, "Option", "ValueOption" ]
+                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) -> consumer m f app rest
                         | _ -> None
                     | _ -> None
                 | _ ->

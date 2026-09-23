@@ -52,13 +52,13 @@ let private testAttributes =
 
 let private aZRegex = Regex "(?=[A-Z])"
 
+let private aZazAZaz09Regex = Regex @"^[A-Za-z][A-Za-z0-9_]*$"
+let private aZ2Regex = Regex "[A-Z]{2}"
+
 /// The double-backtick spelling, when the name earns one: five or more
 /// words, plain camel/snake, no acronym runs.
 let quotedForm (name: string) : string option =
-    if
-        Regex.IsMatch(name, "[A-Z]{2}")
-        || not (Regex.IsMatch(name, @"^[A-Za-z][A-Za-z0-9_]*$"))
-    then
+    if aZ2Regex.IsMatch name || not (aZazAZaz09Regex.IsMatch name) then
         None
     else
         let words =

@@ -63,6 +63,38 @@ let ``a bound over a different collection is left alone`` () =
             "module Test\nlet f (xs: int[]) (ys: int[]) =\n    for i in 0 .. xs.Length - 1 do\n        printfn \"%d\" ys.[i]"
     )
 
+/// The typed scan the analyzers run: the source must be proven a
+/// collection that enumerates in index order.
+let private checkedIndexedLoopsIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    IndexedLoop.findChecked tree sourceText IndexedLoop.SourceGate.Any checkResults
+
+[<Fact>]
+let ``a type with Length and an indexer but no enumerator keeps its index`` () =
+    // StringBuilder has .Length and .[i] but `for c in sb` does not compile
+    Assert.Empty(
+        checkedIndexedLoopsIn
+            "module Test\nlet f (sb: System.Text.StringBuilder) =\n    for i in 0 .. sb.Length - 1 do\n        printfn \"%c\" sb.[i]"
+    )
+
+[<Fact>]
+let ``the typed scan still takes an array`` () =
+    match
+        checkedIndexedLoopsIn
+            "module Test\nlet f (xs: int[]) =\n    for i in 0 .. xs.Length - 1 do\n        printfn \"%d\" xs.[i]"
+    with
+    | [ _ ] -> ()
+    | other -> failwithf "Expected one indexed-loop fix, got %A" other
+
+[<Fact>]
+let ``a body that calls a method on the collection keeps its index`` () =
+    // the bound was read once; `for item in xs` while xs.Add runs throws
+    // "Collection was modified"
+    Assert.Empty(
+        indexedLoopsIn
+            "module Test\nlet f (xs: ResizeArray<int>) =\n    for i in 0 .. Seq.length xs - 1 do\n        if xs.[i] > 0 then xs.Add 0"
+    )
+
 // ---- FR0102 ListIndexing ----
 
 let private listIndexingIn (source: string) =

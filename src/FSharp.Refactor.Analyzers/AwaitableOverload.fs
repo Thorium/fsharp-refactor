@@ -18,7 +18,10 @@
 ///     returns the NON-generic Task
 ///   - inside `async { }` the same rewrite bridges with
 ///     `|> Async.AwaitTask` — real Task twins only there, AwaitTask has
-///     no ValueTask overload
+///     no ValueTask overload — and never under a try/with (inside the
+///     CE or around its run): AwaitTask surfaces a faulted task as
+///     AggregateException, so `with :? IOException` would stop catching
+///     what the blocking call threw bare
 ///   - never inside a lambda, a nested CE, a finally block or an
 ///     exception handler
 ///   - never `Dispose` → `DisposeAsync`: a ValueTask twin with nothing
@@ -233,6 +236,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SynExpr.ArrayOrListComputed(expr = body) -> Some body.Range
                 | _ -> None)
 
+        // the protected bodies of every try/with in the file: under one,
+        // an async site's `Async.AwaitTask` bridge would hand the handler
+        // an AggregateException where the blocking call threw the bare
+        // exception (`with :? IOException` stops catching) — whether the
+        // try sits inside the CE or around its run
+        let tryWithBodies =
+            index.Exprs
+            |> Array.choose (fun (_, e) ->
+                match e with
+                | SynExpr.TryWith(tryExpr = body) -> Some body.Range
+                | _ -> None)
+
         let noBindRanges =
             index.Exprs
             |> Array.collect (fun (_, e) ->
@@ -365,6 +380,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 let twin =
                                     match builder, twin with
                                     | "async", Some m when not (returnsRealTask m) -> None
+                                    | "async", Some _ when
+                                        tryWithBodies |> Array.exists (fun b -> Range.rangeContainsRange b expr.Range)
+                                        ->
+                                        None
                                     | _ -> twin
 
                                 match twin with

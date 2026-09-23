@@ -176,7 +176,7 @@ let private freshNames (full: string) (baseNames: string list) =
     baseNames
     |> List.map (fun baseName ->
         [ baseName; baseName + "2"; baseName + "3" ]
-        |> List.tryFind (fun candidate -> not (taken candidate))
+        |> List.tryFind (taken >> not)
         |> Option.defaultValue baseName)
 
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
@@ -360,7 +360,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                                 // a clause spanning a `#if` has two texts, and
                                 // the fix would rewrite only the one it saw
-                                if not overlapping && not (spansDirective source clauseRange) then
+                                if not (overlapping || spansDirective source clauseRange) then
                                     let original = textOfRange source clauseRange
 
                                     let replacement =

@@ -227,6 +227,7 @@ let private commentOutSetting (c: Typed.Checked) (code: string) (r: range) =
     edit code r $"() (* {Text.textOfRange c.Source r} *)"
 
 /// The name the harness checks a program under; the script rules act on `.fsx` only.
+[<Literal>]
 let private scriptName = "Test.fsx"
 
 /// Every advisory finding of the family, tagged with the code the CLI gives it.

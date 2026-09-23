@@ -152,6 +152,15 @@ let ``check-then-add on ConcurrentDictionary is flagged as a race`` () =
     | other -> failwithf "Expected exactly one concurrent TryAdd suggestion, got %A" other
 
 [<Fact>]
+let ``check-then-add stays where the framework has no Dictionary TryAdd`` () =
+    // net48 / netstandard2.0: Dictionary<'K,'V>.TryAdd does not exist
+    let tree, sourceText, checkResults =
+        parseAndCheckLegacyFramework
+            "open System.Collections.Generic\nlet f (d: Dictionary<string, int>) k (v: int) = if not (d.ContainsKey k) then d.[k] <- v"
+
+    Assert.Empty(DictTryGet.findTryAdd tree sourceText checkResults)
+
+[<Fact>]
 let ``fsharp6 index-set syntax is recognized`` () =
     assertTryAdd
         "open System.Collections.Generic\nlet f (d: Dictionary<string, int>) k (v: int) = if not (d.ContainsKey k) then d[k] <- v"

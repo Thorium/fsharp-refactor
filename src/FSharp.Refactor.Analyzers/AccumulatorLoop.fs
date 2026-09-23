@@ -184,6 +184,7 @@ let private (|ListFeed|_|) (e: SynExpr) =
 
 /// `[]`, `List.empty`, `List.Empty` (under an annotation or not): the empty
 /// list a list expression starts from too.
+[<TailCall>]
 let rec private isEmptyList (e: SynExpr) =
     match e with
     | SynExpr.Typed(expr = inner)

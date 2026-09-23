@@ -372,3 +372,41 @@ let ``an awaited, waited or synchronously run result still gets use`` () =
         do! tc.Run 1
         return n + tc.Count
     }")
+
+// ---- a self-recursive scope: `use` puts the recursive call in try/finally ----
+
+[<Fact>]
+let ``a binding whose scope recurses into the enclosing function gets no fix`` () =
+    // `use` wraps the rest of the body in try/finally: the tail call to
+    // `pump` is no longer a tail call (a stack overflow at 1e6), and every
+    // level keeps its stream open until the whole recursion unwinds
+    expectNoFixFor
+        "fs"
+        "module Test
+open System.IO
+let rec pump (path: string) n =
+    let fs = new FileStream(path, FileMode.Open)
+    fs.ReadByte() |> ignore
+    if n > 0 then pump path (n - 1) else 0"
+
+    // an agent loop: `return! loop ()` inside `use` keeps every resource alive
+    expectNoFixFor
+        "fs"
+        "module Test
+open System.IO
+let rec loop (path: string) : Async<unit> =
+    async {
+        let fs = new FileStream(path, FileMode.Open)
+        fs.ReadByte() |> ignore
+        return! loop path
+    }"
+
+    // the same body without the recursion keeps its fix
+    expectFix
+        "fs"
+        "module Test
+open System.IO
+let rec pump (path: string) n =
+    let fs = new FileStream(path, FileMode.Open)
+    fs.ReadByte() |> ignore
+    n"

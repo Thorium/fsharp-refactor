@@ -26,6 +26,10 @@
 ///     having typechecked: when the none branch is `None`, the some branch is
 ///     known to be option-typed)
 ///   - non-atomic expressions are parenthesized when inlined
+///   - no arm reads a byref, a byref-like value (Span) or the enclosing
+///     struct's `this` (its fields, its primary-constructor values) from
+///     outside it (typed): the arms become a lambda, which cannot capture
+///     them (FS0406)
 module FSharp.Refactor.OptionModule
 
 open System.Collections.Generic
@@ -148,6 +152,8 @@ type private Candidate =
         Target: string
         /// The matched expression, for the property spelling of a test.
         Scrutinee: SynExpr
+        /// The two arms' bodies: what moves into the rewrite's lambda.
+        Arms: range list
     }
 
 /// Decide the rewrite for a wrapper match, given the normalized parts.
@@ -382,6 +388,8 @@ let private mentionsRecursiveBinder (index: AstIndex.Index) (path: SyntaxNode li
                && Range.rangeContainsRange bodyRange n.idRange
            | _ -> false)
 
+let private wRegex = Regex @"^[\w.]+$"
+
 let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText) : Candidate list =
     let candidates = ResizeArray<Candidate>()
     // one index per file, not one per candidate match
@@ -426,7 +434,7 @@ let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source
                         match rewrite cfg source scrutinee boundVar someBody noneBody with
                         | Some(replacement, target) ->
                             let replacement =
-                                if inOperandPosition && not (Regex.IsMatch(replacement, @"^[\w.]+$")) then
+                                if inOperandPosition && not (wRegex.IsMatch replacement) then
                                     $"({replacement})"
                                 else
                                     replacement
@@ -439,6 +447,7 @@ let private findCandidates (cfg: WrapperConfig) (parseTree: ParsedInput) (source
                                     Replacement = replacement
                                     Target = target
                                     Scrutinee = scrutinee
+                                    Arms = [ someBody.Range; noneBody.Range ]
                                 }
                         | None -> ()
                     | _ -> ()
@@ -1147,37 +1156,6 @@ let receiverSettled
 
     not ids.IsEmpty && pathSettled 0 ids
 
-let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) =
-    if hasErrors check then
-        []
-    else
-        let evidence = lazy (declarationEvidence parseTree)
-
-        findCandidates cfg parseTree source
-        |> List.filter (fun c ->
-            not (spansDirective source c.MatchRange)
-            && resolvesToCoreCase check source cfg.CoreFullNamePrefix c.SomeIdent
-            && resolvesToCoreCase check source cfg.CoreFullNamePrefix c.NoneIdent)
-        |> List.map (fun c ->
-            // an isSome/isNone test reads as the property where the
-            // receiver's type is settled — the spelling FR0010 produces,
-            // so the two rules agree on what a test looks like
-            let replacement =
-                if c.Target.EndsWith ".isSome" || c.Target.EndsWith ".isNone" then
-                    match c.Scrutinee with
-                    | ReceiverPath(ids, text) when receiverSettled check source evidence.Value ids ->
-                        text + (if c.Target.EndsWith ".isSome" then ".IsSome" else ".IsNone")
-                    | _ -> c.Replacement
-                else
-                    c.Replacement
-
-            {
-                Range = c.MatchRange
-                OriginalText = textOfRange source c.MatchRange
-                ReplacementText = replacement
-                Target = c.Target
-            })
-
 /// A byref, or a byref-like struct (`Span<'T>`, `ReadOnlySpan<'T>`, a
 /// `[<IsByRefLike>]` of the project's own): a value no closure may capture
 /// and no computation expression may hold across its binds.
@@ -1209,15 +1187,47 @@ let isByRefLike (t: FSharpType) =
 /// testReturnsTask went from 3 s to 13 s on the file. A name FCS cannot
 /// type is recorded at the use with no declaration, which every caller
 /// reads as byref-like: the rewrite stands down rather than guess.
+///
+/// A struct's `this` is a byref (`byref<S>` in FCS's view of the self
+/// identifier), so `this.Field` is caught as it is. A primary-constructor
+/// value of a struct is not: `type S(x: int)` reads `x` as a plain int,
+/// yet it is a field of `this`, and a closure over it captures `this`
+/// (FS0406). Those uses are recorded with no declaration, captured
+/// wherever they sit — typed proof: the parameters of a constructor whose
+/// declaring entity is a value type.
 let private byRefLikeUsesCache =
     System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, (range * range option)[]>()
+
+/// Where the parameters of the file's struct constructors are declared.
+let private structConstructorParameters (uses: FSharpSymbolUse[]) =
+    let declared = HashSet<range>()
+
+    for u in uses do
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as v when u.IsFromDefinition ->
+            try
+                if v.IsConstructor then
+                    match v.DeclaringEntity with
+                    | Some entity when entity.IsValueType ->
+                        for group in v.CurriedParameterGroups do
+                            for p in group do
+                                declared.Add p.DeclarationLocation |> ignore
+                    | _ -> ()
+            with _ -> // a constructor FCS cannot describe adds nothing; fsharpanalyzer: ignore-line FR0055
+                ()
+        | _ -> ()
+
+    declared
 
 let private byRefLikeUses (check: FSharpCheckFileResults) =
     byRefLikeUsesCache.GetValue(
         check,
         fun c ->
             try
-                c.GetAllUsesOfAllSymbolsInFile()
+                let uses = c.GetAllUsesOfAllSymbolsInFile() |> Array.ofSeq
+                let structParameters = structConstructorParameters uses
+
+                uses
                 |> Seq.choose (fun u ->
                     match u.Symbol with
                     | :? FSharpMemberOrFunctionOrValue as v ->
@@ -1238,6 +1248,17 @@ let private byRefLikeUses (check: FSharpCheckFileResults) =
                                         None
 
                                 Some(u.Range, declared)
+                            elif
+                                structParameters.Count > 0
+                                && not v.IsModuleValueOrMember
+                                && (try
+                                        structParameters.Contains v.DeclarationLocation
+                                    with _ -> // no declaration: not a constructor parameter of this file; fsharpanalyzer: ignore-line FR0055
+                                        false)
+                            then
+                                // a field of the struct's `this`: captured
+                                // wherever the stretch starts
+                                Some(u.Range, None)
                             else
                                 None
                         with _ -> // fsharpanalyzer: ignore-line FR0055
@@ -1271,6 +1292,42 @@ let capturesByRefLike (check: FSharpCheckFileResults) (index: AstIndex.Index) (s
 /// wherever it was declared.
 let readsByRefLike (check: FSharpCheckFileResults) (index: AstIndex.Index) (source: ISourceText) (bodyRange: range) =
     readsByRefLikeWhere false check index source bodyRange
+
+let findWith (cfg: WrapperConfig) (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) =
+    if hasErrors check then
+        []
+    else
+        let evidence = lazy (declarationEvidence parseTree)
+
+        let index = AstIndex.ofTree parseTree
+
+        findCandidates cfg parseTree source
+        |> List.filter (fun c ->
+            not (spansDirective source c.MatchRange)
+            // the arms move into a lambda, which cannot capture a Span, a
+            // byref, or the enclosing struct's `this` (FS0406)
+            && not (c.Arms |> List.exists (capturesByRefLike check index source))
+            && resolvesToCoreCase check source cfg.CoreFullNamePrefix c.SomeIdent
+            && resolvesToCoreCase check source cfg.CoreFullNamePrefix c.NoneIdent)
+        |> List.map (fun c ->
+            // an isSome/isNone test reads as the property where the
+            // receiver's type is settled — the spelling FR0010 produces,
+            // so the two rules agree on what a test looks like
+            let replacement =
+                if c.Target.EndsWith ".isSome" || c.Target.EndsWith ".isNone" then
+                    match c.Scrutinee with
+                    | ReceiverPath(ids, text) when receiverSettled check source evidence.Value ids ->
+                        text + (if c.Target.EndsWith ".isSome" then ".IsSome" else ".IsNone")
+                    | _ -> c.Replacement
+                else
+                    c.Replacement
+
+            {
+                Range = c.MatchRange
+                OriginalText = textOfRange source c.MatchRange
+                ReplacementText = replacement
+                Target = c.Target
+            })
 
 /// Find Option and ValueOption matches that can be rewritten.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =

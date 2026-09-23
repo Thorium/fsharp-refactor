@@ -677,3 +677,59 @@ let ``FR0012: map fusion still fuses a BCL property read`` () =
     with
     | [ s ] -> Assert.Equal("List.map (string >> (fun (s: string) -> s.Length)) xs", s.ReplacementText)
     | other -> failwithf "Expected one fusion hint, got %A" other
+
+// ---- FR0029: the if/else split's condition, a hoisted name read after the task ----
+
+[<Fact>]
+let ``FR0029: a split whose condition may throw stays advice under a public function`` () =
+    // `cache.[key]` throws KeyNotFoundException; split, the condition runs
+    // at the call instead of faulting the returned Task
+    let source =
+        lines
+            [
+                "module Test"
+                "open System.Collections.Generic"
+                "let f (cache: Dictionary<string, int>) (key: string) ="
+                "    task {"
+                "        if cache.[key] > 0 then"
+                awaits 12 4
+                "            return x1"
+                "        else"
+                awaits 12 4
+                "            return x2"
+                "    }"
+            ]
+
+    assertTypechecks source
+    let tree, sourceText, check = parseAndCheck source
+
+    let splits =
+        TaskStateMachine.find tree sourceText (Some check) 4 false Set.empty
+        |> List.filter (fun s -> s.Kind = TaskStateMachine.AdviceKind.SplitBranches)
+
+    Assert.NotEmpty splits
+    Assert.All(splits, fun s -> Assert.Empty s.Edits)
+
+[<Fact>]
+let ``FR0029: a let whose name is read after the task is not hoisted`` () =
+    // hoisted above `task {`, `let id = id.Trim()` would also rebind the
+    // `id` that `log id` reads after the task
+    let source =
+        lines
+            [
+                "module Test"
+                "let log (s: string) = ignore s"
+                "let private f (id: string) ="
+                "    task {"
+                "        let id = id.Trim()"
+                awaits 8 8
+                "        return id + string x1"
+                "    }"
+                "    |> ignore"
+                "    log id"
+            ]
+
+    assertTypechecks source
+
+    for _, edits in hoistsIn source do
+        Assert.Empty edits

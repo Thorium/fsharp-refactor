@@ -212,3 +212,9 @@ let ``an isSome test on an unannotated parameter keeps the module form`` () =
         "let f x = let b = match x with | Some _ -> true | None -> false in if b then x |> Option.map ((+) 1) else None"
         "Option.isSome"
         "x |> Option.isSome"
+
+[<Fact>]
+let ``a struct member's primary-constructor value stays out of the lambda`` () =
+    // `x` is a field of the struct's `this`, which no closure may capture: FS0406
+    assertNoSuggestion
+        "module Test\n[<Struct>]\ntype S(x: int) =\n    member _.M(o: int option) = match o with Some v -> Some (v + x) | None -> None"

@@ -34,7 +34,8 @@ type Shape =
     | IfBool of BoolExpr
     /// FR0010: `List.length xs = 0`
     | LengthZero
-    /// FR0004: `xs |> Seq.toList |> List.filter f`
+    /// FR0004: `xs |> Array.toList |> List.filter f` (an array source: parse-only,
+    /// a `seq` source may be lazy and FR0004 then needs a typed pure callback)
     | ConversionPipe
     /// FR0086: `$"no holes"`
     | HoleFree of string
@@ -74,7 +75,7 @@ let print (i: int) (shape: Shape) : string =
     | IdLambda -> $"let f{i} (xs: int list) = xs |> List.map (fun x -> x)"
     | IfBool e -> $"let f{i} {parameters} = if {printBool e} then true else false"
     | LengthZero -> $"let f{i} (xs: int list) = List.length xs = 0"
-    | ConversionPipe -> $"let f{i} (xs: seq<int>) = xs |> Seq.toList |> List.filter (fun x -> x > 1)"
+    | ConversionPipe -> $"let f{i} (xs: int[]) = xs |> Array.toList |> List.filter (fun x -> x > 1)"
     | HoleFree s -> $"let v{i} = $\"{s}\""
     | MatchBang ->
         $"let f{i} (g: unit -> Async<int option>) =\n    async {{\n        let! r = g ()\n\n        match r with\n        | Some v -> return v\n        | None -> return 0\n    }}"

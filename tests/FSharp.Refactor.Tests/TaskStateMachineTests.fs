@@ -505,11 +505,14 @@ let ``a split fires when only one arm awaits`` () =
 
 [<Fact>]
 let ``the embedding-generator shape splits`` () =
+    // private: under a public function the condition `inputs.Length = 0`
+    // (a property read, a NullReferenceException on null) would move out
+    // of the task and throw at the call - the split stays advice there
     let source =
         "module Probe\n"
         + "open System.Threading\nopen System.Threading.Tasks\n"
         + "let gate = new SemaphoreSlim(1)\nlet inferenceLock = new SemaphoreSlim(4)\nlet lockSlots = 4\n"
-        + "let generate (inputs: string[]) (ct: CancellationToken) : Task<int> =\n"
+        + "let private generate (inputs: string[]) (ct: CancellationToken) : Task<int> =\n"
         + "    task {\n"
         + "        if inputs.Length = 0 then\n"
         + "            // zero-input contract: no model touch\n"

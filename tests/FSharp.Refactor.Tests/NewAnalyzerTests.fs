@@ -219,6 +219,35 @@ let ``unanchored literal becomes Contains`` () =
         "s.Contains \"abc\""
 
 [<Fact>]
+let ``a member access after the test keeps the argument parenthesised`` () =
+    // `s.Contains "abc".ToString()` would call ToString on the literal
+    let source =
+        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc\").ToString()"
+
+    assertRegexFix source "s.Contains(\"abc\")"
+
+    match regexIn source with
+    | [ { Edits = [ (range, _, replacement) ] } ] -> Assert.True(typechecksCleanly (applyEdit source range replacement))
+    | other -> failwithf "Expected one edit, got %A" other
+
+[<Fact>]
+let ``a case-insensitive construction without CultureInvariant is not hoisted`` () =
+    // IgnoreCase folds case by the culture current at construction: built
+    // per call it follows the thread's culture, hoisted it freezes the first
+    let hoists (options: string) =
+        regexIn (
+            "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) =\n    let r = Regex(\"a+\", "
+            + options
+            + ")\n    r.IsMatch s"
+        )
+        |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.HoistConstruction)
+
+    Assert.Empty(hoists "RegexOptions.IgnoreCase")
+    Assert.Empty(hoists "RegexOptions.IgnoreCase ||| RegexOptions.Compiled")
+    Assert.NotEmpty(hoists "RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant")
+    Assert.NotEmpty(hoists "RegexOptions.Compiled")
+
+[<Fact>]
 let ``pattern with metacharacters is left alone`` () =
     noStringOperation "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"a.c\")"
 
@@ -349,8 +378,8 @@ let ``regex constructed in a List.map lambda is hoisted with the Split chain int
 [<Fact>]
 let ``regex constructed with constant RegexOptions keeps them in the hoisted binding`` () =
     assertRegexConstructionHoist
-        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.map (fun x -> Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.Multiline).IsMatch x)"
-        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.Multiline)\nlet f (xs: string list) =\n    xs |> List.map (fun x -> aRegex.IsMatch x)"
+        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.map (fun x -> Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant ||| RegexOptions.Multiline).IsMatch x)"
+        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant ||| RegexOptions.Multiline)\nlet f (xs: string list) =\n    xs |> List.map (fun x -> aRegex.IsMatch x)"
 
 [<Fact>]
 let ``a qualified regex construction hoists without the open`` () =
@@ -460,7 +489,7 @@ let ``FR0016: a union over 32 bytes, or one the file boxes or locks, stays a cla
 
     let typed (source: string) =
         let tree, sourceText, check = parseAndCheck source
-        StructDu.findWith (Some check) false tree sourceText
+        StructDu.findWith (Some check) true false tree sourceText
 
     Assert.Empty(
         typed

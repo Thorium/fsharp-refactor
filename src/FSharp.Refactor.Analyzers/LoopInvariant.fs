@@ -34,6 +34,9 @@
 ///     scanned is the whole anchor statement: the pipeline head and every
 ///     argument of a collection operation run between the hoisted binding
 ///     and the lambda
+///   - in a `Seq.*` lambda, no `let mutable` read at all: the lambda runs
+///     at ENUMERATION, possibly after a later `scale <- 5` the statement
+///     scan never sees, where the hoisted binding read the old value
 ///   - the binding is a plain single-line `let` of a simple name (no
 ///     mutable, no use, no functions)
 ///   - the bound name appears nowhere in the file outside the loop body:
@@ -252,14 +255,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        // (loop node, loop-bound names, body) for every loop-like shape
+        // (loop node, loop-bound names, body, lazy) for every loop-like
+        // shape; `lazy` marks a Seq lambda, which runs at ENUMERATION —
+        // possibly long after the statement, past any later assignment
         let candidates =
             [
                 for path, expr in index.Exprs do
                     match expr with
-                    | SynExpr.For(ident = loopVar; doBody = body) -> path, expr, Set.singleton loopVar.idText, body
-                    | SynExpr.ForEach(pat = pat; bodyExpr = body) -> path, expr, Set.ofList (patBoundNames pat), body
-                    | SynExpr.While(doExpr = body) -> path, expr, Set.empty, body
+                    | SynExpr.For(ident = loopVar; doBody = body) ->
+                        path, expr, Set.singleton loopVar.idText, body, false
+                    | SynExpr.ForEach(pat = pat; bodyExpr = body) ->
+                        path, expr, Set.ofList (patBoundNames pat), body, false
+                    | SynExpr.While(doExpr = body) -> path, expr, Set.empty, body, false
                     // xs |> List.map (fun x -> ...) — the lambda's params are
                     // the per-element names
                     | SynExpr.App(
@@ -267,7 +274,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         argExpr = SynExpr.Paren(expr = SynExpr.Lambda(parsedData = Some(pats, _); body = body))) when
                         collectionModules.Contains m.idText
                         ->
-                        path, expr, Set.ofList (pats |> List.collect patBoundNames), body
+                        path, expr, Set.ofList (pats |> List.collect patBoundNames), body, m.idText = "Seq"
                     | _ -> ()
             ]
 
@@ -425,7 +432,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         let suggestions: Suggestion list =
             [
-                for path, loopExpr, loopVars, body in candidates do
+                for path, loopExpr, loopVars, body, isLazy in candidates do
                     match insertionAnchor source path loopExpr with
                     | Some anchor ->
                         let mutable boundEarlier = Set.empty
@@ -482,6 +489,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                        |> List.forall (fun rd ->
                                            match readKind check source rd with
                                            | ReadKind.Immutable -> true
+                                           // a Seq lambda runs at enumeration,
+                                           // after code no scan of the statement
+                                           // sees (`scale <- 5` below it): the
+                                           // hoisted read would see the old value
+                                           | ReadKind.Mutable when isLazy -> false
                                            | ReadKind.Mutable ->
                                                not (calleesMayAssign 0 Set.empty rd.idText scanRange (Some rhs.Range)))
                                     ->

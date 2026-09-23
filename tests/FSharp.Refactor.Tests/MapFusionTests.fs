@@ -68,3 +68,10 @@ let ``a composed second mapper folds into one chain`` () =
     assertPatched
         "module Test\nlet f g h xs = xs |> List.map fst |> List.map (g >> h)"
         "module Test\nlet f g h xs = xs |> List.map (fst >> g >> h)"
+
+[<Fact>]
+let ``a backward composition keeps its parentheses`` () =
+    // `fst >> f << g` is `(fst >> f) << g`: a different function
+    assertPatched
+        "module Test\nlet f g h xs = xs |> List.map fst |> List.map (g << h)"
+        "module Test\nlet f g h xs = xs |> List.map (fst >> (g << h))"

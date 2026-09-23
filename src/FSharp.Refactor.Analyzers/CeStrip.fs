@@ -14,7 +14,10 @@
 ///
 /// Safety rules:
 ///   - the stripped computation in the first two forms must be a bare
-///     identifier — evaluating it early has no effects
+///     identifier — evaluating it early has no effects — and not a
+///     mutable one (a `let mutable` of that name anywhere in the file, or,
+///     typed, any value FCS reports IsMutable): the wrapper reads it each
+///     time it runs, the bare name once, at definition
 ///   - `use!` is never stripped (its disposal would be lost)
 ///   - in the runner form the returned expression must be single-line and
 ///     safe to inline at an arbitrary expression position
@@ -26,6 +29,8 @@
 ///     overloads also accept Async and stripping could change the type
 module FSharp.Refactor.CeStrip
 
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
@@ -220,10 +225,48 @@ let private multiLineLiteralLines (parseTree: ParsedInput) : Set<int> =
     AstIndex.replay collector parseTree
     Set.ofSeq lines
 
-/// Find do-nothing async/task wrappings.
-let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
+/// The names the file binds `mutable` anywhere — a module or local
+/// `let mutable`, a class's `let mutable`: a forwarded identifier of one
+/// of these names may be read at run time, and stripping the wrapper
+/// would read it once, at definition.
+let private mutableNames (parseTree: ParsedInput) : Set<string> =
+    (AstIndex.ofTree parseTree).Pats
+    |> Array.collect (fun (path, pat) ->
+        match path with
+        | SyntaxNode.SynBinding(SynBinding(isMutable = true; headPat = head)) :: _ when obj.ReferenceEquals(head, pat) ->
+            patNames head |> Array.ofList
+        | _ -> [||])
+    |> Set.ofArray
+
+/// Typed: the identifier resolves to a mutable value (declared anywhere,
+/// an opened module's `let mutable` included).
+let private resolvesToMutable (check: FSharpCheckFileResults option) (source: ISourceText) (e: SynExpr) =
+    match check, e with
+    | Some c, SynExpr.Ident id ->
+        match OptionModule.symbolOfIdent c source id with
+        | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+            (try
+                value.IsMutable
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 true)
+        | _ -> false
+    | _ -> false
+
+/// Find do-nothing async/task wrappings. The check results, where the
+/// caller has them, also prove a forwarded identifier declared outside
+/// the file immutable.
+let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
     let opens = collectOpens parseTree
+    let mutables = lazy (mutableNames parseTree)
+
+    let readOnce (comp: SynExpr) =
+        match comp with
+        | SynExpr.Ident id ->
+            not (mutables.Value.Contains id.idText)
+            && not (resolvesToMutable check source comp)
+        | _ -> false
+
     let literalLines = multiLineLiteralLines parseTree
 
     let add (range: range) (replacementText: string) (kind: StripKind) =
@@ -252,6 +295,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 // async { return! comp } / async { let! v = comp in return v }
                 | AsyncCe body ->
                     forwardedComputation body
+                    |> Option.filter readOnce
                     |> Option.iter (fun comp -> add expr.Range (textOfRange source comp.Range) StripKind.Forwarded)
                 // task { return x }
                 | TaskCe(SynExpr.YieldOrReturn(expr = NonThrowing returned)) when
@@ -434,3 +478,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     suggestions
     |> Seq.filter (fun s -> not (spansDirective source s.Range))
     |> List.ofSeq
+
+/// Find do-nothing async/task wrappings, parse-only.
+let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list = findWith None parseTree source

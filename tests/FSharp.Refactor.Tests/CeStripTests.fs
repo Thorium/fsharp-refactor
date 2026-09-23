@@ -206,3 +206,23 @@ let ``the cure does not fight the prevention`` () =
             "module Test\nlet f (v: int) =\n    task {\n        do! System.Threading.Tasks.Task.Delay 1\n        let runTail () = task {\n            use r = new System.IO.MemoryStream()\n            let a = v + 1\n            let b = a + 1\n            return a + b + int r.Length\n        }\n        return! runTail ()\n    }"
         |> List.filter (fun s -> s.Kind = CeStrip.StripKind.ThunkIdentity)
     )
+
+[<Fact>]
+let ``return-bang of a mutable identifier keeps its wrapper`` () =
+    // the wrapper reads `current` each time the computation RUNS; stripped,
+    // the value is read once, where the expression is evaluated
+    assertNoSuggestion
+        "module Test\nlet mutable current : Async<int> = async { return 1 }\nlet next () = async { return! current }"
+
+    assertNoSuggestion
+        "module Test\ntype Holder() =\n    let mutable current : Async<int> = async { return 1 }\n    member _.Next = async { return! current }\n    member _.Set v = current <- v"
+
+    assertNoSuggestion
+        "module Test\nlet f () =\n    let mutable current : Async<int> = async { return 1 }\n    let run = async { let! v = current in return v }\n    current <- async { return 2 }\n    run"
+
+    // typed: a mutable declared outside the file reads the same way
+    let source =
+        "module Test\nmodule State =\n    let mutable current : Async<int> = async { return 1 }\nopen State\nlet next () = async { return! current }"
+
+    let tree, sourceText, check = parseAndCheck source
+    Assert.Empty(CeStrip.findWith (Some check) tree sourceText)

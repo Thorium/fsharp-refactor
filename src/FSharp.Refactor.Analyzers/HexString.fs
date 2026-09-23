@@ -62,11 +62,15 @@ let private toHexStringAvailable (check: FSharpCheckFileResults) =
 /// only as far as the `Replace`, so the space-applied form would leave
 /// `Convert.ToHexString h.Substring(0, 16)` — handing the substring OF
 /// THE BYTES to ToHexString instead of taking it from the hex. Found live
-/// on prismatic, where it cost a whole rollback pass. Parenthesise there,
-/// and only there.
+/// on prismatic, where it cost a whole rollback pass. An indexer or slice
+/// (`.Replace("-", "")[..7]`, `.[0]`) continues the same way:
+/// `ToHexString hash[..7]` hex-encodes the first eight BYTES. Parenthesise
+/// there, and only there.
 let private continuesIntoMemberAccess (source: ISourceText) (r: range) =
     let line = source.GetLineString(r.EndLine - 1)
-    r.EndColumn < line.Length && line.[r.EndColumn] = '.'
+
+    r.EndColumn < line.Length
+    && (line.[r.EndColumn] = '.' || line.[r.EndColumn] = '[')
 
 /// Find dash-stripped BitConverter hex chains. Requires typed check results
 /// for the target-framework gate.

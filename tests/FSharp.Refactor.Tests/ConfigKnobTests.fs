@@ -127,7 +127,7 @@ let ``the generated config is pure ASCII`` () =
         text
         |> Seq.filter (fun c -> c > '\127')
         |> Seq.distinct
-        |> Seq.map (fun c -> $"U+%04X{int c} '{c}'")
+        |> Seq.map (fun c -> $"U+%04X{int c} '%c{c}'")
         |> List.ofSeq
 
     Assert.True(

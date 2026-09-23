@@ -474,3 +474,118 @@ let ``a constant is resolved by its declaration, not by its name`` () =
         "module T\nlet kind = \"file\"\nmodule Overrides =\n    let kind = \"dir\"\nlet weight (kind: string) =\n    match kind with\n    | \"file\" -> 1\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\nlet a = weight Overrides.kind\nlet b = weight kind"
         "module T\nlet kind = \"file\"\nmodule Overrides =\n    let kind = \"dir\"\n[<RequireQualifiedAccess>]\ntype Kind =\n    | ``File``\n    | ``Dir``\n\n    override this.ToString() =\n        match this with\n        | Kind.``File`` -> kind\n        | Kind.``Dir`` -> \"dir\"\n\nlet weight (kind: Kind) =\n    match kind with\n    | Kind.``File`` -> 1\n    | Kind.``Dir`` -> 0\nlet a = weight Kind.``Dir``\nlet b = weight Kind.``File``"
     |> ignore
+
+[<Fact>]
+let ``a field read through a DotGet off a call is an unknown use and stands down`` () =
+    // `(mk b).Kind` resolves to a range no expression node matches: an
+    // unmatched read is unsafe, never "no sink"
+    Assert.Empty(
+        findIn
+            "module T\ntype Item = { Kind: string; Size: int }\nlet mk (b: bool) = if b then { Kind = \"file\"; Size = 1 } else { Kind = \"dir\"; Size = 0 }\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\nlet up = (mk true).Kind.ToUpper()"
+    )
+
+    Assert.Empty(
+        findIn
+            "module T\ntype Item = { Kind: string; Size: int }\nlet mk (b: bool) = if b then { Kind = \"file\"; Size = 1 } else { Kind = \"dir\"; Size = 0 }\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\nlet shown = sprintf \"%A\" (mk true).Kind"
+    )
+
+[<Fact>]
+let ``literals that make no valid case name stand down`` () =
+    // ``1.0`` and ``1/2`` are not union case names (FS0883)
+    Assert.Empty(
+        findIn
+            "module T\nlet f (v: string) =\n    match v with\n    | \"1.0\" -> 1\n    | \"2.0\" -> 2\n    | _ -> failwith \"?\"\nlet a = f \"1.0\"\nlet b = f \"2.0\""
+    )
+
+    Assert.Empty(
+        findIn
+            "module T\nlet f (v: string) =\n    match v with\n    | \"1/2\" -> 1\n    | \"1/4\" -> 2\n    | _ -> failwith \"?\"\nlet a = f \"1/2\"\nlet b = f \"1/4\""
+    )
+
+[<Fact>]
+let ``case names clashing with generated members stand down`` () =
+    // `IsEu` from "is-eu" clashes with case Eu's generated tester, and a
+    // `ToString` case with the override (FS0023)
+    Assert.Empty(
+        findIn
+            "module T\nlet f (v: string) =\n    match v with\n    | \"eu\" -> 1\n    | \"is-eu\" -> 2\n    | _ -> failwith \"?\"\nlet a = f \"eu\"\nlet b = f \"is-eu\""
+    )
+
+    Assert.Empty(
+        findIn
+            "module T\nlet f (v: string) =\n    match v with\n    | \"to-string\" -> 1\n    | \"other\" -> 2\n    | _ -> failwith \"?\"\nlet a = f \"to-string\"\nlet b = f \"other\""
+    )
+
+[<Fact>]
+let ``a null nested in an option pattern goes like a top-level one`` () =
+    // `| Some null -> 3` cannot match a union (FS0043): every literal has
+    // its arm, so it is dead and goes like `Some _` would; the wildcard
+    // stays for None
+    let source =
+        "module T\nlet family (n: int) =\n    if n = 1 then Some \"MEL\"\n    elif n = 2 then Some \"Serilog\"\n    else None\nlet f (n: int) =\n    match family n with\n    | Some null -> 3\n    | Some \"MEL\" -> 1\n    | Some \"Serilog\" -> 2\n    | _ -> 0"
+
+    match findIn source with
+    | [ s ] ->
+        let patched = applyEdits source s.Edits
+        Assert.DoesNotContain("null", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one suggestion, got %d" other.Length
+
+    // a literal no arm names leaves `Some null` live: no spelling on the union
+    Assert.Empty(
+        findIn
+            "module T\nlet family (n: int) =\n    if n = 1 then Some \"MEL\"\n    elif n = 2 then Some \"Serilog\"\n    elif n = 3 then Some \"NLog\"\n    else None\nlet f (n: int) =\n    match family n with\n    | Some null -> 3\n    | Some \"MEL\" -> 1\n    | Some \"Serilog\" -> 2\n    | _ -> 0"
+    )
+
+[<Fact>]
+let ``a record printed whole or compared keeps its string field`` () =
+    // retyping the field changes `%A`/`string r` output and the record's
+    // structural order (cases compare by declaration, not by text)
+    let prefix =
+        "module T\ntype Item = { Kind: string; Size: int }\nlet items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ]\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\"\n"
+
+    for tail in
+        [
+            "let shown = sprintf \"%A\" (List.head items)"
+            "let shown = string (List.head items)"
+            "let shown = $\"{List.head items}\""
+            "let sorted = List.sort items"
+            "let c = compare items.[0] items.[1]"
+            "let m = items |> List.map (fun i -> i, 1) |> Map.ofList"
+            "let s = Set.ofList items"
+            "let b = items.[0] < items.[1]"
+        ] do
+        Assert.True(List.isEmpty (findIn (prefix + tail)), tail)
+
+[<Fact>]
+let ``a record field's rewrite is offered by the editor alone`` () =
+    // the record's printed text and order change with the field, and a
+    // generic helper doing either is out of the scan's sight: a sweep
+    // reports the set without a fix
+    let source =
+        "type Item = { Kind: string; Size: int }\n\nlet items = [ { Kind = \"file\"; Size = 1 }; { Kind = \"dir\"; Size = 0 } ]\n\nlet weight (i: Item) =\n    match i.Kind with\n    | \"file\" -> i.Size\n    | \"dir\" -> 0\n    | _ -> failwith \"?\""
+
+    let tree, sourceText, check = parseAndCheck source
+    let world = worldOf check sourceText tree
+    Assert.True((StringUnion.find world tree sourceText |> List.exactlyOne).FieldSlot)
+
+    match FSharp.Refactor.Analyzers.stringUnionMessagesIn false world tree sourceText with
+    | [ m ] ->
+        Assert.Empty m.Fixes
+        Assert.Contains("the editor offers the rewrite", m.Message)
+    | other -> failwithf "Expected one message, got %d" other.Length
+
+    match FSharp.Refactor.Analyzers.stringUnionMessagesIn true world tree sourceText with
+    | [ m ] -> Assert.NotEmpty m.Fixes
+    | other -> failwithf "Expected one message, got %d" other.Length
+
+    // a parameter slot alone is no field slot: the sweep applies it
+    let source =
+        "let f (mode: string) =\n    match mode with\n    | \"on\" -> 1\n    | \"off\" -> 0\n    | _ -> -1\n\nlet x = f \"on\" + f \"off\""
+
+    let tree, sourceText, check = parseAndCheck source
+    let world = worldOf check sourceText tree
+
+    match FSharp.Refactor.Analyzers.stringUnionMessagesIn false world tree sourceText with
+    | [ m ] -> Assert.NotEmpty m.Fixes
+    | other -> failwithf "Expected one message, got %d" other.Length

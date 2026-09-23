@@ -16,13 +16,19 @@
 ///     CancellationToken (two tokens make the choice a human call)
 ///   - the call uses .NET tupled shape (`M()`, `M(a)`, `M(a, b)`) — the
 ///     edit appends the token inside the parentheses
+///   - the call is not CLEANUP: not in a `finally`, a `with` handler or
+///     a callback handed to the token's own `Register` (which runs because
+///     the token is already cancelled)
+///   - the token's name is not rebound (`for ct in ...`, `let ct = ...`)
+///     inside the binding ahead of the call: `ct` there may be anything
 ///
 /// The loop note (findUnobservedLoops): a loop awaiting inside, under the
 /// token's binding, that never mentions the token — nor a local built
 /// with it (`let enumerator = source.GetAsyncEnumerator ct`) — cannot be
 /// cancelled. Outside `async { }` only, which observes the token at every
 /// bind by itself; quiet where the fix above already hands the token to a
-/// call in the loop.
+/// call in the loop, and inside cleanup (finally, with handlers, Register
+/// callbacks) or under a rebinding of the token's name.
 module FSharp.Refactor.CancellationOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -107,6 +113,67 @@ let private schedulesDelegate (mfv: FSharpMemberOrFunctionOrValue) =
     (mfv.DisplayName = "Run" || mfv.DisplayName = "StartNew")
     && (OptionModule.enclosingFullName mfv).StartsWith "System.Threading.Tasks.Task"
 
+/// The CLEANUP zones of a file: every `finally` block, every `with`
+/// handler, and the callbacks handed to a CancellationToken's `Register`
+/// (`ct.Register(fun () -> ...)` runs BECAUSE the token was cancelled).
+/// A token handed to a call there, or a cancellation check placed there,
+/// throws OperationCanceledException on the way out instead of cleaning
+/// up — `tx.RollbackAsync()` after a cancelled `CommitAsync ct`.
+let private cleanupZones (index: AstIndex.Index) (source: ISourceText) (check: FSharpCheckFileResults) =
+    index.Exprs
+    |> Array.collect (fun (_, e) ->
+        match e with
+        | SynExpr.TryFinally(finallyExpr = f) -> [| f.Range |]
+        | SynExpr.TryWith(withCases = cases) ->
+            cases
+            |> List.map (fun (SynMatchClause(resultExpr = result)) -> result.Range)
+            |> Array.ofList
+        | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) when
+            methodId.idText = "Register" || methodId.idText = "UnsafeRegister"
+            ->
+            let lineText = source.GetLineString(methodId.idRange.EndLine - 1)
+
+            let onToken =
+                match
+                    check.GetSymbolUseAtLocation(
+                        methodId.idRange.EndLine,
+                        methodId.idRange.EndColumn,
+                        lineText,
+                        [ methodId.idText ]
+                    )
+                with
+                | Some symbolUse ->
+                    match symbolUse.Symbol with
+                    | :? FSharpMemberOrFunctionOrValue as mfv ->
+                        OptionModule.enclosingFullName mfv = "System.Threading.CancellationToken"
+                    | _ -> false
+                | None -> false
+
+            if onToken then [| args.Range |] else [||]
+        | _ -> [||])
+
+/// Is the token's NAME rebound between its parameter and `r` — `[ for ct
+/// in names -> ... ]`, a `let ct = ...`, a lambda or match variable — so
+/// that `ct` at `r` may be something else entirely? Any pattern binding
+/// the name inside the token's binding, ahead of `r`, counts: an
+/// over-approximation of scope that only ever withholds a fix.
+let private shadowedBefore (index: AstIndex.Index) (name: string) (paramId: range) (bindingRange: range) (r: range) =
+    index.Pats
+    |> Array.exists (fun (_, pat) ->
+        let bound =
+            match pat with
+            | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> Some id
+            | _ -> None
+
+        match bound with
+        | Some id ->
+            id.idText = name
+            && not (Range.equals id.idRange paramId)
+            && Range.rangeContainsRange bindingRange id.idRange
+            && Position.posLt id.idRange.Start r.Start
+        | None -> false)
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
         []
@@ -140,7 +207,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 | _ -> None)
 
                         match binding with
-                        | Some bindingRange -> yield id.idText, bindingRange
+                        | Some bindingRange -> yield id.idText, bindingRange, id.idRange
                         | None -> ()
                     | _ -> ()
             ]
@@ -151,17 +218,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // throw OperationCanceledException on the way out instead of
         // rolling back, so the transaction is left hanging. No token is
         // ever injected into one (the same exclusion FR0079 applies to its
-        // bridge sites)
-        let cleanupRanges =
-            index.Exprs
-            |> Array.collect (fun (_, e) ->
-                match e with
-                | SynExpr.TryFinally(finallyExpr = f) -> [| f.Range |]
-                | SynExpr.TryWith(withCases = cases) ->
-                    cases
-                    |> List.map (fun (SynMatchClause(resultExpr = result)) -> result.Range)
-                    |> Array.ofList
-                | _ -> [||])
+        // bridge sites), nor into a token's Register callback
+        let cleanupRanges = cleanupZones index source check
 
         let inCleanup (callRange: range) =
             cleanupRanges |> Array.exists (fun z -> Range.rangeContainsRange z callRange)
@@ -170,10 +228,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let tokenFor (callRange: range) =
             let inScope =
                 tokenParams
-                |> List.filter (fun (_, bindingRange) -> Range.rangeContainsRange bindingRange callRange)
+                |> List.filter (fun (_, bindingRange, _) -> Range.rangeContainsRange bindingRange callRange)
 
-            match inScope |> List.map fst |> List.distinct with
-            | [ name ] when not (inCleanup callRange) -> Some name
+            match inScope |> List.map (fun (name, _, _) -> name) |> List.distinct with
+            | [ name ] when
+                not (inCleanup callRange)
+                // `ct` at the call must still BE the parameter
+                && not (
+                    inScope
+                    |> List.exists (fun (n, bindingRange, paramId) ->
+                        shadowedBefore index n paramId bindingRange callRange)
+                )
+                ->
+                Some name
             | _ -> None
 
         [
@@ -428,26 +495,31 @@ let findUnobservedLoopsWith
                                 | _ -> None)
 
                         match binding with
-                        | Some bindingRange -> yield id.idText, bindingRange
+                        | Some bindingRange -> yield id.idText, bindingRange, id.idRange
                         | None -> ()
                     | _ -> ()
             ]
 
         // the one token in scope, as `find` reads it
         let tokenFor (r: range) =
-            match
+            let inScope =
                 tokenParams
-                |> List.filter (fun (_, bindingRange) -> Range.rangeContainsRange bindingRange r)
-                |> List.map fst
-                |> List.distinct
-            with
-            | [ name ] -> Some name
+                |> List.filter (fun (_, bindingRange, _) -> Range.rangeContainsRange bindingRange r)
+
+            match inScope |> List.map (fun (name, _, _) -> name) |> List.distinct with
+            | [ name ] when
+                not (
+                    inScope
+                    |> List.exists (fun (n, bindingRange, paramId) -> shadowedBefore index n paramId bindingRange r)
+                )
+                ->
+                Some name
             | _ -> None
 
         // the binding the token belongs to
         let scopeOf (token: string) (r: range) =
             tokenParams
-            |> List.tryPick (fun (name, bindingRange) ->
+            |> List.tryPick (fun (name, bindingRange, _) ->
                 if name = token && Range.rangeContainsRange bindingRange r then
                     Some bindingRange
                 else
@@ -500,14 +572,13 @@ let findUnobservedLoopsWith
                     builder.idText.StartsWith "async"
                 | _ -> false)
 
-        // a loop in a `finally` is cleanup: nothing should throw there, a
-        // cancellation check least of all (as CR0170 draws it)
-        let underFinally (path: SyntaxNode list) (r: range) =
-            path
-            |> List.exists (fun node ->
-                match node with
-                | SyntaxNode.SynExpr(SynExpr.TryFinally(finallyExpr = f)) -> Range.rangeContainsRange f.Range r
-                | _ -> false)
+        // a loop in a `finally`, a `with` handler or a token's Register
+        // callback is cleanup: nothing should throw there, a cancellation
+        // check least of all (as CR0170 draws it)
+        let cleanupRanges = cleanupZones index source check
+
+        let underFinally (_: SyntaxNode list) (r: range) =
+            cleanupRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
 
         let bindsInside (r: range) =
             index.Exprs
@@ -537,7 +608,7 @@ let findUnobservedLoopsWith
                 ->
                 let at = Range.mkRange loop.Range.FileName b.Range.Start b.Range.Start
                 let indent = String.replicate b.Range.StartColumn " "
-                Some(at, "", token + ".ThrowIfCancellationRequested()\n" + indent)
+                Some(at, "", $"{token}.ThrowIfCancellationRequested()\n{indent}")
             | _ -> None
 
         let unobserved =
