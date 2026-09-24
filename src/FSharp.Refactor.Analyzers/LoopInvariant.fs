@@ -18,7 +18,12 @@
 ///     on their operands (typed-gated against shadowed operators) — no
 ///     calls, no property reads, and none of the operators that APPLY
 ///     something (`|>`, `>>`, `!`, `:=`): `reader |> readLine` is a call;
-///     `/` and `%` only over a literal, non-zero divisor
+///     `/` and `%` only over a literal, non-zero divisor that is no signed
+///     integral -1 (`Int32.MinValue / -1` throws OverflowException)
+///   - no checked arithmetic: a file opening `Checked` (or
+///     `Microsoft.FSharp.Core.Operators.Checked`) stands down, and so does
+///     any operator the typed tree resolves to the Checked module - `+`,
+///     `-`, `*` there throw on overflow where the empty loop did not
 ///   - the RHS references no loop variable, no name bound earlier in the
 ///     loop body, and no name assigned in the loop's own statement
 ///   - a RHS reading a `let mutable` (typed): besides an assignment in the
@@ -119,17 +124,40 @@ let rec private nonZeroConst (c: SynConst) =
     | SynConst.Measure(constant = inner) -> nonZeroConst inner
     | _ -> false
 
-/// A divisor that cannot be zero: a non-zero numeric literal, negated or
-/// parenthesised or not. `a / 2` and `a % 4` are total; `a / b` may throw
-/// on a divisor the loop never met.
-[<return: Struct>]
-let rec private (|NonZeroLiteral|_|) (e: SynExpr) =
-    match e with
-    | SynExpr.Const(c, _) -> if nonZeroConst c then ValueSome() else ValueNone
-    | SynExpr.Paren(expr = inner) -> (|NonZeroLiteral|_|) inner
-    | SynExpr.App(funcExpr = SingleIdent neg; argExpr = inner) when neg.idText = "op_UnaryNegation" ->
-        (|NonZeroLiteral|_|) inner
+/// The value of a SIGNED integral literal, where one: `MinValue / -1` and
+/// `MinValue % -1` overflow (OverflowException), so -1 is no safe divisor
+/// for these. An unsigned, float or decimal literal has no such value.
+[<TailCall>]
+let rec private signedIntegral (c: SynConst) : int64 voption =
+    match c with
+    | SynConst.SByte v -> ValueSome(int64 v)
+    | SynConst.Int16 v -> ValueSome(int64 v)
+    | SynConst.Int32 v -> ValueSome(int64 v)
+    | SynConst.Int64 v -> ValueSome v
+    | SynConst.IntPtr v -> ValueSome v
+    | SynConst.Measure(constant = inner) -> signedIntegral inner
     | _ -> ValueNone
+
+/// A divisor that makes `/` and `%` total: a numeric literal, negated or
+/// parenthesised or not, other than zero - and other than a signed
+/// integral -1 (`Int32.MinValue / -1` throws OverflowException). `a / 2`
+/// and `a % 4` are total; `a / b` may throw on a divisor the loop never
+/// met. A float's -1 is fine: float division never throws.
+[<return: Struct>]
+let private (|NonZeroLiteral|_|) (e: SynExpr) =
+    let rec safe (negated: bool) (e: SynExpr) =
+        match e with
+        | SynExpr.Const(c, _) ->
+            nonZeroConst c
+            && (match signedIntegral c with
+                | ValueSome v -> (if negated then -v else v) <> -1L
+                | ValueNone -> true)
+        | SynExpr.Paren(expr = inner) -> safe negated inner
+        | SynExpr.App(funcExpr = SingleIdent neg; argExpr = inner) when neg.idText = "op_UnaryNegation" ->
+            safe (not negated) inner
+        | _ -> false
+
+    if safe false e then ValueSome() else ValueNone
 
 /// Purity walk: succeeds only for expression shapes that always yield the
 /// same value. Collects every identifier read and every operator ident —
@@ -247,10 +275,30 @@ let rec private leadingLets (acc: (SynBinding * SynExpr) list) (body: SynExpr) =
         | _ -> List.rev acc
     | _ -> List.rev acc
 
+/// Under `open Checked`, `+`, `-`, `*` and unary `-` throw
+/// OverflowException: hoisted above a loop that never ran, they would
+/// throw where nothing did. The whole file stands down.
+let private opensChecked (source: ISourceText) =
+    [
+        "Checked"
+        "Operators.Checked"
+        "Microsoft.FSharp.Core.Operators.Checked"
+        "FSharp.Core.Operators.Checked"
+    ]
+    |> List.exists (opensNamespace source)
+
+/// An operator that resolves to the Checked module however it got in scope.
+let private resolvesToChecked (check: FSharpCheckFileResults) (source: ISourceText) (op: Ident) =
+    match OptionModule.symbolOfIdent check source op with
+    | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        OptionModule.enclosingFullName value = "Microsoft.FSharp.Core.Operators.Checked"
+        || (OptionModule.fullNameOf value).StartsWith "Microsoft.FSharp.Core.Operators.Checked"
+    | _ -> false
+
 /// Find hoistable invariant bindings. Requires typed check results for the
 /// operator-purity gate.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
-    if OptionModule.hasErrors check then
+    if OptionModule.hasErrors check || opensChecked source then
         []
     else
         let index = AstIndex.ofTree parseTree
@@ -482,6 +530,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     // a shadowed operator can have arbitrary
                                     // semantics; the typed gate runs last
                                     && ops |> List.forall (OptionModule.resolvesToCoreOperator check source)
+                                    // a checked operator throws on overflow
+                                    && not (ops |> List.exists (resolvesToChecked check source))
                                     // a `let mutable` the binding reads, local or
                                     // shared, may be written by what the statement
                                     // calls (a closure captures a local one too)

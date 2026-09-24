@@ -100,6 +100,16 @@ let ``single NaN uses Single IsNaN`` () =
 let ``ordinary float equality is left alone`` () =
     Assert.Empty(nanIn "let f (x: float) (y: float) = x = y")
 
+[<Fact>]
+let ``FR0045: a file-local nan sentinel is an ordinary value and its equality stays`` () =
+    // legacy sensor feeds mark a missing reading with a sentinel the file
+    // names `nan`; the bare `nan` must resolve to FSharp.Core's operator
+    // before `x = nan` is the always-false comparison
+    Assert.Empty(
+        nanIn
+            "let nan = -9999.0\nlet isMissing (reading: float) = reading = nan\nlet hasValue (reading: float) = reading <> nan"
+    )
+
 // ---- FR0046 WeakLock ----
 
 let private locksIn (source: string) =

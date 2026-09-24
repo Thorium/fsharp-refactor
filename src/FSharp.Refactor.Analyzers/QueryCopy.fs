@@ -32,11 +32,16 @@
 ///   auto-property (a C# entity's), or a `member val` of this file, not
 ///   `[<NotMapped>]`.
 /// A sweep moves only comparisons SQL answers as .NET does: integers,
-/// `bool`, enums and `Guid`, not nullable, and `= null`/`<> null`. A string
-/// compares under the column's collation, a decimal or a date is rounded to
-/// the column's scale, a float is the server's, a nullable column is
-/// NULL-unknown where .NET says true: those the editor offers and a sweep
-/// leaves as a note. F# captures only immutable values, so what the lambda
+/// `bool`, enums and `Guid`, and `= null`/`<> null`. A string compares
+/// under the column's collation, a decimal or a date is rounded to the
+/// column's scale, a float is the server's, a nullable column is
+/// NULL-unknown where .NET may say true: those the editor offers and a
+/// sweep leaves as a note. The one nullable comparison that is exact: a
+/// `Nullable<T>` column of one of the exact types against a value proven
+/// non-null (a literal, or a value or enum case whose own type is no
+/// Nullable), by `=`, `<`, `<=`, `>`, `>=`, under no `not` - SQL's unknown
+/// and .NET's false both drop the NULL row. Under an odd number of `not`s
+/// SQL still drops it where .NET keeps it, and `<>` keeps it in .NET too. F# captures only immutable values, so what the lambda
 /// reads is the same whenever the query runs.
 module FSharp.Refactor.QueryCopy
 
@@ -168,6 +173,25 @@ let rec private typeFidelity (t: FSharpType) =
             | _ -> None
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         None
+
+let private isNullable (t: FSharpType) =
+    try
+        let t = OptionModule.stripAbbreviations t
+        t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.Nullable`1"
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        true
+
+/// `Nullable<T>` of a T SQL compares as .NET does (integers, bool, enums,
+/// Guid): its only difference is the NULL row.
+let private nullableOfExact (t: FSharpType) =
+    try
+        let t = OptionModule.stripAbbreviations t
+
+        isNullable t
+        && t.GenericArguments.Count = 1
+        && typeFidelity t.GenericArguments.[0] = Some Exact
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        false
 
 /// A column holding a value, not an entity: a navigation property
 /// (`o.Customer`) is a column too, but in memory it is whatever the copy
@@ -351,25 +375,61 @@ let find
                 | _ -> false
             | _ -> false
 
-        let comparison (param: Ident) (l: SynExpr) (r: SynExpr) =
+        let typeOfName (ident: Ident) =
+            match symbolAt ident with
+            | Some(:? FSharpMemberOrFunctionOrValue as v) -> Some(resultTypeOf v)
+            | Some(:? FSharpField as f) -> Some f.FieldType
+            | _ -> None
+
+        /// The value (already `value`) is not null: a literal, or a name
+        /// whose own type is no Nullable - an `int` converted to the
+        /// column's `Nullable<int>` on the way in, an enum case.
+        let nonNullValue (e: SynExpr) =
+            let ownType =
+                match unparen e with
+                | SynExpr.Const _ -> Some None
+                | SynExpr.Ident id -> Some(typeOfName id)
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    Some(typeOfName (List.last ids))
+                | _ -> None
+
+            match ownType with
+            | Some None -> true
+            | Some(Some t) -> not (isNullable t)
+            | None -> false
+
+        /// `negated`: under an odd number of `not`s. A Nullable column of an
+        /// exact type compared by `=`, `<`, `<=`, `>`, `>=` with a non-null
+        /// value drops the NULL row in SQL (unknown) and in .NET (false)
+        /// alike; negated, SQL still drops it (NOT unknown is unknown) where
+        /// .NET keeps it, and so does `<>` - those stay Near.
+        let comparison (negated: bool) (param: Ident) (op: string) (l: SynExpr) (r: SynExpr) =
             let isNullLiteral (e: SynExpr) =
                 match unparen e with
                 | SynExpr.Null _ -> true
                 | _ -> false
 
+            let againstValue (t: FSharpType) (v: SynExpr) =
+                if not negated && op <> "op_Inequality" && nullableOfExact t && nonNullValue v then
+                    Some Exact
+                else
+                    typeFidelity t
+
             match column param l, column param r with
             | Some t, None when isNullLiteral r && scalar t -> Some Exact
             | None, Some t when isNullLiteral l && scalar t -> Some Exact
             | Some lt, Some rt -> combine (typeFidelity lt) (typeFidelity rt)
-            | Some t, None when value param r -> typeFidelity t
-            | None, Some t when value param l -> typeFidelity t
+            | Some t, None when value param r -> againstValue t r
+            | None, Some t when value param l -> againstValue t l
             | _ -> None
 
-        let rec predicate (param: Ident) (e: SynExpr) =
+        let rec predicate (negated: bool) (param: Ident) (e: SynExpr) =
             match unparen e with
-            | Infix(("op_BooleanAnd" | "op_BooleanOr"), l, r) -> combine (predicate param l) (predicate param r)
-            | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) -> predicate param inner
-            | Infix(op, l, r) when comparisons.Contains op -> comparison param l r
+            | Infix(("op_BooleanAnd" | "op_BooleanOr"), l, r) ->
+                combine (predicate negated param l) (predicate negated param r)
+            | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
+                predicate (not negated) param inner
+            | Infix(op, l, r) when comparisons.Contains op -> comparison negated param op l r
             | e ->
                 match column param e with
                 | Some t when isBool t -> Some Exact
@@ -388,7 +448,7 @@ let find
             lambda1 arg
             |> Option.bind (fun (param, body) ->
                 (if isFilter then
-                     predicate param body
+                     predicate false param body
                  else
                      projection param body)
                 |> Option.map (fun f -> f, textOfRange source (unparen arg).Range))
@@ -397,12 +457,6 @@ let find
             match symbolAt name with
             | Some(:? FSharpMemberOrFunctionOrValue as v) -> declaringName v = "System.Linq.Enumerable"
             | _ -> false
-
-        let typeOfName (ident: Ident) =
-            match symbolAt ident with
-            | Some(:? FSharpMemberOrFunctionOrValue as v) -> Some(resultTypeOf v)
-            | Some(:? FSharpField as f) -> Some f.FieldType
-            | _ -> None
 
         let isUnitArg (e: SynExpr) =
             match e with

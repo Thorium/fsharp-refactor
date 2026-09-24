@@ -57,6 +57,66 @@ let ``a custom operation validates its DSL operand name`` () =
             "module Test\ntype Cfg() =\n    member _.Yield(_: unit) = 0\n    [<CustomOperation \"vpc\">]\n    member _.Vpc(state: int) =\n        if state < 0 then invalidArg \"vpc\" \"bad\"\n        state"
     )
 
+let private editorChecker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
+
+/// The editor analyzer's messages for one script, through the SDK context an
+/// IDE host builds - the editor is where FR0061/FR0062 offer their fixes.
+let private editorMessagesOf
+    (source: string)
+    (analyzer: FSharp.Analyzers.SDK.EditorContext -> Async<FSharp.Analyzers.SDK.Message list>)
+    =
+    let sourceText = FSharp.Compiler.Text.SourceText.ofString source
+
+    let options, _ =
+        editorChecker.GetProjectOptionsFromScript("Test.fsx", sourceText, assumeDotNetFramework = false)
+        |> Async.RunSynchronously
+
+    let parseResults, answer =
+        editorChecker.ParseAndCheckFileInProject("Test.fsx", source.GetHashCode(), sourceText, options)
+        |> Async.RunSynchronously
+
+    let checkResults =
+        match answer with
+        | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded r -> r
+        | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
+
+    let context: FSharp.Analyzers.SDK.EditorContext =
+        {
+            FileName = "Test.fsx"
+            SourceText = sourceText
+            ParseFileResults = parseResults
+            TypedTree = None
+            CheckFileResults = Some checkResults
+            CheckProjectResults = None
+            ProjectOptions = FSharp.Analyzers.SDK.AnalyzerProjectOptions.BackgroundCompilerOptions options
+            AnalyzerIgnoreRanges = Map.empty
+        }
+
+    analyzer context |> Async.RunSynchronously
+
+[<Fact>]
+let ``a misspelled name in a one-parameter function is corrected to that parameter in the editor`` () =
+    // one parameter leaves no doubt which name was meant: the editor's fix
+    // writes it, and the exception then names the argument the caller passed
+    let source =
+        "module Test\nlet scale (factor: int) =\n    if factor = 0 then invalidArg \"facotr\" \"zero\"\n    100 / factor"
+
+    match
+        editorMessagesOf source Analyzers.argNamesEditorAnalyzer
+        |> List.filter (fun m -> m.Code = "FR0061")
+    with
+    | [ m ] ->
+        let fix = List.exactlyOne m.Fixes
+        let patched = applyEdit source fix.FromRange fix.ToText
+
+        Assert.Equal(
+            "module Test\nlet scale (factor: int) =\n    if factor = 0 then invalidArg \"factor\" \"zero\"\n    100 / factor",
+            patched
+        )
+
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one FR0061 message, got %A" other
+
 // ---- FR0063 / FR0064 ExceptionRules ----
 
 let private exceptionsIn (source: string) =
@@ -76,6 +136,16 @@ let ``a finally that only cleans up is fine`` () =
     let finallies, _ =
         exceptionsIn
             "module Test\nlet f (act: unit -> int) (cleanup: unit -> unit) =\n    try\n        act ()\n    finally\n        cleanup ()"
+
+    Assert.Empty finallies
+
+[<Fact>]
+let ``a raise the finally's own try-with catches never escapes the finally`` () =
+    // best-effort cleanup: the flush failure is raised and caught INSIDE the
+    // finally, so the exception in flight from act () is never replaced
+    let finallies, _ =
+        exceptionsIn
+            "module Test\nlet f (act: unit -> int) (flush: unit -> bool) (log: string -> unit) =\n    try\n        act ()\n    finally\n        try\n            if not (flush ()) then failwith \"flush failed\"\n        with ex ->\n            log ex.Message"
 
     Assert.Empty finallies
 
@@ -202,6 +272,24 @@ let ``a mutable inside a private module is confined`` () =
         miscIn "module Test\nmodule private State =\n    let mutable counter = 0"
 
     Assert.Empty mutables
+
+[<Fact>]
+let ``the editor makes public mutable state private, with internal as the alternative`` () =
+    let source =
+        "module Test\nlet mutable counter = 0\nlet bump () = counter <- counter + 1"
+
+    match
+        editorMessagesOf source Analyzers.miscRulesEditorAnalyzer
+        |> List.filter (fun m -> m.Code = "FR0062")
+    with
+    | [ makePrivate; makeInternal ] ->
+        let fix = List.exactlyOne makePrivate.Fixes
+        let patched = applyEdit source fix.FromRange fix.ToText
+
+        Assert.Equal("module Test\nlet mutable private counter = 0\nlet bump () = counter <- counter + 1", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        Assert.Equal("internal ", (List.exactlyOne makeInternal.Fixes).ToText)
+    | other -> failwithf "Expected the FR0062 note and its internal alternative, got %A" other
 
 [<Fact>]
 let ``cultureless DateTime Parse is noted`` () =
@@ -434,6 +522,30 @@ let ``a name used after the loop stays put`` () =
         invariantsIn
             "let sink (n: int) = ()\nlet run (a: int) =\n    let c = 99\n    for x = 0 to 100 do\n        let c = a + 3\n        sink (x + c)\n    sink c"
     )
+
+[<Fact>]
+let ``FR0071: a sign flip by -1 and checked arithmetic stay in the loop`` () =
+    // a ledger that flips every balance's sign: `Int32.MinValue / -1` throws
+    // OverflowException, and hoisted above a loop over no entries it would
+    // throw where the loop never divided
+    let loopOver (rhs: string) =
+        $"let sink (n: int) = ()\nlet run (a: int) (xs: int list) =\n    for x in xs do\n        let c = {rhs}\n        sink (x + c)"
+
+    for rhs in [ "a / -1"; "a % -1"; "a / (-1)"; "a * 2 / - 1" ] do
+        Assert.Empty(invariantsIn (loopOver rhs))
+
+    // any other literal divisor is total, and so is a float's -1
+    assertHoisted
+        (loopOver "a / -2")
+        "let sink (n: int) = ()\nlet run (a: int) (xs: int list) =\n    let c = a / -2\n    for x in xs do\n        sink (x + c)"
+
+    assertHoisted
+        "let sink (n: float) = ()\nlet run (a: float) (xs: float list) =\n    for x in xs do\n        let c = a / -1.0\n        sink (x + c)"
+        "let sink (n: float) = ()\nlet run (a: float) (xs: float list) =\n    let c = a / -1.0\n    for x in xs do\n        sink (x + c)"
+
+    // under `open Checked`, `+` throws on overflow: the empty loop did not
+    for opening in [ "open Checked"; "open Microsoft.FSharp.Core.Operators.Checked" ] do
+        Assert.Empty(invariantsIn (opening + "\n" + loopOver "a + 3"))
 
 [<Fact>]
 let ``an array literal stays: hoisting would share one buffer`` () =
@@ -3141,6 +3253,45 @@ let ``FR0035: a companion never snapshots a binding that is still mutated or com
         let found = containsIn source
         Assert.NotEmpty found // still noted
         Assert.All(found, (fun s -> Assert.Empty s.Fix))
+
+[<Fact>]
+let ``FR0035: sensor thresholds holding a NaN never become a Set`` () =
+    // a calibration table with a "no reading" NaN: `List.contains nan xs`
+    // is false (NaN equals nothing), `(Set.ofList xs).Contains nan` is true
+    // (the Set compares, and NaN compares equal to itself) - an alarm that
+    // never fired would start firing
+    let probe =
+        "let f (xs: float list) =\n    for x in xs do\n        if List.contains x thresholds then\n            printfn \"%f\" x"
+
+    let cases =
+        [
+            "module M\nlet private thresholds = [ 1.5; nan; 3.0 ]\n" + probe
+            "module M\nlet private thresholds = [ 1.5; System.Double.NaN ]\n" + probe
+            "module M\nlet private thresholds = [ 1.5; infinity - infinity ]\n" + probe
+            "module M\nlet private limit = 2.0\nlet private thresholds = [ 1.5; limit ]\n"
+            + probe
+        ]
+
+    for source in cases do
+        let found = containsIn source
+        Assert.NotEmpty found // still noted
+        Assert.All(found, (fun s -> Assert.Empty s.Fix))
+
+    // a tuple carrying a float is the same NaN in a different coat
+    let tupled =
+        "module M\nlet private zones = [ (\"a\", 1.5); (\"b\", nan) ]\nlet f (xs: (string * float) list) =\n    for x in xs do\n        if List.contains x zones then\n            printfn \"%A\" x"
+
+    Assert.All(containsIn tupled, (fun s -> Assert.Empty s.Fix))
+
+    // every element a written-out number: no NaN can be in the list
+    let plain = "module M\nlet private thresholds = [ 1.5; -2.0; 3.0 ]\n" + probe
+
+    match containsIn plain with
+    | [ s ] ->
+        let patched = applyMigration plain s.Fix
+        Assert.Contains("[ 1.5; -2.0; 3.0 ] |> Set.ofList", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected one contains suggestion, got %A" other
 
 // ---- FR0132 comment and file guards (suave, test fixtures) ----
 

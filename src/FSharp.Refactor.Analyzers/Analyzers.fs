@@ -3160,7 +3160,7 @@ let private vectorizedLinqMessages (parseTree: ParsedInput) (source: ISourceText
     |> List.map (fun s ->
         let message =
             if s.FunctionName = "contains" then
-                $"{s.ModuleName}.contains over an array is a scalar loop; on .NET 8+ System.Linq's Contains() is SIMD-vectorized for '{s.ArrayName}''s element type (measured ~5x at 1000 elements, ~6x at 100k)."
+                $"{s.ModuleName}.contains over an array is a scalar loop; on .NET 8+ System.Linq's Contains() is SIMD-vectorized for '{s.ArrayName}''s element type (measured ~5x at 1000 elements, ~6x at 100k), with the same answers and the same ArgumentNullException on a null array."
             else
                 sprintf
                     "%s.%s over an array is a scalar loop; on .NET 8+ System.Linq's %s%s() is SIMD-vectorized for '%s''s element type (note: LINQ Sum throws on overflow where F#'s sum wraps)."
@@ -3170,7 +3170,14 @@ let private vectorizedLinqMessages (parseTree: ParsedInput) (source: ISourceText
                     (s.FunctionName.Substring 1)
                     s.ArrayName
 
-        hint "FR0041" message s.Range [])
+        // Array.contains is exact as Enumerable.Contains; the aggregations
+        // (overflow, empty) stay notes
+        let fixes =
+            match s.ReplacementText with
+            | Some replacement -> [ fix s.Range (Text.textOfRange source s.Range) replacement ]
+            | None -> []
+
+        hint "FR0041" message s.Range fixes)
 
 [<EditorAnalyzer("VectorizedLinq", "SIMD-vectorized LINQ aggregations for primitive arrays", HelpBase)>]
 let vectorizedLinqEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
@@ -6401,17 +6408,26 @@ let prefixCompareCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0167 CharArrayCopy ----
 
+/// `nonNull` is FSharp.Core 9's, and on a non-nullable `string` under
+/// `--checknulls` it warns FS3262 ("You can remove this `nonNull`
+/// assertion"): there the String twins stay the editor's offer.
+let private checksNulls (options: AnalyzerProjectOptions) =
+    options.OtherOptions
+    |> List.exists (fun (arg: string) -> arg = "--checknulls" || arg = "--checknulls+")
+
 let private charArrayCopyMessages
     (offerFixes: bool)
+    (nonNullAvailable: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     checkResults
     : Message list =
-    CharArrayCopy.find parseTree source checkResults
+    CharArrayCopy.findWith nonNullAvailable parseTree source checkResults
     |> List.map (fun (s: CharArrayCopy.Suggestion) ->
-        // the `for` throws on a null string on both sides and a sweep
-        // applies it; the String functions treat null as empty where the
-        // copy threw, so only the editor offers those
+        // the `for` throws on a null string on both sides, and so does a
+        // String function over `nonNull s`: a sweep applies those; the bare
+        // String functions treat null as empty where the copy threw, so
+        // only the editor offers them
         let fixes =
             if (s.Exact || offerFixes) && not (CapabilityFix.guardUnavailable ()) then
                 [ CapabilityFix.make source s.Range s.OriginalText s.ReplacementText ]
@@ -6419,8 +6435,10 @@ let private charArrayCopyMessages
                 []
 
         let message =
-            if s.Exact then
+            if s.Consumer = "for" then
                 $"'{s.OriginalText}' copies the whole string into an array the loop reads once - a string is already a sequence of its characters, and `for c in {s.ReplacementText} do` walks it by index without the copy (measured 13.4 => 9.4 ns, 72 => 0 B)."
+            elif s.Exact then
+                $"'{s.OriginalText}' copies the whole string into an array that is read once - `{s.ReplacementText}` walks the string itself, by index, without the copy (measured 9.2 => 4.3 ns, 72 => 0 B); `nonNull` throws on a null string as the copy did."
             else
                 $"'{s.OriginalText}' copies the whole string into an array that is read once - `{s.ReplacementText}` walks the string itself, by index, without the copy (measured 9.2 => 4.3 ns, 72 => 0 B); a null string throws here and reads as empty there, so apply once that cannot happen."
 
@@ -6429,12 +6447,25 @@ let private charArrayCopyMessages
 [<EditorAnalyzer("CharArrayCopy", "A ToCharArray copy that is only read once", HelpBase)>]
 let charArrayCopyEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0167" "CharArrayCopy" (fun () ->
-        whenChecked ctx (charArrayCopyMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+        whenChecked
+            ctx
+            (charArrayCopyMessages
+                true
+                (fsharpCoreAtLeast 9 ctx.FileName ctx.ProjectOptions
+                 && not (checksNulls ctx.ProjectOptions))
+                ctx.ParseFileResults.ParseTree
+                ctx.SourceText))
 
 [<CliAnalyzer("CharArrayCopy", "A ToCharArray copy that is only read once", HelpBase)>]
 let charArrayCopyCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0167" "CharArrayCopy" (fun () ->
-        charArrayCopyMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+        charArrayCopyMessages
+            false
+            (fsharpCoreAtLeast 9 ctx.FileName ctx.ProjectOptions
+             && not (checksNulls ctx.ProjectOptions))
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            ctx.CheckFileResults)
 
 // ---- FR0172 ListHeadPattern ----
 
@@ -6471,22 +6502,18 @@ let private rangeMapMessages
     : Message list =
     RangeMap.find parseTree source checkResults
     |> List.map (fun (s: RangeMap.Suggestion) ->
-        // `[| 0 .. n - 1 |]` with a negative `n` is the empty range and the
-        // map yields an empty array; `init` raises ArgumentException on a
-        // negative count. So a sweep applies the fix only where the count
-        // is provably not negative - a length, a count, a literal - and the
-        // editor offers it either way, since the author knows what `n` is
-        let fixes =
-            if s.CountProven || offerFixes then
-                [ fix s.Range s.OriginalText s.ReplacementText ]
-            else
-                []
+        // `[| 0 .. n - 1 |]` with a negative `n` is the empty range where
+        // `init` raises ArgumentException; a count not proven non-negative
+        // is spelled `max 0 n`, which gives the empty result back, so the
+        // fix is exact for every count and the sweep applies it too
+        ignore offerFixes
+        let fixes = [ fix s.Range s.OriginalText s.ReplacementText ]
 
         let caveat =
             if s.CountProven then
                 ""
             else
-                " (a negative count would have given an empty result here and raises ArgumentException after, so a sweep leaves this one alone)"
+                " (`max 0` keeps a negative count's empty result, as the range gave)"
 
         hint
             "FR0173"

@@ -7,11 +7,23 @@
 ///     values |> Array.sum         →  values.Sum()        // open System.Linq
 ///     values |> Array.contains v  →  values.Contains v
 ///
-/// Advice, not a fix, because the semantics are not identical:
+/// The aggregations are advice, not a fix, because the semantics are not
+/// identical:
 ///   - LINQ Sum is overflow-CHECKED (throws OverflowException) where
 ///     Array.sum wraps silently — usually an improvement, but a change
+///   - Min/Max/Average throw InvalidOperationException on an empty array
 ///   - on floats, F# min/max and LINQ Min/Max disagree about NaN, so the
 ///     note is gated to int/int64 element types where the win is clean
+///
+/// `Array.contains v arr` is exact on those types and a sweep applies it
+/// as `System.Linq.Enumerable.Contains(arr, v)` (`Enumerable.Contains`
+/// under `open System.Linq`): int equality agrees with
+/// EqualityComparer.Default, and a null array throws ArgumentNullException
+/// on both sides. Guards: FSharp.Core's Array module (typed), single line,
+/// and where the direct form read the probed value BEFORE a dotted array
+/// path (a getter), a value with no effect (a constant, a name). The
+/// piped form reads the array first on both sides. `Seq.contains` over an
+/// array stays a note here - FR0139 fixes it.
 ///
 /// The array value must be a plain identifier whose type resolves (typed
 /// check results) to a vectorizable primitive array.
@@ -32,6 +44,9 @@ type Suggestion =
         FunctionName: string
         /// The array value's name, for the message.
         ArrayName: string
+        /// The exact LINQ spelling the sweep applies over `Range` - an
+        /// `Array.contains` only; None for a note.
+        ReplacementText: string option
     }
 
 let private vectorizedFunctions = set [ "sum"; "average"; "min"; "max" ]
@@ -64,23 +79,27 @@ let private (|ArrayAggregation|_|) (e: SynExpr) =
         isInfix = false
         funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
         argExpr = ArrPath(arr, text)) when aggregationModules.Contains m.idText && vectorizedFunctions.Contains f.idText ->
-        ValueSome(m.idText, f.idText, arr, text)
+        ValueSome(m.idText, f, arr, text, None)
     | PipeApp(ArrPath(arr, text), SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))) when
         aggregationModules.Contains m.idText && vectorizedFunctions.Contains f.idText
         ->
-        ValueSome(m.idText, f.idText, arr, text)
+        ValueSome(m.idText, f, arr, text, None)
     // `Array.contains v arr` / `arr |> Array.contains v` — two-argument
     // shape; Enumerable.Contains rides the same vectorized span path as
-    // the aggregations (measured ~5x at 1000 ints, ~6x at 100k)
+    // the aggregations (measured ~5x at 1000 ints, ~6x at 100k). The
+    // probed value comes back too, for the fix
     | SynExpr.App(
         isInfix = false
-        funcExpr = SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])))
+        funcExpr = SynExpr.App(
+            isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])); argExpr = needle)
         argExpr = ArrPath(arr, text)) when aggregationModules.Contains m.idText && f.idText = "contains" ->
-        ValueSome(m.idText, f.idText, arr, text)
-    | PipeApp(ArrPath(arr, text), SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])))) when
-        aggregationModules.Contains m.idText && f.idText = "contains"
-        ->
-        ValueSome(m.idText, f.idText, arr, text)
+        ValueSome(m.idText, f, arr, text, Some needle)
+    | PipeApp(ArrPath(arr, text),
+              SynExpr.App(
+                  isInfix = false
+                  funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
+                  argExpr = needle)) when aggregationModules.Contains m.idText && f.idText = "contains" ->
+        ValueSome(m.idText, f, arr, text, Some needle)
     | _ -> ValueNone
 
 /// Does the identifier resolve to an int[]/int64[]?
@@ -118,17 +137,61 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
+        // spelled so it resolves whether or not System.Linq is open, as
+        // FR0139 spells its Contains
+        let enumerable =
+            if opensNamespace source "System.Linq" then
+                "Enumerable"
+            else
+                "System.Linq.Enumerable"
+
+        let coreArrayFunction (f: Ident) =
+            match OptionModule.symbolOfIdent check source f with
+            | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+                OptionModule.enclosingFullName value = "Microsoft.FSharp.Collections.ArrayModule"
+            | _ -> false
+
+        // a needle whose evaluation has no effect: the direct form read it
+        // before the array, `Enumerable.Contains(arr, v)` reads it after
+        let rec inert (e: SynExpr) =
+            match e with
+            | SynExpr.Const _
+            | SynExpr.Ident _ -> true
+            | SynExpr.Paren(expr = inner) -> inert inner
+            | _ -> false
+
         [
             for path, expr in index.Exprs do
                 match expr with
-                | ArrayAggregation(m, fn, arr, arrText) when
+                | ArrayAggregation(m, fn, arr, arrText, needle) when
                     not (insideQuotedCode path) && resolvesToVectorizableArray check source arr
                     ->
+                    let piped =
+                        match expr with
+                        | PipeApp _ -> true
+                        | _ -> false
+
+                    // `Array.contains` only: `Seq.contains` over an array is
+                    // FR0139's fix. The aggregations stay notes - LINQ Sum
+                    // throws on overflow where Array.sum wraps, Min/Max/Average
+                    // throw InvalidOperationException on an empty array
+                    let replacement =
+                        match needle with
+                        | Some needle when
+                            m = "Array"
+                            && isSingleLine expr.Range
+                            && coreArrayFunction fn
+                            && (piped || not (arrText.Contains '.') || inert needle)
+                            ->
+                            Some $"{enumerable}.Contains({arrText}, {textOfRange source needle.Range})"
+                        | _ -> None
+
                     {
                         Range = expr.Range
                         ModuleName = m
-                        FunctionName = fn
+                        FunctionName = fn.idText
                         ArrayName = arrText
+                        ReplacementText = replacement
                     }
                 | _ -> ()
         ]

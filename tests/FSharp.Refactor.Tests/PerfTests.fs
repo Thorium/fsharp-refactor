@@ -437,6 +437,46 @@ let ``FR0167: a bound copy, a sliced copy, a Seq or map consumer and a non-strin
             "module Test\nopen System\ntype Doc(t: string) =\n    member _.ToCharArray() = t.ToCharArray()\nlet f (s: string) (d: Doc) =\n    let chars = s.ToCharArray()\n    for c in chars do ignore c\n    for c in s.ToCharArray(1, 2) do ignore c\n    let a = s.ToCharArray() |> Seq.filter Char.IsDigit |> Seq.length\n    let b = Array.map Char.ToUpper (s.ToCharArray())\n    for c in d.ToCharArray() do ignore c\n    a, b"
     )
 
+[<Fact>]
+let ``FR0167: on FSharp.Core 9 an order-code check walks nonNull s and still throws on a null code`` () =
+    // an order-code validator: `null.ToCharArray()` threw, while
+    // `String.exists Char.IsDigit null` answers false - a missing code would
+    // quietly fail (or pass) validation. `nonNull s` throws the same
+    // NullReferenceException the copy did, so with it the sweep may apply
+    let source =
+        "module Test\nopen System\nlet f (code: string) (name: string) =\n    let mutable n = 0\n    let a = Array.exists Char.IsDigit (code.ToCharArray())\n    let b = code.Trim().ToCharArray() |> Array.forall (fun c -> c <> ' ')\n    name.ToCharArray() |> Array.iteri (fun i c -> n <- n + i + int c)\n    Array.iter (fun c -> n <- n + int c) (code.ToCharArray())\n    n, a, b"
+
+    let tree, sourceText, checkResults =
+        FSharp.Refactor.Tests.Parsing.parseAndCheck source
+
+    let found = FSharp.Refactor.CharArrayCopy.findWith true tree sourceText checkResults
+
+    Assert.Equal<bool list>([ true; true; true; true ], found |> List.map (fun s -> s.Exact))
+
+    Assert.Equal<string list>(
+        [
+            "String.exists Char.IsDigit (nonNull code)"
+            "nonNull (code.Trim()) |> String.forall (fun c -> c <> ' ')"
+            "nonNull name |> String.iteri (fun i c -> n <- n + i + int c)"
+            "String.iter (fun c -> n <- n + int c) (nonNull code)"
+        ],
+        found |> List.map (fun s -> s.ReplacementText)
+    )
+
+    let patched =
+        found
+        |> List.sortByDescending (fun s -> s.Range.StartLine, s.Range.StartColumn)
+        |> List.fold (fun src s -> applyEdit src s.Range s.ReplacementText) source
+
+    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+
+    // below FSharp.Core 9 there is no nonNull: the bare String twin, editor only
+    let older =
+        FSharp.Refactor.CharArrayCopy.findWith false tree sourceText checkResults
+
+    Assert.All(older, (fun s -> Assert.False s.Exact))
+    Assert.Equal("String.exists Char.IsDigit code", older.Head.ReplacementText)
+
 
 // ---- the modern-framework gate the string rules share ----
 

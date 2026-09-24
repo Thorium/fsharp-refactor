@@ -227,6 +227,12 @@ let family: Family =
                         match s.LinqSpelling with
                         | None -> "FR0139", [ edit "FR0139" s.Range "Array" ]
                         | Some(callRange, linqText) -> "FR0139", [ edit "FR0139" callRange linqText ]
+                    // Array.contains is swept to Enumerable.Contains; the
+                    // aggregations are notes
+                    for s in VectorizedLinq.find c.Tree c.Source c.Check do
+                        match s.ReplacementText with
+                        | Some replacement -> yield "FR0041", [ edit "FR0041" s.Range replacement ]
+                        | None -> ()
                     for s in CountIsEmpty.find c.Tree c.Source c.Check ->
                         "FR0052", [ edit "FR0052" s.Range s.ReplacementText ]
                     for s in AddRange.find c.Tree c.Source c.Check ->
@@ -251,7 +257,9 @@ let family: Family =
             fun c ->
                 [
                     for s in ListIndexing.find c.Tree c.Source c.Check -> "FR0102", s.Range
-                    for s in VectorizedLinq.find c.Tree c.Source c.Check -> "FR0041", s.Range
+                    for s in VectorizedLinq.find c.Tree c.Source c.Check do
+                        if s.ReplacementText.IsNone then
+                            yield "FR0041", s.Range
                     for s in MapIgnore.find c.Tree c.Source c.Check do
                         if s.ReplacementText.IsNone then
                             yield "FR0076", s.Range

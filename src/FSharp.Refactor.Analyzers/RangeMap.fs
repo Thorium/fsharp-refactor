@@ -14,16 +14,15 @@
 /// same order `Array.map` walks the range in, so a side effect in the
 /// function happens as often and in the sequence it did before.
 ///
-/// THE ONE DIFFERENCE, and the reason a sweep is choosier than the editor:
-/// a NEGATIVE count. `[| 0 .. n - 1 |]` with `n = -1` is the empty range,
-/// so the map yields `[||]`; `Array.init -1` raises ArgumentException. So
-/// the count has to be non-negative, and a sweep applies the fix only
-/// where that is PROVEN - a literal, or a `Length`/`Count`/`length` the
-/// typed tree says is the FRAMEWORK's (a property somebody wrote can
-/// answer anything, so its name alone would defeat the very guard this
-/// is) - while the editor offers it wherever the shape matches and lets
-/// the author answer for the count. FR0166 draws the same line for the
-/// same reason.
+/// THE ONE DIFFERENCE is a NEGATIVE count: `[| 0 .. n - 1 |]` with
+/// `n = -1` is the empty range, so the map yields `[||]`; `Array.init -1`
+/// raises ArgumentException. A count PROVEN non-negative - a literal, or a
+/// `Length`/`Count`/`length` the typed tree says is the FRAMEWORK's (a
+/// property somebody wrote can answer anything) - is written as is;
+/// any other is written `max 0 n`, which hands a negative count the empty
+/// result the range gave. Exact for every count either way, so a sweep
+/// applies it too: a 2^n array of ints is not worth keeping over a count
+/// nobody expects to be negative.
 ///
 /// The count becomes an argument, so one that is not a single atom keeps
 /// its parentheses: `[| 0 .. n * 2 - 1 |]` has to produce
@@ -31,8 +30,13 @@
 /// `(Array.init n) * (2 f)`.
 ///
 /// Declined: a range that does not start at 0 (`[| 1 .. n |] |> map f`
-/// would need the function shifted), a stepped range, a mapper the
-/// replacement cannot carry on one line, and a compiler directive inside
+/// would need the function shifted), a stepped range, a mapper spanning
+/// lines that is no lambda with its body on a line of its own, or whose
+/// later lines are not indented past the column the range starts at (its
+/// text moves as written, lines and columns kept, so `Array.init n (fun i
+/// ->` over a body indented under it is fine, one hanging left of it is
+/// not, and neither is `(fun i -> match i with` over arms aligned to the
+/// `match`, which the rewrite moves), and a compiler directive inside
 /// the expression - the rewrite drops the range's own text, and a
 /// directive written there would go with it. A comment inside is held the
 /// same way, by the analyzer's comment guard.
@@ -119,9 +123,8 @@ let private asArgument (source: ISourceText) (e: SynExpr) =
     | _ -> $"({text})"
 
 /// `0 .. <upper>` written as a range literal, yielding the COUNT the
-/// `init` needs: `0 .. c - 1` counts `c`, and `0 .. <literal k>` counts
-/// `k + 1`. Any other upper bound would need arithmetic this rule does not
-/// invent.
+/// `init` needs: `0 .. c - 1` counts `c`, `0 .. <literal k>` counts
+/// `k + 1`, and any other upper bound `n` counts `(n + 1)`.
 [<return: Struct>]
 let private (|ZeroRangeCount|_|) (check: FSharpCheckFileResults, source: ISourceText) (e: SynExpr) =
     let countOf (upper: SynExpr) =
@@ -133,7 +136,10 @@ let private (|ZeroRangeCount|_|) (check: FSharpCheckFileResults, source: ISource
             ValueSome(asArgument source countExpr, provablyNonNegative check source countExpr)
         // a literal upper bound folds: 0 .. 9 is ten elements
         | SynExpr.Const(SynConst.Int32 k, _) when k >= -1 -> ValueSome(string (k + 1), true)
-        | _ -> ValueNone
+        // any other upper bound `n` counts `n + 1` (the `0` fixes it as an
+        // int, the type `init` takes); a provably non-negative `n` proves
+        // the count, anything else is clamped by the caller
+        | other -> ValueSome($"({asArgument source other} + 1)", provablyNonNegative check source other)
 
     match e with
     | SynExpr.IndexRange(expr1 = Some ZeroConst; expr2 = Some upper) -> countOf upper
@@ -181,25 +187,58 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let suggestions = ResizeArray<Suggestion>()
 
+        // a multi-line mapper (`(fun i ->` and a body under it) moves with its
+        // lines where they are: `Array.init n (fun i ->` then starts at the
+        // column the range did, and every later line must be indented past it.
+        // Only a lambda whose body starts on a line of its own: a token after
+        // the arrow moves with the first line, and what later lines aligned to
+        // it would turn offside (`match`'s arms) or bind anew (a second
+        // statement indented past a first one moved left is its argument)
+        let carriesOver (startColumn: int) (mapper: SynExpr) =
+            let range = mapper.Range
+
+            let bodyOnItsOwnLine =
+                match stripParens mapper with
+                | SynExpr.Lambda(parsedData = Some(_, body)) -> body.Range.StartLine > range.StartLine
+                | _ -> false
+
+            isSingleLine range
+            || bodyOnItsOwnLine
+               && [ range.StartLine + 1 .. range.EndLine ]
+                  |> List.forall (fun l ->
+                      let line = source.GetLineString(l - 1)
+                      let trimmed = line.TrimStart()
+                      let indent = line.Length - trimmed.Length
+
+                      trimmed = ""
+                      || indent > startColumn
+                      || (indent = startColumn && trimmed.StartsWith ")"))
+
         let consider (whole: SynExpr) (rangeExpr: SynExpr) (mapExpr: SynExpr) =
             match (|RangeLiteral|_|) (check, source) rangeExpr, mapExpr with
             | ValueSome(isArray, count, proven), MapCall(moduleIdent, mapIdent, mapper) ->
                 match initOf moduleIdent.idText with
                 | ValueSome(initName, wantsArray) when
                     wantsArray |> Option.forall (fun a -> a = isArray)
-                    // the mapper's text is spliced as written, so it has to
-                    // be one line for the replacement to stay well-formed
-                    && isSingleLine mapper.Range
+                    // the mapper's text is spliced as written, its later lines
+                    // keeping their columns: they must stay right of where
+                    // `Array.init` will start (a closing `)` may sit on it)
+                    && carriesOver whole.Range.StartColumn mapper
                     // the replacement drops the range's own text, so a
                     // directive inside what it replaces would go with it
                     && not (spansDirective source whole.Range)
                     && coreMap check source moduleIdent mapIdent
                     ->
+                    // an unproven count is clamped: `max 0 n` makes a negative
+                    // count the empty result the range gave, so the rewrite is
+                    // exact for every count and a sweep applies it too
+                    let countText = if proven then count else $"(max 0 {count})"
+
                     suggestions.Add
                         {
                             Range = whole.Range
                             OriginalText = textOfRange source whole.Range
-                            ReplacementText = $"{initName} {count} {textOfRange source mapper.Range}"
+                            ReplacementText = $"{initName} {countText} {textOfRange source mapper.Range}"
                             CountProven = proven
                         }
                 | _ -> ()

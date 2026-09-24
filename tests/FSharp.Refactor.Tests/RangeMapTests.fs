@@ -28,7 +28,7 @@ let private assertRewrites (body: string) (expected: string) (expectedProven: bo
 let ``a range mapped over becomes Array.init`` () =
     assertRewrites
         "let r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> f i)"
-        "Array.init dimension (fun i -> f i)"
+        "Array.init (max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
@@ -47,26 +47,42 @@ let ``a literal upper bound folds to the count`` () =
 let ``the direct application is the same rewrite`` () =
     assertRewrites
         "let r = Array.map (fun i -> f i) [| 0 .. dimension - 1 |]"
-        "Array.init dimension (fun i -> f i)"
+        "Array.init (max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``a list range becomes List.init`` () =
     assertRewrites
         "let r = [ 0 .. dimension - 1 ] |> List.map (fun i -> f i)"
-        "List.init dimension (fun i -> f i)"
+        "List.init (max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``Seq.map over a range becomes Seq.init`` () =
     assertRewrites
         "let r = [| 0 .. dimension - 1 |] |> Seq.map (fun i -> f i)"
-        "Seq.init dimension (fun i -> f i)"
+        "Seq.init (max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``a named function carries over unchanged`` () =
-    assertRewrites "let r = [| 0 .. dimension - 1 |] |> Array.map f" "Array.init dimension f" false
+    assertRewrites "let r = [| 0 .. dimension - 1 |] |> Array.map f" "Array.init (max 0 dimension) f" false
+
+[<Fact>]
+let ``an inclusive upper bound counts one more`` () =
+    // `[ 0 .. n ]` holds n + 1 elements; a negative n (n < -1) is clamped empty
+    assertRewrites
+        "let r = [ 0 .. dimension ] |> List.map (fun i -> f i)"
+        "List.init (max 0 (dimension + 1)) (fun i -> f i)"
+        false
+
+    assertRewrites
+        "let r = [| 0 .. xs.Length |] |> Array.map (fun i -> f i)"
+        "Array.init (xs.Length + 1) (fun i -> f i)"
+        true
+
+    Assert.Equal<int list>([ 0 .. -3 ] |> List.map id, List.init (max 0 (-3 + 1)) id)
+    Assert.Equal<int list>([ 0..4 ] |> List.map id, List.init (max 0 (4 + 1)) id)
 
 [<Fact>]
 let ``a compound count keeps its own parentheses`` () =
@@ -74,14 +90,14 @@ let ``a compound count keeps its own parentheses`` () =
     // `(Array.init n) * (2 f)`
     assertRewrites
         "let r = [| 0 .. dimension * 2 - 1 |] |> Array.map (fun i -> f i)"
-        "Array.init (dimension * 2) (fun i -> f i)"
+        "Array.init (max 0 (dimension * 2)) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``a call as the count keeps its parentheses too`` () =
     assertRewrites
         "let g (a: int) (b: int) = a + b\nlet r = [| 0 .. g 2 3 - 1 |] |> Array.map (fun i -> f i)"
-        "Array.init (g 2 3) (fun i -> f i)"
+        "Array.init (max 0 (g 2 3)) (fun i -> f i)"
         false
 
 [<Fact>]
@@ -142,10 +158,50 @@ let ``a shadowing Array module stays`` () =
     Assert.Empty(RangeMap.find tree text check)
 
 [<Fact>]
-let ``a multi-line mapper stays, since its text is spliced`` () =
-    Assert.Empty(
-        found "let r =\n    [| 0 .. dimension - 1 |]\n    |> Array.map (fun i ->\n        let d = f i\n        d + 1)"
-    )
+let ``a multi-line mapper under the range moves with its lines into Array.init`` () =
+    // FSharp.Azure.Quantum's AmplitudeAmplification: a 2^n amplitude array
+    // built by mapping over a 2^n array of ints
+    assertRewrites
+        "let r =\n    [| 0 .. dimension - 1 |]\n    |> Array.map (fun i ->\n        let d = f i\n        d + 1)"
+        "Array.init (max 0 dimension) (fun i ->\n        let d = f i\n        d + 1)"
+        false
+
+[<Fact>]
+let ``a multi-line mapper whose body hangs left of the range keeps the map`` () =
+    // spliced where the range stood, the body would sit left of `Array.init`
+    let body =
+        "let r = [| 0 .. dimension - 1 |] |> Array.map (fun i ->\n    let d = f i\n    d + 1)"
+
+    Assert.True(typechecksCleanly (header + body), "the fixture itself must typecheck")
+    Assert.Empty(found body)
+
+/// Every later line aligned under the first line's token after the arrow.
+let private alignedUnder (first: string) (later: string list) =
+    let pad = String.replicate (first.LastIndexOf "-> " + 3) " "
+    String.concat "\n" (first :: (later |> List.map (fun l -> pad + l)))
+
+[<Fact>]
+let ``match arms aligned to a match after the arrow keep the map`` () =
+    // `Array.init (max 0 (dimension + 1)) (fun i ->` is longer than the range
+    // and map, so the `match` moves right and the arms fall offside (FS0058)
+    let arms =
+        "let r =\n"
+        + alignedUnder "    [| 0 .. dimension |] |> Array.map (fun i -> match i with" [ "| 0 -> f 0"; "| _ -> i)" ]
+
+    Assert.True(typechecksCleanly (header + arms), "the fixture itself must typecheck")
+    Assert.Empty(found arms)
+
+[<Fact>]
+let ``a second statement aligned to a first one after the arrow keeps the map`` () =
+    // a second statement aligned to a first one on the arrow's line: moved
+    // left, the first leaves the second indented past it, and the second
+    // becomes its argument - `tap i i` - with no error at all
+    let statements =
+        "let tap (x: int) = ignore x; fun (y: int) -> y * 100\nlet r =\n"
+        + alignedUnder "    [| 0 .. dimension - 1 |] |> Array.map (fun i -> tap i |> ignore" [ "i)" ]
+
+    Assert.True(typechecksCleanly (header + statements), "the fixture itself must typecheck")
+    Assert.Empty(found statements)
 
 [<Fact>]
 let ``the rewrite keeps what the program does`` () =
@@ -156,10 +212,12 @@ let ``the rewrite keeps what the program does`` () =
     Assert.Equal<int[]>(before, after)
 
 [<Fact>]
-let ``a negative count is why the sweep waits for a proof`` () =
-    // the premise of CountProven: the two shapes genuinely differ there
+let ``a negative count is why an unproven count is clamped`` () =
+    // the bare `init` differs from the range there; `max 0 n` does not
     let n = -1
     Assert.Empty([| 0 .. n - 1 |] |> Array.map id)
 
     Assert.Throws<System.ArgumentException>(fun () -> Array.init n id |> ignore)
     |> ignore
+
+    Assert.Empty(Array.init (max 0 n) id)

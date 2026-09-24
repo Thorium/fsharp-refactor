@@ -202,6 +202,80 @@ let private elementComparable = elementSatisfies (supportsComparison 0)
 /// Whether the element's `.Equals` agrees with `=` (a HashSet's demand).
 let private elementEquatable = elementSatisfies (equalsAgrees 0)
 
+/// Can a value of this type carry a float (Double or Single) - itself, or a
+/// part of a tuple, record, union, list, option, array, Set or Map? Such a
+/// value can carry a NaN, and NaN splits the two probes: `List.contains`
+/// asks `=`, where `nan = nan` is false, and a `Set` asks the comparison,
+/// where NaN sorts equal to itself - `List.contains nan [ nan ]` is false,
+/// `(Set.ofList [ nan ]).Contains nan` is true. Fail-safe: unknown is yes.
+let rec private mayHoldFloat (depth: int) (t: FSharpType) : bool =
+    depth > 4
+    || (try
+            let t = OptionModule.stripAbbreviations t
+
+            let parts () =
+                t.GenericArguments |> Seq.exists (mayHoldFloat (depth + 1))
+
+            if t.IsGenericParameter || t.IsFunctionType then
+                false
+            elif t.IsTupleType || t.IsStructTupleType then
+                parts ()
+            elif not t.HasTypeDefinition then
+                true
+            else
+                let d = t.TypeDefinition
+
+                match d.TryFullName with
+                | Some("System.Double" | "System.Single") -> true
+                | _ when d.IsEnum -> false
+                | _ when d.IsFSharpRecord ->
+                    d.FSharpFields |> Seq.exists (fun f -> mayHoldFloat (depth + 1) f.FieldType)
+                | _ when d.IsFSharpUnion ->
+                    d.UnionCases
+                    |> Seq.exists (fun c -> c.Fields |> Seq.exists (fun f -> mayHoldFloat (depth + 1) f.FieldType))
+                | _ -> parts ()
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            true)
+
+/// Whether the element can carry a NaN.
+let private elementMayHoldFloat = elementSatisfies (mayHoldFloat 0)
+
+/// An element written out in full, with no NaN in it: a constant (a
+/// numeric literal is never NaN, save a bit-pattern float like
+/// `0x7FF8000000000000LF`), a negated one, and tuples and records of
+/// those. `nan`, `Double.NaN`, `infinity - infinity`, a named value or any
+/// other computation is not proven.
+let rec private nanFreeLiteral (e: SynExpr) =
+    match e with
+    | SynExpr.Const(SynConst.Unit, _) -> false
+    | SynExpr.Const(SynConst.Double v, _) -> not (System.Double.IsNaN v)
+    | SynExpr.Const(SynConst.Single v, _) -> not (System.Single.IsNaN v)
+    | SynExpr.Const(SynConst.Measure(constant = inner), r) -> nanFreeLiteral (SynExpr.Const(inner, r))
+    | SynExpr.Const _ -> true
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.Typed(expr = inner) -> nanFreeLiteral inner
+    | SynExpr.App(isInfix = false; funcExpr = SingleIdent neg; argExpr = SynExpr.Const _ as inner) when
+        neg.idText = "op_UnaryNegation"
+        ->
+        nanFreeLiteral inner
+    | SynExpr.Tuple(exprs = exprs) -> exprs |> List.forall nanFreeLiteral
+    | SynExpr.Record(baseInfo = None; copyInfo = None; recordFields = fields) ->
+        fields
+        |> List.forall (fun (SynExprRecordField(expr = value)) -> value |> Option.exists nanFreeLiteral)
+    | _ -> false
+
+/// Every element of a list or array literal is `nanFreeLiteral`.
+let private nanFreeCollection (rhs: SynExpr) =
+    let rec elements (e: SynExpr) =
+        match e with
+        | SynExpr.Sequential(expr1 = a; expr2 = b) -> elements a @ elements b
+        | e -> [ e ]
+
+    match rhs with
+    | SynExpr.ArrayOrList(exprs = exprs) -> exprs |> List.forall nanFreeLiteral
+    | SynExpr.ArrayOrListComputed(expr = inner) -> elements inner |> List.forall nanFreeLiteral
+    | _ -> false
+
 type ContainsSuggestion =
     {
         Range: range
@@ -217,7 +291,11 @@ type ContainsSuggestion =
         /// what a snapshot saw), an array only private and with no use but
         /// the probes (an element write), and the element's `.Equals`
         /// agrees with `=` (no array, float or function inside), proven by
-        /// the typed tree.
+        /// the typed tree. The in-place `Set` conversion asks `comparison`
+        /// of the element, and of an element that can carry a float (a
+        /// float, or a tuple/record/union holding one) that every element
+        /// of the literal is a written-out constant, none a NaN: the Set
+        /// finds a NaN that `List.contains` never did.
         Fix: (range * string * string) list
     }
 
@@ -577,6 +655,16 @@ let findWith
                                     && (check
                                         |> Option.bind (fun c -> elementComparable c source moduleIdent)
                                         |> Option.defaultValue false)
+                                    // a float element compares NaN equal to
+                                    // itself in the Set where `=` never did:
+                                    // only a literal of written-out numbers,
+                                    // none a NaN, converts
+                                    && (nanFreeCollection declRhs
+                                        || not (
+                                            check
+                                            |> Option.bind (fun c -> elementMayHoldFloat c source moduleIdent)
+                                            |> Option.defaultValue true
+                                        ))
                                 then
                                     let convert =
                                         Range.mkRange declRange.FileName declRhs.Range.End declRhs.Range.End,

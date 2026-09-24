@@ -29,8 +29,14 @@
 /// require; single line; no quotation. The `for` is exact on every input —
 /// both sides throw on a null string — and a sweep applies it; the String
 /// module treats a null string as EMPTY (`String.exists f null` is false,
-/// `String.iter f null` does nothing) where `null.ToCharArray()` threw, so
-/// those rewrites are the editor's offer and a note in a sweep.
+/// `String.iter f null` does nothing) where `null.ToCharArray()` threw. On
+/// FSharp.Core 9+ the receiver goes through `nonNull`, which throws the
+/// same NullReferenceException - `String.exists f (nonNull s)`, `nonNull
+/// s |> String.iter f`, a non-atomic receiver in parentheses - and a sweep
+/// applies that. Below FSharp.Core 9 (no `nonNull`), under `--checknulls`
+/// (where `nonNull` on a non-nullable `string` warns FS3262), or in a file
+/// binding a `nonNull` of its own, the bare twin is the editor's offer and
+/// a note in a sweep.
 module FSharp.Refactor.CharArrayCopy
 
 open FSharp.Compiler.CodeAnalysis
@@ -49,9 +55,10 @@ type Suggestion =
         /// "for", or the String function the Array one becomes.
         Consumer: string
         /// The rewrite is the same on every input: the `for` (both sides throw
-        /// on a null string) — a sweep applies it. The String functions treat
-        /// a null string as empty where the copy threw, so only the editor
-        /// offers those; the CLI notes.
+        /// on a null string), and the String functions over `nonNull s` —
+        /// a sweep applies it. The bare String functions treat a null string
+        /// as empty where the copy threw, so only the editor offers those;
+        /// the CLI notes.
         Exact: bool
     }
 
@@ -85,7 +92,14 @@ let private (|ArrayFunction|_|) (e: SynExpr) =
         ValueSome f
     | _ -> ValueNone
 
-let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
+/// `nonNullAvailable`: the compilation has FSharp.Core 9's `nonNull` and
+/// no `--checknulls`, so the String twins can go through it exactly.
+let findWith
+    (nonNullAvailable: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults)
+    : Suggestion list =
     if OptionModule.hasErrors check then
         []
     else
@@ -115,6 +129,35 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         let argument (text: string) = if atom text then text else $"({text})"
 
+        // FSharp.Core 9's `nonNull` throws the NullReferenceException the
+        // copy threw, where the String functions read null as empty: with
+        // it the rewrite is exact. A file binding a `nonNull` of its own
+        // would take that one - the bare twin and the editor then
+        let wrapNonNull =
+            nonNullAvailable
+            && not (
+                index.Pats
+                |> Array.exists (fun (_, p) ->
+                    match p with
+                    | SynPat.Named(ident = SynIdent(ident = id))
+                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> id.idText = "nonNull"
+                    | _ -> false)
+            )
+
+        // the receiver as the String function's argument, and as the head
+        // of a pipeline
+        let stringArgument (receiver: string) =
+            if wrapNonNull then
+                $"(nonNull {argument receiver})"
+            else
+                argument receiver
+
+        let pipeHead (receiver: string) =
+            if wrapNonNull then
+                $"nonNull {argument receiver}"
+            else
+                receiver
+
         [
             for path, expr in index.Exprs do
                 if not (insideQuotedCode path) then
@@ -140,9 +183,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         {
                             Range = expr.Range
                             OriginalText = textOfRange source expr.Range
-                            ReplacementText = $"String.{f.idText} {textOfRange source fn.Range} {argument receiver}"
+                            ReplacementText =
+                                $"String.{f.idText} {textOfRange source fn.Range} {stringArgument receiver}"
                             Consumer = $"String.{f.idText}"
-                            Exact = false
+                            Exact = wrapNonNull
                         }
                     // s.ToCharArray() |> Array.exists f
                     | SynExpr.App(
@@ -160,9 +204,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         {
                             Range = expr.Range
                             OriginalText = textOfRange source expr.Range
-                            ReplacementText = $"{receiver} |> String.{f.idText} {textOfRange source fn.Range}"
+                            ReplacementText = $"{pipeHead receiver} |> String.{f.idText} {textOfRange source fn.Range}"
                             Consumer = $"String.{f.idText}"
-                            Exact = false
+                            Exact = wrapNonNull
                         }
                     | _ -> ()
         ]
+
+/// Below FSharp.Core 9 (no `nonNull`): the String twins are the editor's offer.
+let find parseTree source check = findWith false parseTree source check

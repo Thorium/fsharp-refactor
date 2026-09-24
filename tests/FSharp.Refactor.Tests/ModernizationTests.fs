@@ -540,6 +540,17 @@ let ``empty attribute parens go away`` () =
         "module Test\n[<System.Serializable>]\ntype T = { X: int }"
 
 [<Fact>]
+let ``an attribute with real arguments or none written keeps its spelling`` () =
+    // the parser hands a bare [<Serializable>] a unit argument too, spanning
+    // the name: only a written "()" is empty parens, and an argument the
+    // attribute needs is never touched
+    Assert.Empty(
+        syntaxIn
+            "module Test\n[<System.Serializable; System.Obsolete(\"use V2\")>]\ntype T = { X: int }\n[<System.Obsolete(\"use V3\", false)>]\nlet f () = 1"
+        |> List.filter (fun s -> s.Kind = RedundantSyntax.Kind.AttributeParens)
+    )
+
+[<Fact>]
 let ``redundant backticks strip at use and binder sites`` () =
     match
         syntaxIn "module Test\nlet ``plain`` = 1\nlet f () = ``plain`` + 1"
@@ -608,6 +619,17 @@ let ``cons of empty is a one-element list pattern`` () =
     match conses with
     | [ s ] -> Assert.Equal("[ x ]", s.ReplacementText)
     | other -> failwithf "Expected exactly one cons fix, got %A" other
+
+[<Fact>]
+let ``a cons pattern laid out over several lines keeps its layout`` () =
+    // wrapping `{ Id = id` in "[ " would shift it right of the `Name` line
+    // aligned under it: the one-line rewrite is not a layout-safe edit
+    let source =
+        "module Test\ntype Row = { Id: int; Name: string }\nlet only (rows: Row list) =\n    match rows with\n    | { Id = id\n        Name = name } :: [] -> Some(id, name)\n    | _ -> None"
+
+    Assert.True(typechecksCleanly source, "the input must be real code for the silence to mean anything")
+    let conses, _, _ = cleanupsIn source
+    Assert.Empty conses
 
 [<Fact>]
 let ``all-wildcard case fields collapse`` () =

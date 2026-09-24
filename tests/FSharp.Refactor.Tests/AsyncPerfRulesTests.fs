@@ -482,6 +482,16 @@ let ``ToString returning a value is fine`` () =
 
     Assert.Empty raises
 
+[<Fact>]
+let ``FR0054: a Dispose that catches its own flush failure throws nothing to its caller`` () =
+    // the raise sits under a try/with inside the member: the member handles
+    // it, so nothing escapes into the using block that disposes it
+    let _, _, raises =
+        objectRulesIn
+            "module Test\ntype Session(conn: System.IO.Stream) =\n    interface System.IDisposable with\n        member _.Dispose() =\n            try\n                if not conn.CanWrite then failwith \"stream already closed\"\n                conn.Flush()\n            with ex ->\n                eprintfn \"flush on dispose failed: %s\" ex.Message"
+
+    Assert.Empty raises
+
 // ---- FR0058 RecursiveSeq ----
 
 let private recursiveSeqIn (source: string) =

@@ -126,6 +126,55 @@ let ``a string, decimal or nullable comparison is Near`` () =
         QueryCopy.Near
 
 [<Fact>]
+let ``a nullable parent id compared with a known id is exact, but not under a not`` () =
+    // the child orders of order 5: the order with no parent is dropped by SQL
+    // (NULL = 5 is unknown) and by .NET (null = 5 is false) alike, so the
+    // sweep may move the filter into the query
+    assertRewrites
+        "let r = orders.ToList().Where(fun o -> o.Parent = 5 && o.Id > 0)"
+        "orders.Where(fun o -> o.Parent = 5 && o.Id > 0).ToList()"
+        QueryCopy.Exact
+
+    assertRewrites
+        "let r = orders.ToList().Where(fun o -> o.Parent = limit || o.Parent = 7)"
+        "orders.Where(fun o -> o.Parent = limit || o.Parent = 7).ToList()"
+        QueryCopy.Exact
+
+    // negated, SQL still drops the parentless order (NOT unknown is
+    // unknown) where .NET keeps it (not false is true); `<>` is the same
+    assertRewrites
+        "let r = orders.ToList().Where(fun o -> not (o.Parent = 5))"
+        "orders.Where(fun o -> not (o.Parent = 5)).ToList()"
+        QueryCopy.Near
+
+    assertRewrites
+        "let r = orders.ToList().Where(fun o -> not (o.Id > 0 && o.Parent = 5))"
+        "orders.Where(fun o -> not (o.Id > 0 && o.Parent = 5)).ToList()"
+        QueryCopy.Near
+
+    assertRewrites
+        "let r = orders.ToList().Where(fun o -> o.Parent <> 5)"
+        "orders.Where(fun o -> o.Parent <> 5).ToList()"
+        QueryCopy.Near
+
+    // a Nullable value may itself be null: SQL `= NULL` is never true
+    assertRewrites
+        "let none = Nullable<int>()\nlet r = orders.ToList().Where(fun o -> o.Parent = none)"
+        "orders.Where(fun o -> o.Parent = none).ToList()"
+        QueryCopy.Near
+
+    // a nullable decimal is rounded to the column's scale either way
+    let header =
+        header.Replace("Parent: Nullable<int> }", "Parent: Nullable<int>; Discount: Nullable<decimal> }")
+
+    let body = "let r = orders.ToList().Where(fun o -> o.Discount = 0.5m)"
+    let tree, source, check = parseAndCheck (header + body)
+
+    match QueryCopy.find false tree source check with
+    | [ s ] -> Assert.Equal(QueryCopy.Near, s.Fidelity)
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
 let ``a stage a provider might not translate stays in memory`` () =
     // a computed property, a call, arithmetic, a list that is no query,
     // a tuple projection, a filter reading a mutable
