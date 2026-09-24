@@ -8,7 +8,12 @@
 /// In the "ProjectSources" collection because `main` configures the
 /// process-wide analyzer state (the api-changes flag above all) for the
 /// duration of the run.
-[<Xunit.Collection("ProjectSources")>]
+///
+/// Tagged `Category=Slow`: each test builds a synthetic solution with
+/// `dotnet build`, together some two minutes. `dotnet test --filter
+/// "Category!=Slow"` leaves them out; tests/run-tests.ps1 runs them in a
+/// process of their own beside the rest.
+[<Xunit.Collection("ProjectSources"); Xunit.Trait("Category", "Slow")>]
 module FSharp.Refactor.Tests.SiblingProjectsTests
 
 open System

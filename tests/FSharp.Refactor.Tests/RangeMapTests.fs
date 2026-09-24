@@ -81,8 +81,9 @@ let ``an inclusive upper bound counts one more`` () =
         "Array.init (xs.Length + 1) (fun i -> f i)"
         true
 
-    Assert.Equal<int list>([ 0 .. -3 ] |> List.map id, List.init (max 0 (-3 + 1)) id)
-    Assert.Equal<int list>([ 0..4 ] |> List.map id, List.init (max 0 (4 + 1)) id)
+    let triple (i: int) = i * 3
+    Assert.Equal<int list>([ 0 .. -3 ] |> List.map triple, List.init (max 0 (-3 + 1)) triple)
+    Assert.Equal<int list>([ 0..4 ] |> List.map triple, List.init (max 0 (4 + 1)) triple)
 
 [<Fact>]
 let ``a compound count keeps its own parentheses`` () =
@@ -215,9 +216,10 @@ let ``the rewrite keeps what the program does`` () =
 let ``a negative count is why an unproven count is clamped`` () =
     // the bare `init` differs from the range there; `max 0 n` does not
     let n = -1
-    Assert.Empty([| 0 .. n - 1 |] |> Array.map id)
+    let triple (i: int) = i * 3
+    Assert.Empty([| 0 .. n - 1 |] |> Array.map triple)
 
-    Assert.Throws<System.ArgumentException>(fun () -> Array.init n id |> ignore)
+    Assert.Throws<System.ArgumentException>(fun () -> Array.init n triple |> ignore)
     |> ignore
 
-    Assert.Empty(Array.init (max 0 n) id)
+    Assert.Empty(Array.init (max 0 n) triple)

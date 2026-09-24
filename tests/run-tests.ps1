@@ -4,11 +4,15 @@
 # test that drives the tool end to end (Program.main installs the
 # cross-file parser, redirects the console and changes directory:
 # process-wide state) sits in the serialized "ProjectSources" collection,
-# and six of those (SiblingProjectsTests, a `dotnet build` of a synthetic
-# solution each) take 70 of the suite's 150 seconds on their own, after
-# everything else has finished. A second PROCESS shares none of that
-# state, so those six run beside the rest: ~75 seconds wall instead of
-# ~150 on a 20-core machine (measured 2026-09-15).
+# and the ones tagged `Category=Slow` (SiblingProjectsTests, a `dotnet
+# build` of a synthetic solution each) take about half the suite's time on
+# their own, after everything else has finished. A second PROCESS shares
+# none of that state, so those run beside the rest: ~75 seconds wall
+# instead of ~150 on a 20-core machine (measured 2026-09-15).
+#
+# The same tag leaves them out of a quick run:
+#
+#     dotnet test tests/FSharp.Refactor.Tests --filter "Category!=Slow"
 #
 #     pwsh -File tests/run-tests.ps1                # Debug
 #     pwsh -File tests/run-tests.ps1 -c Release
@@ -22,7 +26,7 @@ $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $project = Join-Path $here "FSharp.Refactor.Tests"
 $propertyProject = Join-Path $here "FSharp.Refactor.PropertyTests"
-$slow = "FullyQualifiedName~SiblingProjectsTests"
+$slow = "Category=Slow"
 
 if (-not $NoBuild) {
     dotnet build $project -c $Configuration --nologo -v q
@@ -33,7 +37,7 @@ if (-not $NoBuild) {
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $common = @("test", $project, "-c", $Configuration, "--no-build", "--nologo")
-$rest = Start-Process -FilePath dotnet -ArgumentList ($common + @("--filter", "`"FullyQualifiedName!~SiblingProjectsTests`"")) -NoNewWindow -PassThru
+$rest = Start-Process -FilePath dotnet -ArgumentList ($common + @("--filter", "`"Category!=Slow`"")) -NoNewWindow -PassThru
 $end2end = Start-Process -FilePath dotnet -ArgumentList ($common + @("--filter", "`"$slow`"")) -NoNewWindow -PassThru
 # the FsCheck suite is a third process: a few seconds, beside the rest
 $properties = Start-Process -FilePath dotnet -ArgumentList @("test", $propertyProject, "-c", $Configuration, "--no-build", "--nologo") -NoNewWindow -PassThru
