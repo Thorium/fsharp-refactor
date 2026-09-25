@@ -150,7 +150,7 @@ let private isMemberStage (check: FSharpCheckFileResults) (source: ISourceText) 
         let r = ident.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value ->
@@ -181,7 +181,7 @@ let private stageIsPure (check: FSharpCheckFileResults) (source: ISourceText) (s
         let r = id.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value ->
@@ -261,7 +261,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     let r = id.idRange
                     let lineText = source.GetLineString(r.EndLine - 1)
 
-                    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
                     | Some symbolUse ->
                         match symbolUse.Symbol with
                         | :? FSharpMemberOrFunctionOrValue as v ->
@@ -309,7 +309,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         let r = id.idRange
                         let lineText = source.GetLineString(r.EndLine - 1)
 
-                        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
                         | Some symbolUse ->
                             match symbolUse.Symbol with
                             | :? FSharpMemberOrFunctionOrValue as v ->

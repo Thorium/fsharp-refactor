@@ -46,7 +46,7 @@ let private resolvesToNonDisposable (check: FSharpCheckFileResults) (source: ISo
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpEntity as entity -> not (isDisposableEntity entity)
@@ -343,7 +343,7 @@ let private bareNameCaptured
         // an F#-declared type resolves to its CONSTRUCTOR here, a .NET one to
         // the entity itself
         let constructed =
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpEntity as entity -> Some entity

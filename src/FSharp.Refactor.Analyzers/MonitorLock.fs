@@ -71,7 +71,7 @@ let private isMonitorEntity (check: FSharpCheckFileResults) (source: ISourceText
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -110,7 +110,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // `base` inside the stretch: a closure cannot use it (FS0405)
         let usesBase (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
                 Range.rangeContainsRange r e.Range
                 && (match e with
@@ -348,7 +348,7 @@ let findLeaks (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheck
             let r = ident.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv -> Some mfv
@@ -534,7 +534,11 @@ let findLeaks (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheck
                         [
                             for l in body.Head.Range.StartLine .. bodyLastLine ->
                                 let line = source.GetLineString(l - 1)
-                                if line.Trim() = "" then "" else "    " + line
+
+                                if System.String.IsNullOrWhiteSpace line then
+                                    ""
+                                else
+                                    "    " + line
                         ]
                         |> String.concat "\n"
 

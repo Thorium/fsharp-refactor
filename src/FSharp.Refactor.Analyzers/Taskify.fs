@@ -539,12 +539,9 @@ let find
                                     let lineText = source.GetLineString(fid.idRange.EndLine - 1)
 
                                     match
-                                        check.GetSymbolUseAtLocation(
-                                            fid.idRange.EndLine,
-                                            fid.idRange.EndColumn,
-                                            lineText,
-                                            [ fid.idText ]
-                                        )
+                                        OptionModule.symbolUseAt
+                                            check
+                                            (fid.idRange.EndLine, fid.idRange.EndColumn, lineText, [ fid.idText ])
                                     with
                                     | None -> false
                                     | Some symbolUse ->

@@ -143,7 +143,7 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                     let r = id.idRange
                     let lineText = source.GetLineString(r.EndLine - 1)
 
-                    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
                     | Some symbolUse ->
                         match symbolUse.Symbol with
                         | :? FSharpMemberOrFunctionOrValue as v ->

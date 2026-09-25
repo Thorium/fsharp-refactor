@@ -178,7 +178,7 @@ let find
                 let lineText = source.GetLineString(id.idRange.EndLine - 1)
 
                 match
-                    check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
+                    OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
                 with
                 | Some symbolUse ->
                     let thisFile = System.IO.Path.GetFullPath(id.idRange.FileName).ToLowerInvariant()

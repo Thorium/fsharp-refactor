@@ -187,12 +187,9 @@ let private assignsBeyondItself
             let lineText = source.GetLineString(target.idRange.EndLine - 1)
 
             match
-                check.GetSymbolUseAtLocation(
-                    target.idRange.EndLine,
-                    target.idRange.EndColumn,
-                    lineText,
-                    [ target.idText ]
-                )
+                OptionModule.symbolUseAt
+                    check
+                    (target.idRange.EndLine, target.idRange.EndColumn, lineText, [ target.idText ])
             with
             | Some symbolUse ->
                 match symbolUse.Symbol with

@@ -127,7 +127,7 @@ let private isFloatingAccumulator (check: FSharpCheckFileResults) (source: ISour
     let r = acc.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ acc.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ acc.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value ->
@@ -144,14 +144,11 @@ let private isFloatingAccumulator (check: FSharpCheckFileResults) (source: ISour
     | None -> false
 
 // does any expression inside `r` mention `name`?
+// (a bare `name`, or the head of `name.Member`: the name's own occurrences,
+// not a walk of the file per question)
 let private mentionsIn (index: AstIndex.Index) (name: string) (r: range) =
-    index.Exprs
-    |> Array.exists (fun (_, e) ->
-        match e with
-        | SynExpr.Ident id when id.idText = name -> Range.rangeContainsRange r id.idRange
-        | SynExpr.LongIdent(longDotId = SynLongIdent(id = firstId :: _)) when firstId.idText = name ->
-            Range.rangeContainsRange r firstId.idRange
-        | _ -> false)
+    AstIndex.mentionsOf index name
+    |> Array.exists (fun struct (mention, _) -> Range.rangeContainsRange r mention)
 
 /// Is the type (after abbreviations) IEnumerable<'T>, or something that
 /// implements it? A `for` loop also accepts the NON-generic IEnumerable and
@@ -204,7 +201,7 @@ let private collectionModule (check: FSharpCheckFileResults) (source: ISourceTex
         let r = ident.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value ->
@@ -504,7 +501,9 @@ let find
                             (let r = acc.idRange
                              let lineText = source.GetLineString(r.EndLine - 1)
 
-                             match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ acc.idText ]) with
+                             match
+                                 OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ acc.idText ])
+                             with
                              | Some symbolUse ->
                                  match symbolUse.Symbol with
                                  | :? FSharpMemberOrFunctionOrValue as value ->
@@ -549,27 +548,26 @@ let find
 /// disqualifies the whole loop. A heuristic, not a purity proof — it errs
 /// toward silence.
 let private effectFreeIn (index: AstIndex.Index) (r: range) =
-    index.Exprs
+    AstIndex.exprsWithin index r
     |> Array.forall (fun (_, e) ->
-        not (Range.rangeContainsRange r e.Range)
-        || (match e with
-            | SynExpr.Set _
-            | SynExpr.LongIdentSet _
-            | SynExpr.DotSet _
-            | SynExpr.DotIndexedSet _
-            | SynExpr.NamedIndexedPropertySet _
-            | SynExpr.DotNamedIndexedPropertySet _
-            | SynExpr.Sequential _
-            | SynExpr.Do _
-            | SynExpr.DoBang _
-            | SynExpr.While _
-            | SynExpr.For _
-            | SynExpr.ForEach _
-            | SynExpr.TryWith _
-            | SynExpr.TryFinally _
-            | SynExpr.LetOrUse _ -> false
-            | SynExpr.Ident id -> id.idText <> "ignore"
-            | _ -> true))
+        match e with
+        | SynExpr.Set _
+        | SynExpr.LongIdentSet _
+        | SynExpr.DotSet _
+        | SynExpr.DotIndexedSet _
+        | SynExpr.NamedIndexedPropertySet _
+        | SynExpr.DotNamedIndexedPropertySet _
+        | SynExpr.Sequential _
+        | SynExpr.Do _
+        | SynExpr.DoBang _
+        | SynExpr.While _
+        | SynExpr.For _
+        | SynExpr.ForEach _
+        | SynExpr.TryWith _
+        | SynExpr.TryFinally _
+        | SynExpr.LetOrUse _ -> false
+        | SynExpr.Ident id -> id.idText <> "ignore"
+        | _ -> true)
 
 /// Does the predicate CALL only what provably does nothing but compute?
 /// `effectFreeIn` reads the predicate's own text; a call is where the
@@ -673,7 +671,13 @@ let findFlagLoops (parseTree: ParsedInput) (source: ISourceText) (check: FSharpC
                                 | _ -> List.rev acc, body
                             | other -> List.rev acc, other
 
-                        let letPrefix, loopBody = unwrapLets [] loopBody
+                        // only a `bool` flag is a question: the lets' purity checks
+                        // each walk the file, so a counter (`let mutable n = 0`)
+                        // is left before they run
+                        let letPrefix, loopBody =
+                            match stripParens init with
+                            | SynExpr.Const(SynConst.Bool _, _) -> unwrapLets [] loopBody
+                            | _ -> [], loopBody
 
                         match stripParens init, loopBody with
                         | SynExpr.Const(SynConst.Bool initVal, _),

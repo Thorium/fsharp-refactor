@@ -153,7 +153,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 let r = id.idRange
                 let lineText = source.GetLineString(r.EndLine - 1)
 
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
                 | Some symbolUse ->
                     match symbolUse.Symbol with
                     | :? FSharpEntity as entity -> entity.TryFullName |> Option.defaultValue ""
@@ -168,7 +168,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // `e.LoaderExceptions ...` for a type that has no such member - a fix
         // that does not compile, which is the one outcome never acceptable.
         let nestedTryRanges (outer: range) =
-            index.Exprs
+            AstIndex.exprsWithin index outer
             |> Array.choose (fun (_, inner) ->
                 match inner with
                 | SynExpr.TryWith _ when Range.rangeContainsRange outer inner.Range -> Some inner.Range
@@ -191,7 +191,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 let r = id.idRange
                 let lineText = source.GetLineString(r.EndLine - 1)
 
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+                match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
                 | Some symbolUse ->
                     match symbolUse.Symbol with
                     | :? FSharpMemberOrFunctionOrValue as m -> OptionModule.enclosingFullName m
@@ -206,7 +206,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // Matching just the latter finds nothing, which is exactly what the
         // first version of this rule did.
         let readsIn (name: string) (body: range) =
-            index.Exprs
+            AstIndex.exprsWithin index body
             |> Array.choose (fun (_, inner) ->
                 if Range.rangeContainsRange body inner.Range then
                     match inner with

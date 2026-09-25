@@ -2,6 +2,13 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.33
+
+The analyzers no longer walk the whole file once per candidate. About thirty rules asked which expressions sit inside a range by testing every expression of the file for each hit, a cost that grew with the square of the file: on an 18k-line file SeqEnumeratedTwice (FR0169) took 5.7 s, FailwithContext (FR0092) 6.6 s, SwallowedException (FR0055) 4.3 s and Accumulation (FR0050/FR0107) 3.5 s of their own work; they now take 9 to 43 ms, UseBinding and AccumulatorLoop (FR0156) about 0.7 s. The shared pieces: `AstIndex.exprsWithin`/`patsWithin`, a range query over a per-file start order that returns exactly the nodes a walk finds, in its order; `AstIndex.mentionsOf`, where each name is read; per-file tables behind the helpers FR0107, the Option/Result wrappers and FR0012 share; and `OptionModule.symbolUseAt`, a per-file memo of FCS's `GetSymbolUseAtLocation` that every typed lookup of the rules goes through. Every message and fix is unchanged - byte-identical on synthetic 4.5k- and 18k-line files, identical dry-run reports on five real projects - and a dry-run sweep of the analyzers project went from 384 s to 229 s, of the tool project from 89 s to 35 s. The analyzers' own code takes its performance notes: single-character `StartsWith`/`EndsWith` use the char overload, two recursive `seq { yield! }` walks became one, a list's length is read once outside its loop.
+
+The api pass no longer takes a build-order-only `ProjectReference` (`ReferenceOutputAssembly` false) for a consumer, unless the project also references the built dll directly: every pass over this repository's own Ionide twin loaded the Analyzers project and both test projects behind it only to report each "cannot be read". The end-to-end tests that build a synthetic solution carry `Category=Slow`, so `dotnet test --filter "Category!=Slow"` leaves them out.
+
+
 ## 0.8.32
 
 FR0173 takes a mapper spanning lines only as a lambda whose body starts on a line of its own. A `match` or a first statement after the arrow moves with that line: `(fun i -> match i with` over arms aligned to the `match` fell offside (FS0058) when the count's `max 0` made the line longer, and a second statement aligned to a first one became its argument when the line got shorter - `tap i` over `i` read as `tap i i`, a changed result with no compile error to stop it.

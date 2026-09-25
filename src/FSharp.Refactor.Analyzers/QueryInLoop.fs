@@ -62,7 +62,7 @@ let private resolvesToQueryable (check: FSharpCheckFileResults) (source: ISource
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> isQueryableType (resultTypeOf value)
@@ -232,7 +232,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                         match queryBody with
                         | Some body ->
-                            index.Exprs
+                            AstIndex.exprsWithin index body.Range
                             |> Array.exists (fun (_, e) ->
                                 Range.rangeContainsRange body.Range e.Range
                                 && (match e with

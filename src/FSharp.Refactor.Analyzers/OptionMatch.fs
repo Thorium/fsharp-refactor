@@ -77,7 +77,7 @@ let private caseNamesFor (check: FSharpCheckFileResults) (source: ISourceText) (
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value ->
@@ -177,38 +177,36 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // match clause, loop pattern)? substituting under a shadow would
         // change which value the binder refers to
         let shadowedIn (name: string) (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
-                Range.rangeContainsRange r e.Range
-                && (let boundPats =
-                        match e with
-                        | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats
-                        | LetOrUseE lou -> lou.Bindings |> List.map (fun (SynBinding(headPat = p)) -> p)
-                        | SynExpr.Match(clauses = clauses)
-                        | SynExpr.MatchBang(clauses = clauses)
-                        | SynExpr.MatchLambda(matchClauses = clauses) ->
-                            clauses |> List.map (fun (SynMatchClause(pat = p)) -> p)
-                        | SynExpr.ForEach(pat = p) -> [ p ]
-                        | _ -> []
+                let boundPats =
+                    match e with
+                    | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats
+                    | LetOrUseE lou -> lou.Bindings |> List.map (fun (SynBinding(headPat = p)) -> p)
+                    | SynExpr.Match(clauses = clauses)
+                    | SynExpr.MatchBang(clauses = clauses)
+                    | SynExpr.MatchLambda(matchClauses = clauses) ->
+                        clauses |> List.map (fun (SynMatchClause(pat = p)) -> p)
+                    | SynExpr.ForEach(pat = p) -> [ p ]
+                    | _ -> []
 
-                    boundPats |> List.exists (fun p -> patBoundNames p |> List.contains name)))
+                boundPats |> List.exists (fun p -> patBoundNames p |> List.contains name))
 
         // an assignment to the option (or its address taken) inside `r`: a
         // `let mutable` reassigned in the arm. The match binds the payload
         // ONCE, where every later `x.Value` read the new value
         let assignedIn (x: string) (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
-                Range.rangeContainsRange r e.Range
-                && (match e with
-                    | SynExpr.LongIdentSet(SynLongIdent(id = [ target ]), _, _)
-                    | SynExpr.Set(SynExpr.Ident target, _, _)
-                    | SynExpr.AddressOf(expr = SynExpr.Ident target) -> target.idText = x
-                    | _ -> false))
+                (match e with
+                 | SynExpr.LongIdentSet(SynLongIdent(id = [ target ]), _, _)
+                 | SynExpr.Set(SynExpr.Ident target, _, _)
+                 | SynExpr.AddressOf(expr = SynExpr.Ident target) -> target.idText = x
+                 | _ -> false))
 
         // `x.Value` prefixes inside `r`: the sub-range covering `x.Value`
         let valueUses (x: string) (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.choose (fun (_, e) ->
                 match e with
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: second :: _)) when
@@ -321,7 +319,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     // re-indenting a branch would re-indent the inside of a
                     // string literal spanning lines
                     let multiLineString =
-                        index.Exprs
+                        AstIndex.exprsWithin index expr.Range
                         |> Array.exists (fun (_, e) ->
                             match e with
                             | SynExpr.Const(SynConst.String _, r)

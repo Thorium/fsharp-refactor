@@ -407,7 +407,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | None -> [ None ]
 
             [
-                for _, e in index.Exprs do
+                for _, e in AstIndex.exprsWithin index r do
                     if
                         Range.rangeContainsRange r e.Range
                         && not (excluded |> Option.exists (fun x -> Range.rangeContainsRange x e.Range))
@@ -423,7 +423,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                 // an active pattern matched in the text runs its body too
                 // (`| Bumped n ->`), and no expression names it
-                for _, p in index.Pats do
+                for _, p in AstIndex.patsWithin index r do
                     if Range.rangeContainsRange r p.Range then
                         match p with
                         | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->

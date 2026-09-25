@@ -135,12 +135,9 @@ let private cleanupZones (index: AstIndex.Index) (source: ISourceText) (check: F
 
             let onToken =
                 match
-                    check.GetSymbolUseAtLocation(
-                        methodId.idRange.EndLine,
-                        methodId.idRange.EndColumn,
-                        lineText,
-                        [ methodId.idText ]
-                    )
+                    OptionModule.symbolUseAt
+                        check
+                        (methodId.idRange.EndLine, methodId.idRange.EndColumn, lineText, [ methodId.idText ])
                 with
                 | Some symbolUse ->
                     match symbolUse.Symbol with
@@ -183,7 +180,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let resolveMember (id: Ident) =
             let lineText = source.GetLineString(id.idRange.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ]) with
+            match
+                OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
+            with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv -> Some(symbolUse, mfv)
@@ -416,12 +415,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             let lineText = source.GetLineString(noneId.idRange.EndLine - 1)
 
                             match
-                                check.GetSymbolUseAtLocation(
-                                    noneId.idRange.EndLine,
-                                    noneId.idRange.EndColumn,
-                                    lineText,
-                                    [ noneId.idText ]
-                                )
+                                OptionModule.symbolUseAt
+                                    check
+                                    (noneId.idRange.EndLine, noneId.idRange.EndColumn, lineText, [ noneId.idText ])
                             with
                             | Some symbolUse ->
                                 match symbolUse.Symbol with
@@ -529,7 +525,7 @@ let findUnobservedLoopsWith
         // source.GetAsyncEnumerator ct`, `let reader = open ct` (Fuuga): a
         // loop stepping one of them observes the token through it
         let carriers (token: string) (scope: range) =
-            index.Exprs
+            AstIndex.exprsWithin index scope
             |> Array.collect (fun (_, e) ->
                 match e with
                 | LetOrUseE lou when Range.rangeContainsRange scope e.Range ->
@@ -581,7 +577,7 @@ let findUnobservedLoopsWith
             cleanupRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
 
         let bindsInside (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
                 Range.rangeContainsRange r e.Range
                 && (match e with

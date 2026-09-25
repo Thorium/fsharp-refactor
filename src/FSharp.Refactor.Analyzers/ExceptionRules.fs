@@ -76,7 +76,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : FinallySuggestion list
                 match e with
                 | SynExpr.TryFinally(finallyExpr = fin) ->
                     let handled =
-                        index.Exprs
+                        AstIndex.exprsWithin index fin.Range
                         |> Array.choose (fun (_, inner) ->
                             match inner with
                             | SynExpr.TryWith(tryExpr = t) when Range.rangeContainsRange fin.Range inner.Range ->

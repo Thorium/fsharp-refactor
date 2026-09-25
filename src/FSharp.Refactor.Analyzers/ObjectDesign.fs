@@ -101,7 +101,7 @@ let resolvesToDisposable (check: FSharpCheckFileResults) (source: ISourceText) (
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> isDisposableType value.FullType
@@ -112,7 +112,7 @@ let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (id: 
     let r = id.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
     |> Option.map (fun u -> u.Symbol)
 
 /// Does the interface type name resolve to IDisposable or an interface
@@ -568,12 +568,9 @@ let find
 
                                     let disposable =
                                         match
-                                            check.GetSymbolUseAtLocation(
-                                                r.EndLine,
-                                                r.EndColumn,
-                                                lineText,
-                                                [ id.idText ]
-                                            )
+                                            OptionModule.symbolUseAt
+                                                check
+                                                (r.EndLine, r.EndColumn, lineText, [ id.idText ])
                                         with
                                         | Some symbolUse ->
                                             match symbolUse.Symbol with

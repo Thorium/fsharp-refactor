@@ -283,7 +283,9 @@ let find
         let symbolAt (ident: Ident) =
             let r = ident.idRange
 
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), [ ident.idText ])
+            OptionModule.symbolUseAt
+                check
+                (r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), [ ident.idText ])
             |> Option.map (fun u -> u.Symbol)
 
         // `member val` properties of this file, by name and declaring line

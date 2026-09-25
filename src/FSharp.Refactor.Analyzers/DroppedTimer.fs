@@ -40,7 +40,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = typeId.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ typeId.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ typeId.idText ]) with
             | Some symbolUse ->
                 (try
                     match symbolUse.Symbol with

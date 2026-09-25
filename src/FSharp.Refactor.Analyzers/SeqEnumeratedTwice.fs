@@ -120,13 +120,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
             |> Option.map (fun u -> u.Symbol)
 
         // a parameter the typechecker reads as IEnumerable<T> itself
-        let isSeqParameter (id: Ident) =
-            match symbolOf id with
-            | Some(:? FSharpMemberOrFunctionOrValue as value) ->
+        let isSeqSymbol (symbol: FSharpSymbol) =
+            match symbol with
+            | :? FSharpMemberOrFunctionOrValue as value ->
                 (try
                     let t = OptionModule.stripAbbreviations value.FullType
 
@@ -135,6 +135,37 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                  with _ -> // an unreadable type is not a seq of ours; fsharpanalyzer: ignore-line FR0055
                      false)
             | _ -> false
+
+        // the body a local value scopes over: that of the first `let` (in
+        // index order) with a binding whose head is exactly `head`. Every
+        // head of the file by its position, collected once when a local asks
+        let letBodies =
+            lazy
+                (let byPosition =
+                    System.Collections.Generic.Dictionary<struct (int * int * int * int), ResizeArray<range * range>>()
+
+                 for _, e in index.Exprs do
+                     match e with
+                     | LetOrUseE lou ->
+                         for SynBinding(headPat = hp) in lou.Bindings do
+                             let r = hp.Range
+                             let key = struct (r.StartLine, r.StartColumn, r.EndLine, r.EndColumn)
+
+                             match byPosition.TryGetValue key with
+                             | true, l -> l.Add(r, lou.Body.Range)
+                             | false, _ -> byPosition.[key] <- ResizeArray [ r, lou.Body.Range ]
+                     | _ -> ()
+
+                 byPosition)
+
+        let scopeOf (head: range) =
+            match
+                letBodies.Value.TryGetValue(struct (head.StartLine, head.StartColumn, head.EndLine, head.EndColumn))
+            with
+            | true, found ->
+                found
+                |> Seq.tryPick (fun (hr, body) -> if Range.equals hr head then Some body else None)
+            | false, _ -> None
 
         // the sources cheap to walk again: a cached or already materialised
         // sequence spelled as one, or a collection upcast to seq
@@ -159,7 +190,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             [
                 for path, pat in index.Pats do
                     match pat with
-                    | SynPat.Named(ident = SynIdent(ident = id)) when isSeqParameter id ->
+                    | SynPat.Named(ident = SynIdent(ident = id)) ->
                         // the innermost binding, and whether the pattern is in
                         // its head (a parameter) or is the binding's own name
                         let binding =
@@ -170,36 +201,32 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     Some(b.RangeOfBindingWithRhs, hp, rhs)
                                 | _ -> None)
 
-                        match binding, symbolOf id with
-                        | Some(bindingRange, headPat, rhs), Some symbol ->
+                        match binding with
+                        | Some(bindingRange, headPat, rhs) ->
+                            let inHead = Range.rangeContainsRange headPat.Range pat.Range
+
                             let isParameter =
-                                Range.rangeContainsRange headPat.Range pat.Range
+                                inHead
                                 && (match headPat with
                                     | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> true
                                     | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs _) -> true
                                     | _ -> false)
 
-                            if isParameter then
-                                yield id, bindingRange, symbol
-                            elif Range.rangeContainsRange headPat.Range pat.Range && not (cheapSource rhs) then
-                                // a local value: its scope is the body of the
-                                // let that binds it
-                                let scope =
-                                    index.Exprs
-                                    |> Array.tryPick (fun (_, e) ->
-                                        match e with
-                                        | LetOrUseE lou when
-                                            lou.Bindings
-                                            |> List.exists (fun (SynBinding(headPat = hp)) ->
-                                                Range.equals hp.Range headPat.Range)
-                                            ->
-                                            Some lou.Body.Range
-                                        | _ -> None)
-
-                                match scope with
-                                | Some scope -> yield id, scope, symbol
-                                | None -> ()
-                        | _ -> ()
+                            // the typed lookup last, and once: for a parameter or
+                            // a local value only, never for a match or lambda binder
+                            if isParameter || (inHead && not (cheapSource rhs)) then
+                                match symbolOf id with
+                                | Some symbol when isSeqSymbol symbol ->
+                                    if isParameter then
+                                        yield id, bindingRange, symbol
+                                    else
+                                        // a local value: its scope is the body of
+                                        // the let that binds it
+                                        match scopeOf headPat.Range with
+                                        | Some scope -> yield id, scope, symbol
+                                        | None -> ()
+                                | _ -> ()
+                        | None -> ()
                     | _ -> ()
             ]
 
@@ -226,11 +253,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | _ -> false)
 
         // two sites in different arms of one branching expression are on
-        // different paths
-        let exclusive (a: range) (b: range) =
+        // different paths. Only a branch inside the scope can part them: one
+        // enclosing the scope holds both sites in the same arm
+        let exclusive (scope: range) (a: range) (b: range) =
             let within (r: range) (site: range) = Range.rangeContainsRange r site
 
-            index.Exprs
+            AstIndex.exprsWithin index scope
             |> Array.exists (fun (_, e) ->
                 match e with
                 | SynExpr.IfThenElse(thenExpr = t; elseExpr = Some els) ->
@@ -252,11 +280,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             for id, bindingRange, symbol in candidates do
                 let sites =
                     [
-                        for path, e in index.Exprs do
-                            if
-                                Range.rangeContainsRange bindingRange e.Range
-                                && not (deferred bindingRange path)
-                            then
+                        for path, e in AstIndex.exprsWithin index bindingRange do
+                            if not (deferred bindingRange path) then
                                 match e with
                                 | SynExpr.ForEach(enumExpr = enumExpr) ->
                                     match stripParens enumExpr with
@@ -291,7 +316,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     [
                         for i in 0 .. sites.Length - 1 do
                             for j in i + 1 .. sites.Length - 1 do
-                                if not (exclusive sites.[i] sites.[j]) then
+                                if not (exclusive bindingRange sites.[i] sites.[j]) then
                                     yield sites.[i], sites.[j]
                     ]
                     |> List.tryHead

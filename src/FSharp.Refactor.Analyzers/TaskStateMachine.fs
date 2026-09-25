@@ -377,7 +377,7 @@ let private cannotThrow
         | _ -> false
 
     let namesMayThrow (r: range) =
-        index.Exprs
+        AstIndex.exprsWithin index r
         |> Array.exists (fun (_, e) ->
             Range.rangeContainsRange r e.Range
             && (match e with
@@ -625,7 +625,7 @@ let find
         | None -> false
 
     let containsBang (r: range) =
-        index.Exprs
+        AstIndex.exprsWithin index r
         |> Array.exists (fun (_, e) -> isBangExpr e && Range.rangeContainsRange r e.Range)
 
     /// A plain `use` inside a CE binds to the BUILDER's Using — in task and
@@ -634,7 +634,7 @@ let find
     /// silently re-binds it to a synchronous `using`, so movement stops at
     /// one (G-Research's GRA-DISPBEFOREASYNC names the same hazard).
     let containsUse (r: range) =
-        index.Exprs
+        AstIndex.exprsWithin index r
         |> Array.exists (fun (_, e) ->
             match e with
             | LetOrUseE lou -> lou.IsUse && Range.rangeContainsRange r e.Range
@@ -692,7 +692,7 @@ let find
 
     // an await of THIS task's resumable code inside the range
     let resumableBangIn (inResumableBody: range -> bool) (r: range) =
-        index.Exprs
+        AstIndex.exprsWithin index r
         |> Array.exists (fun (_, e) -> isBangExpr e && inResumableBody e.Range && Range.rangeContainsRange r e.Range)
 
     // LOCAL mutable bindings anywhere in the file, with where they are
@@ -1310,7 +1310,7 @@ let find
                         // and NOT counting them is what makes the extraction
                         // converge instead of re-wrapping its own output
                         let functionDefLines (r: range) =
-                            index.Exprs
+                            AstIndex.exprsWithin index r
                             |> Array.sumBy (fun (_, e) ->
                                 match e with
                                 | LetOrUseE lou when not lou.IsBang && Range.rangeContainsRange r e.Range ->

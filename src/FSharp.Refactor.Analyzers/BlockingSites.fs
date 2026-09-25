@@ -31,7 +31,7 @@ let symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident
         let r = ident.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ])
+        OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ])
         |> Option.map (fun u -> u.Symbol)
     with _ -> // fsharpanalyzer: ignore-line FR0055
         None

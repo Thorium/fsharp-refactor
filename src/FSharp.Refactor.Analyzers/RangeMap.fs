@@ -212,7 +212,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                       trimmed = ""
                       || indent > startColumn
-                      || (indent = startColumn && trimmed.StartsWith ")"))
+                      || (indent = startColumn && trimmed.StartsWith ')'))
 
         let consider (whole: SynExpr) (rangeExpr: SynExpr) (mapExpr: SynExpr) =
             match (|RangeLiteral|_|) (check, source) rangeExpr, mapExpr with

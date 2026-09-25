@@ -77,7 +77,7 @@ let private unionCasesOf (check: FSharpCheckFileResults) (source: ISourceText) (
     let r = caseIdent.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ caseIdent.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ caseIdent.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpUnionCase as unionCase ->

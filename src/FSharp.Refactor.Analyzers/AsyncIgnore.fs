@@ -95,7 +95,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let r = ident.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value -> ValueSome value
@@ -266,7 +266,7 @@ let findUnhandledStart
             let r = ident.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as value ->

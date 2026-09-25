@@ -73,7 +73,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = op.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ op.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ op.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -102,7 +102,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -136,7 +136,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let text = textOfRange source e.Range
 
             match e with
-            | SynExpr.Const _ when text.StartsWith "-" -> $"{conversion} ({text})"
+            | SynExpr.Const _ when text.StartsWith '-' -> $"{conversion} ({text})"
             | SynExpr.Ident _
             | SynExpr.LongIdent _
             | SynExpr.Const _ -> $"{conversion} {text}"

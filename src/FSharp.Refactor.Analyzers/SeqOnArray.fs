@@ -128,7 +128,7 @@ let private resolvesToSeqModule (check: FSharpCheckFileResults) (source: ISource
     let r = f.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ f.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ f.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value ->
@@ -161,7 +161,7 @@ let private arrayElementOf (check: FSharpCheckFileResults) (source: ISourceText)
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             None
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> elementOf value.FullType

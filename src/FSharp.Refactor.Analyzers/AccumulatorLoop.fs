@@ -88,6 +88,7 @@
 module FSharp.Refactor.AccumulatorLoop
 
 open System
+open System.Collections.Generic
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
@@ -240,7 +241,7 @@ let private declaredElementType (source: ISourceText) (construction: SynExpr) =
 let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) =
     let r = id.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
-    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
 
 let private sameSpan (a: range) (b: range) = a.Start = b.Start && a.End = b.End
 
@@ -289,7 +290,7 @@ let private feedResolves (check: FSharpCheckFileResults) (source: ISourceText) (
         let r = f.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ "List"; f.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ "List"; f.idText ]) with
         | Some u ->
             match u.Symbol with
             | :? FSharpMemberOrFunctionOrValue as v ->
@@ -849,6 +850,54 @@ let private aloneOnItsLine (source: ISourceText) (binding: SynBinding) =
     line.StartsWith "let "
     && afterMutable (line.Substring 4) = afterMutable ((textOfRange source r).Trim())
 
+/// The file's name expressions (an identifier, or a path by its head
+/// identifier), its `Add` calls by their receiver and its list feeds by their
+/// target - each by that identifier's span, the first in index order kept, as
+/// a walk of the file finds it. `nodeAt` and `feedAt` ask them per use of an
+/// accumulator; built once per index.
+type private SpanTables =
+    {
+        Names: Dictionary<struct (int * int * int * int), SyntaxNode list * SynExpr>
+        Adds: Dictionary<struct (int * int * int * int), SynExpr>
+        Feeds: Dictionary<struct (int * int * int * int), SynExpr>
+    }
+
+let private spanKey (r: range) =
+    struct (r.StartLine, r.StartColumn, r.EndLine, r.EndColumn)
+
+let private spanTables =
+    System.Runtime.CompilerServices.ConditionalWeakTable<AstIndex.Index, SpanTables>()
+
+let private spanTablesOf (index: AstIndex.Index) =
+    spanTables.GetValue(
+        index,
+        fun index ->
+            let names = Dictionary()
+            let adds = Dictionary()
+            let feeds = Dictionary()
+
+            for path, e in index.Exprs do
+                match e with
+                | SynExpr.Ident id -> names.TryAdd(spanKey id.idRange, (path, e)) |> ignore
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) ->
+                    names.TryAdd(spanKey first.idRange, (path, e)) |> ignore
+                | _ -> ()
+
+                match e with
+                | AddCall([ recv ], _, _) -> adds.TryAdd(spanKey recv.idRange, e) |> ignore
+                | _ -> ()
+
+                match e with
+                | ListFeed(target, _, _, _) -> feeds.TryAdd(spanKey target.idRange, e) |> ignore
+                | _ -> ()
+
+            {
+                Names = names
+                Adds = adds
+                Feeds = feeds
+            }
+    )
+
 /// Find the accumulators whose loops are a list expression. Requires typed
 /// check results.
 /// The suggestion for one candidate accumulator, when its loops and drains
@@ -867,27 +916,32 @@ let private suggestionFor
     : Suggestion option =
     // the expression a use IS — the identifier, or the `acc.Member` path
     // it heads — with its ancestors
+    let tables = spanTablesOf index
+
     let nodeAt (r: range) =
-        index.Exprs
-        |> Array.tryFind (fun (_, e) ->
-            match e with
-            | SynExpr.Ident id -> sameSpan id.idRange r
-            | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> sameSpan first.idRange r
-            | _ -> false)
+        match tables.Names.TryGetValue(spanKey r) with
+        | true, node -> Some node
+        | false, _ -> None
 
     // the feed whose receiver or target is exactly this use: the statement's
     // range, the element it adds, whether it consed it to the front, and
     // the typed proof it is the feed it looks like (deferred: a resolution
     // per call is the expensive step)
     let feedAt (r: range) =
-        index.Exprs
-        |> Array.tryPick (fun (_, e) ->
+        let table =
+            match kind with
+            | Kind.ResizeArray -> tables.Adds
+            | Kind.List -> tables.Feeds
+
+        match table.TryGetValue(spanKey r) with
+        | true, e ->
             match kind, e with
             | Kind.ResizeArray, AddCall([ recv ], addIdent, arg) when sameSpan recv.idRange r ->
                 Some(e.Range, arg, false, (fun () -> resolvesToListAdd check source addIdent))
             | Kind.List, ListFeed(target, elem, cons, proof) when sameSpan target.idRange r ->
                 Some(e.Range, elem, cons, (fun () -> feedResolves check source proof))
-            | _ -> None)
+            | _ -> None
+        | false, _ -> None
 
     let accumulator =
         match kind with
@@ -982,16 +1036,15 @@ let private suggestionFor
                 outside |> List.forall (fun (r, _) -> Position.posGeq r.Start region.End)
 
             let hostile =
-                index.Exprs
+                AstIndex.exprsWithin index region
                 |> Array.exists (fun (_, e) ->
-                    Range.rangeContainsRange region e.Range
-                    && (hostileToListExpr e
-                        // another collection filled by the same loop would
-                        // have to move with it
-                        || (match e with
-                            | AddCall(recv :: _, _, _) -> recv.idText <> acc.idText
-                            | ListFeed(target, _, _, _) -> target.idText <> acc.idText
-                            | _ -> false)))
+                    (hostileToListExpr e
+                     // another collection filled by the same loop would
+                     // have to move with it
+                     || (match e with
+                         | AddCall(recv :: _, _, _) -> recv.idText <> acc.idText
+                         | ListFeed(target, _, _, _) -> target.idText <> acc.idText
+                         | _ -> false)))
 
             if
                 not quietBefore
@@ -1123,7 +1176,7 @@ let private suggestionFor
 
                             let glued =
                                 r.StartColumn > 0
-                                && (textOfRange source r).StartsWith "("
+                                && (textOfRange source r).StartsWith '('
                                 && (let c = line.[r.StartColumn - 1]
                                     Char.IsLetterOrDigit c || c = '_' || c = '\'' || c = '`')
 

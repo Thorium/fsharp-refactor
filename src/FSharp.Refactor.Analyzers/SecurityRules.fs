@@ -441,7 +441,7 @@ let find
                 | _ -> false)
 
         let constructsStrong (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
                 Range.rangeContainsRange r e.Range
                 && (match e with

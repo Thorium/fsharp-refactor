@@ -106,7 +106,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 if not parameters.IsEmpty then
                     // self-call application spines inside the body whose arguments
                     // include a singleton append to a parameter
-                    for _, e in index.Exprs do
+                    for _, e in AstIndex.exprsWithin index bodyRange do
                         match e with
                         | SynExpr.App(isInfix = false; argExpr = SingletonAppendTo parameters accParam) when
                             Range.rangeContainsRange bodyRange e.Range

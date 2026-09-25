@@ -691,3 +691,66 @@ let ``FR0171: a user type named Encoding is not the framework's under a typechec
 
     // parse-only, the spelling is the proof: both
     Assert.Equal(2, (FSharp.Refactor.ByteStringLiteral.find tree sourceText).Length)
+
+// ---- AstIndex.exprsWithin ----
+
+[<Fact>]
+let ``exprsWithin answers exactly what a walk of the whole index answers`` () =
+    // the rules ask it per candidate in place of `index.Exprs |> filter
+    // (rangeContainsRange r)`: the same nodes in the same order, or a rule
+    // would see a different file. Two of this package's own sources: every
+    // shape it walks, object expressions (the lifted nodes) included
+    for file in [ "SwallowedException.fs"; "AstIndex.fs" ] do
+        let path =
+            Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "src", "FSharp.Refactor.Analyzers", file)
+
+        let tree, _ = parseNamed file (File.ReadAllText path)
+        let index = FSharp.Refactor.AstIndex.ofTree tree
+
+        let spans =
+            [
+                // every seventh node's own range, and windows of lines that
+                // cut through nodes
+                for i, (_, e) in Array.indexed index.Exprs do
+                    if i % 7 = 0 then
+                        e.Range
+
+                for line in 1..13..1200 do
+                    Range.mkRange file (Position.mkPos line 4) (Position.mkPos (line + 9) 30)
+            ]
+
+        Assert.True(spans.Length > 100, $"{file}: too few spans to prove anything")
+
+        for r in spans do
+            let expected =
+                index.Exprs
+                |> Array.filter (fun (_, e) -> Range.rangeContainsRange r e.Range)
+                |> Array.map snd
+
+            let actual = FSharp.Refactor.AstIndex.exprsWithin index r |> Array.map snd
+
+            Assert.True(
+                expected.Length = actual.Length
+                && Array.forall2
+                    (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b))
+                    (Array.map box expected)
+                    (Array.map box actual),
+                $"{file} {r}: {expected.Length} nodes by the walk, {actual.Length} by the query"
+            )
+
+            // the patterns the same way
+            let expectedPats =
+                index.Pats
+                |> Array.filter (fun (_, p) -> Range.rangeContainsRange r p.Range)
+                |> Array.map snd
+
+            let actualPats = FSharp.Refactor.AstIndex.patsWithin index r |> Array.map snd
+
+            Assert.True(
+                expectedPats.Length = actualPats.Length
+                && Array.forall2
+                    (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b))
+                    (Array.map box expectedPats)
+                    (Array.map box actualPats),
+                $"{file} {r}: {expectedPats.Length} patterns by the walk, {actualPats.Length} by the query"
+            )

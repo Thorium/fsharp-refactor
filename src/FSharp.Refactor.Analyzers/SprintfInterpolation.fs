@@ -87,7 +87,7 @@ let private appliesPlainFunction (check: FSharpCheckFileResults) (source: ISourc
         let lineText = source.GetLineString(r.EndLine - 1)
 
         match
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, idents |> List.map (fun i -> i.idText))
+            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, idents |> List.map (fun i -> i.idText))
         with
         | Some symbolUse ->
             match symbolUse.Symbol with

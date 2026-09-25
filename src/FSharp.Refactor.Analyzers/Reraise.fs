@@ -80,7 +80,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // quotation — and so is a nested try. A `for`, a `match` and an
         // `if` inside the handler are fine.
         let opaqueRangesIn (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.collect (fun (_, e) ->
                 if not (Range.rangeContainsRange r e.Range) then
                     [||]
@@ -112,7 +112,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let reboundIn (name: string) (r: range) =
             let binds (p: SynPat) = patBoundNames p |> List.contains name
 
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
                 Range.rangeContainsRange r e.Range
                 && (match e with

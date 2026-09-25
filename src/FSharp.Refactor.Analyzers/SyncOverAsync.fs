@@ -113,7 +113,7 @@ let private enclosingEntityOf (check: FSharpCheckFileResults) (source: ISourceTe
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> OptionModule.enclosingFullName value
@@ -124,7 +124,7 @@ let private fullNameOf (check: FSharpCheckFileResults) (source: ISourceText) (id
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> OptionModule.fullNameOf value
@@ -334,7 +334,7 @@ let private syncSiblingFix
         let lineText = source.GetLineString(r.EndLine - 1)
 
         let hasSibling =
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -552,8 +552,18 @@ let findWith
 
             acc.ToArray()
 
+        // (by position first: a site asks of its own few candidates, not the
+        // file's whole spine)
+        let spineByStart =
+            lazy
+                (spineRanges
+                 |> Array.groupBy (fun s -> struct (s.StartLine, s.StartColumn))
+                 |> dict)
+
         let onSpine (r: range) =
-            spineRanges |> Array.exists (fun s -> Range.equals s r)
+            match spineByStart.Value.TryGetValue(struct (r.StartLine, r.StartColumn)) with
+            | true, found -> found |> Array.exists (fun s -> Range.equals s r)
+            | false, _ -> false
 
         // every CE body of ANY builder (seq { }, query { }, custom ones) and
         // every comprehension. A `do!` fix landing in statement position of
@@ -594,16 +604,24 @@ let findWith
         // AggregateException: `t.Wait()`, `t.Result` and `Task.WaitAll`
         // throw the wrapper, a bind throws the inner exception — the
         // handler would go dead (and WaitAll's other failures with it)
+        // (the try bodies with such a handler, found once: the handler text
+        // does not depend on the site)
+        let aggregateTryBodies =
+            lazy
+                (index.Exprs
+                 |> Array.choose (fun (_, e) ->
+                     match e with
+                     | SynExpr.TryWith(tryExpr = body; withCases = cases) when
+                         cases
+                         |> List.exists (fun (c: SynMatchClause) ->
+                             bAggregateExRegex.IsMatch(textOfRange source c.Range))
+                         ->
+                         Some body.Range
+                     | _ -> None))
+
         let underAggregateHandler (r: range) =
-            index.Exprs
-            |> Array.exists (fun (_, e) ->
-                match e with
-                | SynExpr.TryWith(tryExpr = body; withCases = cases) ->
-                    Range.rangeContainsRange body.Range r
-                    && cases
-                       |> List.exists (fun (c: SynMatchClause) ->
-                           bAggregateExRegex.IsMatch(textOfRange source c.Range))
-                | _ -> false)
+            aggregateTryBodies.Value
+            |> Array.exists (fun body -> Range.rangeContainsRange body r)
 
         let finallyRanges =
             index.Exprs
@@ -1011,8 +1029,15 @@ let findWith
                     | Some r -> Range.rangeContainsRange r e.Range && e.Range.StartLine < expr.Range.StartLine
                     | None -> false
 
+                // what `earlierInBody` can accept lies inside the binding
+                let bodyExprs =
+                    lazy
+                        (match bindingRange with
+                         | Some r -> AstIndex.exprsWithin index r
+                         | None -> [||])
+
                 let afterWaitForExit () =
-                    index.Exprs
+                    bodyExprs.Value
                     |> Array.exists (fun (_, e) ->
                         match e with
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when
@@ -1025,7 +1050,7 @@ let findWith
                 // happened — the read drains, and the earlier line carries
                 // whatever note the wait itself deserves
                 let afterOwnWait (recvText: string) =
-                    index.Exprs
+                    bodyExprs.Value
                     |> Array.exists (fun (_, e) ->
                         match e with
                         | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
@@ -1122,12 +1147,12 @@ let findWith
                                     let returnsValue =
                                         (fullNameOf check source cw).Length > 0
                                         && (match
-                                                check.GetSymbolUseAtLocation(
-                                                    cw.idRange.EndLine,
-                                                    cw.idRange.EndColumn,
-                                                    source.GetLineString(cw.idRange.EndLine - 1),
-                                                    [ cw.idText ]
-                                                )
+                                                OptionModule.symbolUseAt
+                                                    check
+                                                    (cw.idRange.EndLine,
+                                                     cw.idRange.EndColumn,
+                                                     source.GetLineString(cw.idRange.EndLine - 1),
+                                                     [ cw.idText ])
                                             with
                                             | Some su ->
                                                 match su.Symbol with

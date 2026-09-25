@@ -127,7 +127,7 @@ let private isCoreOptionTest (check: FSharpCheckFileResults) (source: ISourceTex
     let r = f.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ f.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ f.idText ]) with
     | Some symbolUse ->
         let name = OptionModule.fullNameOf symbolUse.Symbol
         name.StartsWith "Microsoft.FSharp.Core." && name.Contains "Option"
@@ -214,7 +214,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 let r = fIdent.idRange
                 let lineText = source.GetLineString(r.EndLine - 1)
 
-                (match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ fIdent.idText ]) with
+                (match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ fIdent.idText ]) with
                  | Some symbolUse ->
                      match symbolUse.Symbol with
                      | :? FSharpMemberOrFunctionOrValue as value ->

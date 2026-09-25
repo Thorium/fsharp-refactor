@@ -178,7 +178,7 @@ let private fieldSymbol
     =
     let lineText = source.GetLineString(fieldIdRange.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(fieldIdRange.EndLine, fieldIdRange.EndColumn, lineText, [ fieldName ]) with
+    match OptionModule.symbolUseAt check (fieldIdRange.EndLine, fieldIdRange.EndColumn, lineText, [ fieldName ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpField as f -> ValueSome(f :> FSharpSymbol)

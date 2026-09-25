@@ -136,7 +136,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = logId.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ logId.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ logId.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -237,7 +237,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = logId.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ logId.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ logId.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -377,7 +377,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             let r = argId.idRange
                             let lineText = source.GetLineString(r.EndLine - 1)
 
-                            (match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ argId.idText ]) with
+                            (match
+                                OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ argId.idText ])
+                             with
                              | Some symbolUse ->
                                  match symbolUse.Symbol with
                                  | :? FSharpMemberOrFunctionOrValue as v ->

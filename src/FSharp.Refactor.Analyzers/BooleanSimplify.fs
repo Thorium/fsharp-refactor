@@ -67,7 +67,7 @@ let private pureCallees = set [ "not"; "isNull" ]
 /// (`op_*`) and a tiny pure allowlist are the only applications left:
 /// property chains, indexing and comparisons pass, calls do not.
 let private duplicateSafe (index: AstIndex.Index) (r: range) =
-    index.Exprs
+    AstIndex.exprsWithin index r
     |> Array.forall (fun (_, e) ->
         not (Range.rangeContainsRange r e.Range)
         || (match e with

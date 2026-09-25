@@ -33,6 +33,7 @@
 module FSharp.Refactor.OptionModule
 
 open System.Collections.Generic
+open System.Runtime.CompilerServices
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Diagnostics
@@ -42,6 +43,30 @@ open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
 open FSharp.Analyzers.SDK.ASTCollecting
 open FSharp.Refactor.Text
+
+/// FCS's `GetSymbolUseAtLocation`, remembered per check result. A lookup
+/// costs a walk of FCS's name resolutions for the file - 0.3 ms at 4k lines,
+/// 0.8 ms at 18k - and the rules resolve the same identifiers over and over:
+/// the same `List.map` is asked by the hint engine, map fusion and the range
+/// rule, each `+` by every rule that needs FSharp.Core's operator. The answer
+/// is a function of the check result and the arguments alone, so the first
+/// asker pays and the rest read it. Lives and dies with the check result.
+let private symbolUses =
+    ConditionalWeakTable<
+        FSharpCheckFileResults,
+        System.Collections.Concurrent.ConcurrentDictionary<struct (int * int * string * string), FSharpSymbolUse option>
+     >()
+
+let symbolUseAt
+    (check: FSharpCheckFileResults)
+    (line: int, column: int, lineText: string, names: string list)
+    : FSharpSymbolUse option =
+    let memo =
+        symbolUses.GetValue(check, fun _ -> System.Collections.Concurrent.ConcurrentDictionary())
+
+    // a newline is in no identifier, so the names join without ambiguity
+    let key = struct (line, column, lineText, String.concat "\n" names)
+    memo.GetOrAdd(key, fun _ -> check.GetSymbolUseAtLocation(line, column, lineText, names))
 
 /// Names for one wrapper family: Some/None/Option or ValueSome/ValueNone/ValueOption.
 type WrapperConfig =
@@ -231,48 +256,74 @@ let private rewrite
 /// author's back, and the guard errs on the side of leaving the match.
 /// Shared by the rules that wrap a branch body in `fun ... ->`
 /// (Option/Result wrappers, OptionMatch, AddRange).
-let capturesMutableLocal (index: AstIndex.Index) (bodyRange: range) : bool =
-    let mutableNames =
-        index.Exprs
-        |> Array.collect (fun (_, e) ->
-            match e with
-            | LetOrUseE lou when not (Range.rangeContainsRange bodyRange lou.Range) ->
-                lou.Bindings
-                |> List.choose (fun (SynBinding(isMutable = isMut; headPat = p)) ->
-                    if isMut then
-                        match p with
-                        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-                        | _ -> None
-                    else
-                        None)
-                |> Array.ofList
-            | _ -> [||])
+/// The file's `let mutable` names with the range of the `let` binding each,
+/// and its byref-typed parameter names: what `capturesMutableLocal` asks of
+/// every arm, collected once per index.
+let private mutableFacts =
+    ConditionalWeakTable<AstIndex.Index, (range * string)[] * string[]>()
 
-    let byrefNames =
-        index.Pats
-        |> Array.choose (fun (_, p) ->
-            match p with
-            | SynPat.Typed(
-                pat = SynPat.Named(ident = SynIdent(ident = id))
-                targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = tids)))) when
-                not tids.IsEmpty
-                && (let t = (List.last tids).idText in t = "byref" || t = "inref" || t = "outref")
-                ->
-                Some id.idText
-            | _ -> None)
+let private mutableFactsOf (index: AstIndex.Index) =
+    mutableFacts.GetValue(
+        index,
+        fun index ->
+            let mutableLets =
+                index.Exprs
+                |> Array.collect (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou ->
+                        lou.Bindings
+                        |> List.choose (fun (SynBinding(isMutable = isMut; headPat = p)) ->
+                            if isMut then
+                                match p with
+                                | SynPat.Named(ident = SynIdent(ident = id)) -> Some(lou.Range, id.idText)
+                                | _ -> None
+                            else
+                                None)
+                        |> Array.ofList
+                    | _ -> [||])
+
+            let byrefNames =
+                index.Pats
+                |> Array.choose (fun (_, p) ->
+                    match p with
+                    | SynPat.Typed(
+                        pat = SynPat.Named(ident = SynIdent(ident = id))
+                        targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = tids)))) when
+                        not tids.IsEmpty
+                        && (let t = (List.last tids).idText in t = "byref" || t = "inref" || t = "outref")
+                        ->
+                        Some id.idText
+                    | _ -> None)
+
+            mutableLets, byrefNames
+    )
+
+let capturesMutableLocal (index: AstIndex.Index) (bodyRange: range) : bool =
+    let mutableLets, byrefNames = mutableFactsOf index
+
+    // a `let mutable` inside the body is the body's own
+    let mutableNames =
+        mutableLets
+        |> Array.choose (fun (letRange, name) ->
+            if Range.rangeContainsRange bodyRange letRange then
+                None
+            else
+                Some name)
 
     let names = Set.ofArray (Array.append mutableNames byrefNames)
 
     not names.IsEmpty
-    && index.Exprs
-       |> Array.exists (fun (_, e) ->
-           match e with
-           | SynExpr.Ident id -> names.Contains id.idText && Range.rangeContainsRange bodyRange id.idRange
-           | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) ->
-               names.Contains first.idText && Range.rangeContainsRange bodyRange first.idRange
-           | SynExpr.LongIdentSet(SynLongIdent(id = first :: _), _, _) ->
-               names.Contains first.idText && Range.rangeContainsRange bodyRange e.Range
-           | _ -> false)
+    && (names
+        |> Set.exists (fun name ->
+            // a bare `name`, or the head of `name.Member`
+            AstIndex.mentionsOf index name
+            |> Array.exists (fun struct (mention, _) -> Range.rangeContainsRange bodyRange mention))
+        // `name <- v` inside the body
+        || AstIndex.exprsWithin index bodyRange
+           |> Array.exists (fun (_, e) ->
+               match e with
+               | SynExpr.LongIdentSet(SynLongIdent(id = first :: _), _, _) -> names.Contains first.idText
+               | _ -> false))
 
 /// Does the arm body at `bodyRange` mention a function bound by a `let
 /// rec` (or its `and`) that encloses it on `path`? In arm position that
@@ -371,7 +422,8 @@ let private mentionsRecursiveBinder (index: AstIndex.Index) (path: SyntaxNode li
         && (memberNames.Contains n.idText || recursiveNames.Contains n.idText)
 
     (not (recursiveNames.IsEmpty && selfMembers.IsEmpty && memberNames.IsEmpty))
-    && index.Exprs
+    // a name leaf inside the body is an expression inside it
+    && AstIndex.exprsWithin index bodyRange
        |> Array.exists (fun (_, e) ->
            match e with
            | SynExpr.Ident id ->
@@ -506,7 +558,7 @@ let resolvesToCoreCase (check: FSharpCheckFileResults) (source: ISourceText) (pr
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpUnionCase as unionCase ->
@@ -573,7 +625,7 @@ let resolvesToCoreOperator (check: FSharpCheckFileResults) (source: ISourceText)
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value ->
@@ -591,7 +643,7 @@ let symbolOfIdent (check: FSharpCheckFileResults) (source: ISourceText) (id: Ide
     let r = id.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+    symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
     |> Option.map (fun u -> u.Symbol)
 
 /// Names of FSharp.Core whose CALL is an effect: `callsOnlyCore` waves
@@ -735,6 +787,73 @@ let partialCoreNames =
 /// a mutable holding a function (`let mutable validator = fun ...`) may
 /// be reassigned, so its initial body says nothing about what a later
 /// call runs.
+/// Every immutable binding head of the file that `bindingDeclaredAt` can
+/// answer with - module and class `let`s first, then expression `let`s, the
+/// order it searches in - by the head's start line and column. Built once per
+/// index; a lookup is the few heads at one position.
+let private bindingHeads =
+    ConditionalWeakTable<AstIndex.Index, Dictionary<struct (int * int), (Ident * SynExpr)[]>>()
+
+let private bindingHeadsOf (index: AstIndex.Index) =
+    bindingHeads.GetValue(
+        index,
+        fun index ->
+            let headOf (SynBinding(isMutable = isMut; headPat = p; expr = body)) =
+                if isMut then
+                    None
+                else
+                    match p with
+                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]))
+                    | SynPat.Named(ident = SynIdent(ident = id))
+                    | SynPat.Typed(pat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])))
+                    | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))) -> Some(id, body)
+                    | _ -> None
+
+            let rec ofMembers (members: SynMemberDefns) =
+                members
+                |> List.collect (fun m ->
+                    match m with
+                    | SynMemberDefn.LetBindings(bindings = bs) -> bs
+                    | SynMemberDefn.Interface(members = Some ms) -> ofMembers ms
+                    | _ -> [])
+
+            let fromDecls =
+                index.Decls
+                |> Seq.collect (fun (_, d) ->
+                    match d with
+                    | SynModuleDecl.Let(bindings = bs) -> Seq.ofList bs
+                    | SynModuleDecl.Types(typeDefns = defns) ->
+                        defns
+                        |> Seq.collect (fun (SynTypeDefn(typeRepr = repr; members = extra)) ->
+                            match repr with
+                            | SynTypeDefnRepr.ObjectModel(members = ms) -> ofMembers ms @ ofMembers extra
+                            | _ -> ofMembers extra)
+                    | _ -> Seq.empty)
+
+            let fromExprs =
+                index.Exprs
+                |> Seq.collect (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou -> Seq.ofList lou.Bindings
+                    | _ -> Seq.empty)
+
+            let byPosition = Dictionary<struct (int * int), ResizeArray<Ident * SynExpr>>()
+
+            for (id: Ident, body) in Seq.append fromDecls fromExprs |> Seq.choose headOf do
+                let key = struct (id.idRange.StartLine, id.idRange.StartColumn)
+
+                match byPosition.TryGetValue key with
+                | true, l -> l.Add(id, body)
+                | false, _ -> byPosition.[key] <- ResizeArray [ id, body ]
+
+            let result = Dictionary<struct (int * int), (Ident * SynExpr)[]>()
+
+            for KeyValue(key, l) in byPosition do
+                result.[key] <- l.ToArray()
+
+            result
+    )
+
 let bindingDeclaredAt (index: AstIndex.Index) (value: FSharpMemberOrFunctionOrValue) : (Ident * SynExpr) option =
     // FCS raises a plain Exception ("DeclarationLocation property not
     // available") for a method of another assembly
@@ -747,17 +866,6 @@ let bindingDeclaredAt (index: AstIndex.Index) (value: FSharpMemberOrFunctionOrVa
     match location with
     | None -> None
     | Some loc ->
-        let headOf (SynBinding(isMutable = isMut; headPat = p; expr = body)) =
-            if isMut then
-                None
-            else
-                match p with
-                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]))
-                | SynPat.Named(ident = SynIdent(ident = id))
-                | SynPat.Typed(pat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])))
-                | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))) -> Some(id, body)
-                | _ -> None
-
         let sitsAt (id: Ident, _) =
             let r = id.idRange
 
@@ -765,35 +873,9 @@ let bindingDeclaredAt (index: AstIndex.Index) (value: FSharpMemberOrFunctionOrVa
             && r.StartColumn = loc.StartColumn
             && System.String.Equals(r.FileName, loc.FileName, System.StringComparison.OrdinalIgnoreCase)
 
-        let rec ofMembers (members: SynMemberDefns) =
-            members
-            |> List.collect (fun m ->
-                match m with
-                | SynMemberDefn.LetBindings(bindings = bs) -> bs
-                | SynMemberDefn.Interface(members = Some ms) -> ofMembers ms
-                | _ -> [])
-
-        let fromDecls =
-            index.Decls
-            |> Seq.collect (fun (_, d) ->
-                match d with
-                | SynModuleDecl.Let(bindings = bs) -> Seq.ofList bs
-                | SynModuleDecl.Types(typeDefns = defns) ->
-                    defns
-                    |> Seq.collect (fun (SynTypeDefn(typeRepr = repr; members = extra)) ->
-                        match repr with
-                        | SynTypeDefnRepr.ObjectModel(members = ms) -> ofMembers ms @ ofMembers extra
-                        | _ -> ofMembers extra)
-                | _ -> Seq.empty)
-
-        let fromExprs =
-            index.Exprs
-            |> Seq.collect (fun (_, e) ->
-                match e with
-                | LetOrUseE lou -> Seq.ofList lou.Bindings
-                | _ -> Seq.empty)
-
-        Seq.append fromDecls fromExprs |> Seq.choose headOf |> Seq.tryFind sitsAt
+        match (bindingHeadsOf index).TryGetValue(struct (loc.StartLine, loc.StartColumn)) with
+        | true, heads -> heads |> Array.tryFind sitsAt
+        | false, _ -> None
 
 /// Does the code in this range CALL only what provably does nothing but
 /// compute? Every identifier in the range that names a FUNCTION (typed)
@@ -863,17 +945,16 @@ let callsOnlyCoreWith
         // unknown fails
         | _ -> false
 
-    index.Exprs
+    AstIndex.exprsWithin index r
     |> Array.forall (fun (_, e) ->
-        not (Range.rangeContainsRange r e.Range)
-        || (match e with
-            | SynExpr.Ident id -> pureIdent [ id ]
-            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
-            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> pureIdent ids
-            // a constructor or an object expression runs arbitrary code
-            | SynExpr.New _
-            | SynExpr.ObjExpr _ -> false
-            | _ -> true))
+        match e with
+        | SynExpr.Ident id -> pureIdent [ id ]
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> pureIdent ids
+        // a constructor or an object expression runs arbitrary code
+        | SynExpr.New _
+        | SynExpr.ObjExpr _ -> false
+        | _ -> true)
 
 /// `callsOnlyCoreWith` where every user function fails: FSharp.Core and
 /// System.String only.
@@ -1047,7 +1128,7 @@ let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (qual
         let r = last.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, qualified |> List.map (fun i -> i.idText))
+        symbolUseAt check (r.EndLine, r.EndColumn, lineText, qualified |> List.map (fun i -> i.idText))
         |> Option.map (fun u -> u.Symbol)
     | None -> None
 
@@ -1196,7 +1277,7 @@ let isByRefLike (t: FSharpType) =
 /// wherever they sit — typed proof: the parameters of a constructor whose
 /// declaring entity is a value type.
 let private byRefLikeUsesCache =
-    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, (range * range option)[]>()
+    ConditionalWeakTable<FSharpCheckFileResults, (range * range option)[]>()
 
 /// Where the parameters of the file's struct constructors are declared.
 let private structConstructorParameters (uses: FSharpSymbolUse[]) =

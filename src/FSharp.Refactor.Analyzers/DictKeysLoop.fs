@@ -57,7 +57,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
             |> Option.map (fun u -> u.Symbol)
 
         // the dictionary's type, from the last identifier of its spelling
@@ -121,7 +121,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     match keysOf enumExpr with
                     | Some(receiverIds, receiverText) when isDictionary (List.last receiverIds) ->
                         let readsWithPaths =
-                            index.Exprs
+                            AstIndex.exprsWithin index body.Range
                             |> Array.filter (fun (_, inner) ->
                                 Range.rangeContainsRange body.Range inner.Range
                                 && indexerRead receiverText key.idText inner)
@@ -149,7 +149,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         // a store through the indexer, or a key used anywhere
                         // but as the lookup, keeps the loop
                         let stores =
-                            index.Exprs
+                            AstIndex.exprsWithin index body.Range
                             |> Array.exists (fun (_, inner) ->
                                 Range.rangeContainsRange body.Range inner.Range
                                 && (match inner with
@@ -175,13 +175,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         // the key inside the body: a `d.[k]` under it reads
                         // ANOTHER key, which the pair's value is not
                         let keyRebound =
-                            (index.Pats
+                            (AstIndex.patsWithin index body.Range
                              |> Array.exists (fun (_, p) ->
                                  Range.rangeContainsRange body.Range p.Range
                                  && List.contains key.idText (patBoundNames p)))
                             // a lambda's parameters are simple patterns the
                             // index does not list
-                            || (index.Exprs
+                            || (AstIndex.exprsWithin index body.Range
                                 |> Array.exists (fun (_, inner) ->
                                     Range.rangeContainsRange body.Range inner.Range
                                     && (match inner with

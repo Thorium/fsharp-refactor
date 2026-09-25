@@ -659,7 +659,7 @@ let private resolvedOperandType
         let r = ident.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as value -> ValueSome(resultTypeOf value)
@@ -711,7 +711,7 @@ let private nameResolvesToCore (check: FSharpCheckFileResults) (source: ISourceT
             let lineText = source.GetLineString(r.EndLine - 1)
 
             try
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, names) with
+                match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, names) with
                 | Some symbolUse ->
                     // the member's own qualified name: the base FSharpSymbol
                     // FullName of a module entity is its short name
@@ -835,7 +835,7 @@ let private isOverloadedMethodGroup (check: FSharpCheckFileResults) (source: ISo
         let r = last.idRange
         let lineText = source.GetLineString(r.EndLine - 1)
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as m ->
@@ -1148,12 +1148,9 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
 
             try
                 match
-                    check.GetSymbolUseAtLocation(
-                        idr.EndLine,
-                        idr.EndColumn,
-                        source.GetLineString(idr.EndLine - 1),
-                        [ id.idText ]
-                    )
+                    OptionModule.symbolUseAt
+                        check
+                        (idr.EndLine, idr.EndColumn, source.GetLineString(idr.EndLine - 1), [ id.idText ])
                 with
                 | Some u ->
                     match u.Symbol with
@@ -1201,7 +1198,7 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
     // an active pattern matched inside the mapper runs its own body, which
     // no expression of the lambda names: `Logged v` printing as it binds
     let matchesActivePattern =
-        index.Pats
+        AstIndex.patsWithin index r
         |> Array.exists (fun (_, p) ->
             Range.rangeContainsRange r p.Range
             && (match p with
@@ -1210,12 +1207,9 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
                     let idr = id.idRange
 
                     match
-                        check.GetSymbolUseAtLocation(
-                            idr.EndLine,
-                            idr.EndColumn,
-                            source.GetLineString(idr.EndLine - 1),
-                            [ id.idText ]
-                        )
+                        OptionModule.symbolUseAt
+                            check
+                            (idr.EndLine, idr.EndColumn, source.GetLineString(idr.EndLine - 1), [ id.idText ])
                     with
                     | Some u -> u.Symbol :? FSharpActivePatternCase
                     | None -> false

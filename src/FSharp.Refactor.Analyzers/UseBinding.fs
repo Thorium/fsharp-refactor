@@ -197,7 +197,7 @@ let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (id: 
     let r = id.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
     |> Option.map (fun u -> u.Symbol)
 
 /// Is the bound expression a construction the binder OWNS — `new T(...)`,
@@ -1426,38 +1426,37 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let names = parameterNames pats argument element |> set
 
             let mentionsParameter (r: range) =
-                index.Exprs
+                AstIndex.exprsWithin index r
                 |> Array.exists (fun (_, e) ->
                     match e with
-                    | SynExpr.Ident id -> names.Contains id.idText && Range.rangeContainsRange r id.idRange
+                    | SynExpr.Ident id -> names.Contains id.idText
                     | _ -> false)
 
             not names.IsEmpty
-            && index.Exprs
+            && AstIndex.exprsWithin index body.Range
                |> Array.exists (fun (path, e) ->
-                   Range.rangeContainsRange body.Range e.Range
-                   && (match e with
-                       | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ p; m ])) ->
-                           names.Contains p.idText && m.idText = "Dispose"
-                       | SynExpr.DotGet(expr = inner; longDotId = SynLongIdent(id = [ m ])) ->
-                           m.idText = "Dispose" && mentionsParameter inner.Range
-                       | SynExpr.Ident id when names.Contains id.idText ->
-                           let usedDirectly =
-                               path
-                               |> List.truncate 2
-                               |> List.exists (fun n ->
-                                   match n with
-                                   | SyntaxNode.SynExpr(LetOrUseE lou) when lou.IsUse ->
-                                       lou.Bindings
-                                       |> List.exists (fun (SynBinding(expr = rhs)) -> rhs.Range = id.idRange)
-                                   | _ -> false)
+                   (match e with
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ p; m ])) ->
+                        names.Contains p.idText && m.idText = "Dispose"
+                    | SynExpr.DotGet(expr = inner; longDotId = SynLongIdent(id = [ m ])) ->
+                        m.idText = "Dispose" && mentionsParameter inner.Range
+                    | SynExpr.Ident id when names.Contains id.idText ->
+                        let usedDirectly =
+                            path
+                            |> List.truncate 2
+                            |> List.exists (fun n ->
+                                match n with
+                                | SyntaxNode.SynExpr(LetOrUseE lou) when lou.IsUse ->
+                                    lou.Bindings
+                                    |> List.exists (fun (SynBinding(expr = rhs)) -> rhs.Range = id.idRange)
+                                | _ -> false)
 
-                           usedDirectly
-                           || (match classifyLoop check source (fun _ -> true) id.idRange false None path with
-                               | Adopted
-                               | Held -> true
-                               | _ -> false)
-                       | _ -> false))
+                        usedDirectly
+                        || (match classifyLoop check source (fun _ -> true) id.idRange false None path with
+                            | Adopted
+                            | Held -> true
+                            | _ -> false)
+                    | _ -> false))
 
         // the binding of `local` that the enclosing scope (a member, a
         // function, a lambda, a computation) constructs itself, in whose
@@ -1475,7 +1474,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         range = r) | SynExpr.ComputationExpr(range = r)) -> Some r
                     | _ -> None)
 
-            index.Exprs
+            // a let the scope must contain lies inside it
+            (match scope with
+             | Some r -> AstIndex.exprsWithin index r
+             | None -> index.Exprs)
             |> Array.choose (fun (_, e) ->
                 match e with
                 | LetOrUseE inner when
@@ -1517,10 +1519,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let inLambda = runsAfter localRange body.Range
             let returnedThrough = returnedThroughTo check source isResult
 
-            index.Exprs
+            AstIndex.exprsWithin index body.Range
             |> Array.exists (fun (path, e) ->
-                Range.rangeContainsRange body.Range e.Range
-                && not (Range.rangeContainsRange construction e.Range)
+                not (Range.rangeContainsRange construction e.Range)
                 && (match e with
                     | SynExpr.Ident id when id.idText = name ->
                         inLambda path
@@ -1594,8 +1595,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         let body = lou.Body
                         let holders = holdersOn index declPath expr.Range
 
+                        // (a name leaf in the scope is an expression inside it)
                         let mentionsOf (names: Set<string>) =
-                            index.Exprs
+                            AstIndex.exprsWithin index body.Range
                             |> Array.filter (fun (_, e) ->
                                 match e with
                                 | SynExpr.Ident id when names.Contains id.idText ->
@@ -1619,7 +1621,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         // stream.ReadByte()`) is evaluated and done
                         let aliases =
                             let localBindings =
-                                index.Exprs
+                                AstIndex.exprsWithin index body.Range
                                 |> Array.collect (fun (_, e) ->
                                     match e with
                                     | LetOrUseE inner when Range.rangeContainsRange body.Range inner.Range ->
@@ -1680,7 +1682,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     || m.idText = "DisposeAsync"
                                     || (m.idText = "Close" && closeDisposes check source binder)
                                 | _ -> false)
-                            || index.Exprs
+                            || AstIndex.exprsWithin index body.Range
                                |> Array.exists (fun (_, e) ->
                                    match e with
                                    | SynExpr.DotGet(expr = receiver; longDotId = SynLongIdent(id = [ m ])) when
@@ -1795,7 +1797,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // `use` would stop it on the way out
                             let selfActive =
                                 selfActiveType check source binder
-                                || index.Exprs
+                                || AstIndex.exprsWithin index rhs.Range
                                    |> Array.exists (fun (_, e) ->
                                        match e with
                                        | SynExpr.Lambda _
@@ -1815,7 +1817,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                            || members |> List.exists (isEvent check source)
                                            || (invokedAt path e.Range && startsWork check source last)
                                        | _ -> false)
-                                || index.Exprs
+                                || AstIndex.exprsWithin index body.Range
                                    |> Array.exists (fun (_, e) ->
                                        match e with
                                        | SynExpr.LongIdentSet(
@@ -1868,7 +1870,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         let f = (List.last ids).idText
 
                                         let called =
-                                            index.Exprs
+                                            AstIndex.exprsWithin index body.Range
                                             |> Array.exists (fun (_, e) ->
                                                 Range.rangeContainsRange body.Range e.Range
                                                 && (match e with
@@ -2034,13 +2036,12 @@ let findEscapingUse
 
         // every mention of `name` inside `r`
         let mentionsIn (name: string) (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
-                Range.rangeContainsRange r e.Range
-                && (match e with
-                    | SynExpr.Ident id -> id.idText = name
-                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> first.idText = name
-                    | _ -> false))
+                (match e with
+                 | SynExpr.Ident id -> id.idText = name
+                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> first.idText = name
+                 | _ -> false))
 
         // the tail expression of a statement chain, and the statements
         // passed on the way — `let a = ... in let b = ... in tail`
@@ -2072,7 +2073,7 @@ let findEscapingUse
                             match tail with
                             | BuilderLiteral(builder, body) -> Some(builder, body, tail)
                             | SynExpr.Ident named ->
-                                index.Exprs
+                                AstIndex.exprsWithin index lou.Range
                                 |> Array.tryPick (fun (_, outer) ->
                                     match outer with
                                     | LetOrUseE inner when

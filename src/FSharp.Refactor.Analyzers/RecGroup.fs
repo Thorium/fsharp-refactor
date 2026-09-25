@@ -346,7 +346,7 @@ let rec private declsOf (decls: SynModuleDecl list) : SynModuleDecl list =
 /// between two records (`PendingConfirmation` in fedit's Model and
 /// PickerState) no longer determines the type.
 let private buildsRecord (index: AstIndex.Index) (bindingRange: range) =
-    index.Exprs
+    AstIndex.exprsWithin index bindingRange
     |> Seq.exists (fun (_, e) ->
         match e with
         | SynExpr.Record _ -> Range.rangeContainsRange bindingRange e.Range
@@ -396,7 +396,7 @@ let private leansOnParameters
     let memberLeans (id: Ident) (_: Ident) = bare.Contains id.idText
 
     not bare.IsEmpty
-    && index.Exprs
+    && AstIndex.exprsWithin index body.Range
        |> Seq.exists (fun (_, e) ->
            Range.rangeContainsRange body.Range e.Range
            && (match e with
@@ -433,7 +433,7 @@ let private annotatedHeaderLine
         let line = keywordRange.StartLine
         let lineText = source.GetLineString(line - 1)
 
-        match check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ]) with
+        match OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as v ->

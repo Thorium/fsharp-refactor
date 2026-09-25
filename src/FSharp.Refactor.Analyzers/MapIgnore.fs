@@ -50,7 +50,7 @@ let private resolvesToCoreMap
     let r = mapId.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ mapId.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ mapId.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value ->
@@ -104,7 +104,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     ->
                     // `ignore` itself must be FSharp.Core's, not a shadow
                     let ignoreIsCore =
-                        index.Exprs
+                        AstIndex.exprsWithin index expr.Range
                         |> Array.exists (fun (_, e) ->
                             match e with
                             | SynExpr.Ident id when

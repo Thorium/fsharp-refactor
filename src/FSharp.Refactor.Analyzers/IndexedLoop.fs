@@ -204,7 +204,7 @@ let private findIn
                     // every `<xs>.[i]` / `<xs>[i]` in the body: its whole range and
                     // the range of the index ident inside it
                     let indexedUses =
-                        index.Exprs
+                        AstIndex.exprsWithin index body.Range
                         |> Array.choose (fun (_, e) ->
                             match e with
                             | SynExpr.DotIndexedGet(objectExpr = o; indexArgs = idx) when
@@ -224,7 +224,7 @@ let private findIn
 
                     // every mention of the index variable in the body
                     let indexMentions =
-                        index.Exprs
+                        AstIndex.exprsWithin index body.Range
                         |> Array.choose (fun (_, e) ->
                             match e with
                             | SynExpr.Ident id when id.idText = i.idText && inBody id.idRange -> Some id.idRange
@@ -238,7 +238,7 @@ let private findIn
                     // nothing may write an element or assign the collection or the
                     // index inside the body
                     let mutates =
-                        index.Exprs
+                        AstIndex.exprsWithin index body.Range
                         |> Array.exists (fun (_, e) ->
                             inBody e.Range
                             && (match e with
@@ -261,7 +261,7 @@ let private findIn
                     // element would silently change behavior. Every binder goes
                     // through a Named pattern, so one scan covers all of them.
                     let rebinds =
-                        index.Pats
+                        AstIndex.patsWithin index body.Range
                         |> Array.exists (fun (_, p) ->
                             Range.rangeContainsRange body.Range p.Range
                             && (match p with
@@ -275,7 +275,7 @@ let private findIn
                     // `&sprite.Field` after it reads "ByRefKinds.InOut does not match
                     // ByRefKinds.In" (Nu's Renderer2d)
                     let addressTaken =
-                        index.Exprs
+                        AstIndex.exprsWithin index body.Range
                         |> Array.exists (fun (_, e) ->
                             match e with
                             | SynExpr.AddressOf(expr = inner) ->
@@ -293,7 +293,7 @@ let private findIn
                     let collSegments = collText.Split('.').Length
 
                     let touchesCollection =
-                        index.Exprs
+                        AstIndex.exprsWithin index body.Range
                         |> Array.exists (fun (_, e) ->
                             inBody e.Range
                             && not (indexedUses |> Array.exists (fun (u, _) -> Range.rangeContainsRange u e.Range))

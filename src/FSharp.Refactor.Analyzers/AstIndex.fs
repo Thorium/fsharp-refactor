@@ -10,6 +10,7 @@
 module FSharp.Refactor.AstIndex
 
 open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Runtime.CompilerServices
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
@@ -240,7 +241,7 @@ let private build (tree: ParsedInput) : Index =
     // supplement: walk object-expression member bodies the SDK walker skips;
     // lifted results splice in under the ObjExpr node's own path, and newly
     // surfaced nested object expressions are processed in turn
-    let pending = System.Collections.Generic.Queue(exprs)
+    let pending = Queue(exprs)
     let supplemental = ResizeArray()
     let supplementalPats = ResizeArray()
     let supplementalTypes = ResizeArray()
@@ -340,6 +341,133 @@ let private build (tree: ParsedInput) : Index =
 
 /// The memoized flat node index for a parse tree.
 let ofTree (tree: ParsedInput) : Index = cache.GetValue(tree, build)
+
+/// An index array (`Exprs`, `Pats`) ordered by start position, for range
+/// queries: the order (positions in the array), each one's start line and
+/// column, and the few whose range ends before it starts (a synthetic node),
+/// which a query always tests. Built once per array.
+type private StartOrder =
+    {
+        Order: int[]
+        Lines: int[]
+        Columns: int[]
+        Odd: int[]
+    }
+
+let private startOrders = ConditionalWeakTable<obj, StartOrder>()
+
+let private startOrderOf (nodes: (SyntaxNode list * 'T)[]) (rangeOf: 'T -> range) =
+    startOrders.GetValue(
+        box nodes,
+        fun _ ->
+            let order =
+                Array.init nodes.Length id
+                |> Array.sortBy (fun i ->
+                    let s = (rangeOf (snd nodes.[i])).Start
+                    s.Line, s.Column)
+
+            {
+                Order = order
+                Lines = order |> Array.map (fun i -> (rangeOf (snd nodes.[i])).StartLine)
+                Columns = order |> Array.map (fun i -> (rangeOf (snd nodes.[i])).StartColumn)
+                Odd =
+                    Array.init nodes.Length id
+                    |> Array.filter (fun i ->
+                        let r = rangeOf (snd nodes.[i])
+                        Position.posGt r.Start r.End)
+            }
+    )
+
+/// The nodes of an index array inside `r` - exactly `nodes |> Array.filter
+/// (fun (_, n) -> Range.rangeContainsRange r (rangeOf n))`, in the same order -
+/// without walking the file: a node inside `r` starts inside it, so a binary
+/// search over the start order finds the window.
+let private within (nodes: (SyntaxNode list * 'T)[]) (rangeOf: 'T -> range) (r: range) : (SyntaxNode list * 'T)[] =
+    let so = startOrderOf nodes rangeOf
+
+    let before (k: int) =
+        so.Lines.[k] < r.StartLine
+        || (so.Lines.[k] = r.StartLine && so.Columns.[k] < r.StartColumn)
+
+    let pastEnd (k: int) =
+        so.Lines.[k] > r.EndLine
+        || (so.Lines.[k] = r.EndLine && so.Columns.[k] > r.EndColumn)
+
+    // the first position in start order not before r's start
+    let mutable lo = 0
+    let mutable hi = so.Order.Length
+
+    while lo < hi do
+        let mid = lo + (hi - lo) / 2
+
+        if before mid then lo <- mid + 1 else hi <- mid
+
+    let hits = ResizeArray<int>()
+    let mutable k = lo
+
+    while k < so.Order.Length && not (pastEnd k) do
+        let i = so.Order.[k]
+
+        if Range.rangeContainsRange r (rangeOf (snd nodes.[i])) then
+            hits.Add i
+
+        k <- k + 1
+
+    for i in so.Odd do
+        if Range.rangeContainsRange r (rangeOf (snd nodes.[i])) && not (hits.Contains i) then
+            hits.Add i
+
+    hits.Sort()
+    [| for i in hits -> nodes.[i] |]
+
+/// The expressions inside `r` - exactly `index.Exprs |> Array.filter (fun
+/// (_, e) -> Range.rangeContainsRange r e.Range)`, in the same order. A rule
+/// asking this per candidate stays linear in the file instead of quadratic.
+let exprsWithin (index: Index) (r: range) : (SyntaxNode list * SynExpr)[] =
+    within index.Exprs (fun (e: SynExpr) -> e.Range) r
+
+/// The patterns inside `r` - exactly `index.Pats |> Array.filter (fun (_, p) ->
+/// Range.rangeContainsRange r p.Range)`, in the same order.
+let patsWithin (index: Index) (r: range) : (SyntaxNode list * SynPat)[] =
+    within index.Pats (fun (p: SynPat) -> p.Range) r
+
+/// Where each name is read: every `SynExpr.Ident` by its range, and the
+/// first identifier of every `SynExpr.LongIdent` (`xs` of `xs.Length`), with
+/// `true` for the latter - in index order. Built once per index, so "does
+/// `name` occur inside this range" costs the name's own occurrences, not a
+/// walk of the file.
+let private mentionIndexes =
+    ConditionalWeakTable<Index, Dictionary<string, struct (range * bool)[]>>()
+
+let mentionsOf (index: Index) (name: string) : struct (range * bool)[] =
+    let byName =
+        mentionIndexes.GetValue(
+            index,
+            fun index ->
+                let lists = Dictionary<string, ResizeArray<struct (range * bool)>>()
+
+                let add (id: Ident) (head: bool) =
+                    match lists.TryGetValue id.idText with
+                    | true, l -> l.Add(struct (id.idRange, head))
+                    | false, _ -> lists.[id.idText] <- ResizeArray [ struct (id.idRange, head) ]
+
+                for _, e in index.Exprs do
+                    match e with
+                    | SynExpr.Ident id -> add id false
+                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> add first true
+                    | _ -> ()
+
+                let result = Dictionary<string, struct (range * bool)[]>()
+
+                for KeyValue(name, l) in lists do
+                    result.[name] <- l.ToArray()
+
+                result
+        )
+
+    match byName.TryGetValue name with
+    | true, found -> found
+    | false, _ -> [||]
 
 /// The quoted code in a file: `<@ @>`, `<@@ @@>` and `query { }` blocks,
 /// for the rules whose rewrite cannot be quoted at all (FR0070: a struct

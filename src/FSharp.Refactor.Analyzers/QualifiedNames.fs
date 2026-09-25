@@ -385,7 +385,7 @@ let find
                 let lineText = source.GetLineString(r.EndLine - 1)
 
                 let ns =
-                    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, names) with
+                    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, names) with
                     | Some symbolUse -> symbolPath symbolUse.Symbol
                     | None -> None
 
@@ -487,7 +487,7 @@ let find
             let lineText = source.GetLineString(r.EndLine - 1)
 
             try
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
+                match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
                 | Some symbolUse ->
                     match symbolUse.Symbol with
                     | :? FSharpUnionCase
@@ -1046,12 +1046,12 @@ let find
 
                     try
                         match
-                            check.GetSymbolUseAtLocation(
-                                r.EndLine,
-                                r.EndColumn,
-                                source.GetLineString(r.EndLine - 1),
-                                ids |> List.map (fun i -> i.idText)
-                            )
+                            OptionModule.symbolUseAt
+                                check
+                                (r.EndLine,
+                                 r.EndColumn,
+                                 source.GetLineString(r.EndLine - 1),
+                                 ids |> List.map (fun i -> i.idText))
                         with
                         | Some su ->
                             match su.Symbol with
@@ -1169,7 +1169,7 @@ let find
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpEntity as e when

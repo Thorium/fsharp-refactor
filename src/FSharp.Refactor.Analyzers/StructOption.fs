@@ -214,7 +214,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     let lineText = source.GetLineString(r.EndLine - 1)
 
                     match
-                        check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ])
+                        OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ])
                     with
                     | None -> None
                     | Some symbolUse ->

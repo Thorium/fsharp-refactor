@@ -69,7 +69,7 @@ let private provenString (check: FSharpCheckFileResults) (source: ISourceText) (
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
         with _ -> // an unreadable symbol proves nothing; fsharpanalyzer: ignore-line FR0055
             None
 

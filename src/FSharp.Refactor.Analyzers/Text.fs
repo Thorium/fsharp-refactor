@@ -787,7 +787,7 @@ let namedInDirectiveRegion (files: string seq) (identifier: string) =
 
                         configured
                         |> List.exists (fun r -> r.StartLine < lineNumber && lineNumber < r.EndLine)
-                        && not (line.TrimStart().StartsWith "#")
+                        && not (line.TrimStart().StartsWith '#')
                         && line.Contains identifier
                         && word.IsMatch line)
                 with _ -> // fsharpanalyzer: ignore-line FR0055

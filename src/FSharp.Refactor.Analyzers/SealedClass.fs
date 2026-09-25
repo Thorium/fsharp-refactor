@@ -76,13 +76,15 @@ let private projectUses (project: FSharpCheckProjectResults) =
                 [||]
     )
 
-/// Every entity of the project's own assembly, nested ones included.
-let rec private allEntities (entities: FSharpEntity seq) : FSharpEntity seq =
-    seq {
-        for e in entities do
-            yield e
-            yield! allEntities e.NestedEntities
-    }
+/// Every entity of the project's own assembly, nested ones included, in
+/// pre-order: one walk into a list, where a `seq { yield! }` per level
+/// allocated an enumerator per nesting and made every element pay the depth.
+let private allEntities (entities: FSharpEntity seq) : FSharpEntity list =
+    let rec walk (found: FSharpEntity list) (level: FSharpEntity seq) =
+        level
+        |> Seq.fold (fun found (e: FSharpEntity) -> walk (e :: found) e.NestedEntities) found
+
+    walk [] entities |> List.rev
 
 let private attributeNamed (name: string) (attrs: SynAttributes) =
     attrs
@@ -161,7 +163,7 @@ let private judgeUse (readLine: string -> int -> string option) (u: FSharpSymbol
 
                 while found.IsNone && line >= 1 do
                     match readLine r.FileName line with
-                    | Some t when t.Trim() <> "" -> found <- Some(t.TrimEnd())
+                    | Some t when not (String.IsNullOrWhiteSpace t) -> found <- Some(t.TrimEnd())
                     | Some _ -> line <- line - 1
                     | None -> line <- 0
 
@@ -173,16 +175,16 @@ let private judgeUse (readLine: string -> int -> string option) (u: FSharpSymbol
                 let beforeNew = before.Substring(0, before.Length - 3).TrimEnd()
 
                 if
-                    beforeNew.EndsWith "{"
+                    beforeNew.EndsWith '{'
                     || (beforeNew = ""
-                        && (previousNonBlank () |> Option.exists (fun t -> t.EndsWith "{")))
+                        && (previousNonBlank () |> Option.exists (fun t -> t.EndsWith '{')))
                 then
                     Some Veto
                 else
                     Some Neutral
             elif before.EndsWith "inherit" then
                 Some Veto
-            elif before.EndsWith "#" then
+            elif before.EndsWith '#' then
                 // `#Node` — a flexible type, "Node or any subtype"; on a
                 // sealed class FS0064 says the annotation is less generic
                 // than written, an error under TreatWarningsAsErrors
@@ -292,7 +294,7 @@ let private entityAt (check: FSharpCheckFileResults) (source: ISourceText) (id: 
 
     try
         match
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), [ id.idText ])
+            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), [ id.idText ])
         with
         | Some u ->
             match u.Symbol with

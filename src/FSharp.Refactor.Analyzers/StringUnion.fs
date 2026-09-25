@@ -985,20 +985,22 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
     /// The arguments an application of `node` supplies, in order,
     /// followed by the ancestors above the whole application.
     member _.ArgumentsOf(path: SyntaxNode list, node: SynExpr) : SynExpr list * SyntaxNode list * SynExpr =
-        let rec climb (path: SyntaxNode list) (current: SynExpr) (args: SynExpr list) =
+        // the arguments gather in reverse, turned once at the top
+        let rec climb (path: SyntaxNode list) (current: SynExpr) (reversedArgs: SynExpr list) =
             match path with
             | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) as app) :: rest when
                 sameSpan f.Range current.Range
                 ->
-                climb rest app (args @ [ a ])
+                climb rest app (a :: reversedArgs)
             | SyntaxNode.SynExpr(SynExpr.TypeApp(expr = inner) as ta) :: rest when sameSpan inner.Range current.Range ->
-                climb rest ta args
+                climb rest ta reversedArgs
             // `x |> f a`: the pipe hands `x` as the last argument
             | SyntaxNode.SynExpr(SynExpr.App(
                 isInfix = false
                 funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_PipeRight"; argExpr = lhs)
-                argExpr = fe) as app) :: rest when sameSpan fe.Range current.Range -> climb rest app (args @ [ lhs ])
-            | _ -> args, path, current
+                argExpr = fe) as app) :: rest when sameSpan fe.Range current.Range ->
+                climb rest app (lhs :: reversedArgs)
+            | _ -> List.rev reversedArgs, path, current
 
         climb path node []
 
@@ -1152,10 +1154,10 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     | Some(_, fs) ->
                         (try
                             textOfRange fs at
-                         with _ ->
+                         with _ -> // a span the file cannot give is no spelling; fsharpanalyzer: ignore-line FR0055
                              "")
                             =
-                            string letter // fsharpanalyzer: ignore-line FR0055
+                            string letter
                     | None -> false
 
                 if letter = 's' && spelled then
@@ -1689,10 +1691,13 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
 
     /// The arms of a consumer match.
     member this.Arms(file: string, clauses: SynMatchClause list) : Arm list =
+        // the list's length walks it: once, not per clause
+        let lastIndex = clauses.Length - 1
+
         clauses
         |> List.mapi (fun i (SynMatchClause(pat = p; whenExpr = guard) as clause) ->
             let guarded = guard.IsSome
-            let later = i < clauses.Length - 1
+            let later = i < lastIndex
 
             // a guarded catch-all is no catch-all the proof can remove: what
             // its guard turns away the arms below still meet, and what it
@@ -1940,7 +1945,7 @@ let private clauseLines (source: ISourceText) (clause: SynMatchClause) : (int * 
     let after = lastLine.Substring(min lastLine.Length r.EndColumn).Trim()
 
     if
-        firstLine.TrimStart().StartsWith "|"
+        firstLine.TrimStart().StartsWith '|'
         && (after = "" || after.StartsWith "//")
         && startLine <= r.EndLine
     then

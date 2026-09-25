@@ -111,7 +111,7 @@ let private resolvesToString (check: FSharpCheckFileResults) (source: ISourceTex
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             false
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> isStringType (resultTypeOf value)

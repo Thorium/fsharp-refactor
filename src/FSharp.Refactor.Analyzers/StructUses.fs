@@ -226,6 +226,20 @@ let private hostileTypeNames
                 ->
                 List.tail args
             | ValueSome callee when callee.idText = "string" || callee.idText = "hash" -> args
+            // only a plain name among the arguments (or a tuple's elements)
+            // has a type `typeOfOperand` reads: without one, the callee's
+            // typed lookup - one per application of the file - finds nothing
+            | ValueSome _ when
+                not (
+                    args
+                    |> List.exists (fun a ->
+                        (operandIdent a).IsSome
+                        || (match stripParens a with
+                            | SynExpr.Tuple(exprs = es) -> es |> List.exists (fun x -> (operandIdent x).IsSome)
+                            | _ -> false))
+                )
+                ->
+                []
             | ValueSome callee ->
                 match OptionModule.symbolOfIdent check source callee with
                 | Some(:? FSharpMemberOrFunctionOrValue as mfv) ->

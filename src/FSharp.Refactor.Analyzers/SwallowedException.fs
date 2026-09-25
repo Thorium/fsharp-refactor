@@ -206,12 +206,9 @@ let private dottedOperandIsPure (check: FSharpCheckFileResults option) (source: 
                 let lineText = source.GetLineString(r.EndLine - 1)
 
                 match
-                    check.GetSymbolUseAtLocation(
-                        r.EndLine,
-                        r.EndColumn,
-                        lineText,
-                        prefix |> List.map (fun i -> i.idText)
-                    )
+                    OptionModule.symbolUseAt
+                        check
+                        (r.EndLine, r.EndColumn, lineText, prefix |> List.map (fun i -> i.idText))
                 with
                 | Some symbolUse -> safeSymbol symbolUse.Symbol
                 | None -> false
@@ -464,7 +461,7 @@ let private zeroOf (check: FSharpCheckFileResults option) (source: ISourceText) 
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                 None
 
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, names) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, names) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as v -> zeroOfType v.FullType
@@ -795,8 +792,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // over assembly loading and FileInfo (SQLProvider) and font lookup
                             // (Kasino) that were put back by hand. A user function, a method of
                             // any other type, a constructor: no narrowing; without a typed
-                            // check, none either
-                            let callsOnlyIo =
+                            // check, none either. Asked only once the text smells of IO: it
+                            // walks the file's expressions and resolves the body's names,
+                            // which for every swallow of a large file made this rule the
+                            // slowest one (the CI perf gate caught it at 2.2 s)
+                            let callsOnlyIo () =
                                 match check with
                                 | None -> false
                                 | Some c ->
@@ -805,7 +805,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         let lineText = source.GetLineString(r.EndLine - 1)
 
                                         match
-                                            c.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+                                            OptionModule.symbolUseAt c (r.EndLine, r.EndColumn, lineText, [ id.idText ])
                                         with
                                         | Some symbolUse ->
                                             match symbolUse.Symbol with
@@ -819,7 +819,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             | _ -> true
                                         | None -> false
 
-                                    index.Exprs
+                                    AstIndex.exprsWithin index tryBody.Range
                                     |> Array.forall (fun (_, e) ->
                                         not (Range.rangeContainsRange tryBody.Range e.Range)
                                         || (match e with
@@ -832,7 +832,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             | _ -> true))
 
                             let narrower =
-                                if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range && callsOnlyIo then
+                                if ioSmell.IsMatch bodyText && isSingleLine tryBody.Range && callsOnlyIo () then
                                     let narrowed =
                                         match binderOf pat with
                                         | ValueSome name ->

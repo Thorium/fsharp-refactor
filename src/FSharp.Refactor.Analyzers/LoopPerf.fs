@@ -181,7 +181,7 @@ let private elementSatisfies
     let lineText = source.GetLineString(r.EndLine - 1)
 
     try
-        match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+        match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as v ->

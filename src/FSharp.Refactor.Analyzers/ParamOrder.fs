@@ -434,7 +434,9 @@ let findApiChanges
                 let r = candidate.Ident.idRange
                 let lineText = defFile.Source.GetLineString(r.EndLine - 1)
 
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ]) with
+                match
+                    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ])
+                with
                 | None -> None
                 | Some symbolUse when hasDistinctParamTypes symbolUse.Symbol ->
                     let uses =
@@ -488,7 +490,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 let r = candidate.Ident.idRange
                 let lineText = source.GetLineString(r.EndLine - 1)
 
-                match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ]) with
+                match
+                    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ candidate.Ident.idText ])
+                with
                 | None -> None
                 // a private binding is named only inside this file, so its
                 // in-file uses are every use there is; the distinct-types

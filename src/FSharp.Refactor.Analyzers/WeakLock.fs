@@ -56,7 +56,7 @@ let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (iden
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ])
+    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ])
     |> Option.map (fun u -> u.Symbol)
 
 let private resolvesToString (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =

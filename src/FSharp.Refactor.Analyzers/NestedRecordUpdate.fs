@@ -95,7 +95,7 @@ let private fieldTypeName (check: FSharpCheckFileResults) (source: ISourceText) 
     let r = fieldId.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ fieldId.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ fieldId.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpField as field ->

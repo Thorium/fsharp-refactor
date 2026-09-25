@@ -210,7 +210,7 @@ let private containerType (source: ISourceText) (check: FSharpCheckFileResults) 
     let r = last.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ last.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as value -> Some(OptionModule.stripAbbreviations value.FullType)

@@ -96,7 +96,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+            match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
             | Some symbolUse ->
                 (try
                     let t =
@@ -135,7 +135,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let r = id.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
-            check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
             |> Option.map (fun u -> u.Symbol)
 
         // the receiver IS the enumerated collection — the same symbol, not
@@ -220,7 +220,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // `items.M args` / `items.[k] <- v` on the enumerated collection, in
         // the body's own statements
         let mutationIn (collection: Ident) (refused: Set<string>) (body: SynExpr) =
-            index.Exprs
+            AstIndex.exprsWithin index body.Range
             |> Array.tryPick (fun (path, e) ->
                 if not (Range.rangeContainsRange body.Range e.Range) || deferred path body then
                     None

@@ -196,7 +196,7 @@ let private typeOfBound (check: FSharpCheckFileResults) (source: ISourceText) (i
     let r = id.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as v ->
@@ -487,10 +487,13 @@ let findAssertions
     : (range * string * string) list =
     [
         for literal in enrichedLiterals do
+            // built once per literal, not once per line of the test file
+            let forms = assertionForms literal
+
             for line in 0 .. source.GetLineCount() - 1 do
                 let text = source.GetLineString line
 
-                for pattern, replacement in assertionForms literal do
+                for pattern, replacement in forms do
                     for m in pattern.Matches text do
                         let r =
                             Range.mkRange

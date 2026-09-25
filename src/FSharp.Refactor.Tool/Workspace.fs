@@ -94,7 +94,69 @@ type ProjectReference =
 let projectTextWithoutComments (text: string) =
     Regex.Replace(text, @"<!--.*?-->", "", RegexOptions.Singleline)
 
-/// Every reference of a project file, in the shapes above.
+/// The name of the assembly a project builds: its `<AssemblyName>` when
+/// the project spells one out, else the project file's own name — the
+/// SDK default. This is the name an InternalsVisibleTo attribute carries.
+let assemblyNameOf (projectPath: string) : string =
+    let text =
+        try
+            File.ReadAllText projectPath
+        with
+        | :? IOException
+        | :? UnauthorizedAccessException -> ""
+
+    let m = Regex.Match(text, "<AssemblyName>\\s*([^<]+?)\\s*</AssemblyName>")
+
+    if m.Success && not (m.Groups.[1].Value.Contains "$(") then
+        m.Groups.[1].Value
+    else
+        Path.GetFileNameWithoutExtension projectPath
+
+/// Does a project's text reference an assembly's dll directly - a
+/// `<Reference Include="Name">` (or `"Name, Version=..."`, or a path ending
+/// in `Name.dll`), or one whose HintPath ends in `Name.dll`? Such a project
+/// compiles against the dll whatever its ProjectReference says.
+let private referencesAssemblyDirectly (text: string) (assemblyName: string) =
+    let namesAssembly (value: string) =
+        let value = value.Trim()
+        let fileName = Path.GetFileName(value.Replace('\\', '/'))
+
+        String.Equals(value.Split(',').[0].Trim(), assemblyName, StringComparison.OrdinalIgnoreCase)
+        || String.Equals(fileName, assemblyName + ".dll", StringComparison.OrdinalIgnoreCase)
+
+    Regex.Matches(
+        text,
+        "<Reference\\b[^>]*?(?:/>|>.*?</Reference\\s*>)",
+        RegexOptions.IgnoreCase ||| RegexOptions.Singleline
+    )
+    |> Seq.exists (fun element ->
+        let includeAttribute =
+            Regex.Match(element.Value, "Include\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)
+
+        let hintPath =
+            Regex.Match(element.Value, "<HintPath>\\s*([^<]+?)\\s*</HintPath>", RegexOptions.IgnoreCase)
+
+        (includeAttribute.Success && namesAssembly includeAttribute.Groups.[1].Value)
+        || (hintPath.Success && namesAssembly hintPath.Groups.[1].Value))
+
+/// A ProjectReference element that only orders the build:
+/// `ReferenceOutputAssembly` false, as an attribute or a child element. Its
+/// project compiles nothing against the target through it - no `-r:`, so no
+/// call site - and unless it references the target's dll directly as well,
+/// it is no referencer of it. FSharp.Refactor.Analyzers builds its
+/// Ionide twin first this way, and every api pass over the twin used to load
+/// the Analyzers project and both test projects behind it only to report
+/// them "cannot be read".
+let private buildOrderOnly (element: string) =
+    Regex.IsMatch(element, "ReferenceOutputAssembly\\s*=\\s*\"\\s*false\\s*\"", RegexOptions.IgnoreCase)
+    || Regex.IsMatch(
+        element,
+        "<ReferenceOutputAssembly>\\s*false\\s*</ReferenceOutputAssembly>",
+        RegexOptions.IgnoreCase
+    )
+
+/// Every reference of a project file that compiles against its target, in
+/// the shapes above.
 let projectReferenceShapesOf (projectPath: string) : ProjectReference list =
     let text =
         try
@@ -105,29 +167,63 @@ let projectReferenceShapesOf (projectPath: string) : ProjectReference list =
 
     let dir = Path.GetDirectoryName(Path.GetFullPath projectPath)
 
-    Regex.Matches(text, "<ProjectReference\\s[^>]*?Include\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)
-    |> Seq.collect (fun m -> m.Groups.[1].Value.Split(';', StringSplitOptions.RemoveEmptyEntries))
-    |> Seq.map (fun raw ->
+    // each whole element - self-closing, or with a body carrying its
+    // metadata - so a build-order-only one can be told apart
+    Regex.Matches(
+        text,
+        "<ProjectReference\\b[^>]*?(?:/>|>.*?</ProjectReference\\s*>)",
+        RegexOptions.IgnoreCase ||| RegexOptions.Singleline
+    )
+    |> Seq.collect (fun element ->
+        let includeAttribute =
+            Regex.Match(
+                element.Value,
+                "^<ProjectReference\\s[^>]*?Include\\s*=\\s*\"([^\"]+)\"",
+                RegexOptions.IgnoreCase
+            )
+
+        if includeAttribute.Success then
+            let buildOrder = buildOrderOnly element.Value
+
+            includeAttribute.Groups.[1].Value.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            |> Seq.map (fun raw -> raw, buildOrder)
+        else
+            Seq.empty)
+    |> Seq.map (fun (raw, buildOrder) ->
         let reference =
             raw
                 .Trim()
                 .Replace("$(MSBuildThisFileDirectory)", dir + string Path.DirectorySeparatorChar)
                 .Replace("$(MSBuildProjectDirectory)", dir)
 
-        if reference.Contains "$(" then
-            let name = reference.Substring(reference.LastIndexOfAny [| '\\'; '/' |] + 1)
+        let shape =
+            if reference.Contains "$(" then
+                let name = reference.Substring(reference.LastIndexOfAny [| '\\'; '/' |] + 1)
 
-            if isProjectFile name && not (name.Contains "$(") then
-                ByName name
+                if isProjectFile name && not (name.Contains "$(") then
+                    ByName name
+                else
+                    Unresolvable
             else
-                Unresolvable
-        else
-            try
-                Resolved(Path.GetFullPath(Path.Combine(dir, reference.Replace('\\', Path.DirectorySeparatorChar))))
-            with
-            | :? ArgumentException
-            | :? PathTooLongException
-            | :? NotSupportedException -> Unresolvable)
+                try
+                    Resolved(Path.GetFullPath(Path.Combine(dir, reference.Replace('\\', Path.DirectorySeparatorChar))))
+                with
+                | :? ArgumentException
+                | :? PathTooLongException
+                | :? NotSupportedException -> Unresolvable
+
+        shape, buildOrder)
+    // a build-order-only reference counts after all when the project also
+    // references the target's dll directly (a `<Reference>` with a HintPath
+    // into its bin): that project compiles against it. One whose target
+    // cannot be named stays, as it always did
+    |> Seq.filter (fun (shape, buildOrder) ->
+        not buildOrder
+        || (match shape with
+            | Resolved target -> referencesAssemblyDirectly text (assemblyNameOf target)
+            | ByName name -> referencesAssemblyDirectly text (Path.GetFileNameWithoutExtension name)
+            | Unresolvable -> true))
+    |> Seq.map fst
     |> Seq.distinct
     |> List.ofSeq
 
@@ -192,24 +288,6 @@ let sharedSourcesOf (workspace: string list) (project: string) (sources: string 
         with
         | [] -> None
         | shared -> Some(p, shared))
-
-/// The name of the assembly a project builds: its `<AssemblyName>` when
-/// the project spells one out, else the project file's own name — the
-/// SDK default. This is the name an InternalsVisibleTo attribute carries.
-let assemblyNameOf (projectPath: string) : string =
-    let text =
-        try
-            File.ReadAllText projectPath
-        with
-        | :? IOException
-        | :? UnauthorizedAccessException -> ""
-
-    let m = Regex.Match(text, "<AssemblyName>\\s*([^<]+?)\\s*</AssemblyName>")
-
-    if m.Success && not (m.Groups.[1].Value.Contains "$(") then
-        m.Groups.[1].Value
-    else
-        Path.GetFileNameWithoutExtension projectPath
 
 /// The solutions in `dir` that list `project`, nearest first as the caller
 /// walks up.

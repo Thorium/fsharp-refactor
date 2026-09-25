@@ -385,12 +385,9 @@ let migrate
             let lineText = source.GetLineString(s.FieldIdRange.EndLine - 1)
 
             match
-                check.GetSymbolUseAtLocation(
-                    s.FieldIdRange.EndLine,
-                    s.FieldIdRange.EndColumn,
-                    lineText,
-                    [ s.FieldName ]
-                )
+                OptionModule.symbolUseAt
+                    check
+                    (s.FieldIdRange.EndLine, s.FieldIdRange.EndColumn, lineText, [ s.FieldName ])
             with
             | Some symbolUse ->
                 match symbolUse.Symbol with
@@ -424,7 +421,7 @@ let migrate
             let isSystemDateTimeIdent (names: string list) (id: Ident) =
                 let lineText = source.GetLineString(id.idRange.EndLine - 1)
 
-                match check.GetSymbolUseAtLocation(id.idRange.EndLine, id.idRange.EndColumn, lineText, names) with
+                match OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, names) with
                 | Some symbolUse ->
                     match symbolUse.Symbol with
                     | :? FSharpEntity as e ->

@@ -164,6 +164,60 @@ let ``referencers include the projects two hops away and every language`` () =
             ))
 
 [<Fact>]
+let ``a build-order-only reference makes no referencer, nor do the projects behind it`` () =
+    // this repository's shape: Analyzers builds its Ionide twin first with
+    // ReferenceOutputAssembly="false" and packs the dll, and the test
+    // projects reference Analyzers. None compiles against the twin, so an
+    // api pass over the twin has no consumer to read (it used to load all
+    // three, only to report each "cannot be read"). A reference whose
+    // element has a body of other metadata still counts
+    withTree
+        [
+            "src/Twin/Twin.fsproj", fsproj []
+            // packing the twin's dll is no reference to it
+            "src/Analyzers/Analyzers.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Content Include=\"..\\Twin\\bin\\Release\\net8.0\\Twin.dll\" Pack=\"true\" />\n    <ProjectReference\n      Include=\"..\\Twin\\Twin.fsproj\"\n      ReferenceOutputAssembly=\"false\"\n      PrivateAssets=\"all\" />\n  </ItemGroup>\n</Project>\n"
+            // build order through the ProjectReference, the dll through a
+            // HintPath: this one compiles against the twin
+            "src/Direct/Direct.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Twin/Twin.fsproj\" ReferenceOutputAssembly=\"false\" />\n    <Reference Include=\"Twin\">\n      <HintPath>..\\Twin\\bin\\Release\\net8.0\\Twin.dll</HintPath>\n    </Reference>\n  </ItemGroup>\n</Project>\n"
+            "src/Other/Other.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Twin/Twin.fsproj\">\n      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>\n    </ProjectReference>\n  </ItemGroup>\n</Project>\n"
+            "src/Real/Real.fsproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Twin/Twin.fsproj\">\n      <PrivateAssets>all</PrivateAssets>\n    </ProjectReference>\n  </ItemGroup>\n</Project>\n"
+            "tests/Tests/Tests.fsproj", fsproj [ "../../src/Analyzers/Analyzers.fsproj" ]
+        ]
+        (fun root ->
+            let workspace =
+                [
+                    "src/Twin/Twin.fsproj"
+                    "src/Analyzers/Analyzers.fsproj"
+                    "src/Direct/Direct.fsproj"
+                    "src/Other/Other.fsproj"
+                    "src/Real/Real.fsproj"
+                    "tests/Tests/Tests.fsproj"
+                ]
+                |> List.map (fun p -> Path.Combine(root, p.Replace('/', Path.DirectorySeparatorChar)))
+
+            let twin = Path.Combine(root, "src", "Twin", "Twin.fsproj")
+
+            Assert.Equal<string list>(
+                [ "Direct.fsproj"; "Real.fsproj" ],
+                names (Workspace.referencersOf workspace twin)
+            )
+
+            Assert.Equal<string list>(
+                [ "Direct.fsproj"; "Real.fsproj" ],
+                names (Workspace.resolvedReferencersOf workspace twin)
+            )
+
+            // the ordinary reference from Tests to Analyzers is untouched
+            Assert.Equal<string list>(
+                [ "Tests.fsproj" ],
+                names (Workspace.referencersOf workspace (Path.Combine(root, "src", "Analyzers", "Analyzers.fsproj")))
+            ))
+
+[<Fact>]
 let ``the workspace is the solution the run was pointed at`` () =
     withTree
         [

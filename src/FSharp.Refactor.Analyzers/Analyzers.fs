@@ -10,6 +10,7 @@ open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
+open FSharp.Compiler.Symbols
 open System
 
 [<Literal>]
@@ -2400,14 +2401,15 @@ let projectUseIndex (project: FSharpCheckProjectResults) : StringUnion.UseIndex 
             )
     )
 
-/// The type names a compilation declares, nested ones included.
-let rec private entityNames (entities: FSharp.Compiler.Symbols.FSharpEntity seq) : string seq =
-    seq {
-        for e in entities do
-            yield e.DisplayName
+/// The type names a compilation declares, nested ones included: one walk
+/// into a list, where a `seq { yield! }` per level allocated an enumerator
+/// per nesting and made every name pay the depth.
+let private entityNames (entities: FSharpEntity seq) : string list =
+    let rec walk (found: string list) (level: FSharpEntity seq) =
+        level
+        |> Seq.fold (fun found (e: FSharpEntity) -> walk (e.DisplayName :: found) e.NestedEntities) found
 
-            yield! entityNames e.NestedEntities
-    }
+    walk [] entities |> List.rev
 
 /// The world a rule sees from one file: the project's uses where the host
 /// has project results, this file's alone where it has not.
@@ -2448,7 +2450,7 @@ let private stringUnionWorld
                 if sameFile file fileName then
                     let r = id.idRange
                     let lineText = source.GetLineString(r.EndLine - 1)
-                    check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ id.idText ])
+                    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
                 else
                     StringUnion.symbolIn indexes.Value file id)
         FileOrder =
@@ -3981,7 +3983,7 @@ let private securityRulesMessages
                     let lineText = source.GetLineString(r.EndLine - 1)
 
                     match
-                        check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ Text.textOfRange source r ])
+                        OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ Text.textOfRange source r ])
                     with
                     | Some symbolUse ->
                         let attributes =
@@ -3989,10 +3991,9 @@ let private securityRulesMessages
                             // an enum member carries its attributes as a FIELD,
                             // not a property - reading only the latter found
                             // nothing on a deliberately obsoleted case
-                            | :? FSharp.Compiler.Symbols.FSharpField as field ->
+                            | :? FSharpField as field ->
                                 Seq.toList field.FieldAttributes @ Seq.toList field.PropertyAttributes
-                            | :? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as value ->
-                                Seq.toList value.Attributes
+                            | :? FSharpMemberOrFunctionOrValue as value -> Seq.toList value.Attributes
                             | _ -> []
 
                         attributes

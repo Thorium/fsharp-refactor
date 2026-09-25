@@ -179,7 +179,7 @@ let find
                             match memberName binding, binding with
                             | Some nameId, SynBinding(expr = body) when specialMembers.Contains nameId.idText ->
                                 let handledRanges =
-                                    index.Exprs
+                                    AstIndex.exprsWithin index body.Range
                                     |> Array.choose (fun (_, e) ->
                                         match e with
                                         | SynExpr.TryWith(tryExpr = t) when Range.rangeContainsRange body.Range e.Range ->

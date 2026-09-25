@@ -682,6 +682,12 @@ let dynamicFallbackLines (analyzedFile: string) : Set<int> =
     | true, lines -> lines
     | _ -> Set.empty
 
+/// The repository root found for each directory, once: the walk up lists
+/// the `*.sln*` files of every level, and every constant `failwith` of a
+/// file asks. Held for the process, as the test sources read from it are.
+let private roots =
+    ConcurrentDictionary<string, string option>(StringComparer.OrdinalIgnoreCase)
+
 /// The repository root above a file: the nearest ancestor holding `.git` or
 /// a solution. None when the file is not inside one.
 let private repositoryRoot (analyzedFile: string) =
@@ -698,7 +704,12 @@ let private repositoryRoot (analyzedFile: string) =
             up dir.Parent
 
     try
-        up (FileInfo(Path.GetFullPath analyzedFile).Directory)
+        let dir = FileInfo(Path.GetFullPath analyzedFile).Directory
+
+        if isNull dir then
+            None
+        else
+            roots.GetOrAdd(dir.FullName, fun _ -> up dir)
     with _ -> // fsharpanalyzer: ignore-line FR0055
         None
 

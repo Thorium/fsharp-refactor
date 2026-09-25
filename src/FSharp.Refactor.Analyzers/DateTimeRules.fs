@@ -43,7 +43,7 @@ let private entityOf (check: FSharpCheckFileResults) (source: ISourceText) (iden
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
 
-    match check.GetSymbolUseAtLocation(r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
+    match OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ ident.idText ]) with
     | Some symbolUse ->
         match symbolUse.Symbol with
         | :? FSharpMemberOrFunctionOrValue as mfv ->
@@ -104,13 +104,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let clockNames = set [ "Now"; "UtcNow"; "Today" ]
 
         let literalIn (wanted: Set<string>) (r: range) =
-            index.Exprs
+            AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
                 match e with
                 | SynExpr.Const(SynConst.String(text = s), _) when Range.rangeContainsRange r e.Range ->
                     wanted.Contains s
                 | _ -> false)
-            || index.Pats
+            || AstIndex.patsWithin index r
                |> Array.exists (fun (_, p) ->
                    match p with
                    | SynPat.Const(SynConst.String(text = s), _) when Range.rangeContainsRange r p.Range ->
