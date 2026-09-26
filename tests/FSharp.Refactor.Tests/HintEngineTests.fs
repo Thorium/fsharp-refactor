@@ -191,6 +191,71 @@ let ``FR0060: an eager filter probed once keeps running the predicate on every e
     assertNoSuggestion "module Test\nlet f (xs: int[]) = Array.item 0 xs"
 
 [<Fact>]
+let ``FR0060: a dotted read in an eager filter's predicate is total only when typed-proven plain`` () =
+    // `o.Value` on None, `l.Head` on [] and `s.Length` on null are getters
+    // that throw: the eager filter raised on an element after the first
+    // match, which exists never reaches. A record field is a plain read
+    for m in [ "List"; "Array" ] do
+        let t = m.ToLower()
+
+        assertNoSuggestion
+            $"module Test\nlet f (xs: int option {t}) = {m}.isEmpty ({m}.filter (fun o -> o.Value > 0) xs)"
+
+        assertNoSuggestion $"module Test\nlet f (xs: int list {t}) = {m}.isEmpty ({m}.filter (fun l -> l.Head > 0) xs)"
+
+        assertNoSuggestion $"module Test\nlet f (xs: string {t}) = {m}.isEmpty ({m}.filter (fun s -> s.Length > 0) xs)"
+
+        assertSingleSuggestion
+            $"module Test\ntype R = {{ Age: int }}\nlet f (xs: R {t}) = {m}.isEmpty ({m}.filter (fun r -> r.Age > 0) xs)"
+            $"not ({m}.exists (fun r -> r.Age > 0) xs)"
+
+    // a BCL constant, a struct's getter and a static field are plain reads
+    assertSingleSuggestion
+        "module Test\nlet f (xs: int list) = List.isEmpty (List.filter (fun x -> x < System.Int32.MaxValue) xs)"
+        "not (List.exists (fun x -> x < System.Int32.MaxValue) xs)"
+
+    assertSingleSuggestion
+        "module Test\nlet f (xs: System.DateTime list) = List.isEmpty (List.filter (fun (d: System.DateTime) -> d.Year > 2000) xs)"
+        "not (List.exists (fun (d: System.DateTime) -> d.Year > 2000) xs)"
+
+    assertSingleSuggestion
+        "module Test\nlet f (xs: string list) = List.isEmpty (List.filter (fun s -> s <> System.String.Empty) xs)"
+        "not (List.exists (fun s -> s <> System.String.Empty) xs)"
+
+    // getters that read on every value of their type
+    for predicate, typeText in
+        [
+            "(fun (kv: System.Collections.Generic.KeyValuePair<string, int>) -> kv.Value > 0)",
+            "System.Collections.Generic.KeyValuePair<string, int>"
+            "(fun (x: int option) -> x.IsSome)", "int option"
+            "(fun (x: int list) -> x.IsEmpty)", "int list"
+            "(fun (x: System.Nullable<int>) -> x.HasValue)", "System.Nullable<int>"
+        ] do
+        assertSingleSuggestion
+            $"module Test\nlet f (xs: {typeText} list) = List.isEmpty (List.filter {predicate} xs)"
+            $"not (List.exists {predicate} xs)"
+
+    // a struct whose getters throw on a default value, or call user code
+    assertNoSuggestion
+        "module Test\nlet f (xs: System.GCMemoryInfo list) = List.isEmpty (List.filter (fun (g: System.GCMemoryInfo) -> g.HeapSizeBytes > 0L) xs)"
+
+    assertNoSuggestion
+        "module Test\nlet f (xs: System.Memory<int> list) = List.isEmpty (List.filter (fun (m: System.Memory<int>) -> m.Span.IsEmpty) xs)"
+
+    // but not a Nullable's Value, a struct getter that throws
+    assertNoSuggestion
+        "module Test\nlet f (xs: System.Nullable<int> list) = List.isEmpty (List.filter (fun (n: System.Nullable<int>) -> n.Value > 0) xs)"
+
+    // the premise: the filter throws where exists stops first
+    let xs = [ Some 1; None ]
+
+    Assert.Throws<System.NullReferenceException>(fun () ->
+        List.filter (fun (o: int option) -> o.Value > 0) xs |> ignore)
+    |> ignore
+
+    Assert.True(List.exists (fun (o: int option) -> o.Value > 0) xs)
+
+[<Fact>]
 let ``fold plus zero stays a fold: sum adds checked`` () =
     // Mibo's Tests.fs: `Array.fold (+) 0` wraps on overflow, `Array.sum`
     // throws OverflowException — not the same program

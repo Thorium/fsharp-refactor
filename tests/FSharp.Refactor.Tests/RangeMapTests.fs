@@ -28,8 +28,35 @@ let private assertRewrites (body: string) (expected: string) (expectedProven: bo
 let ``a range mapped over becomes Array.init`` () =
     assertRewrites
         "let r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> f i)"
-        "Array.init (max 0 dimension) (fun i -> f i)"
+        "Array.init (FSharp.Core.Operators.max 0 dimension) (fun i -> f i)"
         false
+
+[<Fact>]
+let ``the clamp is FSharp.Core's max whatever the project calls max`` () =
+    // a `max` of the project's own - here one that answers its first
+    // argument, so a bare `max 0 n` would be 0 and the array empty - binds
+    // the bare name, and a module named Operators defining one takes
+    // `Operators.max`; the full name is FSharp.Core's
+    let body =
+        "let max (a: int) (_: int) = a\nmodule Operators =\n    let max (_: int) (b: int) = b\nlet r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> f i)"
+
+    assertRewrites body "Array.init (FSharp.Core.Operators.max 0 dimension) (fun i -> f i)" false
+
+    // the name binds to FSharp.Core's, not to either helper
+    match found body with
+    | [ s ] ->
+        let patched = applyEdit (header + body) s.Range s.ReplacementText
+        let _, patchedText, patchedCheck = parseAndCheck patched
+        let line = patched.Split('\n').Length
+        let lineText = patchedText.GetLineString(line - 1)
+        let column = lineText.IndexOf "max 0" + "max".Length
+
+        match patchedCheck.GetSymbolUseAtLocation(line, column, lineText, [ "FSharp"; "Core"; "Operators"; "max" ]) with
+        | Some u -> Assert.StartsWith("Microsoft.FSharp.Core.Operators", u.Symbol.FullName)
+        | None -> failwith "max did not resolve"
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+    Assert.Equal(8, Array.length (Array.init (FSharp.Core.Operators.max 0 8) id))
 
 [<Fact>]
 let ``a Length count is proven non-negative, so a sweep may apply it`` () =
@@ -47,33 +74,36 @@ let ``a literal upper bound folds to the count`` () =
 let ``the direct application is the same rewrite`` () =
     assertRewrites
         "let r = Array.map (fun i -> f i) [| 0 .. dimension - 1 |]"
-        "Array.init (max 0 dimension) (fun i -> f i)"
+        "Array.init (FSharp.Core.Operators.max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``a list range becomes List.init`` () =
     assertRewrites
         "let r = [ 0 .. dimension - 1 ] |> List.map (fun i -> f i)"
-        "List.init (max 0 dimension) (fun i -> f i)"
+        "List.init (FSharp.Core.Operators.max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``Seq.map over a range becomes Seq.init`` () =
     assertRewrites
         "let r = [| 0 .. dimension - 1 |] |> Seq.map (fun i -> f i)"
-        "Seq.init (max 0 dimension) (fun i -> f i)"
+        "Seq.init (FSharp.Core.Operators.max 0 dimension) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``a named function carries over unchanged`` () =
-    assertRewrites "let r = [| 0 .. dimension - 1 |] |> Array.map f" "Array.init (max 0 dimension) f" false
+    assertRewrites
+        "let r = [| 0 .. dimension - 1 |] |> Array.map f"
+        "Array.init (FSharp.Core.Operators.max 0 dimension) f"
+        false
 
 [<Fact>]
 let ``an inclusive upper bound counts one more`` () =
     // `[ 0 .. n ]` holds n + 1 elements; a negative n (n < -1) is clamped empty
     assertRewrites
         "let r = [ 0 .. dimension ] |> List.map (fun i -> f i)"
-        "List.init (max 0 (dimension + 1)) (fun i -> f i)"
+        "List.init (FSharp.Core.Operators.max 0 (dimension + 1)) (fun i -> f i)"
         false
 
     assertRewrites
@@ -91,14 +121,14 @@ let ``a compound count keeps its own parentheses`` () =
     // `(Array.init n) * (2 f)`
     assertRewrites
         "let r = [| 0 .. dimension * 2 - 1 |] |> Array.map (fun i -> f i)"
-        "Array.init (max 0 (dimension * 2)) (fun i -> f i)"
+        "Array.init (FSharp.Core.Operators.max 0 (dimension * 2)) (fun i -> f i)"
         false
 
 [<Fact>]
 let ``a call as the count keeps its parentheses too`` () =
     assertRewrites
         "let g (a: int) (b: int) = a + b\nlet r = [| 0 .. g 2 3 - 1 |] |> Array.map (fun i -> f i)"
-        "Array.init (max 0 (g 2 3)) (fun i -> f i)"
+        "Array.init (FSharp.Core.Operators.max 0 (g 2 3)) (fun i -> f i)"
         false
 
 [<Fact>]
@@ -164,7 +194,7 @@ let ``a multi-line mapper under the range moves with its lines into Array.init``
     // built by mapping over a 2^n array of ints
     assertRewrites
         "let r =\n    [| 0 .. dimension - 1 |]\n    |> Array.map (fun i ->\n        let d = f i\n        d + 1)"
-        "Array.init (max 0 dimension) (fun i ->\n        let d = f i\n        d + 1)"
+        "Array.init (FSharp.Core.Operators.max 0 dimension) (fun i ->\n        let d = f i\n        d + 1)"
         false
 
 [<Fact>]
@@ -183,7 +213,7 @@ let private alignedUnder (first: string) (later: string list) =
 
 [<Fact>]
 let ``match arms aligned to a match after the arrow keep the map`` () =
-    // `Array.init (max 0 (dimension + 1)) (fun i ->` is longer than the range
+    // `Array.init (FSharp.Core.Operators.max 0 (dimension + 1)) (fun i ->` is longer than the range
     // and map, so the `match` moves right and the arms fall offside (FS0058)
     let arms =
         "let r =\n"

@@ -31,12 +31,15 @@
 /// module treats a null string as EMPTY (`String.exists f null` is false,
 /// `String.iter f null` does nothing) where `null.ToCharArray()` threw. On
 /// FSharp.Core 9+ the receiver goes through `nonNull`, which throws the
-/// same NullReferenceException - `String.exists f (nonNull s)`, `nonNull
-/// s |> String.iter f`, a non-atomic receiver in parentheses - and a sweep
-/// applies that. Below FSharp.Core 9 (no `nonNull`), under `--checknulls`
-/// (where `nonNull` on a non-nullable `string` warns FS3262), or in a file
-/// binding a `nonNull` of its own, the bare twin is the editor's offer and
-/// a note in a sweep.
+/// same NullReferenceException - `String.exists f (FSharp.Core.Operators.nonNull s)`,
+/// `FSharp.Core.Operators.nonNull s |> String.iter f`, a non-atomic receiver in
+/// parentheses - and a sweep applies that. Qualified in full, because a
+/// `nonNull` of the project's own (an AutoOpen helper in another file, as
+/// in the type-provider SDK) would take the bare name, and a module of its
+/// own named `Operators` would take `Operators.nonNull`: F# tries every
+/// `Operators` in scope and the nearest that defines the name wins. Below FSharp.Core 9 (no `nonNull`) or under
+/// `--checknulls` (where `nonNull` on a non-nullable `string` warns
+/// FS3262), the bare twin is the editor's offer and a note in a sweep.
 module FSharp.Refactor.CharArrayCopy
 
 open FSharp.Compiler.CodeAnalysis
@@ -55,7 +58,7 @@ type Suggestion =
         /// "for", or the String function the Array one becomes.
         Consumer: string
         /// The rewrite is the same on every input: the `for` (both sides throw
-        /// on a null string), and the String functions over `nonNull s` —
+        /// on a null string), and the String functions over `FSharp.Core.Operators.nonNull s` —
         /// a sweep applies it. The bare String functions treat a null string
         /// as empty where the copy threw, so only the editor offers those;
         /// the CLI notes.
@@ -131,30 +134,22 @@ let findWith
 
         // FSharp.Core 9's `nonNull` throws the NullReferenceException the
         // copy threw, where the String functions read null as empty: with
-        // it the rewrite is exact. A file binding a `nonNull` of its own
-        // would take that one - the bare twin and the editor then
-        let wrapNonNull =
-            nonNullAvailable
-            && not (
-                index.Pats
-                |> Array.exists (fun (_, p) ->
-                    match p with
-                    | SynPat.Named(ident = SynIdent(ident = id))
-                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> id.idText = "nonNull"
-                    | _ -> false)
-            )
+        // it the rewrite is exact. Spelled `FSharp.Core.Operators.nonNull`:
+        // a bare `nonNull`, or an `Operators.nonNull`, binds to whatever the
+        // project declares by that name
+        let wrapNonNull = nonNullAvailable
 
         // the receiver as the String function's argument, and as the head
         // of a pipeline
         let stringArgument (receiver: string) =
             if wrapNonNull then
-                $"(nonNull {argument receiver})"
+                $"(FSharp.Core.Operators.nonNull {argument receiver})"
             else
                 argument receiver
 
         let pipeHead (receiver: string) =
             if wrapNonNull then
-                $"nonNull {argument receiver}"
+                $"FSharp.Core.Operators.nonNull {argument receiver}"
             else
                 receiver
 

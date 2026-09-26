@@ -111,15 +111,40 @@ module private DeepStack =
                 failure.Throw()
                 result
 
+    /// `run` without holding the calling thread: the analyzer's async hands
+    /// `work` to a worker and awaits it. A thread-pool thread blocked on the
+    /// worker - one per queued analyzer, a thousand on a large project - left
+    /// no thread for the FCS parse a worker itself waited on (the default
+    /// hints, parsed once behind a lazy): the dogfood run deadlocked there
+    let runAsync (work: unit -> 'T) : Async<'T> =
+        async {
+            if onWorker.Value then
+                return work ()
+            else
+                workers.Force()
+
+                let completion =
+                    System.Threading.Tasks.TaskCompletionSource<'T>(
+                        System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
+                    )
+
+                queue.Add(fun () ->
+                    try
+                        completion.SetResult(work ())
+                    with e ->
+                        completion.SetException e)
+
+                return! Async.AwaitTask completion.Task
+        }
+
 /// Run a rule's message builder only when the configuration enables the rule
 /// for the analyzed file. A disabled rule skips all analysis work.
 let private whenEnabled (fileName: string) (code: string) (name: string) (produce: unit -> Message list) =
     async {
-        return
-            if Configuration.isRuleEnabled fileName code name then
-                DeepStack.run produce
-            else
-                []
+        if Configuration.isRuleEnabled fileName code name then
+            return! DeepStack.runAsync produce
+        else
+            return []
     }
 
 /// The same gate for an analyzer that emits MORE THAN ONE code. It runs
@@ -128,14 +153,13 @@ let private whenEnabled (fileName: string) (code: string) (name: string) (produc
 /// `--codes FR0149` alone brings FR0149 back.
 let private whenAnyEnabled (fileName: string) (codes: string list) (name: string) (produce: unit -> Message list) =
     async {
-        return
-            if
-                codes
-                |> List.exists (fun code -> Configuration.isRuleEnabled fileName code name)
-            then
-                DeepStack.run produce
-            else
-                []
+        if
+            codes
+            |> List.exists (fun code -> Configuration.isRuleEnabled fileName code name)
+        then
+            return! DeepStack.runAsync produce
+        else
+            return []
     }
 
 /// The scope gate for the rules whose fix changes a declaration's
@@ -620,15 +644,17 @@ let private booleanSimplifyMessages (fileName: string) (parseTree: ParsedInput) 
 [<EditorAnalyzer("BooleanSimplify", "Drop boolean identity literals and duplicated operands", HelpBase)>]
 let booleanSimplifyEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () -> booleanSimplifyMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return!
+            DeepStack.runAsync (fun () ->
+                booleanSimplifyMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 [<CliAnalyzer("BooleanSimplify", "Drop boolean identity literals and duplicated operands", HelpBase)>]
 let booleanSimplifyCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () -> booleanSimplifyMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return!
+            DeepStack.runAsync (fun () ->
+                booleanSimplifyMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 // ---- FR0110 MissingCases ----
@@ -1087,8 +1113,8 @@ let private ifRestructureMessages
 [<EditorAnalyzer("IfRestructure", "Flatten else-if, chain-to-match, nested-if merges", HelpBase)>]
 let ifRestructureEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 whenChecked ctx (ifRestructureMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
                 |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
@@ -1096,8 +1122,8 @@ let ifRestructureEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("IfRestructure", "Flatten else-if, chain-to-match, nested-if merges", HelpBase)>]
 let ifRestructureCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 ifRestructureMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
     }
 
@@ -2121,13 +2147,17 @@ let private objectRulesMessages (fileName: string) (parseTree: ParsedInput) (sou
                  HelpBase)>]
 let objectRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return DeepStack.run (fun () -> objectRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return!
+            DeepStack.runAsync (fun () ->
+                objectRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 [<CliAnalyzer("ObjectRules", "Equals/GetHashCode pairing, ctor-time abstract calls, raises in special members", HelpBase)>]
 let objectRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return DeepStack.run (fun () -> objectRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return!
+            DeepStack.runAsync (fun () ->
+                objectRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 // ---- FR0024 RaiseFailwith ----
@@ -2792,8 +2822,8 @@ let private objectDesignMessages
 [<EditorAnalyzer("ObjectDesign", "Disposable fields without IDisposable; could-be-static members", HelpBase)>]
 let objectDesignEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 whenChecked
                     ctx
                     (objectDesignMessages
@@ -2807,8 +2837,8 @@ let objectDesignEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("ObjectDesign", "Disposable fields without IDisposable; could-be-static members", HelpBase)>]
 let objectDesignCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 objectDesignMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
@@ -2935,8 +2965,8 @@ let private loopPerfMessages
 [<EditorAnalyzer("LoopPerf", "Linear probes and expensive constructions inside loops", HelpBase)>]
 let loopPerfEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 loopPerfMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     (seenByLaterFile ctx.FileName ctx.ProjectOptions)
@@ -2949,8 +2979,8 @@ let loopPerfEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("LoopPerf", "Linear probes and expensive constructions inside loops", HelpBase)>]
 let loopPerfCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 loopPerfMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     (seenByLaterFile ctx.FileName ctx.ProjectOptions)
@@ -3585,8 +3615,8 @@ let private accumulationMessages
 [<EditorAnalyzer("Accumulation", "Mutable accumulator loops and quadratic appends", HelpBase)>]
 let accumulationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 whenChecked ctx (accumulationMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
                 |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
@@ -3594,8 +3624,8 @@ let accumulationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("Accumulation", "Mutable accumulator loops and quadratic appends", HelpBase)>]
 let accumulationCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 accumulationMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
     }
 
@@ -3666,7 +3696,7 @@ let private swallowedExceptionMessages
     // beside it
     let parseSites =
         if Configuration.isRuleEnabled parseTree.FileName "FR0168" "ParseControlFlow" then
-            SwallowedException.findParseControlFlow parseTree source
+            SwallowedException.findParseControlFlow parseTree source check
             |> List.filter (fun s -> not s.Offers.IsEmpty)
             |> List.map (fun s -> s.Range)
         else
@@ -3717,12 +3747,19 @@ let swallowedExceptionCliAnalyzer (ctx: CliContext) : Async<Message list> =
 /// failed parse then costs a bool instead of a throw and a stack unwind.
 /// The fix is a sweep's where the catch covers what TryParse answers false
 /// to (a catch-all; FormatException, plus OverflowException on a numeric
-/// type); a narrower catch is a note. CSharp.Refactor's CR0166.
-let private parseControlFlowMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
-    SwallowedException.findParseControlFlow parseTree source
+/// type); a narrower catch is a note, and so is an argument that could
+/// throw on its own. CSharp.Refactor's CR0166.
+let private parseControlFlowMessages
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults option)
+    : Message list =
+    SwallowedException.findParseControlFlow parseTree source check
     |> List.map (fun s ->
         let message =
-            if s.Offers.IsEmpty then
+            if s.Offers.IsEmpty && s.ArgumentMayThrow then
+                $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal - a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the argument can throw on its own and the catch answers that with the fallback too, so bind it first (under its own guard) and the TryParse rewrite is exact."
+            elif s.Offers.IsEmpty then
                 $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal - a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the catch covers less than TryParse answers false to (an overflow would propagate here and fall back there), so the rewrite is yours to judge."
             elif s.CatchAll then
                 $"'try {s.TypeName}.Parse ... with {s.PatternText}' uses the exception as the expected case's signal - a failed parse pays a throw and a stack unwind for what {s.TypeName}.TryParse answers with a bool; the fix drops the try, and with it the catch-all that swallowed every other failure (a null input, which Parse threw for, takes the fallback either way)."
@@ -3740,12 +3777,12 @@ let private parseControlFlowMessages (parseTree: ParsedInput) (source: ISourceTe
 [<EditorAnalyzer("ParseControlFlow", "A try around T.Parse with a parse-failure catch is T.TryParse", HelpBase)>]
 let parseControlFlowEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0168" "ParseControlFlow" (fun () ->
-        parseControlFlowMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        parseControlFlowMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 [<CliAnalyzer("ParseControlFlow", "A try around T.Parse with a parse-failure catch is T.TryParse", HelpBase)>]
 let parseControlFlowCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0168" "ParseControlFlow" (fun () ->
-        parseControlFlowMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        parseControlFlowMessages ctx.ParseFileResults.ParseTree ctx.SourceText (Some ctx.CheckFileResults))
 
 // ---- FR0057 XmlDocParams ----
 
@@ -3931,15 +3968,17 @@ let private exceptionRulesMessages (fileName: string) (parseTree: ParsedInput) (
 [<EditorAnalyzer("ExceptionRules", "Raise-in-finally and reserved exceptions", HelpBase)>]
 let exceptionRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () -> exceptionRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return!
+            DeepStack.runAsync (fun () ->
+                exceptionRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 [<CliAnalyzer("ExceptionRules", "Raise-in-finally and reserved exceptions", HelpBase)>]
 let exceptionRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () -> exceptionRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
+        return!
+            DeepStack.runAsync (fun () ->
+                exceptionRulesMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 // ---- FR0065 / FR0066 SecurityRules ----
@@ -4173,8 +4212,8 @@ let private securityRulesMessages
 [<EditorAnalyzer("SecurityRules", "Weak crypto and string-built SQL", HelpBase)>]
 let securityRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 securityRulesMessages
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
@@ -4186,8 +4225,8 @@ let securityRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("SecurityRules", "Weak crypto and string-built SQL", HelpBase)>]
 let securityRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 securityRulesMessages
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
@@ -4854,8 +4893,8 @@ let private miscRulesMessages
 [<EditorAnalyzer("MiscRules", "Visible mutable state, culture parsing, duplicate enum values", HelpBase)>]
 let miscRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 miscRulesMessages
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
@@ -4867,8 +4906,8 @@ let miscRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("MiscRules", "Visible mutable state, culture parsing, duplicate enum values", HelpBase)>]
 let miscRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 miscRulesMessages
                     ctx.FileName
                     ctx.ParseFileResults.ParseTree
@@ -5052,8 +5091,8 @@ let structHintsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
         // no ProjectSources host in editors: the cross-file path degrades
         // to the note by itself
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 structHintsMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
@@ -5068,8 +5107,8 @@ let structHintsCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
         // parse-only runs carry degraded check results; the migration
         // itself refuses to run on error files, so passing them is safe
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 structHintsMessages
                     (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
                     ctx.FileName
@@ -5746,16 +5785,16 @@ let private redundantSyntaxMessages
 [<EditorAnalyzer("RedundantSyntax", "Attribute suffix/parens, backticks, hole-free interpolation", HelpBase)>]
 let redundantSyntaxEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 redundantSyntaxMessages ctx.CheckFileResults ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText)
     }
 
 [<CliAnalyzer("RedundantSyntax", "Attribute suffix/parens, backticks, hole-free interpolation", HelpBase)>]
 let redundantSyntaxCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 redundantSyntaxMessages
                     (Some ctx.CheckFileResults)
                     ctx.FileName
@@ -5835,8 +5874,8 @@ let private patternCleanupMessages
 [<EditorAnalyzer("PatternCleanups", "Cons-of-empty, all-wildcard case fields, tuple-in-list", HelpBase)>]
 let patternCleanupsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 whenChecked
                     ctx
                     (patternCleanupMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText))
@@ -5845,8 +5884,8 @@ let patternCleanupsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 [<CliAnalyzer("PatternCleanups", "Cons-of-empty, all-wildcard case fields, tuple-in-list", HelpBase)>]
 let patternCleanupsCliAnalyzer (ctx: CliContext) : Async<Message list> =
     async {
-        return
-            DeepStack.run (fun () ->
+        return!
+            DeepStack.runAsync (fun () ->
                 patternCleanupMessages
                     ctx.FileName
                     false
@@ -6316,7 +6355,8 @@ let private enumerationMutationMessages (parseTree: ParsedInput) (source: ISourc
 [<EditorAnalyzer("EnumerationMutation", "A collection edited inside a for loop over itself throws", HelpBase)>]
 let enumerationMutationEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0164" "EnumerationMutation" (fun () ->
-        whenChecked ctx (enumerationMutationMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+        whenChecked ctx (enumerationMutationMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("EnumerationMutation", "A collection edited inside a for loop over itself throws", HelpBase)>]
 let enumerationMutationCliAnalyzer (ctx: CliContext) : Async<Message list> =
@@ -6505,7 +6545,7 @@ let private rangeMapMessages
     |> List.map (fun (s: RangeMap.Suggestion) ->
         // `[| 0 .. n - 1 |]` with a negative `n` is the empty range where
         // `init` raises ArgumentException; a count not proven non-negative
-        // is spelled `max 0 n`, which gives the empty result back, so the
+        // is spelled `FSharp.Core.Operators.max 0 n`, which gives the empty result back, so the
         // fix is exact for every count and the sweep applies it too
         ignore offerFixes
         let fixes = [ fix s.Range s.OriginalText s.ReplacementText ]
@@ -6514,7 +6554,7 @@ let private rangeMapMessages
             if s.CountProven then
                 ""
             else
-                " (`max 0` keeps a negative count's empty result, as the range gave)"
+                " (`FSharp.Core.Operators.max 0` keeps a negative count's empty result, as the range gave)"
 
         hint
             "FR0173"

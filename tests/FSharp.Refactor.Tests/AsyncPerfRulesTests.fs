@@ -1610,8 +1610,8 @@ let ``FR0055: a Some-wrapped Parse body pairs with its None fallback`` () =
     | other -> failwithf "Expected one finding, got %A" other
 
 let private parseControlFlowIn (source: string) =
-    let tree, sourceText, _ = parseAndCheck source
-    SwallowedException.findParseControlFlow tree sourceText
+    let tree, sourceText, check = parseAndCheck source
+    SwallowedException.findParseControlFlow tree sourceText (Some check)
 
 [<Fact>]
 let ``FR0055: a Parse caught narrowly for its own failures is TryParse as control flow`` () =
@@ -1690,6 +1690,74 @@ let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow 
         Assert.Contains("| false, _ -> fallback", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
+let ``FR0168: an argument that can throw on its own keeps the try, whatever the catch`` () =
+    // the catch answered the argument's own exception with the fallback:
+    // `s.Substring 5` on a short string, an index past the end - TryParse
+    // would let it escape. `ArgumentOutOfRangeException` IS an
+    // ArgumentException, so the narrow catch covered it too. A record field
+    // and a module value are plain reads and keep the rewrite
+    let source =
+        "module Test\nopen System\ntype R = { Text: string }\nmodule Defaults =\n    let text = \"1\"\nlet sub (s: string) =\n    try Int32.Parse(s.Substring 5) with _ -> 0\nlet index (args: string[]) =\n    try Int32.Parse args.[1] with _ -> 0\nlet narrow (s: string) =\n    try Int32.Parse(s.Substring 5) with :? FormatException | :? OverflowException | :? ArgumentException -> 0\ntype C() =\n    member _.Text = \"1\"\nlet getter (c: C) =\n    try Int32.Parse c.Text with _ -> 0\nlet field (r: R) =\n    try Int32.Parse r.Text with _ -> 0\nlet moduleValue () =\n    try Int32.Parse Defaults.text with _ -> 0"
+
+    match parseControlFlowIn source with
+    | [ sub; index; narrow; getter; field; moduleValue ] ->
+        for s in [ sub; index; narrow; getter ] do
+            Assert.True(s.ArgumentMayThrow, $"line {s.Range.StartLine}")
+            Assert.Empty s.Offers
+
+        for s in [ field; moduleValue ] do
+            Assert.False(s.ArgumentMayThrow, $"line {s.Range.StartLine}")
+            Assert.NotEmpty s.Offers
+    | other -> failwithf "Expected six findings, got %A" other
+
+    // without the fix the catch-all stays FR0055's swallow
+    let (sub: string) = "abc"
+
+    Assert.Equal(
+        0,
+        (try
+            System.Int32.Parse(sub.Substring 5)
+         with _ ->
+             0)
+    )
+
+    Assert.Throws<System.ArgumentOutOfRangeException>(fun () ->
+        match System.Int32.TryParse(sub.Substring 5) with
+        | true, v -> ignore v
+        | false, _ -> ())
+    |> ignore
+
+[<Fact>]
+let ``FR0168: a static property opened by open type is a getter, not a value`` () =
+    let source =
+        "module Test\nopen System\ntype Cfg =\n    static member Port: string = failwith \"no config\"\nopen type Cfg\nlet a () = try Int32.Parse Port with _ -> 0\nlet b (port: string) = try Int32.Parse port with _ -> 0"
+
+    match parseControlFlowIn source with
+    | [ a; b ] ->
+        Assert.True(a.ArgumentMayThrow)
+        Assert.Empty a.Offers
+        Assert.False(b.ArgumentMayThrow)
+        Assert.NotEmpty b.Offers
+    | other -> failwithf "Expected two findings, got %A" other
+
+[<Fact>]
+let ``FR0168: a TimeSpan overflows, so a FormatException catch alone keeps the note`` () =
+    let source =
+        "module Test\nopen System\nlet narrow (s: string) =\n    try TimeSpan.Parse s with :? FormatException -> TimeSpan.Zero\nlet covered (s: string) =\n    try TimeSpan.Parse s with :? FormatException | :? OverflowException -> TimeSpan.Zero"
+
+    match parseControlFlowIn source with
+    | [ narrow; covered ] ->
+        Assert.Empty narrow.Offers
+        Assert.NotEmpty covered.Offers
+    | other -> failwithf "Expected two findings, got %A" other
+
+    // the premise: Parse overflows where TryParse answers false
+    Assert.Throws<System.OverflowException>(fun () -> System.TimeSpan.Parse "99999999.00:00:00" |> ignore)
+    |> ignore
+
+    Assert.False(fst (System.TimeSpan.TryParse "99999999.00:00:00"))
 
 [<Fact>]
 let ``FR0055: a file-IO body gets the narrower catch`` () =

@@ -23,7 +23,10 @@
 /// && s.Substring(0, 6) = …`, inside `if s.Length >= 6 then`, or in the
 /// else branch of a condition whose failure proves it (`if s.Length < 6
 /// then … else`; `< 3` proves too little), with no
-/// lambda, `let` or match arm rebinding the receiver between — and the fix
+/// lambda, `let` or match arm rebinding the receiver between, and the
+/// receiver an immutable value read through immutable fields (a `let
+/// mutable` may be reassigned between the guard and the cut, a getter may
+/// answer another string) — and the fix
 /// is applied by a sweep only then (`Exact`); without the guard the editor
 /// still offers it, for a human who knows the string is long enough, and
 /// the CLI notes.
@@ -176,8 +179,9 @@ let private cutOf (e: SynExpr) =
 /// Is the comparison guarded by `recv.Length >= n` (or an equivalent) in
 /// the same `&&` chain, or in the condition of an enclosing `if` whose
 /// then-branch holds it? Then a Substring cannot throw and the rewrite is
-/// exact.
-let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident list) (n: int) =
+/// exact. Answers the guard's range, so the caller can look at what runs
+/// between the guard and the cut.
+let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident list) (n: int) : range option =
     let isLength (e: SynExpr) =
         match stripParens e with
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
@@ -186,15 +190,22 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
             && sameIdents (List.take (ids.Length - 1) ids) receiver
         | _ -> false
 
-    let rec guards (e: SynExpr) =
+    // the comparison that proves the length, so the caller knows where the
+    // proof ends and what runs after it
+    let rec guards (e: SynExpr) : range option =
+        let proven (holds: bool) = if holds then Some e.Range else None
+
         match stripParens e with
-        | Infix("op_BooleanAnd", l, r) -> guards l || guards r
-        | Infix("op_GreaterThanOrEqual", len, IntLiteral k) when isLength len -> k >= n
-        | Infix("op_GreaterThan", len, IntLiteral k) when isLength len -> k >= n - 1
-        | Infix("op_Equality", len, IntLiteral k) when isLength len -> k >= n
-        | Infix("op_LessThanOrEqual", IntLiteral k, len) when isLength len -> k >= n
-        | Infix("op_LessThan", IntLiteral k, len) when isLength len -> k >= n - 1
-        | _ -> false
+        | Infix("op_BooleanAnd", l, r) ->
+            match guards l with
+            | Some g -> Some g
+            | None -> guards r
+        | Infix("op_GreaterThanOrEqual", len, IntLiteral k) when isLength len -> proven (k >= n)
+        | Infix("op_GreaterThan", len, IntLiteral k) when isLength len -> proven (k >= n - 1)
+        | Infix("op_Equality", len, IntLiteral k) when isLength len -> proven (k >= n)
+        | Infix("op_LessThanOrEqual", IntLiteral k, len) when isLength len -> proven (k >= n)
+        | Infix("op_LessThan", IntLiteral k, len) when isLength len -> proven (k >= n - 1)
+        | _ -> None
 
     // a condition that FAILS on a long-enough string: the else branch of
     // `if recv.Length < n then … else <ours>` is guarded too. The else
@@ -202,14 +213,19 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
     // exact only for k >= n (`if s.Length < 3 then … else s.Substring(0, 6)`
     // still throws on "ORDER", where StartsWith returns false); `Length <=
     // k` failed proves Length >= k + 1
-    let rec failsWhenLong (e: SynExpr) =
+    let rec failsWhenLong (e: SynExpr) : range option =
+        let proven (holds: bool) = if holds then Some e.Range else None
+
         match stripParens e with
-        | Infix("op_BooleanOr", l, r) -> failsWhenLong l || failsWhenLong r
-        | Infix("op_LessThan", len, IntLiteral k) when isLength len -> k >= n
-        | Infix("op_LessThanOrEqual", len, IntLiteral k) when isLength len -> k >= n - 1
-        | Infix("op_GreaterThan", IntLiteral k, len) when isLength len -> k >= n
-        | Infix("op_GreaterThanOrEqual", IntLiteral k, len) when isLength len -> k >= n - 1
-        | _ -> false
+        | Infix("op_BooleanOr", l, r) ->
+            match failsWhenLong l with
+            | Some g -> Some g
+            | None -> failsWhenLong r
+        | Infix("op_LessThan", len, IntLiteral k) when isLength len -> proven (k >= n)
+        | Infix("op_LessThanOrEqual", len, IntLiteral k) when isLength len -> proven (k >= n - 1)
+        | Infix("op_GreaterThan", IntLiteral k, len) when isLength len -> proven (k >= n)
+        | Infix("op_GreaterThanOrEqual", IntLiteral k, len) when isLength len -> proven (k >= n - 1)
+        | _ -> None
 
     // a node that binds names: below it the receiver may be ANOTHER value
     // of the same name (`if s.Length >= 6 then xs |> List.map (fun s ->
@@ -236,10 +252,16 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
         // a `let` between the `if` and the comparison rebinds the receiver
         // only when one of its bindings names it
         | SyntaxNode.SynExpr(LetOrUseE lou) -> lou.Bindings |> List.exists (fun (SynBinding(headPat = p)) -> patBinds p)
+        // a loop between the `if` and the cut runs the cut again after a
+        // write later in its body, with the guard evaluated once
         | SyntaxNode.SynExpr(SynExpr.Lambda _)
         | SyntaxNode.SynExpr(SynExpr.MatchLambda _)
         | SyntaxNode.SynExpr(SynExpr.ForEach _)
         | SyntaxNode.SynExpr(SynExpr.For _)
+        | SyntaxNode.SynExpr(SynExpr.While _)
+        | SyntaxNode.SynExpr(SynExpr.WhileBang _)
+        | SyntaxNode.SynExpr(SynExpr.ArrayOrListComputed _)
+        | SyntaxNode.SynExpr(SynExpr.ComputationExpr _)
         | SyntaxNode.SynExpr(SynExpr.ObjExpr _)
         | SyntaxNode.SynMatchClause _
         | SyntaxNode.SynBinding _
@@ -253,25 +275,41 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
         match path with
         | SyntaxNode.SynExpr(SynExpr.Paren _ as p) :: rest -> chainGuards rest p.Range
         | SyntaxNode.SynExpr(Infix("op_BooleanAnd", l, r) as whole) :: rest ->
-            (Range.rangeContainsRange r.Range inner && guards l)
-            || chainGuards rest whole.Range
+            match
+                (if Range.rangeContainsRange r.Range inner then
+                     guards l
+                 else
+                     None)
+            with
+            | Some g -> Some g
+            | None -> chainGuards rest whole.Range
         | SyntaxNode.SynExpr(SynExpr.App(isInfix = true)) :: rest -> chainGuards rest inner
-        | _ -> false
+        | _ -> None
 
     // an `if` on the path, with no binder between it and the comparison
     let rec ifGuards (path: SyntaxNode list) =
         match path with
-        | [] -> false
-        | node :: _ when binds node -> false
+        | [] -> None
+        | node :: _ when binds node -> None
         | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenE; elseExpr = elseE)) :: rest ->
-            (Range.rangeContainsRange thenE.Range own && guards cond)
-            || (match elseE with
-                | Some e -> Range.rangeContainsRange e.Range own && failsWhenLong cond
-                | None -> false)
-            || ifGuards rest
+            let found =
+                if Range.rangeContainsRange thenE.Range own then
+                    guards cond
+                else
+                    match elseE with
+                    | Some e when Range.rangeContainsRange e.Range own -> failsWhenLong cond
+                    | _ -> None
+
+            // the window opens where the proof ends: the rest of the
+            // condition runs after it, and may write the receiver
+            match found with
+            | Some g -> Some g
+            | None -> ifGuards rest
         | _ :: rest -> ifGuards rest
 
-    chainGuards path own || ifGuards path
+    match chainGuards path own with
+    | Some g -> Some g
+    | None -> ifGuards path
 
 /// `tolerantSlicing`: the project's FSharp.Core clamps an out-of-range slice
 /// (5.0 and later, FS-1077); under an older one a slice THROWS like a
@@ -311,6 +349,126 @@ let find
 
         let prefix = if opensSystemNamespace source then "" else "System."
 
+        // `member val X = ... with get` properties of this file, by name and
+        // declaring line: a field set once, at construction
+        let getOnlyAutoProperties =
+            lazy
+                (index.Decls
+                 |> Array.collect (fun (_, decl) ->
+                     match decl with
+                     | SynModuleDecl.Types(typeDefns = types) ->
+                         [|
+                             for SynTypeDefn(typeRepr = repr; members = members) in types do
+                                 let inner =
+                                     match repr with
+                                     | SynTypeDefnRepr.ObjectModel(members = inner) -> inner
+                                     | _ -> []
+
+                                 for m in members @ inner do
+                                     match m with
+                                     | SynMemberDefn.AutoProperty(ident = id; propKind = SynMemberKind.PropertyGet) ->
+                                         id.idText, id.idRange.StartLine
+                                     | _ -> ()
+                         |]
+                     | _ -> [||])
+                 |> Set.ofArray)
+
+        // the guard read the receiver's Length; the cut reads the receiver
+        // again. An immutable value (never a byref, whose target may be
+        // written), through immutable fields, get-only `member val`s and the
+        // BCL's instance getters, is the same string both times. A `let
+        // mutable` is too unless it is written between the guard and the cut:
+        // a local one only by a `<-` or a `&` in that stretch (a closure
+        // cannot capture it), so `while not (isNull line) do if line.Length
+        // >= 6 then ... line.Substring(0, 6)` stays exact; a module or class
+        // one by any call in the stretch as well. A computed getter may
+        // answer another string each call
+        let receiverFixed (path: SyntaxNode list) (receiver: Ident list) (guard: range) (cut: range) =
+            let resolve (ids: Ident list) =
+                let last = List.last ids
+                let r = last.idRange
+
+                OptionModule.symbolUseAt
+                    check
+                    (r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), ids |> List.map (fun i -> i.idText))
+                |> Option.map (fun u -> u.Symbol)
+
+            let root = (List.head receiver).idText
+
+            // what runs after the guard and before the cut
+            let between = Range.mkRange guard.FileName guard.End cut.Start
+
+            let betweenExprs =
+                lazy
+                    (AstIndex.exprsWithin index between
+                     |> Array.filter (fun (_, e) -> Range.rangeContainsRange between e.Range))
+
+            // a byref to the receiver, taken anywhere, writes through
+            let byrefStore (id: Ident) =
+                match resolve [ id ] with
+                | Some(:? FSharpMemberOrFunctionOrValue as v) -> OptionModule.isByRefLike v.FullType
+                | _ -> false
+
+            let writtenBetween () =
+                betweenExprs.Value
+                |> Array.exists (fun (_, e) ->
+                    match e with
+                    | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = [ id ])) -> id.idText = root || byrefStore id
+                    | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = first :: _)) -> first.idText = root
+                    | SynExpr.DotSet(targetExpr = SynExpr.Ident id) -> id.idText = root
+                    | SynExpr.Set(targetExpr = target) ->
+                        (match stripParens target with
+                         | SynExpr.Ident id -> id.idText = root || byrefStore id
+                         | _ -> false)
+                    | SynExpr.AddressOf(expr = SynExpr.Ident id) -> id.idText = root
+                    | _ -> false)
+
+            // declared inside the binding the cut sits in: a local, which
+            // only this code can write; a class or module `let mutable` is
+            // any call's to write
+            let declaredHere (v: FSharpMemberOrFunctionOrValue) =
+                try
+                    let declared = v.DeclarationLocation
+
+                    path
+                    |> List.exists (fun node ->
+                        match node with
+                        | SyntaxNode.SynBinding(SynBinding _ as b) ->
+                            Range.rangeContainsRange b.RangeOfBindingWithRhs declared
+                        | _ -> false)
+                with _ -> // no declaration to place: not a local; fsharpanalyzer: ignore-line FR0055
+                    false
+
+            let callBetween () =
+                betweenExprs.Value
+                |> Array.exists (fun (_, e) ->
+                    match e with
+                    | SynExpr.App _
+                    | SynExpr.New _ -> true
+                    | _ -> false)
+
+            [ 1 .. receiver.Length ]
+            |> List.forall (fun n ->
+                try
+                    match resolve (List.take n receiver) with
+                    // a module or namespace on the way: `Config.Name`
+                    | Some(:? FSharpEntity as e) -> e.IsFSharpModule || e.IsNamespace
+                    | Some(:? FSharpMemberOrFunctionOrValue as v) when
+                        n > 1 && (v.IsProperty || v.IsPropertyGetterMethod) && v.IsInstanceMember
+                        ->
+                        (OptionModule.enclosingFullName v).StartsWith "System."
+                        || (not v.HasSetterMethod
+                            && getOnlyAutoProperties.Value.Contains((v.DisplayName, v.DeclarationLocation.StartLine)))
+                    | Some(:? FSharpMemberOrFunctionOrValue as v) ->
+                        not v.IsMember
+                        && not (OptionModule.isByRefLike v.FullType)
+                        && (not v.IsMutable
+                            || (not (writtenBetween ()) && (declaredHere v || not (callBetween ()))))
+                    | Some(:? FSharpField as f) when n > 1 -> not f.IsMutable
+                    | _ -> false
+                with _ -> // an unreadable symbol proves nothing; fsharpanalyzer: ignore-line FR0055
+                    false)
+
         [
             for path, expr in index.Exprs do
                 match expr with
@@ -338,7 +496,9 @@ let find
                             Method = cut.Method
                             Exact =
                                 (cut.Slice && tolerantSlicing)
-                                || lengthGuarded path expr.Range cut.Receiver cut.Length
+                                || (match lengthGuarded path expr.Range cut.Receiver cut.Length with
+                                    | Some guard -> receiverFixed path cut.Receiver guard expr.Range
+                                    | None -> false)
                         }
                     | _ -> ()
                 | _ -> ()

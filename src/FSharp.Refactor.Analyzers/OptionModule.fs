@@ -956,6 +956,94 @@ let callsOnlyCoreWith
         | SynExpr.ObjExpr _ -> false
         | _ -> true)
 
+/// A dotted read the typed check proves cannot throw when read: every
+/// segment a namespace, a module or a type named for its statics, a record
+/// (or anonymous record) field, a static literal or a static field of the
+/// BCL (`Int32.MaxValue`, `String.Empty`), a plain value, or a getter known
+/// to read on every value of its type (`d.Year`, `t.TotalSeconds`,
+/// `kv.Value`, `o.IsSome`, `l.IsEmpty`, `n.HasValue`) — never another
+/// member, so no user getter, no `.Value` on an option, a Nullable or a
+/// Lazy, no `.Head` on a list, no `.Length` on a null string. Anything
+/// unresolved is unproven.
+let dottedReadCannotThrow (check: FSharpCheckFileResults) (source: ISourceText) (ids: Ident list) =
+    // the structs whose every getter reads (a default `GCMemoryInfo` or
+    // `ModuleHandle` throws, a `Memory<T>.Span` calls a user MemoryManager)
+    let readOnlyStructs =
+        set
+            [
+                "System.DateTime"
+                "System.DateTimeOffset"
+                "System.TimeSpan"
+                "System.DateOnly"
+                "System.TimeOnly"
+                "System.Guid"
+                "System.Decimal"
+                "System.Index"
+                "System.Range"
+                "System.Collections.Generic.KeyValuePair`2"
+            ]
+
+    // getters that cannot throw on any value of their type: an option's
+    // IsSome/IsNone (compiled static, null-safe), a list's IsEmpty/Length (a
+    // list is never null), a Nullable's HasValue - never its Value
+    let totalGetter (v: FSharpMemberOrFunctionOrValue) =
+        match v.ApparentEnclosingEntity |> Option.bind (fun e -> e.TryFullName), v.DisplayName with
+        | Some name, _ when readOnlyStructs.Contains name -> true
+        | Some("Microsoft.FSharp.Core.FSharpOption`1" | "Microsoft.FSharp.Core.FSharpValueOption`1"),
+          ("IsSome" | "IsNone") -> true
+        | Some "Microsoft.FSharp.Collections.FSharpList`1", ("IsEmpty" | "Length") -> true
+        | Some "System.Nullable`1", "HasValue" -> true
+        | _ -> false
+
+    let safeSymbol (symbol: FSharpSymbol) =
+        match symbol with
+        | :? FSharpEntity -> true
+        | :? FSharpField as field ->
+            field.IsAnonRecordField
+            || (field.DeclaringEntity |> Option.exists (fun entity -> entity.IsFSharpRecord))
+            || (field.IsStatic
+                && (field.LiteralValue.IsSome
+                    || (field.DeclaringEntity
+                        |> Option.exists (fun entity ->
+                            entity.TryFullName |> Option.exists (fun n -> n.StartsWith "System.")))))
+        | :? FSharpMemberOrFunctionOrValue as v ->
+            not v.IsMember
+            // FCS reports an IL property read as its getter method
+            || ((v.IsProperty || v.IsPropertyGetterMethod) && totalGetter v)
+        | _ -> false
+
+    let symbolOf (prefix: Ident list) =
+        try
+            let id = List.last prefix
+            let r = id.idRange
+            let lineText = source.GetLineString(r.EndLine - 1)
+
+            symbolUseAt check (r.EndLine, r.EndColumn, lineText, prefix |> List.map (fun i -> i.idText))
+            |> Option.map (fun u -> u.Symbol)
+        with _ -> // unresolved reads as unsafe; fsharpanalyzer: ignore-line FR0055
+            None
+
+    // FCS resolves no symbol at a namespace segment (`System` in
+    // `System.Int32.MaxValue`): such a leading segment is a namespace when
+    // the whole path resolves to a symbol whose full name it begins
+    let whole = if ids.IsEmpty then None else symbolOf ids
+
+    let namespacePrefix (prefix: Ident list) =
+        match whole with
+        | Some symbol ->
+            (try
+                symbol.FullName.StartsWith(identText prefix + ".")
+             with _ -> // fsharpanalyzer: ignore-line FR0055
+                 false)
+        | None -> false
+
+    not ids.IsEmpty
+    && [ 1 .. ids.Length ]
+       |> List.forall (fun n ->
+           match (if n = ids.Length then whole else symbolOf (List.take n ids)) with
+           | Some symbol -> safeSymbol symbol
+           | None -> n < ids.Length && namespacePrefix (List.take n ids))
+
 /// `callsOnlyCoreWith` where every user function fails: FSharp.Core and
 /// System.String only.
 let callsOnlyCore (check: FSharpCheckFileResults) (source: ISourceText) (index: AstIndex.Index) (r: range) =

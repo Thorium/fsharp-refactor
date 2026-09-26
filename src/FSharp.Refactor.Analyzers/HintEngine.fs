@@ -1105,15 +1105,18 @@ let private totalOperators =
 /// A predicate that cannot throw: a one-parameter lambda whose body is
 /// comparisons, `&&`, `||` and `not` over literals, names and dotted reads
 /// - no call, no arithmetic (`10 / x` divides by zero, `int s` fails to
-/// parse), no indexer. `isPureFunction` rules out effects; this rules out
+/// parse), no indexer. A dotted read must be typed-proven plain (record
+/// fields, modules, values: `OptionModule.dottedReadCannotThrow`): `o.Value`
+/// on None, `l.Head` on an empty list and `s.Length` on a null string are
+/// getters that throw. `isPureFunction` rules out effects; this rules out
 /// the exception an eager filter raised on an element after the first match.
-let private isTotalPredicate (e: SynExpr) =
+let private isTotalPredicate (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) =
     let rec total (e: SynExpr) =
         match stripParens e with
         | SynExpr.Const _
         | SynExpr.Null _
-        | SynExpr.Ident _
-        | SynExpr.LongIdent _ -> true
+        | SynExpr.Ident _ -> true
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> OptionModule.dottedReadCannotThrow check source ids
         | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = a); argExpr = b) when
             totalOperators.Contains op.idText
             ->
@@ -1400,7 +1403,7 @@ let find
                                 match bindings.TryGetValue v with
                                 | true, bound ->
                                     let bound = stripParens bound
-                                    isTotalPredicate bound && isPureFunction c source fileIndex.Value bound
+                                    isTotalPredicate c source bound && isPureFunction c source fileIndex.Value bound
                                 | false, _ -> false)
                         | None -> false)
 

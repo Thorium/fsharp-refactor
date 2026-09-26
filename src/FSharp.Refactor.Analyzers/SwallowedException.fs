@@ -190,32 +190,7 @@ let rec private pureArithmetic (dottedIsPure: SynExpr -> bool) (e: SynExpr) : (b
 let private dottedOperandIsPure (check: FSharpCheckFileResults option) (source: ISourceText) (e: SynExpr) =
     match check, e with
     | Some check, SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
-        let safeSymbol (symbol: FSharpSymbol) =
-            match symbol with
-            | :? FSharpEntity as entity -> entity.IsFSharpModule || entity.IsNamespace
-            | :? FSharpField as field ->
-                field.IsAnonRecordField
-                || (field.DeclaringEntity |> Option.exists (fun entity -> entity.IsFSharpRecord))
-            | :? FSharpMemberOrFunctionOrValue as v -> not v.IsMember
-            | _ -> false
-
-        let resolves (prefix: Ident list) =
-            try
-                let id = List.last prefix
-                let r = id.idRange
-                let lineText = source.GetLineString(r.EndLine - 1)
-
-                match
-                    OptionModule.symbolUseAt
-                        check
-                        (r.EndLine, r.EndColumn, lineText, prefix |> List.map (fun i -> i.idText))
-                with
-                | Some symbolUse -> safeSymbol symbolUse.Symbol
-                | None -> false
-            with _ -> // unresolved reads as unsafe; fsharpanalyzer: ignore-line FR0055
-                false
-
-        [ 1 .. ids.Length ] |> List.forall (fun n -> resolves (List.take n ids))
+        OptionModule.dottedReadCannotThrow check source ids
     | _ -> false
 
 let private parseTypes =
@@ -259,12 +234,40 @@ let private parseCall (e: SynExpr) =
         bare inner |> Option.map (fun (t, a) -> t, a, Some wrapper.idText)
     | _ -> bare e |> Option.map (fun (t, a) -> t, a, None)
 
+/// The Parse call's argument cannot throw while it is evaluated: a name, a
+/// literal, or a dotted read the typed check proves plain (modules, record
+/// fields, values - no getter). The catch covered the argument too: an
+/// `s.Substring 5` or an `args.[1]` throws an exception the handler
+/// answered with the fallback, and TryParse would let it escape.
+let private argumentCannotThrow (check: FSharpCheckFileResults option) (source: ISourceText) (arg: SynExpr) =
+    match arg with
+    | SynExpr.Const _ -> true
+    // a name is a value - unless `open type` made a static property of
+    // it, whose getter runs code
+    | SynExpr.Ident id ->
+        match check with
+        | Some check ->
+            match OptionModule.symbolOfIdent check source id with
+            | Some(:? FSharpMemberOrFunctionOrValue as v) -> not (v.IsProperty || v.IsMember)
+            | _ -> false
+        | None -> true
+    | SynExpr.LongIdent _ -> dottedOperandIsPure check source arg
+    | _ -> false
+
 /// The TryParse offer for a try whose body is one Parse call: the miss
 /// arm spelled out, as FR0014 spells its TryGetValue one — a bare `_`
 /// hides what a two-case tuple match falls through on. A `Some (T.Parse
-/// a)` body pairs with a `None` fallback; a bare one with a value.
-let private tryParseOffer (source: ISourceText) (expr: SynExpr) (tryBody: SynExpr) (fallback: string) =
+/// a)` body pairs with a `None` fallback; a bare one with a value. None
+/// where the argument could throw on its own (`argumentCannotThrow`).
+let private tryParseOffer
+    (check: FSharpCheckFileResults option)
+    (source: ISourceText)
+    (expr: SynExpr)
+    (tryBody: SynExpr)
+    (fallback: string)
+    =
     match parseCall tryBody with
+    | Some(_, arg, _) when not (argumentCannotThrow check source arg) -> []
     | Some(typeName, arg, wrapper) ->
         let a = textOfRange source arg.Range
 
@@ -777,7 +780,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // 2. TryParse, for a one-call Parse body
                             let tryParse =
                                 match fallbackText with
-                                | Some fb -> tryParseOffer source expr tryBody fb
+                                | Some fb -> tryParseOffer check source expr tryBody fb
                                 | None -> []
 
                             // 3. a narrower catch for file IO — for a body that IS the IO call: a
@@ -1026,8 +1029,12 @@ type ParseSuggestion =
         /// The catch is a catch-all: FR0055's swallow, which FR0168's fix
         /// removes with the try.
         CatchAll: bool
+        /// The Parse argument could throw on its own (`s.Substring 5`), and
+        /// the catch answered that with the fallback too: no rewrite.
+        ArgumentMayThrow: bool
         /// The rewrite, where the catch covers what TryParse answers false
-        /// to (a sweep applies it); empty where the catch is narrower (a note).
+        /// to (a sweep applies it); empty where the catch is narrower or
+        /// the argument may throw (a note).
         Offers: Offer list
     }
 
@@ -1056,6 +1063,8 @@ let private overflowing =
             "Double"
             "Single"
             "Decimal"
+            // a component out of range: "99999999.00:00:00"
+            "TimeSpan"
         ]
 
 /// The exception types a pattern names: `:? FormatException`, with or
@@ -1072,7 +1081,11 @@ let rec private caughtTypes (pat: SynPat) =
         | _ -> None
     | _ -> None
 
-let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseSuggestion list =
+let findParseControlFlow
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults option)
+    : ParseSuggestion list =
     let index = AstIndex.ofTree parseTree
 
     // a test file yields nothing to walk, as for the catch-all
@@ -1116,10 +1129,10 @@ let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseS
 
                     match arms |> List.map snd |> List.distinct with
                     | [ fallback ] ->
-                        let typeName =
+                        let typeName, argumentMayThrow =
                             match parseCall tryBody with
-                            | Some(t, _, _) -> t
-                            | None -> ""
+                            | Some(t, arg, _) -> t, not (argumentCannotThrow check source arg)
+                            | None -> "", true
 
                         let shortName = typeName.Substring(typeName.LastIndexOf '.' + 1)
 
@@ -1135,7 +1148,7 @@ let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseS
 
                         let offers =
                             if covered then
-                                tryParseOffer source expr tryBody fallback
+                                tryParseOffer check source expr tryBody fallback
                             else
                                 []
 
@@ -1147,6 +1160,7 @@ let findParseControlFlow (parseTree: ParsedInput) (source: ISourceText) : ParseS
                                 |> List.map (fun (SynMatchClause(pat = pat)) -> textOfRange source pat.Range)
                                 |> String.concat " | "
                             CatchAll = catchAll
+                            ArgumentMayThrow = argumentMayThrow
                             Offers = offers
                         }
                     | _ -> ()

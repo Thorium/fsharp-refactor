@@ -11,7 +11,9 @@
 ///
 /// `itms.[0]`, `itms[0]`, `itms.Head`, `List.head itms` (and `itms |> …`)
 /// all become the head name; `.[1]` / `List.item 1` the second; `.Tail` /
-/// `List.tail` the tail, which stays `_` when nothing reads it. The arm's
+/// `List.tail` the tail, which stays `_` when nothing reads it (and which,
+/// read beside a second element, is `h :: (s :: _ as t)`: the tail starts
+/// after the head, not after the second). The arm's
 /// only uses of the name must be those; a `.Length`, an `IsEmpty`, a
 /// higher index, or the list passed on whole leaves the arm alone — the
 /// pattern would then name a head the arm does not need and the list
@@ -36,6 +38,13 @@
 /// `| name ->` covers every length, but it covers every array, string and
 /// union with it, and the cons pattern it would license over an array does
 /// not compile (the arm is dead code the compiler already warns about).
+///
+/// The rewrite splices its edits in place, lines and columns kept. A
+/// pattern grows (`itms` to `itmsHead :: _`), so a body that starts on the
+/// `->` line and continues below would have its continuation lines fall
+/// offside: across lines the body must start on a line of its own under a
+/// single-line pattern and guard, and no later line may be indented past
+/// an edit that lengthens its line (`RangeMap` declines the same way).
 ///
 /// A rebinding of the name inside the arm — a lambda parameter, a `let`,
 /// a nested arm, a loop variable — stands the rule down: the indexed
@@ -199,7 +208,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                 for i in 0 .. clauses.Length - 1 do
                     match clauses.[i] with
-                    | SynMatchClause(pat = SynPat.Named(ident = SynIdent(ident = name); isThisVal = false) as pat) as clause ->
+                    | SynMatchClause(
+                        pat = SynPat.Named(ident = SynIdent(ident = name); isThisVal = false) as pat
+                        whenExpr = guard
+                        resultExpr = result) as clause ->
                         let clauseRange = clause.Range
                         let nameText = name.idText
 
@@ -340,8 +352,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 let spelled part =
                                     if parts.Contains part then nameOf part else "_"
 
+                                // `.Tail` is the list after the FIRST element:
+                                // beside a second element it is `s :: _` named
+                                // whole, never the rest after the second
                                 let pattern =
-                                    if parts.Contains Part.Second then
+                                    if parts.Contains Part.Second && parts.Contains Part.Tail then
+                                        $"{spelled Part.Head} :: ({secondName} :: _ as {tailName})"
+                                    elif parts.Contains Part.Second then
                                         $"{spelled Part.Head} :: {spelled Part.Second} :: {spelled Part.Tail}"
                                     else
                                         $"{spelled Part.Head} :: {spelled Part.Tail}"
@@ -358,9 +375,109 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     |> List.pairwise
                                     |> List.exists (fun ((a, _), (b, _)) -> Position.posGeq a.End b.Start)
 
+                                // the edits are spliced in place, lines and
+                                // columns kept, so a line that gets longer moves
+                                // what follows the edit right - and a later line
+                                // aligned to it falls offside (FS0058). Across
+                                // lines the body must start on a line of its own
+                                // below a single-line pattern and guard (the
+                                // pattern grows: `itms` to `itmsHead :: _`), and
+                                // no later line may be indented past an edit
+                                // that lengthens its line
+                                let delta (r: range, text: string) =
+                                    text.Length - (r.EndColumn - r.StartColumn)
+
+                                // only the lines right under the edited line
+                                // that are indented past the edit can be
+                                // anchored to it: the first later line at or
+                                // left of the edit's column closes every
+                                // context opened to its right
+                                let anchoredBelow (r: range) =
+                                    let rec scan (l: int) =
+                                        if l > clauseRange.EndLine then
+                                            false
+                                        else
+                                            let line = source.GetLineString(l - 1)
+                                            let trimmed = line.TrimStart()
+
+                                            if trimmed = "" then
+                                                scan (l + 1)
+                                            elif line.Length - trimmed.Length <= r.StartColumn then
+                                                false
+                                            else
+                                                true
+
+                                    scan (r.StartLine + 1)
+
+                                // a shortening edit moves the tokens after it
+                                // left: a later line aligned EXACTLY to one of
+                                // them - a list element, a second statement in
+                                // parentheses - reads as an argument of the line
+                                // above. An arm's `|` or an `else` to the right
+                                // of its `match` or `if` stays legal
+                                let alignedToTokenAfter (r: range) =
+                                    let edited = source.GetLineString(r.StartLine - 1)
+
+                                    let tokenStarts =
+                                        [
+                                            for c in r.EndColumn .. edited.Length - 1 do
+                                                if edited.[c] <> ' ' && (c = 0 || " ([{,;".Contains edited.[c - 1]) then
+                                                    c
+                                        ]
+
+                                    let continuation (trimmed: string) =
+                                        [ "|"; "else"; "elif"; "then"; "with"; ")"; "]"; "}" ]
+                                        |> List.exists (fun opener -> trimmed.StartsWith opener)
+
+                                    let rec scan (l: int) =
+                                        if l > clauseRange.EndLine then
+                                            false
+                                        else
+                                            let line = source.GetLineString(l - 1)
+                                            let trimmed = line.TrimStart()
+                                            let indent = line.Length - trimmed.Length
+
+                                            if trimmed = "" then
+                                                scan (l + 1)
+                                            elif indent <= r.StartColumn then
+                                                false
+                                            elif List.contains indent tokenStarts && not (continuation trimmed) then
+                                                true
+                                            else
+                                                scan (l + 1)
+
+                                    scan (r.StartLine + 1)
+
+                                let layoutHolds =
+                                    if isSingleLine clauseRange then
+                                        // a line below anchored to text after
+                                        // the clause on its line moves with it
+                                        not (
+                                            alignmentHazardBelow
+                                                source
+                                                clauseRange.EndLine
+                                                clauseRange.EndColumn
+                                                (edits |> List.sumBy delta)
+                                        )
+                                    else
+                                        result.Range.StartLine > name.idRange.StartLine
+                                        && (match guard with
+                                            | Some g -> g.Range.EndLine = name.idRange.StartLine
+                                            | None -> true)
+                                        && edits
+                                           |> List.forall (fun (r, text) ->
+                                               let d = delta (r, text)
+
+                                               r.StartLine = name.idRange.StartLine
+                                               || d = 0
+                                               || (if d > 0 then
+                                                       not (anchoredBelow r)
+                                                   else
+                                                       not (alignedToTokenAfter r)))
+
                                 // a clause spanning a `#if` has two texts, and
                                 // the fix would rewrite only the one it saw
-                                if not (overlapping || spansDirective source clauseRange) then
+                                if layoutHolds && not (overlapping || spansDirective source clauseRange) then
                                     let original = textOfRange source clauseRange
 
                                     let replacement =

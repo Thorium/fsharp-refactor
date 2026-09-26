@@ -19,8 +19,9 @@
 /// raises ArgumentException. A count PROVEN non-negative - a literal, or a
 /// `Length`/`Count`/`length` the typed tree says is the FRAMEWORK's (a
 /// property somebody wrote can answer anything) - is written as is;
-/// any other is written `max 0 n`, which hands a negative count the empty
-/// result the range gave. Exact for every count either way, so a sweep
+/// any other is written `FSharp.Core.Operators.max 0 n` (FSharp.Core's, whatever the
+/// project calls `max`), which hands a negative count the empty result
+/// the range gave. Exact for every count either way, so a sweep
 /// applies it too: a 2^n array of ints is not worth keeping over a count
 /// nobody expects to be negative.
 ///
@@ -231,8 +232,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     ->
                     // an unproven count is clamped: `max 0 n` makes a negative
                     // count the empty result the range gave, so the rewrite is
-                    // exact for every count and a sweep applies it too
-                    let countText = if proven then count else $"(max 0 {count})"
+                    // exact for every count and a sweep applies it too. Spelled
+                    // `FSharp.Core.Operators.max`: a bare `max`, or an
+                    // `Operators.max`, binds to whatever the project declares
+                    // by that name
+                    let countText =
+                        if proven then
+                            count
+                        else
+                            $"(FSharp.Core.Operators.max 0 {count})"
 
                     suggestions.Add
                         {

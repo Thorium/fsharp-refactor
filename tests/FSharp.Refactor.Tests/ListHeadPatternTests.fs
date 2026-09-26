@@ -16,8 +16,9 @@ let private rewritten (source: string) =
     | [ s ] -> s.ReplacementText
     | other -> failwithf "expected one suggestion, got %A" other
 
-/// Apply the one suggestion and typecheck the result: no errors, and no
-/// FS0025 — the cons pattern must leave the match as complete as it was.
+/// Apply the one suggestion and typecheck the result: no errors, no FS0025
+/// — the cons pattern must leave the match as complete as it was — and no
+/// FS0058, a line the longer pattern pushed offside.
 let private appliedTypechecks (source: string) =
     match findIn source with
     | [ s ] ->
@@ -28,7 +29,8 @@ let private appliedTypechecks (source: string) =
             check.Diagnostics
             |> Array.filter (fun d ->
                 d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
-                || d.ErrorNumber = 25)
+                || d.ErrorNumber = 25
+                || d.ErrorNumber = 58)
 
         Assert.True(Array.isEmpty offending, $"%s{patched}\n%A{offending}")
         patched
@@ -98,6 +100,33 @@ let ``FR0172: the tail is named only when the arm reads it`` () =
 
     Assert.Equal("_ :: itmsTail -> itmsTail", rewritten onlyTail)
     appliedTypechecks onlyTail |> ignore
+
+[<Fact>]
+let ``FR0172: a tail read beside the second element is the list after the head`` () =
+    // `h :: s :: t` would bind the rest after the SECOND element, one
+    // short of `itms.Tail`, and still typecheck
+    let both =
+        "module Test\nlet f (xs: int list) =\n    match xs with\n    | [] -> 0\n    | [ _ ] -> 1\n    | itms -> itms.[0] + itms.[1] + List.length itms.Tail"
+
+    Assert.Equal(
+        "itmsHead :: (itmsSecond :: _ as itmsTail) -> itmsHead + itmsSecond + List.length itmsTail",
+        rewritten both
+    )
+
+    appliedTypechecks both |> ignore
+
+    let noHead =
+        "module Test\nlet f (xs: int list) =\n    match xs with\n    | [] | [ _ ] -> []\n    | itms -> itms.[1] :: itms.Tail"
+
+    Assert.Equal("_ :: (itmsSecond :: _ as itmsTail) -> itmsSecond :: itmsTail", rewritten noHead)
+    appliedTypechecks noHead |> ignore
+
+    // the pattern's tail is the list's own Tail
+    let xs = [ 1; 2; 3 ]
+
+    match xs with
+    | _ :: (_ :: _ as tail) -> Assert.Equal<int list>(xs.Tail, tail)
+    | _ -> failwith "unreachable"
 
 [<Fact>]
 let ``FR0172: any other use of the list keeps the arm`` () =
@@ -172,6 +201,64 @@ let ``FR0172: the guard is rewritten with the body, across lines`` () =
     )
 
     appliedTypechecks source |> ignore
+
+[<Fact>]
+let ``FR0172: a body starting on the arrow line and continuing below is left alone`` () =
+    // `itms` becomes `itmsHead :: _`, so the `->` moves right and the second
+    // statement, aligned to the first, falls offside - and typechecks with a
+    // warning, which no compile backstop stops
+    let continued =
+        "module Test\nlet f (xs: int list) =\n    match xs with\n    | [] -> ()\n    | itms -> printfn \"%d\" itms.[0]\n              printfn \"done\""
+
+    Assert.Empty(findIn continued)
+
+    // a guard spanning lines moves the same way
+    let guarded =
+        "module Test\nlet f (xs: int list) =\n    match xs with\n    | [] -> 0\n    | itms when itms.[0] > 0\n                && itms.[0] < 9 ->\n        1\n    | _ -> -1"
+
+    Assert.Empty(findIn guarded)
+
+    // a later line indented past an edit that lengthens its line
+    let aligned =
+        "module Test\nlet g (x: int) (f: int -> int) = f x\nlet f (xs: int list) =\n    match xs with\n    | [] -> 0\n    | itms ->\n        g itms[0] (fun y ->\n                     y + 1)"
+
+    Assert.Empty(findIn aligned)
+
+    // a single-line clause followed on its line by text a line below is
+    // anchored to: that text moves with the grown pattern
+    let trailing =
+        "module Test\nlet f (xs: int list) =\n    (match xs with [] -> 0 | itms -> itms[0]) + (match xs with\n                                                 | [] -> 1\n                                                 | _ -> 2)"
+
+    Assert.Empty(findIn trailing)
+
+    // a shortening edit with a later line aligned exactly to a token after
+    // it: the line would read as an argument of the line above
+    let exactAligned =
+        "module Test\nlet g (x: int) (fs: (int -> int) list) = fs |> List.sumBy (fun f -> f x)\nlet f (xs: int list) =\n    match xs with\n    | [] -> 0\n    | itms ->\n        g (List.head itms) [ id\n                             id ]"
+
+    Assert.Empty(findIn exactAligned)
+
+    // an ordinary nested block below a lengthening edit is anchored to its
+    // own lines, not to the edit: the fix stays
+    let nested =
+        "module Test\nlet f (xs: string list) =\n    match xs with\n    | [] -> 0\n    | itms ->\n        let cmd = itms[0]\n        for a in [ 1; 2 ] do\n            if a > 1 then\n                match cmd with\n                | \"x\" -> printfn \"%d %s\" a cmd\n                | _ -> if a > 0 then printfn \"deep\"\n        cmd.Length"
+
+    Assert.Equal(1, (findIn nested).Length)
+    appliedTypechecks nested |> ignore
+
+    // the same shapes with the body on its own line, or a shortening edit,
+    // keep the fix and typecheck without a warning
+    let ownLine =
+        "module Test\nlet f (xs: int list) =\n    match xs with\n    | [] -> ()\n    | itms ->\n        printfn \"%d\" itms.[0]\n        printfn \"done\""
+
+    Assert.Equal("itmsHead :: _ ->\n        printfn \"%d\" itmsHead\n        printfn \"done\"", rewritten ownLine)
+    appliedTypechecks ownLine |> ignore
+
+    let shortening =
+        "module Test\nlet g (x: int) (f: int -> int) = f x\nlet f (xs: int list) =\n    match xs with\n    | [] -> 0\n    | itms ->\n        g itms.Head (fun y ->\n                       y + 1)"
+
+    Assert.Equal("itmsHead :: _ ->\n        g itmsHead (fun y ->\n                       y + 1)", rewritten shortening)
+    appliedTypechecks shortening |> ignore
 
 [<Fact>]
 let ``FR0172: function and match! arms qualify too`` () =

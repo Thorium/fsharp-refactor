@@ -272,10 +272,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 isRemoveCall (stripParens arg)
             | _ -> false
 
+        let comments = lazy (Text.commentsWithText parseTree source)
+
         // the filter shape: a `List<T>` walked by a plain variable, the body
         // exactly `if cond then <remove x>` with no else, the condition on
         // one line and never naming the list (RemoveAll runs it per element
-        // in the same order the loop did, so its effects keep their count)
+        // in the same order the loop did, so its effects keep their count).
+        // The condition becomes a closure: a `let mutable` or a byref/Span
+        // it reads cannot be captured (FS0407/FS0406). The loop is rewritten
+        // whole, so a comment anywhere in it would go: the snapshot then
         let filterShape (collection: Ident) (typeName: string) (pat: SynPat) (body: SynExpr) (loop: SynExpr) =
             match typeName, pat, body with
             | "System.Collections.Generic.List`1",
@@ -284,6 +289,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 isSingleLine cond.Range
                 && removesLoopVar collection loopVar thenExpr
                 && not (mentionsIdentifier (textOfRange source cond.Range) collection.idText)
+                && not (OptionModule.capturesMutableLocal index cond.Range)
+                && not (OptionModule.capturesByRefLike check index source cond.Range)
+                && not (
+                    comments.Value
+                    |> List.exists (fun (r, _) -> Range.rangeContainsRange loop.Range r)
+                )
                 ->
                 let condText = textOfRange source cond.Range
 

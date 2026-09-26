@@ -285,7 +285,7 @@ let family: Family =
                         for r, _, replacement in Option.toList s.Fix do
                             yield "FR0123", [ edit "FR0123" r replacement ]
                     // the narrow-catch TryParse rewrite, offered in the editor
-                    for s in SwallowedException.findParseControlFlow c.Tree c.Source do
+                    for s in SwallowedException.findParseControlFlow c.Tree c.Source (Some c.Check) do
                         for offer in s.Offers do
                             yield fixes "FR0168" offer.Edits
                     // the editor offers the fix for a literal operand too
@@ -302,7 +302,7 @@ let family: Family =
             fun c ->
                 [
                     for s in SwallowedException.find c.Tree c.Source (Some c.Check) -> "FR0055", s.Range
-                    for s in SwallowedException.findParseControlFlow c.Tree c.Source do
+                    for s in SwallowedException.findParseControlFlow c.Tree c.Source (Some c.Check) do
                         if s.Offers.IsEmpty then
                             yield "FR0168", s.Range
                     let finallies, reserved = ExceptionRules.find c.Tree c.Source
@@ -319,7 +319,7 @@ let family: Family =
                     for s in MonitorLock.find c.Tree c.Source c.Check -> "FR0123", s.Range
                     for s in MonitorLock.findLeaks c.Tree c.Source c.Check -> "FR0123", s.Range
                     for s in WeakLock.find c.Tree c.Source c.Check -> "FR0046", s.Range
-                    for s in SwallowedException.findParseControlFlow c.Tree c.Source -> "FR0055", s.Range
+                    for s in SwallowedException.findParseControlFlow c.Tree c.Source (Some c.Check) -> "FR0055", s.Range
                     for s in IntDivisionToFloat.find c.Tree c.Source c.Check -> "FR0159", s.Range
                     for s in LostInnerException.find c.Tree c.Source c.Check -> "FR0160", s.Range
                     for s in LazyInit.find c.Tree c.Source -> "FR0162", s.Range

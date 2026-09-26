@@ -221,6 +221,31 @@ let ``FR0164: a body with more than the removal, or a condition naming the list,
     | other -> failwithf "Expected two findings, got %A" other
 
 [<Fact>]
+let ``FR0164: a condition over a mutable or a Span, or a comment in the loop, keeps the snapshot`` () =
+    // RemoveAll takes the condition as a closure: a `let mutable` in it is
+    // FS0407, a Span FS0406. The filter rewrites the whole loop, so a
+    // comment in it would be deleted; the snapshot's edit touches neither
+    let source =
+        "module M\nopen System\nopen System.Collections.Generic\nlet mutableLimit (items: List<int>) =\n    let mutable limit = 0\n    limit <- 3\n    for x in items do\n        if x < limit then items.Remove x |> ignore\nlet span (items: List<int>, s: ReadOnlySpan<int>) =\n    for x in items do\n        if x < s.Length then items.Remove x |> ignore\nlet commented (items: List<int>) =\n    for x in items do\n        // negative entries are stale\n        if x < 0 then items.Remove x |> ignore"
+
+    Assert.True(typechecksCleanly source)
+
+    match enumerationMutationsIn source with
+    | [ a; b; c ] ->
+        for s in [ a; b; c ] do
+            Assert.True(s.Filter.IsNone, $"line {s.Range.StartLine}: no filter fix")
+            Assert.Equal("Array.ofSeq items", s.ReplacementText)
+
+        let patched =
+            [ a; b; c ]
+            |> List.sortByDescending (fun s -> s.Range.StartLine)
+            |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
+
+        Assert.Contains("// negative entries are stale", patched)
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
 let ``FR0164: a removal from a dictionary or set, an edit to another collection, and a concurrent one stay quiet`` () =
     let source =
         "module M\nopen System.Collections.Generic\nopen System.Collections.Concurrent\nlet prune (d: Dictionary<int, int>) (h: HashSet<int>) =\n    for KeyValue(k, v) in d do\n        if v < 0 then d.Remove k |> ignore\n        d.[k] <- v + 1\n    for x in h do\n        if x < 0 then h.Remove x |> ignore\nlet copy (src: List<int>) (dst: List<int>) =\n    for x in src do\n        dst.Add x\nlet bag (b: ConcurrentBag<int>) =\n    for x in b do\n        b.Add x\nlet immutable (xs: int list) (acc: List<int>) =\n    for x in xs do\n        acc.Add x"
