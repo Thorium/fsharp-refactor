@@ -191,10 +191,11 @@ let ``FR0060: an eager filter probed once keeps running the predicate on every e
     assertNoSuggestion "module Test\nlet f (xs: int[]) = Array.item 0 xs"
 
 [<Fact>]
-let ``FR0060: a dotted read in an eager filter's predicate is total only when typed-proven plain`` () =
-    // `o.Value` on None, `l.Head` on [] and `s.Length` on null are getters
-    // that throw: the eager filter raised on an element after the first
-    // match, which exists never reaches. A record field is a plain read
+let ``FR0060: a dotted read in an eager filter's predicate is total unless it is a member known to throw`` () =
+    // `o.Value` on None and `l.Head` on [] throw on an element after the
+    // first match, which the eager filter reached and exists never does.
+    // Any other read - a record field, `s.Length` (a null element is the
+    // accepted residual) - is total, as FSharpLint's own hint takes it
     for m in [ "List"; "Array" ] do
         let t = m.ToLower()
 
@@ -203,7 +204,9 @@ let ``FR0060: a dotted read in an eager filter's predicate is total only when ty
 
         assertNoSuggestion $"module Test\nlet f (xs: int list {t}) = {m}.isEmpty ({m}.filter (fun l -> l.Head > 0) xs)"
 
-        assertNoSuggestion $"module Test\nlet f (xs: string {t}) = {m}.isEmpty ({m}.filter (fun s -> s.Length > 0) xs)"
+        assertSingleSuggestion
+            $"module Test\nlet f (xs: string {t}) = {m}.isEmpty ({m}.filter (fun (s: string) -> s.Length > 0) xs)"
+            $"not ({m}.exists (fun (s: string) -> s.Length > 0) xs)"
 
         assertSingleSuggestion
             $"module Test\ntype R = {{ Age: int }}\nlet f (xs: R {t}) = {m}.isEmpty ({m}.filter (fun r -> r.Age > 0) xs)"
@@ -235,9 +238,11 @@ let ``FR0060: a dotted read in an eager filter's predicate is total only when ty
             $"module Test\nlet f (xs: {typeText} list) = List.isEmpty (List.filter {predicate} xs)"
             $"not (List.exists {predicate} xs)"
 
-    // a struct whose getters throw on a default value, or call user code
-    assertNoSuggestion
+    // any other getter is a read by default; a Memory's Span, which calls
+    // into a user MemoryManager, is the detected exception
+    assertSingleSuggestion
         "module Test\nlet f (xs: System.GCMemoryInfo list) = List.isEmpty (List.filter (fun (g: System.GCMemoryInfo) -> g.HeapSizeBytes > 0L) xs)"
+        "not (List.exists (fun (g: System.GCMemoryInfo) -> g.HeapSizeBytes > 0L) xs)"
 
     assertNoSuggestion
         "module Test\nlet f (xs: System.Memory<int> list) = List.isEmpty (List.filter (fun (m: System.Memory<int>) -> m.Span.IsEmpty) xs)"

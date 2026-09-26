@@ -349,6 +349,11 @@ let find
 
         let prefix = if opensSystemNamespace source then "" else "System."
 
+        // the body of this file a symbol names, to read what a call between
+        // the guard and the cut visibly does
+        let bodiesDeclaredAt (symbol: FSharpSymbol) =
+            OptionModule.bodiesBoundAt index parseTree.FileName symbol |> List.map fst
+
         // `member val X = ... with get` properties of this file, by name and
         // declaring line: a field set once, at construction
         let getOnlyAutoProperties =
@@ -393,7 +398,40 @@ let find
                     (r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), ids |> List.map (fun i -> i.idText))
                 |> Option.map (fun u -> u.Symbol)
 
-            let root = (List.head receiver).idText
+            // the mutable itself: `s` of `M.s` and of `this.s`, whatever path
+            // the receiver reaches it by - matched as a symbol, so another
+            // `line` of another scope is another value
+            let mutableSymbol =
+                [ 1 .. receiver.Length ]
+                |> List.tryPick (fun n ->
+                    match resolve (List.take n receiver) with
+                    | Some(:? FSharpMemberOrFunctionOrValue as v) when v.IsMutable -> Some(v :> FSharpSymbol)
+                    | _ -> None)
+
+            let root =
+                match mutableSymbol with
+                | Some v -> v.DisplayName
+                | None -> (List.head receiver).idText
+
+            let declaredAt (symbol: FSharpSymbol) =
+                try
+                    symbol.DeclarationLocation
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    None
+
+            let rootDeclared = mutableSymbol |> Option.bind declaredAt
+
+            // the ident names the receiver's own mutable
+            let isRoot (id: Ident) =
+                id.idText = root
+                && (match rootDeclared with
+                    | Some declared ->
+                        (match resolve [ id ] with
+                         | Some symbol -> declaredAt symbol = Some declared
+                         | None -> true)
+                    | None -> true)
+
+            let anyRoot (ids: Ident list) = ids |> List.exists isRoot
 
             // what runs after the guard and before the cut
             let between = Range.mkRange guard.FileName guard.End cut.Start
@@ -413,14 +451,15 @@ let find
                 betweenExprs.Value
                 |> Array.exists (fun (_, e) ->
                     match e with
-                    | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = [ id ])) -> id.idText = root || byrefStore id
-                    | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = first :: _)) -> first.idText = root
-                    | SynExpr.DotSet(targetExpr = SynExpr.Ident id) -> id.idText = root
+                    | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = [ id ])) -> isRoot id || byrefStore id
+                    | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids)) -> anyRoot ids
+                    | SynExpr.DotSet(targetExpr = SynExpr.Ident id) -> isRoot id
+                    | SynExpr.DotSet(longDotId = SynLongIdent(id = ids)) -> anyRoot ids
                     | SynExpr.Set(targetExpr = target) ->
                         (match stripParens target with
-                         | SynExpr.Ident id -> id.idText = root || byrefStore id
+                         | SynExpr.Ident id -> isRoot id || byrefStore id
                          | _ -> false)
-                    | SynExpr.AddressOf(expr = SynExpr.Ident id) -> id.idText = root
+                    | SynExpr.AddressOf(expr = SynExpr.Ident id) -> isRoot id
                     | _ -> false)
 
             // declared inside the binding the cut sits in: a local, which
@@ -439,13 +478,58 @@ let find
                 with _ -> // no declaration to place: not a local; fsharpanalyzer: ignore-line FR0055
                     false
 
-            let callBetween () =
-                betweenExprs.Value
-                |> Array.exists (fun (_, e) ->
-                    match e with
-                    | SynExpr.App _
-                    | SynExpr.New _ -> true
-                    | _ -> false)
+            // a call between the guard and the cut resets a module or class
+            // mutable only when its body, defined in this file, visibly
+            // assigns the receiver - itself or through the calls it makes,
+            // three deep (`Reset() = Clear()`), a `&` to it included; a call
+            // defined elsewhere, an interface call, a constructor is taken as
+            // harmless - the fix by default
+            let calleeAssignsBetween () =
+                let assigns (body: SynExpr) =
+                    AstIndex.exprsWithin index body.Range
+                    |> Array.exists (fun (_, x) ->
+                        Range.rangeContainsRange body.Range x.Range
+                        && (match x with
+                            | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids))
+                            | SynExpr.DotSet(longDotId = SynLongIdent(id = ids)) -> anyRoot ids
+                            | SynExpr.Set(targetExpr = target) ->
+                                (match stripParens target with
+                                 | SynExpr.Ident id -> isRoot id
+                                 | _ -> false)
+                            | SynExpr.AddressOf(expr = SynExpr.Ident id) -> isRoot id
+                            | SynExpr.AddressOf(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
+                                anyRoot ids
+                            | _ -> false))
+
+                // every function of this file named in a range may run
+                // there: applied, piped (`"" |> setS`), composed, handed to
+                // `List.iter`
+                let mentioned (r: range) =
+                    AstIndex.exprsWithin index r
+                    |> Array.choose (fun (_, x) ->
+                        if Range.rangeContainsRange r x.Range then
+                            match x with
+                            | SynExpr.Ident id -> Some [ id ]
+                            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some ids
+                            | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                                Some [ List.last ids ]
+                            | _ -> None
+                        else
+                            None)
+
+                let visited = System.Collections.Generic.HashSet<string>()
+
+                let rec assignsThrough (depth: int) (ids: Ident list) =
+                    match resolve ids with
+                    | Some symbol ->
+                        bodiesDeclaredAt symbol
+                        |> List.exists (fun body ->
+                            visited.Add $"{body.Range.StartLine}:{body.Range.StartColumn}"
+                            && (assigns body
+                                || (depth > 0 && (mentioned body.Range |> Array.exists (assignsThrough (depth - 1))))))
+                    | None -> false
+
+                mentioned between |> Array.exists (assignsThrough 2)
 
             [ 1 .. receiver.Length ]
             |> List.forall (fun n ->
@@ -463,7 +547,7 @@ let find
                         not v.IsMember
                         && not (OptionModule.isByRefLike v.FullType)
                         && (not v.IsMutable
-                            || (not (writtenBetween ()) && (declaredHere v || not (callBetween ()))))
+                            || (not (writtenBetween ()) && (declaredHere v || not (calleeAssignsBetween ()))))
                     | Some(:? FSharpField as f) when n > 1 -> not f.IsMutable
                     | _ -> false
                 with _ -> // an unreadable symbol proves nothing; fsharpanalyzer: ignore-line FR0055

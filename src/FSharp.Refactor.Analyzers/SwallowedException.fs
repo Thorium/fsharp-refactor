@@ -234,25 +234,183 @@ let private parseCall (e: SynExpr) =
         bare inner |> Option.map (fun (t, a) -> t, a, Some wrapper.idText)
     | _ -> bare e |> Option.map (fun (t, a) -> t, a, None)
 
-/// The Parse call's argument cannot throw while it is evaluated: a name, a
-/// literal, or a dotted read the typed check proves plain (modules, record
-/// fields, values - no getter). The catch covered the argument too: an
-/// `s.Substring 5` or an `args.[1]` throws an exception the handler
-/// answered with the fallback, and TryParse would let it escape.
-let private argumentCannotThrow (check: FSharpCheckFileResults option) (source: ISourceText) (arg: SynExpr) =
-    match arg with
-    | SynExpr.Const _ -> true
-    // a name is a value - unless `open type` made a static property of
-    // it, whose getter runs code
-    | SynExpr.Ident id ->
-        match check with
-        | Some check ->
-            match OptionModule.symbolOfIdent check source id with
-            | Some(:? FSharpMemberOrFunctionOrValue as v) -> not (v.IsProperty || v.IsMember)
-            | _ -> false
-        | None -> true
-    | SynExpr.LongIdent _ -> dottedOperandIsPure check source arg
-    | _ -> false
+/// The Parse call's argument may throw while it is evaluated - the catch
+/// covered that too, and TryParse would let it escape. Only the shapes known
+/// to throw count: an index (`args.[1]`), a cut or a parse of its own
+/// (`s.Substring 5`, `Int32.Parse x`, `Convert.ToInt32 x`), a numeric
+/// conversion (`int x`, `Checked.int x`, `unbox`), a `.Value`/`.Head`/
+/// `.Tail`/`.Item` read anywhere in a chain (`o.Value.Trim()`) - of an
+/// option, a Nullable, a Lazy, a list, never a KeyValuePair or a record -
+/// and the partial functions of FSharp.Core (`List.head`, `Option.get`,
+/// `Map.find`). A user getter or function, a `Trim`, a concatenation is
+/// taken as harmless: the fix by default, and a getter that throws is the
+/// accepted residual.
+let private argumentMayThrow (check: FSharpCheckFileResults option) (source: ISourceText) (arg: SynExpr) =
+    let throwingMembers =
+        set
+            [
+                "Chars"
+                "Force"
+                "Substring"
+                "Remove"
+                "Insert"
+                "Parse"
+                "ParseExact"
+                "Item"
+                "Head"
+                "Tail"
+                "Value"
+                "First"
+                "Last"
+                "Single"
+                "ElementAt"
+                "Get"
+                "Slice"
+                "ChangeType"
+                "ToInt32"
+                "ToInt64"
+                "ToInt16"
+                "ToByte"
+                "ToSByte"
+                "ToUInt32"
+                "ToUInt64"
+                "ToUInt16"
+                "ToDouble"
+                "ToSingle"
+                "ToDecimal"
+                "ToChar"
+                "ToDateTime"
+            ]
+
+    let conversions =
+        set
+            [
+                "int"
+                "int8"
+                "int16"
+                "int32"
+                "int64"
+                "uint8"
+                "uint16"
+                "uint32"
+                "uint64"
+                "byte"
+                "sbyte"
+                "float"
+                "float32"
+                "double"
+                "single"
+                "decimal"
+                "char"
+                "nativeint"
+                "unativeint"
+                "enum"
+            ]
+
+    // the partial functions of FSharp.Core, by module and name
+    let throwingFunctions =
+        set
+            [
+                for m in [ "List"; "Array"; "Seq" ] do
+                    for f in
+                        [
+                            "head"
+                            "last"
+                            "item"
+                            "nth"
+                            "get"
+                            "find"
+                            "findIndex"
+                            "findBack"
+                            "findIndexBack"
+                            "pick"
+                            "reduce"
+                            "reduceBack"
+                            "exactlyOne"
+                            "take"
+                            "skip"
+                            "max"
+                            "min"
+                            "maxBy"
+                            "minBy"
+                            "average"
+                            "averageBy"
+                        ] do
+                        yield $"{m}.{f}"
+                for m in [ "Option"; "ValueOption" ] do
+                    yield $"{m}.get"
+                yield "Map.find"
+                yield "Map.findKey"
+                yield "Map.pick"
+                yield "Set.minElement"
+                yield "Set.maxElement"
+            ]
+
+    // the owners whose `Value`, `Head`, `Tail`, `Force`, `Span` throw on some
+    // value: an option, a Nullable, a Lazy, a list, a Memory - never a
+    // KeyValuePair, a record field of that name, a user getter
+    let throwingOwners =
+        set
+            [
+                "Microsoft.FSharp.Core.FSharpOption`1"
+                "Microsoft.FSharp.Core.FSharpValueOption`1"
+                "System.Nullable`1"
+                "System.Lazy`1"
+                "Microsoft.FSharp.Collections.FSharpList`1"
+                "System.Memory`1"
+                "System.ReadOnlyMemory`1"
+            ]
+
+    let ownedMembers = set [ "Value"; "Head"; "Tail"; "Force"; "Span" ]
+
+    // any of the segments given: `o.Value.Trim()` reads the Value on the way
+    let throwingRead (segments: Ident list) =
+        segments
+        |> List.exists (fun segment ->
+            throwingMembers.Contains segment.idText
+            && (match check with
+                | Some check ->
+                    (match OptionModule.symbolOfIdent check source segment with
+                     | Some(:? FSharpField) -> false
+                     | Some(:? FSharpMemberOrFunctionOrValue as v) when ownedMembers.Contains segment.idText ->
+                         throwingOwners.Contains(OptionModule.enclosingFullName v)
+                     | _ -> true)
+                | None -> true))
+
+    // the segments after a path's head: the head is the value, type or module
+    // read
+    let afterHead (ids: Ident list) = ids |> List.skip (min 1 ids.Length)
+
+    let partialFunction (ids: Ident list) =
+        match ids with
+        | [ m; f ] ->
+            throwingFunctions.Contains $"{m.idText}.{f.idText}"
+            || (m.idText = "Checked" && conversions.Contains f.idText)
+        | [ f ] -> f.idText = "unbox"
+        | _ -> false
+
+    let rec headThrows (f: SynExpr) =
+        match stripParens f with
+        | SynExpr.Ident id -> conversions.Contains id.idText || id.idText = "unbox"
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> partialFunction ids || throwingRead (afterHead ids)
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) -> throwingRead ids
+        | SynExpr.TypeApp(expr = f)
+        | SynExpr.App(funcExpr = f) -> headThrows f
+        | _ -> false
+
+    let rec may (e: SynExpr) =
+        match stripParens e with
+        | SynExpr.DotIndexedGet _
+        | SynExpr.Downcast _
+        | SynExpr.InferredDowncast _ -> true
+        | SynExpr.App(isInfix = false; argExpr = SynExpr.ArrayOrListComputed(isArray = false)) -> true
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> partialFunction ids || throwingRead (afterHead ids)
+        | SynExpr.DotGet(expr = inner; longDotId = SynLongIdent(id = ids)) -> throwingRead ids || may inner
+        | SynExpr.App(funcExpr = f; argExpr = a) -> headThrows f || may a || may f
+        | SynExpr.Tuple(exprs = es) -> es |> List.exists may
+        | _ -> false
+
+    may arg
 
 /// The TryParse offer for a try whose body is one Parse call: the miss
 /// arm spelled out, as FR0014 spells its TryGetValue one — a bare `_`
@@ -267,7 +425,7 @@ let private tryParseOffer
     (fallback: string)
     =
     match parseCall tryBody with
-    | Some(_, arg, _) when not (argumentCannotThrow check source arg) -> []
+    | Some(_, arg, _) when argumentMayThrow check source arg -> []
     | Some(typeName, arg, wrapper) ->
         let a = textOfRange source arg.Range
 
@@ -1131,7 +1289,7 @@ let findParseControlFlow
                     | [ fallback ] ->
                         let typeName, argumentMayThrow =
                             match parseCall tryBody with
-                            | Some(t, arg, _) -> t, not (argumentCannotThrow check source arg)
+                            | Some(t, arg, _) -> t, argumentMayThrow check source arg
                             | None -> "", true
 
                         let shortName = typeName.Substring(typeName.LastIndexOf '.' + 1)

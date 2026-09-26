@@ -402,10 +402,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                                             if trimmed = "" then
                                                 scan (l + 1)
-                                            elif line.Length - trimmed.Length <= r.StartColumn then
-                                                false
                                             else
-                                                true
+                                                line.Length - trimmed.Length > r.StartColumn
 
                                     scan (r.StartLine + 1)
 
@@ -427,7 +425,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                                     let continuation (trimmed: string) =
                                         [ "|"; "else"; "elif"; "then"; "with"; ")"; "]"; "}" ]
-                                        |> List.exists (fun opener -> trimmed.StartsWith opener)
+                                        |> List.exists trimmed.StartsWith
 
                                     let rec scan (l: int) =
                                         if l > clauseRange.EndLine then

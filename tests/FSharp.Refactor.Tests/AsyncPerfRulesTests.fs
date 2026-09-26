@@ -1614,6 +1614,23 @@ let private parseControlFlowIn (source: string) =
     SwallowedException.findParseControlFlow tree sourceText (Some check)
 
 [<Fact>]
+let ``FR0055: a Parse argument that may throw on its own - a Value on the way, a partial function, a checked conversion - keeps the catch; a KeyValuePair's Value or a Trim is offered TryParse``
+    ()
+    =
+    let source =
+        "module Test\nopen System\nopen System.Collections.Generic\nlet a (o: string option) = try Int32.Parse(o.Value.Trim()) with _ -> 0\nlet b (xs: string list) = try Int32.Parse(List.head xs) with _ -> 0\nlet c (xs: string list) = try Int32.Parse(xs |> List.head) with _ -> 0\nlet d (n: int64) = try Int32.Parse(string (Checked.int n)) with _ -> 0\nlet e (kv: KeyValuePair<string, string>) = try Int32.Parse kv.Value with _ -> 0\nlet f (s: string) = try Int32.Parse(s.Trim()) with _ -> 0\nlet g (o: obj) = try Int32.Parse(o :?> string) with _ -> 0\nlet h (m: Map<string, string>) = try Int32.Parse(Map.pick (fun k v -> if k = \"a\" then Some v else None) m) with _ -> 0"
+
+    let found = parseControlFlowIn source |> List.sortBy (fun s -> s.Range.StartLine)
+    Assert.Equal<int list>([ 4; 5; 6; 7; 8; 9; 10; 11 ], found |> List.map (fun s -> s.Range.StartLine))
+
+    Assert.Equal<bool list>(
+        [ true; true; true; true; false; false; true; true ],
+        found |> List.map (fun s -> s.ArgumentMayThrow)
+    )
+
+    Assert.Equal<int list>([ 0; 0; 0; 0; 1; 1; 0; 0 ], found |> List.map (fun s -> s.Offers.Length))
+
+[<Fact>]
 let ``FR0055: a Parse caught narrowly for its own failures is TryParse as control flow`` () =
     let source =
         "module Test\nopen System\nlet parse (s: string) =\n    try Int32.Parse s with :? FormatException | :? OverflowException -> 0\nlet parse2 (s: string) =\n    try\n        Some(Decimal.Parse s)\n    with\n    | :? FormatException\n    | :? OverflowException as e -> None\nlet parse3 (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> None"
@@ -1694,23 +1711,24 @@ let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow 
 [<Fact>]
 let ``FR0168: an argument that can throw on its own keeps the try, whatever the catch`` () =
     // the catch answered the argument's own exception with the fallback:
-    // `s.Substring 5` on a short string, an index past the end - TryParse
-    // would let it escape. `ArgumentOutOfRangeException` IS an
-    // ArgumentException, so the narrow catch covered it too. A record field
-    // and a module value are plain reads and keep the rewrite
+    // `s.Substring 5` on a short string, an index past the end, a numeric
+    // conversion - TryParse would let it escape. `ArgumentOutOfRangeException`
+    // IS an ArgumentException, so the narrow catch covered it too. A record
+    // field, a module value, a user getter or a Trim are taken as reads:
+    // the fix by default, a getter that throws the accepted residual
     let source =
-        "module Test\nopen System\ntype R = { Text: string }\nmodule Defaults =\n    let text = \"1\"\nlet sub (s: string) =\n    try Int32.Parse(s.Substring 5) with _ -> 0\nlet index (args: string[]) =\n    try Int32.Parse args.[1] with _ -> 0\nlet narrow (s: string) =\n    try Int32.Parse(s.Substring 5) with :? FormatException | :? OverflowException | :? ArgumentException -> 0\ntype C() =\n    member _.Text = \"1\"\nlet getter (c: C) =\n    try Int32.Parse c.Text with _ -> 0\nlet field (r: R) =\n    try Int32.Parse r.Text with _ -> 0\nlet moduleValue () =\n    try Int32.Parse Defaults.text with _ -> 0"
+        "module Test\nopen System\ntype R = { Text: string }\nmodule Defaults =\n    let text = \"1\"\nlet sub (s: string) =\n    try Int32.Parse(s.Substring 5) with _ -> 0\nlet index (args: string[]) =\n    try Int32.Parse args.[1] with _ -> 0\nlet narrow (s: string) =\n    try Int32.Parse(s.Substring 5) with :? FormatException | :? OverflowException | :? ArgumentException -> 0\nlet converted (x: float) =\n    try Int32.Parse(string (int x)) with _ -> 0\ntype C() =\n    member _.Text = \"1\"\nlet getter (c: C) =\n    try Int32.Parse c.Text with _ -> 0\nlet trimmed (s: string) =\n    try Int32.Parse(s.Trim()) with _ -> 0\nlet field (r: R) =\n    try Int32.Parse r.Text with _ -> 0\nlet moduleValue () =\n    try Int32.Parse Defaults.text with _ -> 0"
 
     match parseControlFlowIn source with
-    | [ sub; index; narrow; getter; field; moduleValue ] ->
-        for s in [ sub; index; narrow; getter ] do
+    | [ sub; index; narrow; converted; getter; trimmed; field; moduleValue ] ->
+        for s in [ sub; index; narrow; converted ] do
             Assert.True(s.ArgumentMayThrow, $"line {s.Range.StartLine}")
             Assert.Empty s.Offers
 
-        for s in [ field; moduleValue ] do
+        for s in [ getter; trimmed; field; moduleValue ] do
             Assert.False(s.ArgumentMayThrow, $"line {s.Range.StartLine}")
             Assert.NotEmpty s.Offers
-    | other -> failwithf "Expected six findings, got %A" other
+    | other -> failwithf "Expected eight findings, got %A" other
 
     // without the fix the catch-all stays FR0055's swallow
     let (sub: string) = "abc"
@@ -1730,16 +1748,16 @@ let ``FR0168: an argument that can throw on its own keeps the try, whatever the 
     |> ignore
 
 [<Fact>]
-let ``FR0168: a static property opened by open type is a getter, not a value`` () =
+let ``FR0168: a bare name is a read, a static property opened by open type included`` () =
+    // a getter that throws is the accepted residual: the fix by default
     let source =
         "module Test\nopen System\ntype Cfg =\n    static member Port: string = failwith \"no config\"\nopen type Cfg\nlet a () = try Int32.Parse Port with _ -> 0\nlet b (port: string) = try Int32.Parse port with _ -> 0"
 
     match parseControlFlowIn source with
     | [ a; b ] ->
-        Assert.True(a.ArgumentMayThrow)
-        Assert.Empty a.Offers
-        Assert.False(b.ArgumentMayThrow)
-        Assert.NotEmpty b.Offers
+        for s in [ a; b ] do
+            Assert.False(s.ArgumentMayThrow)
+            Assert.NotEmpty s.Offers
     | other -> failwithf "Expected two findings, got %A" other
 
 [<Fact>]

@@ -638,6 +638,115 @@ let resolvesToCoreOperator (check: FSharpCheckFileResults) (source: ISourceText)
         | _ -> false
     | None -> false
 
+/// The bodies a file's bindings give their names: (the ident's range, the
+/// right-hand side) for every module and class `let`, every member (a
+/// getter and a setter alike), every object-expression member and every
+/// `let` inside an expression — by the ident the head pattern binds. Each
+/// name of a tuple or `as` pattern shares the body (`let view, _ = d, 1`);
+/// a parameter, whose declaration sits in the same head, never counts.
+/// Collected once per index.
+let private boundBodyTable =
+    ConditionalWeakTable<AstIndex.Index, (range * SynExpr * bool)[]>()
+
+let boundBodies (index: AstIndex.Index) : (range * SynExpr * bool)[] =
+    boundBodyTable.GetValue(
+        index,
+        fun index ->
+            let rec headNames (p: SynPat) =
+                match p with
+                | SynPat.Named(ident = SynIdent(ident = id)) -> [ id.idRange ]
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    [ (List.last ids).idRange ]
+                | SynPat.Typed(pat = inner)
+                | SynPat.Attrib(pat = inner)
+                | SynPat.Paren(inner, _) -> headNames inner
+                | SynPat.Tuple(elementPats = pats) -> pats |> List.collect headNames
+                | SynPat.As(lhsPat = l; rhsPat = r) -> headNames l @ headNames r
+                | _ -> []
+
+            // a tuple pattern over a tuple: each name its own element
+            // (`let a, b = d, other` binds `b` to `other` alone); any other
+            // shape shares the body
+            let rec pairs (p: SynPat) (body: SynExpr) =
+                match p, stripParens body with
+                | SynPat.Paren(inner, _), _ -> pairs inner body
+                | SynPat.Tuple(elementPats = pats), SynExpr.Tuple(exprs = exprs) when pats.Length = exprs.Length ->
+                    List.zip pats exprs |> List.collect (fun (p, e) -> pairs p e)
+                | _ -> [ for r in headNames p -> r, body ]
+
+            // a property's setter is flagged: a read runs the getter alone,
+            // a store the setter alone
+            let ofBindings (bindings: SynBinding list) =
+                [
+                    for SynBinding(valData = SynValData(memberFlags = flags); headPat = p; expr = body) in bindings do
+                        let setter =
+                            match flags with
+                            | Some f -> f.MemberKind = SynMemberKind.PropertySet
+                            | None -> false
+
+                        for r, b in pairs p body do
+                            yield r, b, setter
+                ]
+
+            let rec ofMembers (members: SynMemberDefn list) =
+                members
+                |> List.collect (fun m ->
+                    match m with
+                    | SynMemberDefn.Member(memberDefn = b) -> ofBindings [ b ]
+                    | SynMemberDefn.GetSetMember(memberDefnForGet = g; memberDefnForSet = s) ->
+                        ofBindings (List.choose id [ g; s ])
+                    | SynMemberDefn.LetBindings(bindings = bindings) -> ofBindings bindings
+                    | SynMemberDefn.Interface(members = Some inner) -> ofMembers inner
+                    | _ -> [])
+
+            let fromDecls =
+                index.Decls
+                |> Array.collect (fun (_, decl) ->
+                    match decl with
+                    | SynModuleDecl.Let(bindings = bindings) -> ofBindings bindings |> Array.ofList
+                    | SynModuleDecl.Types(typeDefns = types) ->
+                        [|
+                            for SynTypeDefn(typeRepr = repr; members = members) in types do
+                                yield! ofMembers members
+
+                                match repr with
+                                | SynTypeDefnRepr.ObjectModel(members = inner) -> yield! ofMembers inner
+                                | _ -> ()
+                        |]
+                    | _ -> [||])
+
+            let fromExprs =
+                index.Exprs
+                |> Array.collect (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou -> ofBindings lou.Bindings |> Array.ofList
+                    | SynExpr.ObjExpr(members = members; extraImpls = impls) ->
+                        ofMembers members
+                        @ (impls
+                           |> List.collect (fun (SynInterfaceImpl(members = implMembers)) -> ofMembers implMembers))
+                        |> Array.ofList
+                    | _ -> [||])
+
+            Array.append fromDecls fromExprs
+    )
+
+/// The bodies of this file that a symbol's declaration names: what a rule
+/// may read to see whether a call visibly does something - a property's
+/// getter AND setter, each written `with get () = ... and set v = ...`
+/// under the one name, the setter's flagged true. A symbol declared in
+/// another file, or one without a declaration, has none.
+let bodiesBoundAt (index: AstIndex.Index) (fileName: string) (symbol: FSharpSymbol) : (SynExpr * bool) list =
+    try
+        match symbol.DeclarationLocation with
+        | Some location when location.FileName = fileName ->
+            boundBodies index
+            |> Array.filter (fun (head, _, _) -> Range.rangeContainsPos head location.Start)
+            |> Array.map (fun (_, body, setter) -> body, setter)
+            |> List.ofArray
+        | _ -> []
+    with _ -> // no declaration to read: nothing to see; fsharpanalyzer: ignore-line FR0055
+        []
+
 /// The symbol an identifier resolves to at its own position, or None.
 let symbolOfIdent (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) : FSharpSymbol option =
     let r = id.idRange
@@ -990,8 +1099,8 @@ let dottedReadCannotThrow (check: FSharpCheckFileResults) (source: ISourceText) 
         match v.ApparentEnclosingEntity |> Option.bind (fun e -> e.TryFullName), v.DisplayName with
         | Some name, _ when readOnlyStructs.Contains name -> true
         | Some("Microsoft.FSharp.Core.FSharpOption`1" | "Microsoft.FSharp.Core.FSharpValueOption`1"),
-          ("IsSome" | "IsNone") -> true
-        | Some "Microsoft.FSharp.Collections.FSharpList`1", ("IsEmpty" | "Length") -> true
+          ("IsSome" | "IsNone")
+        | Some "Microsoft.FSharp.Collections.FSharpList`1", ("IsEmpty" | "Length")
         | Some "System.Nullable`1", "HasValue" -> true
         | _ -> false
 

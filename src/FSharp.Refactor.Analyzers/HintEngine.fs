@@ -1111,12 +1111,49 @@ let private totalOperators =
 /// getters that throw. `isPureFunction` rules out effects; this rules out
 /// the exception an eager filter raised on an element after the first match.
 let private isTotalPredicate (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) =
+    // a dotted read is total unless it ends in a member known to throw on
+    // some value of its type: `.Value` (an option, a Nullable, a Lazy),
+    // `.Head`/`.Tail` (an empty list), `.Item`, `.Force()`, `.Span` (a
+    // disposed Memory) - a record field of that name is a read. Any other
+    // getter, `s.Length` included, is taken as total: FSharpLint's hint
+    // fires there, and a null element is the accepted residual
+    let throwingMembers = set [ "Value"; "Head"; "Tail"; "Item"; "Force"; "Span" ]
+
+    // the owners whose member of that name throws: `Value` of an option, a
+    // Nullable or a Lazy - never of a KeyValuePair - `Head`/`Tail` of a list,
+    // `Span` of a Memory; an indexer `Item` of anything; a member that does
+    // not resolve is taken by its name
+    let throwingOwners =
+        set
+            [
+                "Microsoft.FSharp.Core.FSharpOption`1"
+                "Microsoft.FSharp.Core.FSharpValueOption`1"
+                "System.Nullable`1"
+                "System.Lazy`1"
+                "Microsoft.FSharp.Collections.FSharpList`1"
+                "System.Memory`1"
+                "System.ReadOnlyMemory`1"
+            ]
+
+    // any segment after the first: `m.Span.IsEmpty` reads the Span
+    let throwingRead (ids: Ident list) =
+        ids
+        |> List.skip (min 1 ids.Length)
+        |> List.exists (fun segment ->
+            throwingMembers.Contains segment.idText
+            && (match OptionModule.symbolOfIdent check source segment with
+                | Some(:? FSharpField) -> false
+                | Some(:? FSharpMemberOrFunctionOrValue as v) ->
+                    segment.idText = "Item"
+                    || throwingOwners.Contains(OptionModule.enclosingFullName v)
+                | _ -> true))
+
     let rec total (e: SynExpr) =
         match stripParens e with
         | SynExpr.Const _
         | SynExpr.Null _
         | SynExpr.Ident _ -> true
-        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> OptionModule.dottedReadCannotThrow check source ids
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> not (throwingRead ids)
         | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = a); argExpr = b) when
             totalOperators.Contains op.idText
             ->

@@ -313,6 +313,19 @@ let ``FR0166: a slice compared with a literal is StartsWith or EndsWith, exactly
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
+let ``FR0166: a module mutable reset by a call between the guard and the cut - directly, through a chain or a byref - is not exact; a reader loop is``
+    ()
+    =
+    let source =
+        "module Test\nmodule M =\n    let mutable s = \"ORDER-1\"\n    let clear () = s <- \"\"\n    let reset () = clear ()\n    let bump (r: byref<string>) = r <- \"\"\n    let resetRef () = bump &s\nlet direct () = if M.s.Length >= 6 then (M.clear (); M.s.Substring(0, 6) = \"ORDER-\") else false\nlet chained () = if M.s.Length >= 6 then (M.reset (); M.s.Substring(0, 6) = \"ORDER-\") else false\nlet byRef () = if M.s.Length >= 6 then (M.resetRef (); M.s.Substring(0, 6) = \"ORDER-\") else false\nlet reader (lines: string list) =\n    let mutable line = List.head lines\n    let mutable n = 0\n    while not (isNull line) do\n        if line.Length >= 6 && line.Substring(0, 6) = \"ORDER-\" then n <- n + 1\n        line <- null\n    n\nmodule Stats =\n    let mutable line = 0\nlet sameName (lines: string list) =\n    let mutable line = List.head lines\n    if line.Length >= 6 && (Stats.line <- Stats.line + 1; true) && line.Substring(0, 6) = \"ORDER-\" then 1 else 0\nmodule P =\n    let mutable s = \"ORDER-1\"\n    let setS (v: string) = s <- v\n    let resetPipe () = \"\" |> setS\nlet piped () = if P.s.Length >= 6 then (P.resetPipe (); P.s.Substring(0, 6) = \"ORDER-\") else false"
+
+    // another scope's `line` written between is another value (exact); a
+    // setter reached through a pipe is a reset (not exact)
+    let found = prefixComparesIn source |> List.sortBy (fun s -> s.Range.StartLine)
+    Assert.Equal<int list>([ 8; 9; 10; 15; 22; 27 ], found |> List.map (fun s -> s.Range.StartLine))
+    Assert.Equal<bool list>([ false; false; false; true; true; false ], found |> List.map (fun s -> s.Exact))
+
+[<Fact>]
 let ``FR0166: a Substring compared with a literal is exact only under a length guard`` () =
     let source =
         "module Test\nopen System\nlet f (s: string) (flag: bool) =\n    let a = s.Substring(0, 6) = \"ORDER-\"\n    let b = s.Length >= 6 && s.Substring(0, 6) = \"ORDER-\" && flag\n    let c = if s.Length > 5 then s.Substring(0, 6) <> \"ORDER-\" else false\n    let d = if s.Length < 3 then false else s.Substring(s.Length - 3) = \"MED\"\n    let e = s.Substring(0, 6) = \"ORDER-\" && s.Length >= 6\n    let g = 6 <= s.Length && s.Substring(0, 6) = \"ORDER-\"\n    a, b, c, d, e, g"
@@ -716,6 +729,18 @@ let ``FR0170: a store through the indexer, a concurrent dictionary, no lookup, a
 
     Assert.Empty(dictKeysLoopsIn source)
 
+[<Fact>]
+let ``FR0170: a visible writer through a setter, a hook, an auto-property, an alias or a constructing getter keeps the loop; a read-only helper converts``
+    ()
+    =
+    let source =
+        "module M\nopen System.Collections.Generic\ntype Holder(d: Dictionary<string, int>) =\n    member val D = Dictionary<string, int>() with get, set\n    member this.Bump with set (v: int) = d.[\"a\"] <- v\n    member this.Reset() = this.D.Clear()\n    member this.Dump() =\n        for k in this.D.Keys do\n            this.Reset()\n            printfn \"%d\" this.D.[k]\nlet setter (d: Dictionary<string, int>) (h: Holder) =\n    for k in d.Keys do\n        h.Bump <- 99\n        printfn \"%d\" d.[k]\nlet mutable hook = fun () -> ()\nlet hooked (d: Dictionary<string, int>) =\n    hook <- fun () -> d.Clear()\n    for k in d.Keys do\n        hook ()\n        printfn \"%d\" d.[k]\nlet tupleAlias (d: Dictionary<string, int>) =\n    let view, _ = d, 1\n    for k in d.Keys do\n        view.Remove k |> ignore\n        printfn \"%d\" d.[k]\ntype Env = { Table: Dictionary<string, int> }\nlet recordAlias (d: Dictionary<string, int>) =\n    let env = { Table = d }\n    for k in d.Keys do\n        env.Table.Remove k |> ignore\n        printfn \"%d\" d.[k]\nlet make () = Dictionary<string, int>()\ntype Store() =\n    member _.Table = make ()\nlet unstable (s: Store) =\n    for k in s.Table.Keys do\n        printfn \"%d\" s.Table.[k]\nlet table = Dictionary<string, int>()\nlet has (k: string) = table.ContainsKey k\nlet readOnly () =\n    for k in table.Keys do\n        if has k then printfn \"%s %d\" (table.Count.ToString()) table.[k]\ntype Holder2(d: Dictionary<string, int>) =\n    member _.Count with get () = d.Count and set (v: int) = d.[\"a\"] <- v\nlet getSet (d: Dictionary<string, int>) (h: Holder2) =\n    for k in d.Keys do\n        h.Count <- 99\n        printfn \"%d\" d.[k]\ntype Env2 = { Table2: Dictionary<string, int>; mutable Counter: int }\nlet holderCounter (d: Dictionary<string, int>) =\n    let env = { Table2 = d; Counter = 0 }\n    for k in d.Keys do\n        env.Counter <- env.Counter + 1\n        printfn \"%d\" d.[k]\nlet sumValues () = table.Values |> Seq.sum\nlet readsValues () =\n    for k in table.Keys do\n        printfn \"%d %d\" (sumValues ()) table.[k]\nlet trace (x: Dictionary<string, int>) = (let sb = System.Text.StringBuilder() in sb.Append(x.Count) |> ignore); x\ntype Store2() =\n    member _.Traced = trace table\nlet stable (s: Store2) =\n    for k in s.Traced.Keys do\n        printfn \"%d\" s.Traced.[k]\nlet tuplePair (d: Dictionary<string, int>) (other: Dictionary<string, int>) =\n    let a, b = d, other\n    for k in d.Keys do\n        b.Remove k |> ignore\n        printfn \"%d %d\" a.Count d.[k]"
+
+    // the read-only helper, the holder's counter, the Values-summing helper,
+    // the getter through a non-constructing helper and the tuple's other
+    // dictionary convert; the get/set property and everything above it hold
+    Assert.Equal<int list>([ 41; 52; 57; 63; 67 ], dictKeysLoopsIn source |> List.map (fun s -> s.Range.StartLine))
+
 // ---- FR0171 ByteStringLiteral ----
 
 let private byteStringsIn (source: string) =
@@ -770,17 +795,21 @@ let ``FR0170: a read deferred under a lambda, lazy, computation expression or ob
     Assert.Empty(dictKeysLoopsIn source)
 
 [<Fact>]
-let ``FR0170: anything that may write the dictionary before a read keeps the loop`` () =
+let ``FR0170: what visibly writes the dictionary before a read keeps the loop`` () =
     // `v` is the value when the iteration started, `d.[k]` the value when it
     // runs, and since .NET Core 3.0 an overwrite or a Remove leaves the
-    // enumeration running: a helper handed the dictionary, a user function
-    // reaching it through a closure, an alias, a Remove, a rebound receiver,
-    // a computed property that hands out another dictionary
+    // enumeration running: a helper handed the dictionary, a local function
+    // writing it, an alias, a Remove, a rebound receiver, a getter of this
+    // file that builds a dictionary. A callback of unknown body (`f ()`) is
+    // taken as harmless: the fix by default
     let source =
         "module M\nopen System.Collections.Generic\nlet bumpIn (d: Dictionary<string, int>) (k: string) = d.[k] <- d.[k] + 1\nlet helper (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        bumpIn d k\n        printfn \"%d\" d.[k]\nlet closure (d: Dictionary<string, int>) =\n    let bump (k: string) = d.[k] <- 0\n    for k in d.Keys do\n        bump k\n        printfn \"%d\" d.[k]\nlet alias (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        let m = d\n        m.[k] <- 0\n        printfn \"%d\" d.[k]\nlet removed (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        d.Remove k |> ignore\n        printfn \"%b\" (d.ContainsKey k && d.[k] > 0)\nlet rebound (d: Dictionary<string, int>) (other: Dictionary<string, int>) =\n    for k in d.Keys do\n        let d = other\n        printfn \"%d\" d.[k]\nlet nested (d: Dictionary<string, int>) (f: unit -> unit) =\n    for k in d.Keys do\n        for _ in 1..2 do\n            printfn \"%d\" d.[k]\n            f ()\ntype Computed() =\n    member _.Table = Dictionary<int, string>()\n    member this.Dump() =\n        for key in this.Table.Keys do\n            printfn \"%s\" this.Table.[key]"
 
     Assert.True(typechecksCleanly source)
-    Assert.Empty(dictKeysLoopsIn source)
+
+    match dictKeysLoopsIn source with
+    | [ s ] -> Assert.Equal(27, s.Range.StartLine)
+    | other -> failwithf "Expected the loop with the unknown callback alone, got %A" other
 
     // the premise: an overwrite mid-enumeration no longer throws, and the
     // pair's value is the one from before it
@@ -792,38 +821,47 @@ let ``FR0170: anything that may write the dictionary before a read keeps the loo
         Assert.Equal(2, d.[k])
 
 [<Fact>]
-let ``FR0170: reassignment, aliases, getters as arguments, outer loops, local functions and FSharp.Core entry points keep the loop``
+let ``FR0170: reassignment, aliases, a visibly writing getter, outer loops, local functions and forced definitions keep the loop``
     ()
     =
-    // each writes the dictionary before a read in the same iteration: a
-    // reassigned mutable receiver; an alias bound before the loop; a user
-    // getter handed to printfn, which runs before the read beside it; a
-    // Remove in a loop around the inner loop that reads; a read inside a
-    // local function called after the Remove; an event whose handler
-    // removes; an Async run that clears; a Seq.length that forces a
-    // sequence whose generator removes
+    // each visibly writes the dictionary before a read in the same
+    // iteration: a reassigned mutable receiver; an alias bound before the
+    // loop; a getter of this file that clears, handed to printfn; a Remove
+    // in a loop around the inner loop that reads; a read inside a local
+    // function called after the Remove; an Async of this file that clears,
+    // run; a Seq.length forcing a sequence of this file whose generator
+    // removes. An event's handler is not the event's definition: the
+    // Trigger is taken as harmless
     let source =
         "module M\nopen System.Collections.Generic\nlet d = Dictionary<string, int>()\nlet mutableReceiver (a: Dictionary<string, int>) (b: Dictionary<string, int>) =\n    let mutable m = a\n    for k in m.Keys do\n        m <- b\n        printfn \"%d\" m.[k]\nlet aliasOutside () =\n    let view: IDictionary<string, int> = d\n    for k in d.Keys do\n        view.[k] <- 0\n        printfn \"%d\" d.[k]\ntype Evictor() =\n    member _.Evicted =\n        d.Clear()\n        0\nlet getterArgument (e: Evictor) =\n    for k in d.Keys do\n        printfn \"%d %d\" e.Evicted d.[k]\nlet outerLoop () =\n    let mutable n = 0\n    for k in d.Keys do\n        while n < 2 do\n            for _ in 1..2 do\n                printfn \"%d\" d.[k]\n            d.Remove k |> ignore\n            n <- n + 1\nlet localFunction () =\n    for k in d.Keys do\n        let get () = d.[k]\n        d.Remove k |> ignore\n        printfn \"%d\" (get ())\nlet ev = Event<string>()\nev.Publish.Add(fun key -> d.Remove key |> ignore)\nlet trigger () =\n    for k in d.Keys do\n        ev.Trigger k\n        printfn \"%d\" d.[k]\nlet flush = async { d.Clear() }\nlet runAsync () =\n    for k in d.Keys do\n        Async.RunSynchronously flush\n        printfn \"%d\" d.[k]\nlet s = seq { d.Remove \"a\" |> ignore; yield 1 }\nlet forced () =\n    for k in d.Keys do\n        let n = Seq.length s\n        printfn \"%d %d\" n d.[k]"
 
     Assert.True(typechecksCleanly source)
-    Assert.Empty(dictKeysLoopsIn source)
+
+    match dictKeysLoopsIn source with
+    | [ s ] -> Assert.Equal(37, s.Range.StartLine)
+    | other -> failwithf "Expected the event's loop alone, got %A" other
 
 [<Fact>]
-let ``FR0170: interface calls, a user collection and a suspension in seq or task keep the loop`` () =
-    // an interface call runs whatever implements it (an observer, a
-    // disposable, a comparer handed to Array.Sort); a collection of the
-    // user's own runs its enumerator; in `seq { }` the consumer runs at each
-    // yield, in `task { }` other code runs at each let! and do!
+let ``FR0170: interface calls and a user collection convert; a suspension in seq or task keeps the loop`` () =
+    // an interface call (an observer, a disposable, a comparer handed to
+    // Array.Sort) and a collection of the user's own run code the analysis
+    // cannot see: taken as harmless, the fix by default, the accepted
+    // residual. In `seq { }` the consumer runs at each yield, in `task { }`
+    // other code runs at each let! and do!: those keep the loop
     let source =
         "module M\nopen System\nopen System.Collections.Generic\nopen System.Threading.Tasks\nlet d = Dictionary<string, int>()\nlet observer (o: IObserver<string>) =\n    for k in d.Keys do\n        o.OnNext k\n        printfn \"%d\" d.[k]\nlet disposer (x: IDisposable) =\n    for k in d.Keys do\n        x.Dispose()\n        printfn \"%d\" d.[k]\nlet sorter (arr: string[]) (cmp: IComparer<string>) =\n    for k in d.Keys do\n        Array.Sort(arr, cmp)\n        printfn \"%d\" d.[k]\ntype Bag() =\n    interface IEnumerable<int> with\n        member _.GetEnumerator() : IEnumerator<int> = (d.Clear(); Seq.empty<int>.GetEnumerator())\n        member _.GetEnumerator() : Collections.IEnumerator = (d.Clear(); (Seq.empty<int> :> Collections.IEnumerable).GetEnumerator())\nlet bag (b: Bag) =\n    for k in d.Keys do\n        for _ in b do ()\n        printfn \"%d\" d.[k]\nlet yields () =\n    seq {\n        for k in d.Keys do\n            yield k\n            yield string d.[k]\n    }\nlet awaits (t: Task<int>) =\n    task {\n        for k in d.Keys do\n            let! x = t\n            printfn \"%d %d\" x d.[k]\n    }"
 
     Assert.True(typechecksCleanly source)
-    Assert.Empty(dictKeysLoopsIn source)
+
+    Assert.Equal<int list>(
+        [ 7; 11; 15; 23 ],
+        dictKeysLoopsIn source |> List.map (fun s -> s.Range.StartLine) |> List.sort
+    )
 
 [<Fact>]
-let ``FR0170: a local dictionary no other name reaches converts past user calls; one that escapes does not`` () =
-    // built in the function and only indexed, stored and asked for its keys:
-    // a logger, a user helper, an interface call or an await cannot reach it
+let ``FR0170: a callback before the read converts unless a definition of this file visibly writes the dictionary`` () =
+    // a local dictionary with a logger, an interface call or a callback
+    // before the read: the fix; in a `task { }` the `do!` keeps the loop
     let unreached =
         "module M\nopen System\nopen System.Collections.Generic\nlet log (s: string) = printfn \"%s\" s\nlet count (words: string[]) (o: IObserver<string>) =\n    let d = Dictionary<string, int>()\n    for w in words do\n        d.[w] <- (if d.ContainsKey w then d.[w] else 0) + 1\n    for k in d.Keys do\n        log k\n        o.OnNext k\n        printfn \"%d\" d.[k]\nlet awaited (words: string[]) (t: Threading.Tasks.Task) =\n    task {\n        let d = Dictionary<string, int>()\n        for w in words do d.[w] <- 1\n        for k in d.Keys do\n            do! t\n            printfn \"%d\" d.[k]\n    }"
 
@@ -835,48 +873,46 @@ let ``FR0170: a local dictionary no other name reaches converts past user calls;
     | [ s ] -> Assert.Equal(9, s.Range.StartLine)
     | other -> failwithf "Expected the plain loop alone, got %A" other
 
-    // handed to a helper, captured by a closure, bound to another name: the
-    // user call before the read may write it
+    // handed to a helper, captured by a closure, bound to another name, with
+    // a callback of unknown body before the read: the callback may reach it
+    // through those, but nothing visible says so - the fix by default, the
+    // accepted residual
     let escaped =
         "module M\nopen System.Collections.Generic\nlet bump (m: Dictionary<string, int>) = m.[\"a\"] <- 0\nlet handedOn (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>()\n    for w in words do d.[w] <- 1\n    let g () = bump d\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]\nlet captured (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>()\n    let reset = fun () -> d.Clear()\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]\nlet aliased (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>()\n    let view = d\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]"
 
     Assert.True(typechecksCleanly escaped)
-    Assert.Empty(dictKeysLoopsIn escaped)
+    Assert.Equal(3, (dictKeysLoopsIn escaped).Length)
 
-    // escapes the member syntax hides: a writer taken as a value, an
-    // extension of the project's own, a capture by a computation, a
-    // framework extension writing through an alias, an implicit yield
+    // what is visible keeps the loop: a writer taken as a value and called,
+    // a sequence of this file that writes, forced; an implicit yield. An
+    // extension of the project's own on the receiver before the loop, and a
+    // framework extension on a parameter that may alias it, are not visible
+    // writes: the fix
     let hidden =
         "module M\nopen System.Collections.Generic\n[<System.Runtime.CompilerServices.Extension>]\ntype Ext =\n    [<System.Runtime.CompilerServices.Extension>]\n    static member Track(m: Dictionary<string, int>) = ()\nlet methodValue (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>()\n    let reset = d.Clear\n    for k in d.Keys do\n        f k\n        reset ()\n        printfn \"%d\" d.[k]\nlet extension (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>()\n    d.Track()\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]\nlet computation (words: string[]) =\n    let d = Dictionary<string, int>()\n    let later = seq { d.[\"a\"] <- 100; yield 1 }\n    for k in d.Keys do\n        let n = Seq.length later\n        printfn \"%d %d\" n d.[k]\nlet aliasRemove (d: Dictionary<string, int>) (other: IDictionary<string, int>) =\n    for k in d.Keys do\n        let mutable old = 0\n        other.Remove(k, &old) |> ignore\n        printfn \"%d\" d.[k]\nlet implicitYield (d: Dictionary<string, int>) =\n    seq {\n        for k in d.Keys do\n            k\n            string d.[k]\n    }"
 
     Assert.True(typechecksCleanly hidden)
-    Assert.Empty(dictKeysLoopsIn hidden)
 
-    // a lookup runs the key's hashing and the comparer's: a comparer or key
-    // type of the user's own may change what `d.[k]` finds, though nothing
-    // writes the dictionary; the framework's comparers are fine
+    Assert.Equal<int list>([ 17; 27 ], dictKeysLoopsIn hidden |> List.map (fun s -> s.Range.StartLine) |> List.sort)
+
+    // a comparer or key type of the user's own changes nothing visible: the
+    // fix for all three
     let lookups =
         "module M\nopen System\nopen System.Collections.Generic\ntype Key(n: int) =\n    member _.N = n\n    override _.GetHashCode() = n\n    override _.Equals(o) = (match o with :? Key as k -> k.N = n | _ -> false)\ntype Cmp() =\n    interface IEqualityComparer<string> with\n        member _.Equals(a, b) = a = b\n        member _.GetHashCode(s) = s.GetHashCode()\nlet userComparer (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>(Cmp())\n    for w in words do d.[w] <- 1\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]\nlet userKey (keys: Key[]) (f: Key -> unit) =\n    let d = Dictionary<Key, int>()\n    for w in keys do d.[w] <- 1\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]\nlet frameworkComparer (words: string[]) (f: string -> unit) =\n    let d = Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)\n    for w in words do d.[w] <- 1\n    for k in d.Keys do\n        f k\n        printfn \"%d\" d.[k]"
 
     Assert.True(typechecksCleanly lookups)
-
-    match dictKeysLoopsIn lookups with
-    | [ s ] -> Assert.Equal(27, s.Range.StartLine)
-    | other -> failwithf "Expected the framework comparer's loop alone, got %A" other
+    Assert.Equal(3, (dictKeysLoopsIn lookups).Length)
 
 [<Fact>]
-let ``FR0170: a pure helper of this file before the read converts, an impure one keeps the loop`` () =
-    // `label k` only computes over FSharp.Core and String: it cannot reach
-    // the dictionary; a helper that stores, names a dictionary or calls
-    // another function of the user's may
+let ``FR0170: a helper of this file before the read converts unless its body touches a dictionary`` () =
+    // `label k` and `counting k` (a module mutable int) touch no dictionary;
+    // `touching k` removes from one, and `chained k` calls it
     let source =
         "module M\nopen System.Collections.Generic\nlet shared = Dictionary<string, int>()\nlet label (k: string) = k.ToUpper() + \":\"\nlet mutable count = 0\nlet counting (k: string) =\n    count <- count + 1\n    k\nlet touching (k: string) =\n    shared.Remove k |> ignore\n    k\nlet chained (k: string) = touching k\nlet pure (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        let l = label k\n        printfn \"%s %d\" l d.[k]\nlet storing (d: Dictionary<string, int>) =\n    for k in d.Keys do\n        let l = counting k\n        printfn \"%s %d\" l d.[k]\nlet dictionary () =\n    for k in shared.Keys do\n        let l = touching k\n        printfn \"%s %d\" l shared.[k]\nlet viaOther () =\n    for k in shared.Keys do\n        let l = chained k\n        printfn \"%s %d\" l shared.[k]"
 
     Assert.True(typechecksCleanly source)
 
-    match dictKeysLoopsIn source with
-    | [ s ] -> Assert.Equal(14, s.Range.StartLine)
-    | other -> failwithf "Expected the pure helper's loop alone, got %A" other
+    Assert.Equal<int list>([ 14; 18 ], dictKeysLoopsIn source |> List.map (fun s -> s.Range.StartLine) |> List.sort)
 
     // in a `seq { }` a unit statement yields nothing: a printf, a store, a
     // Console call before the read leave the consumer out of the loop
