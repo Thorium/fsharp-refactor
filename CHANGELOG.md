@@ -2,6 +2,13 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.36
+
+From GitHub pull requests #7 and #8. FR0015 numbers a function's second regex before it falls back to the function's whole name: `isPostcode` with two patterns hoists `postcodeRegex` and `postcodeRegex2`, where the second had taken `isPostcodeRegex`, a name that reads as the function's one regex. The whole name still comes first where the file already spells the stem name or another declaration took it, so `hasPostcode` and `isPostcode` keep `isPostcodeRegex`.
+
+The tests: a failing typecheck or parse assertion lists the compiler's errors above the source. The README kind-summary check accepts the CRLF line endings of a Windows checkout, and the tests compiled against the legacy .NET Framework reference set run only on Windows, the one platform where that set resolves - on the Linux CI one failed its input check.
+
+
 ## 0.8.35
 
 From a run over a 370-file Fable codebase (GitHub issues #1 to #6). FR0147 no longer opens a namespace that an `open` would also reach through a partial path: F# resolves `open X` against every namespace already open - `Microsoft.FSharp` always, and each open of the file - and opens every match, so `open Core` for a user namespace `Core` also opened Microsoft.FSharp.Core, re-opened its Operators over a user's own `tan`, and failed with FS0893, an error; `open IO` under `open System` is the same. Such a namespace is now a note naming the second one. FR0162 stays quiet on a slot that is reset - a store of `None`, `null` or another empty value anywhere, an in-flight task dropped once it settles so the next call retries, which a `Lazy` never could - and no longer counts a store inside a lambda under the emptiness test as guarded, since the lambda runs later. FR0035 leaves a module-level literal of fewer than eight written-out elements alone, and converts one of fewer than sixteen through the HashSet companion rather than in place to an F# Set: measured on .NET 10, a HashSet beats the list scan from about eight elements, while the Set, a comparison tree, catches up only at about twelve when every probe misses and about twenty when half hit (strings, at eight: list 29 ms, HashSet 22, Set 31 all missing; 34, 28 and 49 half hitting). The old "2.5x even at five elements" did not reproduce. `{ "FR0035": { "minElements": 8, "setMinElements": 16 } }` moves the floors.

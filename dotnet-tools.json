@@ -22,13 +22,6 @@
         "fsharp-analyzers"
       ],
       "rollForward": true
-    },
-    "fsharp-refactor": {
-      "version": "0.8.34",
-      "commands": [
-        "fsharp-refactor"
-      ],
-      "rollForward": false
     }
   }
 }
