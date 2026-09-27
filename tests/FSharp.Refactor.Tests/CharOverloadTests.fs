@@ -27,15 +27,15 @@ let ``Contains with a single-char string gets the char fix`` () =
 
 [<Fact>]
 let ``StringBuilder Append gets the char fix`` () =
-    assertCharFix "let f (sb: System.Text.StringBuilder) = sb.Append(\"x\")" "'x'"
+    assertCharFix """let f (sb: System.Text.StringBuilder) = sb.Append("x")""" "'x'"
 
 [<Fact>]
 let ``ordinal StartsWith collapses to the char overload`` () =
-    assertCharFix "let f (s: string) = s.StartsWith(\"x\", System.StringComparison.Ordinal)" "('x')"
+    assertCharFix """let f (s: string) = s.StartsWith("x", System.StringComparison.Ordinal)""" "('x')"
 
 [<Fact>]
 let ``quote character is escaped in the char literal`` () =
-    assertCharFix "let f (s: string) = s.Contains \"'\"" "'\\''"
+    assertCharFix "let f (s: string) = s.Contains \"'\"" """'\''"""
 
 [<Fact>]
 let ``bare EndsWith stays advisory because of culture semantics`` () =
@@ -58,15 +58,25 @@ let ``a verbatim single-char string is the char overload too`` () =
     // @"\" is THE spelling of a backslash in path code — the FR0015 lesson.
     // Contains, because StartsWith(string) is culture-sensitive and only
     // ever gets the advisory tier
-    assertCharFix "let f (s: string) = s.Contains @\"\\\"" "'\\\\'"
+    assertCharFix "let f (s: string) = s.Contains @\"\\\"" """'\\'"""
 
 [<Fact>]
 let ``Contains inside a query expression keeps the string overload`` () =
     // Contains(string) in a where clause is what SQL translators turn
     // into LIKE; the char overload is not a recognized pattern
     Assert.Empty(
-        charOverloadsIn
-            "open System.Linq\nlet f (xs: string list) =\n    query {\n        for x in xs.AsQueryable() do\n            where (x.Contains \"a\")\n            select x\n    }"
+        charOverloadsIn (
+            fsharp
+                """
+                open System.Linq
+                let f (xs: string list) =
+                    query {
+                        for x in xs.AsQueryable() do
+                            where (x.Contains "a")
+                            select x
+                    }
+                """
+        )
     )
 
 [<Fact>]
@@ -106,7 +116,15 @@ let ``FR0038: the culture-sensitive methods carry no portable form`` () =
 
 [<Fact>]
 let ``FR0038: a dotted receiver keeps its path in the portable form`` () =
-    match charOverloadsIn "type T = { Name: string }\nlet f (t: T) = t.Name.Contains \"x\"" with
+    match
+        charOverloadsIn (
+            fsharp
+                """
+                type T = { Name: string }
+                let f (t: T) = t.Name.Contains "x"
+                """
+        )
+    with
     | [ s ] ->
         match s.PortableOffer with
         | Some(_, _, replacement) -> Assert.Equal("t.Name.IndexOf 'x' >= 0", replacement)

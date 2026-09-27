@@ -38,52 +38,126 @@ let private assertNoReraise (source: string) =
 let ``FR0044: a match arm rebinding the exception name raises the inner one`` () =
     // the report's repro: `reraise ()` compiles here but rethrows the OUTER
     // exception, where `raise ex` threw the unwrapped one
-    assertNoReraise
-        "let f (act: unit -> int) (unwrap: exn -> exn option) =\n    try act ()\n    with ex ->\n        match unwrap ex with\n        | Some ex -> raise ex\n        | None -> 0"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) (unwrap: exn -> exn option) =
+                try act ()
+                with ex ->
+                    match unwrap ex with
+                    | Some ex -> raise ex
+                    | None -> 0
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a for loop rebinding the exception name raises the loop's one`` () =
-    assertNoReraise
-        "let f (act: unit -> int) (inner: exn -> exn list) =\n    try act ()\n    with ex ->\n        for ex in inner ex do\n            raise ex\n        0"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) (inner: exn -> exn list) =
+                try act ()
+                with ex ->
+                    for ex in inner ex do
+                        raise ex
+                    0
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a function clause rebinding the exception name stays put`` () =
-    assertNoReraise
-        "let f (act: unit -> int) (unwrap: exn -> exn option) =\n    try act ()\n    with ex ->\n        unwrap ex |> (function Some ex -> raise ex | None -> 0)"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) (unwrap: exn -> exn option) =
+                try act ()
+                with ex ->
+                    unwrap ex |> (function Some ex -> raise ex | None -> 0)
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a match arm on something else still gets reraise`` () =
     // a match inside the handler is not a closure: reraise () compiles there
-    assertReraise
-        "let f (act: unit -> int) (code: int) =\n    try act ()\n    with ex ->\n        match code with\n        | 1 -> raise ex\n        | _ -> 0"
+    assertReraise (
+        fsharp
+            """
+            let f (act: unit -> int) (code: int) =
+                try act ()
+                with ex ->
+                    match code with
+                    | 1 -> raise ex
+                    | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a local function in the handler is a closure`` () =
     // `let helper () = reraise ()` is FS0413: not directly in the handler
-    assertNoReraise
-        "let f (act: unit -> int) =\n    try act ()\n    with ex ->\n        let helper () = raise ex\n        helper ()"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                try act ()
+                with ex ->
+                    let helper () = raise ex
+                    helper ()
+            """
+    )
 
 [<Fact>]
 let ``FR0044: an object-expression member in the handler is a closure`` () =
-    assertNoReraise
-        "let f (act: unit -> int) =\n    try act ()\n    with ex ->\n        let d = { new System.IDisposable with member _.Dispose() = raise ex }\n        d.Dispose()\n        0"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                try act ()
+                with ex ->
+                    let d = { new System.IDisposable with member _.Dispose() = raise ex }
+                    d.Dispose()
+                    0
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a lazy in the handler is a closure`` () =
-    assertNoReraise
-        "let f (act: unit -> int) =\n    try act ()\n    with ex ->\n        let l = lazy (raise ex)\n        l.Value"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                try act ()
+                with ex ->
+                    let l = lazy (raise ex)
+                    l.Value
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a list comprehension in the handler is a closure`` () =
-    assertNoReraise
-        "let f (act: unit -> int) =\n    try act ()\n    with ex ->\n        [ for i in 1 .. 2 -> raise ex ] |> List.sum"
+    assertNoReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                try act ()
+                with ex ->
+                    [ for i in 1 .. 2 -> raise ex ] |> List.sum
+            """
+    )
 
 [<Fact>]
 let ``FR0044: a plain value binding and an if in the handler still get reraise`` () =
     // a value binding is no closure, and an if is fine: the direct shape
     // keeps its offer
-    assertReraise
-        "let f (act: unit -> int) (strict: bool) =\n    try act ()\n    with ex ->\n        let msg = ex.Message\n        if strict then raise ex else msg.Length"
+    assertReraise (
+        fsharp
+            """
+            let f (act: unit -> int) (strict: bool) =
+                try act ()
+                with ex ->
+                    let msg = ex.Message
+                    if strict then raise ex else msg.Length
+            """
+    )
 
 // ---- FR0055 SwallowedException: C1 log binder, C2 guard purity, E1 failure slots ----
 
@@ -116,36 +190,77 @@ let private assertGuard (source: string) (expected: string) =
 [<Fact>]
 let ``FR0055: an option Value operand can throw, so no guard`` () =
     // the report's repro: `None.Value` escapes where the catch returned 0
-    assertNoGuard "module Test\nlet ratio (total: int option) (count: int) = try total.Value / count with _ -> 0"
+    assertNoGuard (
+        fsharp
+            """
+            module Test
+            let ratio (total: int option) (count: int) = try total.Value / count with _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``FR0055: a string Length operand is a property, so no guard`` () =
-    assertNoGuard "module Test\nlet ratio (s: string) (count: int) = try s.Length / count with _ -> 0"
+    assertNoGuard (
+        fsharp
+            """
+            module Test
+            let ratio (s: string) (count: int) = try s.Length / count with _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``FR0055: under open Checked the arithmetic itself throws, so no guard`` () =
-    assertNoGuard
-        "module Test\nopen Microsoft.FSharp.Core.Operators.Checked\nlet ratio (a: int) (b: int) = try a * 2 / b with _ -> 0"
+    assertNoGuard (
+        fsharp
+            """
+            module Test
+            open Microsoft.FSharp.Core.Operators.Checked
+            let ratio (a: int) (b: int) = try a * 2 / b with _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``FR0055: decimal arithmetic overflows, so no guard`` () =
-    assertNoGuard "module Test\nlet ratio (a: decimal) (b: decimal) = try a / b with _ -> 0m"
+    assertNoGuard (
+        fsharp
+            """
+            module Test
+            let ratio (a: decimal) (b: decimal) = try a / b with _ -> 0m
+            """
+    )
 
 [<Fact>]
 let ``FR0055: plain parameters still get the guard`` () =
-    assertGuard "module Test\nlet ratio (a: int) (b: int) = try a / b with _ -> 0" "if b = 0 then 0 else a / b"
+    assertGuard
+        (fsharp
+            """
+            module Test
+            let ratio (a: int) (b: int) = try a / b with _ -> 0
+            """)
+        "if b = 0 then 0 else a / b"
 
 [<Fact>]
 let ``FR0055: record fields are pure operands and keep the guard`` () =
     assertGuard
-        "module Test\ntype R = { Total: int; Count: int }\nlet ratio (r: R) = try r.Total / r.Count with _ -> 0"
+        (fsharp
+            """
+            module Test
+            type R = { Total: int; Count: int }
+            let ratio (r: R) = try r.Total / r.Count with _ -> 0
+            """)
         "if r.Count = 0 then 0 else r.Total / r.Count"
 
 [<Fact>]
 let ``FR0055: a tuple carrying Error reports the failure, not a disguised result`` () =
     // the report's repro: `Error "step failed"` IS the failure report
     let source =
-        "module Test\nlet step (state: int) (f: int -> int * Result<int, string>) =\n    try f state\n    with _ -> (state, Error \"step failed\")"
+        fsharp
+            """
+            module Test
+            let step (state: int) (f: int -> int * Result<int, string>) =
+                try f state
+                with _ -> (state, Error "step failed")
+            """
 
     assertTypechecks source
     Assert.Empty(swallowedIn source)
@@ -153,7 +268,16 @@ let ``FR0055: a tuple carrying Error reports the failure, not a disguised result
 [<Fact>]
 let ``FR0055: Choice2Of2 and Failure slots carry the failure too`` () =
     let source =
-        "module Test\nlet a (state: int) (f: int -> int * Choice<int, string>) =\n    try f state\n    with _ -> (state, Choice2Of2 \"\")\nlet b (state: int) (f: int -> int * exn) =\n    try f state\n    with _ -> (state, Failure \"\")"
+        fsharp
+            """
+            module Test
+            let a (state: int) (f: int -> int * Choice<int, string>) =
+                try f state
+                with _ -> (state, Choice2Of2 "")
+            let b (state: int) (f: int -> int * exn) =
+                try f state
+                with _ -> (state, Failure "")
+            """
 
     assertTypechecks source
     Assert.Empty(swallowedIn source)
@@ -161,7 +285,13 @@ let ``FR0055: Choice2Of2 and Failure slots carry the failure too`` () =
 [<Fact>]
 let ``FR0055: a tuple carrying a zero is still a disguised result`` () =
     let source =
-        "module Test\nlet step (state: int) (f: int -> int * int) =\n    try f state\n    with _ -> (state, 0)"
+        fsharp
+            """
+            module Test
+            let step (state: int) (f: int -> int * int) =
+                try f state
+                with _ -> (state, 0)
+            """
 
     match swallowedIn source with
     | [ s ] -> Assert.Equal(Some "(state, 0)", s.FallbackText)
@@ -181,7 +311,16 @@ let private logOfferIn (source: string) =
 let ``FR0055: the log offer on a bare Exception type test binds the exception`` () =
     // the report's repro: the log line said `ex`, the pattern bound nothing
     let source =
-        "module Test\ntype Logger() =\n    member _.LogError(ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ()\nlet work (logger: Logger) (id: int) =\n    logger.LogError(null, \"started {Id}\", id)\n    try printfn \"%d\" id\n    with :? System.Exception -> ()"
+        fsharp
+            """
+            module Test
+            type Logger() =
+                member _.LogError(ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ()
+            let work (logger: Logger) (id: int) =
+                logger.LogError(null, "started {Id}", id)
+                try printfn "%d" id
+                with :? System.Exception -> ()
+            """
 
     assertTypechecks source
 
@@ -196,7 +335,16 @@ let ``FR0055: the log offer on a bare Exception type test binds the exception`` 
 [<Fact>]
 let ``FR0055: the log offer on a wildcard still binds and typechecks`` () =
     let source =
-        "module Test\ntype Logger() =\n    member _.LogError(ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ()\nlet work (logger: Logger) (id: int) =\n    logger.LogError(null, \"started {Id}\", id)\n    try printfn \"%d\" id\n    with _ -> ()"
+        fsharp
+            """
+            module Test
+            type Logger() =
+                member _.LogError(ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ()
+            let work (logger: Logger) (id: int) =
+                logger.LogError(null, "started {Id}", id)
+                try printfn "%d" id
+                with _ -> ()
+            """
 
     match logOfferIn source with
     | Some offer ->
@@ -210,14 +358,23 @@ let ``FR0055: the log offer picks a binder the function does not already use`` (
     // `ex` is the int parameter: binding the exception to it would make the
     // log line's `{ex}` parameter the exception
     let source =
-        "module Test\ntype Logger() =\n    member _.LogError(ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ()\nlet work (logger: Logger) (ex: int) =\n    logger.LogError(null, \"started {Ex}\", ex)\n    try printfn \"%d\" ex\n    with _ -> ()"
+        fsharp
+            """
+            module Test
+            type Logger() =
+                member _.LogError(ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ()
+            let work (logger: Logger) (ex: int) =
+                logger.LogError(null, "started {Ex}", ex)
+                try printfn "%d" ex
+                with _ -> ()
+            """
 
     match logOfferIn source with
     | Some offer ->
         let patched = applyOffer source offer
         Assert.Contains("with exn ->", patched)
         Assert.Contains("logger.LogError(exn, ", patched)
-        Assert.Contains("exn.Message, \"work\", ex)", patched)
+        Assert.Contains("""exn.Message, "work", ex)""", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | None -> failwith "Expected the log offer"
 
@@ -228,7 +385,17 @@ let private exceptionDetailIn (source: string) =
     ExceptionDetail.find tree sourceText checkResults
 
 let private handlerOf (body: string) =
-    "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) (strict: bool) (log: string -> unit) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n"
+    fsharp
+        """
+        module M
+        open System
+        open System.Reflection
+        let run (a: Assembly) (strict: bool) (log: string -> unit) : Type[] =
+            try
+                a.GetTypes()
+            with :? ReflectionTypeLoadException as e ->
+
+        """
     + body
 
 [<Fact>]
@@ -239,7 +406,7 @@ let ``FR0151: a Message read inside an interpolated string is reported but not f
     assertTypechecks source
 
     match exceptionDetailIn source with
-    | [ s ] -> Assert.True(s.Fix.IsNone, "no Message fix inside a $\"...\" hole")
+    | [ s ] -> Assert.True(s.Fix.IsNone, """no Message fix inside a $"..." hole""")
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -259,7 +426,14 @@ let ``FR0151: a plain Message read keeps its fix`` () =
 let ``FR0151: a statement-position rethrow gets no carry-on fix`` () =
     // the report's repro: `if strict then <Type[]>` mid-body is FS0001
     let source =
-        handlerOf "        log e.Message\n        if strict then reraise ()\n        [||]"
+        handlerOf (
+            fsharp
+                """
+                        log e.Message
+                        if strict then reraise ()
+                        [||]
+                """
+        )
 
     assertTypechecks source
 
@@ -272,7 +446,13 @@ let ``FR0151: a statement-position rethrow gets no carry-on fix`` () =
 [<Fact>]
 let ``FR0151: a deliberate wrap is not a rethrow`` () =
     let source =
-        handlerOf "        log e.Message\n        raise (InvalidOperationException(\"types\", e))"
+        handlerOf (
+            fsharp
+                """
+                        log e.Message
+                        raise (InvalidOperationException("types", e))
+                """
+        )
 
     assertTypechecks source
 
@@ -301,7 +481,15 @@ let ``FR0151: a tail raise of the handler's own binder gets the carry-on fix`` (
 
 [<Fact>]
 let ``FR0151: a rethrow in the tail if's branch gets the carry-on fix`` () =
-    assertCarryOn (handlerOf "        log e.Message\n        if strict then reraise () else [||]")
+    assertCarryOn (
+        handlerOf (
+            fsharp
+                """
+                        log e.Message
+                        if strict then reraise () else [||]
+                """
+        )
+    )
 
 let private checker = FSharpChecker.Create()
 
@@ -322,6 +510,8 @@ let private editorMessages (source: string) (analyzer: EditorContext -> Async<Me
         match answer with
         | FSharpCheckFileAnswer.Succeeded r -> r
         | FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
+
+    FSharp.Refactor.Tests.Parsing.requireTypechecks "editorMessages" source checkResults
 
     let context: EditorContext =
         {
@@ -364,7 +554,12 @@ let ``FR0116: the message carries the insert as well as the removal`` () =
     // element before a `for` is a statement): FAKE's Wix.fs had a member
     // deleted and never put back
     let source =
-        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x\nand g (y: int) : int = y + 1"
+        fsharp
+            """
+            module Test
+            let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x
+            and g (y: int) : int = y + 1
+            """
 
     match editorMessages source Analyzers.recGroupEditorAnalyzer with
     | [ m ] ->

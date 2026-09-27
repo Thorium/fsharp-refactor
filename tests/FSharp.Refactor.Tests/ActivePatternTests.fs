@@ -24,57 +24,162 @@ let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 [<Fact>]
 let ``dotted guard function becomes an active pattern`` () =
     assertSingleSuggestion
-        "module Test\nlet describe (s: string) =\n    match s with\n    | s when System.String.IsNullOrEmpty s -> \"empty\"\n    | s -> s"
+        (fsharp
+            """
+            module Test
+            let describe (s: string) =
+                match s with
+                | s when System.String.IsNullOrEmpty s -> "empty"
+                | s -> s
+            """)
         // a .NET member's extracted input is annotated with its resolved
         // parameter type — for the overloaded ones (Path.IsPathRooted) it
         // is the difference between compiling and FS0041
-        "module Test\n[<return: Struct>]\nlet inline private (|IsNullOrEmpty|_|) (input: string) =\n    if System.String.IsNullOrEmpty input then ValueSome input else ValueNone\n\nlet describe (s: string) =\n    match s with\n    | IsNullOrEmpty _ -> \"empty\"\n    | s -> s"
+        (fsharp
+            """
+            module Test
+            [<return: Struct>]
+            let inline private (|IsNullOrEmpty|_|) (input: string) =
+                if System.String.IsNullOrEmpty input then ValueSome input else ValueNone
+
+            let describe (s: string) =
+                match s with
+                | IsNullOrEmpty _ -> "empty"
+                | s -> s
+            """)
 
 [<Fact>]
 let ``module-level guard function becomes an active pattern`` () =
     assertSingleSuggestion
-        "module Test\nlet isEven (n: int) = n % 2 = 0\nlet f x =\n    match x with\n    | n when isEven n -> n\n    | n -> 0"
-        "module Test\nlet isEven (n: int) = n % 2 = 0\n[<return: Struct>]\nlet inline private (|IsEven|_|) input =\n    if isEven input then ValueSome input else ValueNone\n\nlet f x =\n    match x with\n    | IsEven n -> n\n    | n -> 0"
+        (fsharp
+            """
+            module Test
+            let isEven (n: int) = n % 2 = 0
+            let f x =
+                match x with
+                | n when isEven n -> n
+                | n -> 0
+            """)
+        (fsharp
+            """
+            module Test
+            let isEven (n: int) = n % 2 = 0
+            [<return: Struct>]
+            let inline private (|IsEven|_|) input =
+                if isEven input then ValueSome input else ValueNone
+
+            let f x =
+                match x with
+                | IsEven n -> n
+                | n -> 0
+            """)
 
 [<Fact>]
 let ``locally defined guard function is not extracted`` () =
     // the generated binding would sit outside isOdd's scope
-    assertNoSuggestion
-        "module Test\nlet f x =\n    let isOdd (n: int) = n % 2 = 1\n    match x with\n    | n when isOdd n -> n\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f x =
+                let isOdd (n: int) = n % 2 = 1
+                match x with
+                | n when isOdd n -> n
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``guard using a lambda parameter function is not extracted`` () =
-    assertNoSuggestion
-        "module Test\nlet f (check: int -> bool) x =\n    match x with\n    | n when check n -> n\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (check: int -> bool) x =
+                match x with
+                | n when check n -> n
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``existing pattern of the same name suppresses the hint`` () =
-    assertNoSuggestion
-        "module Test\nlet isEven (n: int) = n % 2 = 0\nlet (|IsEven|_|) (n: int) = if isEven n then Some n else None\nlet f x =\n    match x with\n    | n when isEven n -> n\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let isEven (n: int) = n % 2 = 0
+            let (|IsEven|_|) (n: int) = if isEven n then Some n else None
+            let f x =
+                match x with
+                | n when isEven n -> n
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``complex guard expression is not extracted`` () =
-    assertNoSuggestion "module Test\nlet f x =\n    match x with\n    | n when n % 2 = 0 -> n\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f x =
+                match x with
+                | n when n % 2 = 0 -> n
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``guard applied to a different value is not extracted`` () =
-    assertNoSuggestion
-        "module Test\nlet isEven (n: int) = n % 2 = 0\nlet f x y =\n    match x with\n    | n when isEven y -> n\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let isEven (n: int) = n % 2 = 0
+            let f x y =
+                match x with
+                | n when isEven y -> n
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``guard inside a member is not extracted`` () =
     // review regression: the inserted binding would sit before the type, where
     // the member parameter is out of scope
-    assertNoSuggestion
-        "module Test\ntype T() =\n    member _.Check f x =\n        match x with\n        | n when f n -> 1\n        | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type T() =
+                member _.Check f x =
+                    match x with
+                    | n when f n -> 1
+                    | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``repeated guards yield a single suggestion`` () =
     // review regression: applying two identical insertions would produce a
     // duplicate definition
     let suggestions =
-        findIn
-            "module Test\nlet isEven (n: int) = n % 2 = 0\nlet f x =\n    match x with\n    | n when isEven n -> n\n    | _ -> 0\nlet g y =\n    match y with\n    | n when isEven n -> n\n    | _ -> 1"
+        findIn (
+            fsharp
+                """
+                module Test
+                let isEven (n: int) = n % 2 = 0
+                let f x =
+                    match x with
+                    | n when isEven n -> n
+                    | _ -> 0
+                let g y =
+                    match y with
+                    | n when isEven n -> n
+                    | _ -> 1
+                """
+        )
 
     Assert.Equal(1, List.length suggestions)
 
@@ -84,15 +189,32 @@ let ``an overloaded method guard annotates the extracted input`` () =
     // extracted pattern's `input` has no inference context, so the resolved
     // parameter type is spelled out
     match
-        findIn
-            "module Test\nopen System.IO\nlet f (p: string) =\n    match p with\n    | q when Path.IsPathRooted q -> q\n    | q -> q"
+        findIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (p: string) =
+                    match p with
+                    | q when Path.IsPathRooted q -> q
+                    | q -> q
+                """
+        )
     with
     | [ s ] ->
         Assert.Contains("(input: string)", s.InsertText)
 
         let patched =
             applyEdit
-                "module Test\nopen System.IO\nlet f (p: string) =\n    match p with\n    | q when Path.IsPathRooted q -> q\n    | q -> q"
+                (fsharp
+                    """
+                    module Test
+                    open System.IO
+                    let f (p: string) =
+                        match p with
+                        | q when Path.IsPathRooted q -> q
+                        | q -> q
+                    """)
                 s.ClauseRange
                 s.ClauseText
 
@@ -106,8 +228,26 @@ let ``a guard variable the body never reads becomes a wildcard`` () =
     // `| IsDigit c -> Decimal` would leave it unused, FS1182 — an error
     // under warnings-as-errors (FsAutoComplete's AdjustConstant)
     assertSingleSuggestion
-        "module Test\nlet kind (ch: char) =\n    match ch with\n    | c when System.Char.IsDigit c -> \"digit\"\n    | _ -> \"other\""
-        "module Test\n[<return: Struct>]\nlet inline private (|IsDigit|_|) (input: char) =\n    if System.Char.IsDigit input then ValueSome input else ValueNone\n\nlet kind (ch: char) =\n    match ch with\n    | IsDigit _ -> \"digit\"\n    | _ -> \"other\""
+        (fsharp
+            """
+            module Test
+            let kind (ch: char) =
+                match ch with
+                | c when System.Char.IsDigit c -> "digit"
+                | _ -> "other"
+            """)
+        (fsharp
+            """
+            module Test
+            [<return: Struct>]
+            let inline private (|IsDigit|_|) (input: char) =
+                if System.Char.IsDigit input then ValueSome input else ValueNone
+
+            let kind (ch: char) =
+                match ch with
+                | IsDigit _ -> "digit"
+                | _ -> "other"
+            """)
 
 [<Fact>]
 let ``a declaration left of its siblings' column gets no pattern`` () =
@@ -115,13 +255,32 @@ let ``a declaration left of its siblings' column gets no pattern`` () =
     // the module body; an attribute line spliced at its column attaches to
     // nothing
     let offside =
-        "module Test\nmodule Inner =\n     let isX (i: int) = i > 0\n    let f i =\n        match i with\n        | x when isX x -> x\n        | _ -> 0"
+        fsharp
+            """
+            module Test
+            module Inner =
+                let a = 1
+               let isX (i: int) = i > 0
+                let f i =
+                    match i with
+                    | x when isX x -> x
+                    | _ -> 0
+            """
 
     let tree, sourceText, checkResults = parseAndCheck offside
     Assert.Empty(ActivePattern.find true tree sourceText checkResults)
 
     let aligned =
-        "module Test\nmodule Inner =\n    let isX (i: int) = i > 0\n    let f i =\n        match i with\n        | x when isX x -> x\n        | _ -> 0"
+        fsharp
+            """
+            module Test
+            module Inner =
+                let isX (i: int) = i > 0
+                let f i =
+                    match i with
+                    | x when isX x -> x
+                    | _ -> 0
+            """
 
     let tree, sourceText, checkResults = parseAndCheck aligned
     Assert.Single(ActivePattern.find true tree sourceText checkResults) |> ignore
@@ -131,7 +290,18 @@ let ``an offside declaration two modules deep under a namespace gets no pattern 
     // the TypeProviders SDK's exact nesting: namespace, module, nested
     // module whose first declaration sits one column right of the offender
     let source =
-        "namespace Provider\nmodule Outer =\n    let isX (i: int) = i > 0\n    module Codebuf =\n         let first = 1\n        let f i =\n            match i with\n            | x when isX x -> x\n            | _ -> 0"
+        fsharp
+            """
+            namespace Provider
+            module Outer =
+                let isX (i: int) = i > 0
+                module Codebuf =
+                     let first = 1
+                    let f i =
+                        match i with
+                        | x when isX x -> x
+                        | _ -> 0
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
     Assert.Empty(ActivePattern.find true tree sourceText checkResults)
@@ -142,7 +312,15 @@ let ``an old FSharp.Core gets the option-returning pattern`` () =
     // does not exist: the attribute attached to nothing and the pattern
     // was refused
     let source =
-        "module Test\nlet isX (i: int) = i > 0\nlet f i =\n    match i with\n    | x when isX x -> x\n    | _ -> 0"
+        fsharp
+            """
+            module Test
+            let isX (i: int) = i > 0
+            let f i =
+                match i with
+                | x when isX x -> x
+                | _ -> 0
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
 
@@ -158,12 +336,40 @@ let ``a guard under #if yields a pattern under the same #if`` () =
     // level must keep its condition: freed of it, the definition would
     // need names that only exist under it
     let source =
-        "module Test\nopen System.IO\nlet f (p: string) =\n#if !FOO\n    match p with\n    | q when Path.IsPathRooted q -> q\n    | q -> q\n#else\n    p\n#endif"
+        fsharp
+            """
+            module Test
+            open System.IO
+            let f (p: string) =
+            #if !FOO
+                match p with
+                | q when Path.IsPathRooted q -> q
+                | q -> q
+            #else
+                p
+            #endif
+            """
 
     match findIn source with
     | [ s ] ->
-        Assert.StartsWith("#if !FOO\n", s.InsertText)
-        Assert.Contains("\n#endif\n", s.InsertText)
+        Assert.StartsWith(
+            fsharp
+                """
+                #if !FOO
+
+                """,
+            s.InsertText
+        )
+
+        Assert.Contains(
+            fsharp
+                """
+
+                #endif
+
+                """,
+            s.InsertText
+        )
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -171,20 +377,58 @@ let ``FR0006: a guard function bound by the declaration itself is never extracte
     // a parameter on its own line, a nested pattern binder, and a `let
     // rec ... and` sibling: all bound inside the declaration, none in scope
     // above it
-    assertNoSuggestion
-        "module Test\nlet f\n    (isOk: int -> bool)\n    x =\n    match x with\n    | n when isOk n -> n\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f
+                (isOk: int -> bool)
+                x =
+                match x with
+                | n when isOk n -> n
+                | _ -> 0
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet f (pair: (int -> bool) * int) =\n    match pair with\n    | (isOk, x) ->\n        match x with\n        | n when isOk n -> n\n        | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (pair: (int -> bool) * int) =
+                match pair with
+                | (isOk, x) ->
+                    match x with
+                    | n when isOk n -> n
+                    | _ -> 0
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet rec f x =\n    match x with\n    | n when isOk n -> n\n    | _ -> 0\nand isOk (n: int) = n > 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let rec f x =
+                match x with
+                | n when isOk n -> n
+                | _ -> 0
+            and isOk (n: int) = n > 0
+            """
+    )
 
 [<Fact>]
 let ``FR0006: a guard variable ending in a prime is still read by the body`` () =
     match
-        findIn
-            "module Test\nlet isEven (n: int) = n % 2 = 0\nlet f x =\n    match x with\n    | n' when isEven n' -> n' + 1\n    | _ -> 0"
+        findIn (
+            fsharp
+                """
+                module Test
+                let isEven (n: int) = n % 2 = 0
+                let f x =
+                    match x with
+                    | n' when isEven n' -> n' + 1
+                    | _ -> 0
+                """
+        )
     with
     | [ s ] -> Assert.Equal("IsEven n'", s.ClauseText)
     | other -> failwithf "Expected one suggestion, got %A" other

@@ -21,8 +21,16 @@ let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 [<Fact>]
 let ``a parenthesized clause pattern loses its parens`` () =
     assertPatched
-        "module Test\nlet f x = match x with | (Some y) -> y | None -> 0"
-        "module Test\nlet f x = match x with | Some y -> y | None -> 0"
+        (fsharp
+            """
+            module Test
+            let f x = match x with | (Some y) -> y | None -> 0
+            """)
+        (fsharp
+            """
+            module Test
+            let f x = match x with | Some y -> y | None -> 0
+            """)
 
 [<Fact>]
 let ``a tuple clause pattern keeps its parens`` () =
@@ -33,14 +41,30 @@ let ``a tuple clause pattern keeps its parens`` () =
 [<Fact>]
 let ``a type-test clause pattern loses its parens`` () =
     assertPatched
-        "module Test\nlet f (x: obj) = match x with | (:? string) -> 1 | _ -> 0"
-        "module Test\nlet f (x: obj) = match x with | :? string -> 1 | _ -> 0"
+        (fsharp
+            """
+            module Test
+            let f (x: obj) = match x with | (:? string) -> 1 | _ -> 0
+            """)
+        (fsharp
+            """
+            module Test
+            let f (x: obj) = match x with | :? string -> 1 | _ -> 0
+            """)
 
 [<Fact>]
 let ``an atomic union-case argument loses its parens`` () =
     assertPatched
-        "module Test\nlet f x = match x with | Some (y) -> y | None -> 0"
-        "module Test\nlet f x = match x with | Some y -> y | None -> 0"
+        (fsharp
+            """
+            module Test
+            let f x = match x with | Some (y) -> y | None -> 0
+            """)
+        (fsharp
+            """
+            module Test
+            let f x = match x with | Some y -> y | None -> 0
+            """)
 
 [<Fact>]
 let ``a let parameter loses its parens`` () =
@@ -49,12 +73,25 @@ let ``a let parameter loses its parens`` () =
 [<Fact>]
 let ``a nested union case keeps its parens`` () =
     // `Some (Some x)` must not become the nonsense `Some Some x`
-    assertNoSuggestion "module Test\nlet f x = match x with | Some (Some y) -> y | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f x = match x with | Some (Some y) -> y | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``a tuple inside a union case keeps its parens`` () =
     // `Some (x, y)` is one case carrying a tuple; `Some x, y` is a pair
-    assertNoSuggestion "module Test\ntype T = C of int * int\nlet f x = match x with | C (a, b) -> a + b"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type T = C of int * int
+            let f x = match x with | C (a, b) -> a + b
+            """
+    )
 
 [<Fact>]
 let ``an annotated parameter keeps its parens`` () =
@@ -64,7 +101,14 @@ let ``an annotated parameter keeps its parens`` () =
 let ``a member parameter keeps its parens`` () =
     // `member _.M(x)` and `member _.M x` agree for one parameter and disagree
     // otherwise; a method's shape is not a formatting concern
-    assertNoSuggestion "module Test\ntype T() =\n    member _.M(x) = x"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type T() =
+                member _.M(x) = x
+            """
+    )
 
 [<Fact>]
 let ``a negative constant as a whole clause pattern is fine bare`` () =
@@ -76,7 +120,13 @@ let ``a negative constant as a whole clause pattern is fine bare`` () =
 [<Fact>]
 let ``a negative constant inside a union case keeps its parens`` () =
     // `Some (-1)` bare would read as the subtraction `Some - 1`
-    assertNoSuggestion "module Test\nlet f x = match x with | Some (-1) -> 0 | _ -> 1"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f x = match x with | Some (-1) -> 0 | _ -> 1
+            """
+    )
 
 [<Fact>]
 let ``the unit pattern is not parens around something`` () =
@@ -86,14 +136,29 @@ let ``the unit pattern is not parens around something`` () =
 
 [<Fact>]
 let ``a unit member parameter is left alone too`` () =
-    assertNoSuggestion "module Test\ntype T() =\n    member _.M() = 1"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type T() =
+                member _.M() = 1
+            """
+    )
 
 [<Fact>]
 let ``a typed clause pattern keeps its parens`` () =
     // from the corpus: `| (request: HttpRequestMessage) when ... ->`.
     // Bare, `| request: HttpRequestMessage when ... ->` does not parse.
-    assertNoSuggestion
-        "module Test\nlet f (x: obj) =\n    match x with\n    | (s: string) when s.Length > 0 -> 1\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (x: obj) =
+                match x with
+                | (s: string) when s.Length > 0 -> 1
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``adjacent parameters gain the space the parens were providing`` () =
@@ -109,7 +174,19 @@ let ``a parameter glued to its function name gains a space`` () =
 let ``a wildcard argument of a union case keeps its parens without types`` () =
     // `Ctor(_)` may be a case that takes no data, where `Ctor _` is an error;
     // the typed FR0088 owns that shape
-    Assert.Empty(findIn "module Test\ntype K =\n    | Ctor\nlet f k =\n    match k with\n    | Ctor(_) -> 0")
+    Assert.Empty(
+        findIn (
+            fsharp
+                """
+                module Test
+                type K =
+                    | Ctor
+                let f k =
+                    match k with
+                    | Ctor(_) -> 0
+                """
+        )
+    )
 
 [<Fact>]
 let ``a function head still loses the parens around its wildcard parameter`` () =
@@ -122,6 +199,15 @@ let ``a function head still loses the parens around its wildcard parameter`` () 
 let ``an object expression member keeps the parens around its parameter`` () =
     // FSharp.CloudAgent and Mibo: `{ new I with member _.M(x) = ... }`
     Assert.Empty(
-        findIn
-            "module Test\ntype I =\n    abstract M: int -> int\nlet make () =\n    { new I with\n        member _.M(x) = x + 1 }"
+        findIn (
+            fsharp
+                """
+                module Test
+                type I =
+                    abstract M: int -> int
+                let make () =
+                    { new I with
+                        member _.M(x) = x + 1 }
+                """
+        )
     )

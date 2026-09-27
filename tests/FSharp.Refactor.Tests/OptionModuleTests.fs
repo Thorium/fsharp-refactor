@@ -31,7 +31,11 @@ let ``Some-wrapped body with None becomes Option map`` () =
 [<Fact>]
 let ``option-returning body with None becomes Option bind`` () =
     assertSingleSuggestion
-        "let g v = if v > 0 then Some v else None\nlet f (x: int option) = match x with | Some v -> g v | None -> None"
+        (fsharp
+            """
+            let g v = if v > 0 then Some v else None
+            let f (x: int option) = match x with | Some v -> g v | None -> None
+            """)
         "Option.bind"
         "x |> Option.bind (fun v -> g v)"
 
@@ -78,7 +82,11 @@ let ``transformed body with default becomes map and defaultValue`` () =
 [<Fact>]
 let ``transformed body with effectful default becomes map and defaultWith`` () =
     assertSingleSuggestion
-        "let compute () = 42\nlet f (x: int option) = match x with | Some v -> v * 2 | None -> compute ()"
+        (fsharp
+            """
+            let compute () = 42
+            let f (x: int option) = match x with | Some v -> v * 2 | None -> compute ()
+            """)
         "Option.map + Option.defaultWith"
         "x |> Option.map (fun v -> v * 2) |> Option.defaultWith (fun () -> compute ())"
 
@@ -127,22 +135,37 @@ let ``wildcard Some pattern maps with underscore`` () =
 [<Fact>]
 let ``non-atomic scrutinee is parenthesized`` () =
     assertSingleSuggestion
-        "let g (y: int) = if y > 0 then Some y else None\nlet f y = match g y with | Some v -> v | None -> 0"
+        (fsharp
+            """
+            let g (y: int) = if y > 0 then Some y else None
+            let f y = match g y with | Some v -> v | None -> 0
+            """)
         "Option.defaultValue"
         "(g y) |> Option.defaultValue 0"
 
 [<Fact>]
 let ``multi-line match is recognized`` () =
     assertSingleSuggestion
-        "let f (x: int option) =\n    match x with\n    | Some v -> Some (v + 1)\n    | None -> None"
+        (fsharp
+            """
+            let f (x: int option) =
+                match x with
+                | Some v -> Some (v + 1)
+                | None -> None
+            """)
         "Option.map"
         "x |> Option.map (fun v -> v + 1)"
 
 [<Fact>]
 let ``shadowed Some and None cases are not rewritten`` () =
     // MyOpt shadows option's cases; rewriting to Option.map would not compile
-    assertNoSuggestion
-        "type MyOpt = Some of int | None\nlet f (x: MyOpt) = match x with | Some v -> Some (v + 1) | None -> None"
+    assertNoSuggestion (
+        fsharp
+            """
+            type MyOpt = Some of int | None
+            let f (x: MyOpt) = match x with | Some v -> Some (v + 1) | None -> None
+            """
+    )
 
 [<Fact>]
 let ``when guard is not rewritten`` () =
@@ -151,8 +174,13 @@ let ``when guard is not rewritten`` () =
 [<Fact>]
 let ``file with type errors produces no suggestions`` () =
     let tree, sourceText, checkResults =
-        parseAndCheck
-            "let f (x: int option) = match x with | Some v -> Some (v + 1) | None -> None\nlet broken: int = \"nope\""
+        parseAndCheckAllowingErrors (
+            fsharp
+                """
+                let f (x: int option) = match x with | Some v -> Some (v + 1) | None -> None
+                let broken: int = "nope"
+                """
+        )
 
     Assert.Empty(OptionModule.find tree sourceText checkResults)
 
@@ -182,8 +210,17 @@ let ``dotted default is treated as effectful and uses defaultWith`` () =
 let ``a branch writing a mutable local cannot become an iter lambda`` () =
     // the arm may write `total` freely; the fabricated closure could not
     // on F# before 10 (FS0407)
-    assertNoSuggestion
-        "let f (x: int option) =\n    let mutable total = 0\n    match x with\n    | Some v -> total <- total + v\n    | None -> ()\n    total"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f (x: int option) =
+                let mutable total = 0
+                match x with
+                | Some v -> total <- total + v
+                | None -> ()
+                total
+            """
+    )
 
 [<Fact>]
 let ``a match in implicit-yield position of a comprehension is control flow`` () =
@@ -192,15 +229,29 @@ let ``a match in implicit-yield position of a comprehension is control flow`` ()
     // Option.iter hands a string-returning lambda to a unit-wanting
     // combinator (FS0001 unit vs string)
     Assert.Empty(
-        findIn
-            "module Test\nlet f (g: string option) =\n    [ if true then \"A\"\n      match g with Some v -> v | None -> () ]"
+        findIn (
+            fsharp
+                """
+                module Test
+                let f (g: string option) =
+                    [ if true then "A"
+                      match g with Some v -> v | None -> () ]
+                """
+        )
     )
 
 [<Fact>]
 let ``a match bound inside a comprehension is a value again`` () =
     match
-        findIn
-            "module Test\nlet f (g: int option) =\n    [ let v = match g with Some v -> v | None -> 0\n      string v ]"
+        findIn (
+            fsharp
+                """
+                module Test
+                let f (g: int option) =
+                    [ let v = match g with Some v -> v | None -> 0
+                      string v ]
+                """
+        )
     with
     | [ _ ] -> ()
     | other -> failwithf "Expected exactly one suggestion for the bound match, got %A" other
@@ -216,5 +267,12 @@ let ``an isSome test on an unannotated parameter keeps the module form`` () =
 [<Fact>]
 let ``a struct member's primary-constructor value stays out of the lambda`` () =
     // `x` is a field of the struct's `this`, which no closure may capture: FS0406
-    assertNoSuggestion
-        "module Test\n[<Struct>]\ntype S(x: int) =\n    member _.M(o: int option) = match o with Some v -> Some (v + x) | None -> None"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            [<Struct>]
+            type S(x: int) =
+                member _.M(o: int option) = match o with Some v -> Some (v + x) | None -> None
+            """
+    )

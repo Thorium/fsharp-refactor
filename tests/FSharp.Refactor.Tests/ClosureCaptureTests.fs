@@ -17,7 +17,13 @@ let ``this-capturing event handler is noted`` () =
     let suggestions =
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)
+                    member this.Bump n = total <- total + n
+                """
         )
 
     match suggestions with
@@ -31,7 +37,13 @@ let ``instance field capture is an implicit this capture`` () =
     let suggestions =
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member _.Hook() = src.Fired.Add(fun n -> total <- total + n)\n    member _.Total = total"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member _.Hook() = src.Fired.Add(fun n -> total <- total + n)
+                    member _.Total = total
+                """
         )
 
     match suggestions with
@@ -43,7 +55,11 @@ let ``stateless handler is fine`` () =
     Assert.Empty(
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    member _.Hook() = src.Fired.Add(fun n -> printfn \"%d\" n)"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    member _.Hook() = src.Fired.Add(fun n -> printfn "%d" n)
+                """
         )
     )
 
@@ -53,13 +69,33 @@ let ``a handler on an event created in the same member is not a leak`` () =
     // `docsDependenciesChanged.Publish.Add(fun ...)` in one member: the
     // publisher is born there and cannot outlive the object
     Assert.Empty(
-        capturesIn
-            "type Watcher() =\n    let mutable total = 0\n    member this.Run() =\n        let changed = Event<string>()\n        changed.Publish.Add(fun s -> this.Bump s.Length)\n        changed.Trigger \"x\"\n    member this.Bump n = total <- total + n"
+        capturesIn (
+            fsharp
+                """
+                type Watcher() =
+                    let mutable total = 0
+                    member this.Run() =
+                        let changed = Event<string>()
+                        changed.Publish.Add(fun s -> this.Bump s.Length)
+                        changed.Trigger "x"
+                    member this.Bump n = total <- total + n
+                """
+        )
     )
 
     Assert.Empty(
-        capturesIn
-            "type Watcher() =\n    let mutable total = 0\n    member this.Run() =\n        let changed = new Event<string>()\n        changed.Publish.Add(fun s -> this.Bump s.Length)\n        changed.Trigger \"x\"\n    member this.Bump n = total <- total + n"
+        capturesIn (
+            fsharp
+                """
+                type Watcher() =
+                    let mutable total = 0
+                    member this.Run() =
+                        let changed = new Event<string>()
+                        changed.Publish.Add(fun s -> this.Bump s.Length)
+                        changed.Trigger "x"
+                    member this.Bump n = total <- total + n
+                """
+        )
     )
 
 [<Fact>]
@@ -74,14 +110,28 @@ let ``a process-wide publisher is told apart from one handed in`` () =
 
     Assert.Equal(
         ClosureCapture.PublisherKind.ProcessWide,
-        publisherOf
-            "type Host() =\n    let mutable exits = 0\n    member this.Hook() = System.AppDomain.CurrentDomain.ProcessExit |> Event.add (fun _ -> this.Bump())\n    member this.Bump() = exits <- exits + 1"
+        publisherOf (
+            fsharp
+                """
+                type Host() =
+                    let mutable exits = 0
+                    member this.Hook() = System.AppDomain.CurrentDomain.ProcessExit |> Event.add (fun _ -> this.Bump())
+                    member this.Bump() = exits <- exits + 1
+                """
+        )
     )
 
     Assert.Equal(
         ClosureCapture.PublisherKind.ProcessWide,
-        publisherOf
-            "type Host() =\n    let mutable exits = 0\n    member this.Hook() = System.AppDomain.CurrentDomain.UnhandledException.Add(fun _ -> this.Bump())\n    member this.Bump() = exits <- exits + 1"
+        publisherOf (
+            fsharp
+                """
+                type Host() =
+                    let mutable exits = 0
+                    member this.Hook() = System.AppDomain.CurrentDomain.UnhandledException.Add(fun _ -> this.Bump())
+                    member this.Bump() = exits <- exits + 1
+                """
+        )
     )
 
     // a publisher handed in lives as long as its owner does
@@ -89,7 +139,13 @@ let ``a process-wide publisher is told apart from one handed in`` () =
         ClosureCapture.PublisherKind.External,
         publisherOf (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)
+                    member this.Bump n = total <- total + n
+                """
         )
     )
 
@@ -98,7 +154,13 @@ let ``Subscribe is also a sink`` () =
     let suggestions =
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member this.Hook() = src.Fired.Subscribe(fun n -> this.Bump n) |> ignore\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member this.Hook() = src.Fired.Subscribe(fun n -> this.Bump n) |> ignore
+                    member this.Bump n = total <- total + n
+                """
         )
 
     match suggestions with
@@ -110,7 +172,13 @@ let ``Observable module functions are sinks`` () =
     let suggestions =
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member this.Hook() = src.Fired |> Observable.add (fun n -> this.Bump n)\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member this.Hook() = src.Fired |> Observable.add (fun n -> this.Bump n)
+                    member this.Bump n = total <- total + n
+                """
         )
 
     match suggestions with
@@ -120,8 +188,15 @@ let ``Observable module functions are sinks`` () =
 [<Fact>]
 let ``ResizeArray Add is not a sink`` () =
     Assert.Empty(
-        capturesIn
-            "type Keeper() =\n    let handlers = ResizeArray<int -> unit>()\n    member this.Hook() = handlers.Add(fun n -> this.Bump n)\n    member _.Bump(n: int) = ignore n"
+        capturesIn (
+            fsharp
+                """
+                type Keeper() =
+                    let handlers = ResizeArray<int -> unit>()
+                    member this.Hook() = handlers.Add(fun n -> this.Bump n)
+                    member _.Bump(n: int) = ignore n
+                """
+        )
     )
 
 [<Fact>]
@@ -129,7 +204,13 @@ let ``shadowing lambda parameter suppresses the note`` () =
     Assert.Empty(
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member _.Hook(f: int -> int) = src.Fired.Add(fun total -> ignore (total + 1))\n    member _.Total = total"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member _.Hook(f: int -> int) = src.Fired.Add(fun total -> ignore (total + 1))
+                    member _.Total = total
+                """
         )
     )
 
@@ -138,7 +219,11 @@ let ``module-level subscription has no this to capture`` () =
     Assert.Empty(
         capturesIn (
             sourcePrefix
-            + "let src = Src()\nlet hook () = src.Fired.Add(fun n -> printfn \"%d\" n)"
+            + fsharp
+                """
+                let src = Src()
+                let hook () = src.Fired.Add(fun n -> printfn "%d" n)
+                """
         )
     )
 
@@ -149,7 +234,13 @@ let ``a method-group subscription pins this too`` () =
     let suggestions =
         capturesIn (
             sourcePrefix
-            + "type Sub(src: Src) =\n    let mutable total = 0\n    member this.Hook() = src.Fired.Add this.Bump\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub(src: Src) =
+                    let mutable total = 0
+                    member this.Hook() = src.Fired.Add this.Bump
+                    member this.Bump n = total <- total + n
+                """
         )
 
     match suggestions with
@@ -163,7 +254,15 @@ let ``a handler on the object's own event is a cycle inside one lifetime`` () =
     Assert.Empty(
         capturesIn (
             sourcePrefix
-            + "type Sub() as x =\n    let fired = Event<int>()\n    let mutable total = 0\n    do x.Fired.Add(fun n -> x.Bump n)\n    member _.Fired = fired.Publish\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub() as x =
+                    let fired = Event<int>()
+                    let mutable total = 0
+                    do x.Fired.Add(fun n -> x.Bump n)
+                    member _.Fired: IEvent<int> = fired.Publish
+                    member this.Bump(n: int) = total <- total + n
+                """
         )
     )
 
@@ -172,6 +271,13 @@ let ``a handler on a publisher held in the object's own field is owned too`` () 
     Assert.Empty(
         capturesIn (
             sourcePrefix
-            + "type Sub() =\n    let src = Src()\n    let mutable total = 0\n    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)\n    member this.Bump n = total <- total + n"
+            + fsharp
+                """
+                type Sub() =
+                    let src = Src()
+                    let mutable total = 0
+                    member this.Hook() = src.Fired.Add(fun n -> this.Bump n)
+                    member this.Bump n = total <- total + n
+                """
         )
     )

@@ -30,13 +30,31 @@ let ``a wait in a thread-choreographed function gets no boundary note`` () =
     // the body hands work to a thread and waits on a signal; "wrap it in
     // task { }" is the advice FR0142 refuses for the same body
     Assert.Empty(
-        blockingIn
-            "open System.Threading\nopen System.Threading.Tasks\nlet f () =\n    let signal = new ManualResetEventSlim(false)\n    let worker = Task.Run(fun () -> signal.Set())\n    signal.Wait()\n    worker.Wait()"
+        blockingIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let f () =
+                    let signal = new ManualResetEventSlim(false)
+                    let worker = Task.Run(fun () -> signal.Set())
+                    signal.Wait()
+                    worker.Wait()
+                """
+        )
     )
 
     // the same wait without the choreography keeps its note
     match
-        blockingIn "open System.Threading.Tasks\nlet g () =\n    let worker = Task.Run(fun () -> 1)\n    worker.Wait()"
+        blockingIn (
+            fsharp
+                """
+                open System.Threading.Tasks
+                let g () =
+                    let worker = Task.Run(fun () -> 1)
+                    worker.Wait()
+                """
+        )
     with
     | [ s ] -> Assert.Equal(SyncOverAsync.BlockKind.TaskWait, s.Kind)
     | other -> failwithf "Expected exactly one boundary Wait site, got %A" other
@@ -57,14 +75,30 @@ let ``RunSynchronously inside a task is flagged`` () =
 
 [<Fact>]
 let ``Thread Sleep in an async gets the Async Sleep fix`` () =
-    match blockingIn "let f () = async {\n    System.Threading.Thread.Sleep 100\n    return 1\n}" with
+    match
+        blockingIn (
+            fsharp
+                """
+                let f () = async {
+                    System.Threading.Thread.Sleep 100
+                    return 1
+                }
+                """
+        )
+    with
     | [ s ] ->
         match s.Fixes with
         | [ (r, _, replacement) ] ->
             Assert.Equal("do! Async.Sleep 100", replacement)
 
             let source =
-                "let f () = async {\n    System.Threading.Thread.Sleep 100\n    return 1\n}"
+                fsharp
+                    """
+                    let f () = async {
+                        System.Threading.Thread.Sleep 100
+                        return 1
+                    }
+                    """
 
             let patched = applyEdit source r replacement
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
@@ -77,11 +111,30 @@ let ``Thread Sleep in sync code is legitimate`` () =
 
 [<Fact>]
 let ``a user type with a Result property is not a task`` () =
-    Assert.Empty(blockingIn "type R() =\n    member _.Result = 1\nlet f (r: R) = task { return r.Result }")
+    Assert.Empty(
+        blockingIn (
+            fsharp
+                """
+                type R() =
+                    member _.Result = 1
+                let f (r: R) = task { return r.Result }
+                """
+        )
+    )
 
 [<Fact>]
 let ``binding with let-bang is fine`` () =
-    Assert.Empty(blockingIn "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let! x = t\n    return x\n}")
+    Assert.Empty(
+        blockingIn (
+            fsharp
+                """
+                let f (t: System.Threading.Tasks.Task<int>) = task {
+                    let! x = t
+                    return x
+                }
+                """
+        )
+    )
 
 // ---- FR0050 / FR0051 Accumulation ----
 
@@ -103,26 +156,56 @@ let ``sum accumulation becomes Seq sum`` () =
     // types compute what the loop computed (AuditSemanticATests has the
     // integer shape, which keeps the fold)
     assertFold
-        "let f (xs: float list) =\n    let mutable total = 0.0\n    for x in xs do\n        total <- total + x\n    total * 2.0"
+        (fsharp
+            """
+            let f (xs: float list) =
+                let mutable total = 0.0
+                for x in xs do
+                    total <- total + x
+                total * 2.0
+            """)
         "let total = xs |> List.sum"
 
 [<Fact>]
 let ``projected sum becomes sumBy`` () =
     assertFold
-        "let f (xs: float list) =\n    let mutable total = 0.0\n    for x in xs do\n        total <- total + x * x\n    total"
+        (fsharp
+            """
+            let f (xs: float list) =
+                let mutable total = 0.0
+                for x in xs do
+                    total <- total + x * x
+                total
+            """)
         "xs |> List.sumBy (fun x -> x * x)"
 
 [<Fact>]
 let ``general combine becomes a fold`` () =
     assertFold
-        "let f (xs: int list) =\n    let mutable best = 1\n    for x in xs do\n        best <- max best (x % 7)\n    best"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let mutable best = 1
+                for x in xs do
+                    best <- max best (x % 7)
+                best
+            """)
         "xs |> List.fold (fun best x -> max best (x % 7)) 1"
 
 [<Fact>]
 let ``reassignment after the loop keeps the mutable`` () =
     let folds, _ =
-        accumulationIn
-            "let f (xs: int list) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x\n    total <- total + 1\n    total"
+        accumulationIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable total = 0
+                    for x in xs do
+                        total <- total + x
+                    total <- total + 1
+                    total
+                """
+        )
 
     Assert.Empty folds
 
@@ -131,16 +214,32 @@ let ``counting a non-generic IEnumerable stays a loop`` () =
     // from the corpus (SQLProvider SeqValues): `for` accepts the non-generic
     // IEnumerable, Seq.sumBy needs seq<'T> — the rewrite would be FS0001
     let folds, _ =
-        accumulationIn
-            "let f (values: System.Collections.IEnumerable) =\n    let mutable count = 0\n    for v in values do\n        count <- count + 1\n    count"
+        accumulationIn (
+            fsharp
+                """
+                let f (values: System.Collections.IEnumerable) =
+                    let mutable count = 0
+                    for v in values do
+                        count <- count + 1
+                    count
+                """
+        )
 
     Assert.Empty folds
 
 [<Fact>]
 let ``quadratic list append in a loop is noted`` () =
     let _, quadratics =
-        accumulationIn
-            "let f (xs: int list) =\n    let mutable acc: int list = []\n    for x in xs do\n        if x > 0 then acc <- acc @ [ x ]\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable acc: int list = []
+                    for x in xs do
+                        if x > 0 then acc <- acc @ [ x ]
+                    acc
+                """
+        )
 
     match quadratics with
     | [ s ] -> Assert.Equal("acc", s.Name)
@@ -149,8 +248,16 @@ let ``quadratic list append in a loop is noted`` () =
 [<Fact>]
 let ``quadratic Array append in a loop is noted`` () =
     let _, quadratics =
-        accumulationIn
-            "let f (xs: int list) =\n    let mutable acc: int[] = [||]\n    for x in xs do\n        if x > 0 then acc <- Array.append acc [| x |]\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable acc: int[] = [||]
+                    for x in xs do
+                        if x > 0 then acc <- Array.append acc [| x |]
+                    acc
+                """
+        )
 
     match quadratics with
     | [ s ] -> Assert.Equal("acc", s.Name)
@@ -173,19 +280,40 @@ let private assertFlagRewrite (source: string) (expectedReplacement: string) =
 [<Fact>]
 let ``a false flag set in a loop becomes exists`` () =
     assertFlagRewrite
-        "let f (xs: int list) =\n    let mutable found = false\n    for x in xs do\n        if x > 3 then found <- true\n    found"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let mutable found = false
+                for x in xs do
+                    if x > 3 then found <- true
+                found
+            """)
         "let found = xs |> List.exists (fun x -> x > 3)"
 
 [<Fact>]
 let ``an array source resolves to Array exists`` () =
     assertFlagRewrite
-        "let f (xs: int[]) =\n    let mutable found = false\n    for x in xs do\n        if x > 3 then found <- true\n    found"
+        (fsharp
+            """
+            let f (xs: int[]) =
+                let mutable found = false
+                for x in xs do
+                    if x > 3 then found <- true
+                found
+            """)
         "let found = xs |> Array.exists (fun x -> x > 3)"
 
 [<Fact>]
 let ``a true flag falsified in a loop becomes forall`` () =
     assertFlagRewrite
-        "let f (xs: int list) =\n    let mutable ok = true\n    for x in xs do\n        if x < 0 then ok <- false\n    ok"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let mutable ok = true
+                for x in xs do
+                    if x < 0 then ok <- false
+                ok
+            """)
         "let ok = xs |> List.forall (fun x -> not (x < 0))"
 
 [<Fact>]
@@ -193,14 +321,31 @@ let ``a negated predicate in the forall dual loses its not`` () =
     // a core-operator predicate: a user function (`valid x`) would run
     // fewer times under forall's short-circuit and keeps the loop
     assertFlagRewrite
-        "let f (xs: int list) =\n    let mutable ok = true\n    for x in xs do\n        if not (x >= 0) then ok <- false\n    ok"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let mutable ok = true
+                for x in xs do
+                    if not (x >= 0) then ok <- false
+                ok
+            """)
         "let ok = xs |> List.forall (fun x -> (x >= 0))"
 
 [<Fact>]
 let ``a second statement in the loop body keeps the mutable`` () =
     Assert.Empty(
-        flagLoopsIn
-            "let f (xs: int list) =\n    let mutable found = false\n    let mutable count = 0\n    for x in xs do\n        count <- count + 1\n        if x > 3 then found <- true\n    found"
+        flagLoopsIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable found = false
+                    let mutable count = 0
+                    for x in xs do
+                        count <- count + 1
+                        if x > 3 then found <- true
+                    found
+                """
+        )
     )
 
 [<Fact>]
@@ -208,37 +353,80 @@ let ``a side-effecting predicate keeps the mutable`` () =
     // exists short-circuits — a predicate with visible effects would run
     // fewer times after the rewrite
     Assert.Empty(
-        flagLoopsIn
-            "let f (xs: int list) =\n    let mutable found = false\n    let mutable seen = 0\n    for x in xs do\n        if (seen <- seen + 1; x > 3) then found <- true\n    found, seen"
+        flagLoopsIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable found = false
+                    let mutable seen = 0
+                    for x in xs do
+                        if (seen <- seen + 1; x > 3) then found <- true
+                    found, seen
+                """
+        )
     )
 
 [<Fact>]
 let ``an else branch keeps the mutable`` () =
     Assert.Empty(
-        flagLoopsIn
-            "let g () = ()\nlet f (xs: int list) =\n    let mutable found = false\n    for x in xs do\n        if x > 3 then found <- true else g ()\n    found"
+        flagLoopsIn (
+            fsharp
+                """
+                let g () = ()
+                let f (xs: int list) =
+                    let mutable found = false
+                    for x in xs do
+                        if x > 3 then found <- true else g ()
+                    found
+                """
+        )
     )
 
 [<Fact>]
 let ``flag reassignment after the loop keeps the mutable`` () =
     Assert.Empty(
-        flagLoopsIn
-            "let f (xs: int list) =\n    let mutable found = false\n    for x in xs do\n        if x > 3 then found <- true\n    found <- found && xs.Length > 1\n    found"
+        flagLoopsIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable found = false
+                    for x in xs do
+                        if x > 3 then found <- true
+                    found <- found && xs.Length > 1
+                    found
+                """
+        )
     )
 
 [<Fact>]
 let ``a predicate reading the flag keeps the mutable`` () =
     Assert.Empty(
-        flagLoopsIn
-            "let f (xs: int list) =\n    let mutable found = false\n    for x in xs do\n        if not found && x > 3 then found <- true\n    found"
+        flagLoopsIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable found = false
+                    for x in xs do
+                        if not found && x > 3 then found <- true
+                    found
+                """
+        )
     )
 
 [<Fact>]
 let ``a non-generic IEnumerable source keeps the mutable`` () =
     // `for` accepts it; List/Array/Seq.exists do not
     Assert.Empty(
-        flagLoopsIn
-            "let f (values: System.Collections.IEnumerable) =\n    let mutable found = false\n    for v in values do\n        if hash v > 3 then found <- true\n    found"
+        flagLoopsIn (
+            fsharp
+                """
+                let f (values: System.Collections.IEnumerable) =
+                    let mutable found = false
+                    for v in values do
+                        if hash v > 3 then found <- true
+                    found
+                """
+        )
     )
 
 // ---- FR0052 CountIsEmpty ----
@@ -271,7 +459,15 @@ let private hexIn (source: string) =
 
 [<Fact>]
 let ``dash-stripped BitConverter chain becomes ToHexString`` () =
-    match hexIn "module Test\nlet f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\")" with
+    match
+        hexIn (
+            fsharp
+                """
+                module Test
+                let f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace("-", "")
+                """
+        )
+    with
     | [ s ] -> Assert.Equal("System.Convert.ToHexString bytes", s.ReplacementText)
     | other -> failwithf "Expected exactly one hex suggestion, got %A" other
 
@@ -281,7 +477,11 @@ let ``a trailing member access keeps the call parenthesised`` () =
     // prismatic: the space form left `ToHexString hash.Substring(0, 16)`,
     // handing the substring OF THE BYTES to ToHexString
     let source =
-        "module Test\nlet f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\").Substring(0, 16)"
+        fsharp
+            """
+            module Test
+            let f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace("-", "").Substring(0, 16)
+            """
 
     match hexIn source with
     | [ s ] ->
@@ -293,7 +493,15 @@ let ``a trailing member access keeps the call parenthesised`` () =
 [<Fact>]
 
 let ``other Replace arguments are left alone`` () =
-    Assert.Empty(hexIn "module Test\nlet f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \":\")")
+    Assert.Empty(
+        hexIn (
+            fsharp
+                """
+                module Test
+                let f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace("-", ":")
+                """
+        )
+    )
 
 // ---- FR0055 SwallowedException ----
 
@@ -303,14 +511,32 @@ let private swallowedIn (source: string) =
 
 [<Fact>]
 let ``empty wildcard catch is noted`` () =
-    match swallowedIn "module Test\nlet f (act: unit -> unit) =\n    try act ()\n    with _ -> ()" with
+    match
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> unit) =
+                    try act ()
+                    with _ -> ()
+                """
+        )
+    with
     | [ s ] -> Assert.Equal("_", s.PatternText)
     | other -> failwithf "Expected exactly one swallow note, got %A" other
 
 [<Fact>]
 let ``empty typed Exception catch is noted`` () =
     match
-        swallowedIn "module Test\nlet f (act: unit -> unit) =\n    try act ()\n    with :? System.Exception -> ()"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> unit) =
+                    try act ()
+                    with :? System.Exception -> ()
+                """
+        )
     with
     | [ _ ] -> ()
     | other -> failwithf "Expected exactly one typed swallow note, got %A" other
@@ -318,14 +544,29 @@ let ``empty typed Exception catch is noted`` () =
 [<Fact>]
 let ``handler that does something is fine`` () =
     Assert.Empty(
-        swallowedIn "module Test\nlet f (act: unit -> unit) =\n    try act ()\n    with ex -> printfn \"%s\" ex.Message"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> unit) =
+                    try act ()
+                    with ex -> printfn "%s" ex.Message
+                """
+        )
     )
 
 [<Fact>]
 let ``deliberately ignoring a specific exception is fine`` () =
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet f (act: unit -> unit) =\n    try act ()\n    with :? System.OperationCanceledException -> ()"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> unit) =
+                    try act ()
+                    with :? System.OperationCanceledException -> ()
+                """
+        )
     )
 
 [<Fact>]
@@ -333,8 +574,18 @@ let ``a catch-all after a rethrown cancellation is not blind`` () =
     // the compiler's NameResolution: `:? OperationCanceledException ->
     // reraise ()` first, then `_ -> None`
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet f (act: unit -> int) =\n    try\n        Some(act ())\n    with\n    | :? System.OperationCanceledException -> reraise ()\n    | _ -> None"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> int) =
+                    try
+                        Some(act ())
+                    with
+                    | :? System.OperationCanceledException -> reraise ()
+                    | _ -> None
+                """
+        )
     )
 
 [<Fact>]
@@ -342,8 +593,19 @@ let ``a catch-all followed by an unconditional failure converts the swallow into
     // DiagnosticsLogger's exiter: `try Environment.Exit n with _ -> ()`
     // and then a failwith — the exception is replaced, not lost
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet exit (n: int) : int =\n    try\n        System.Environment.Exit n\n    with _ ->\n        ()\n\n    failwith \"exit did not exit\""
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let exit (n: int) : int =
+                    try
+                        System.Environment.Exit n
+                    with _ ->
+                        ()
+
+                    failwith "exit did not exit"
+                """
+        )
     )
 
 [<Fact>]
@@ -355,21 +617,65 @@ let ``a one-call teardown body is the best-effort release idiom`` () =
         | [ s ] -> s.Teardown
         | other -> failwithf "Expected exactly one swallow note, got %A" other
 
-    Assert.True(teardownOf "module Test\nlet close (s: System.IO.Stream) =\n    try s.Dispose() with _ -> ()")
-
     Assert.True(
-        teardownOf
-            "module Test\ntype T() =\n    let mutable s: System.IO.Stream = null\n    member _.Close() =\n        try\n            s.Dispose()\n            s <- null\n        with _ -> ()"
+        teardownOf (
+            fsharp
+                """
+                module Test
+                let close (s: System.IO.Stream) =
+                    try s.Dispose() with _ -> ()
+                """
+        )
     )
 
-    Assert.True(teardownOf "module Test\nlet cleanup (p: string) =\n    try System.IO.File.Delete p with ex -> ()")
+    Assert.True(
+        teardownOf (
+            fsharp
+                """
+                module Test
+                type T() =
+                    let mutable s: System.IO.Stream = null
+                    member _.Close() =
+                        try
+                            s.Dispose()
+                            s <- null
+                        with _ -> ()
+                """
+        )
+    )
+
+    Assert.True(
+        teardownOf (
+            fsharp
+                """
+                module Test
+                let cleanup (p: string) =
+                    try System.IO.File.Delete p with ex -> ()
+                """
+        )
+    )
 
     // a call to anything else is a swallow around real work
-    Assert.False(teardownOf "module Test\nlet f (act: unit -> unit) =\n    try act () with _ -> ()")
+    Assert.False(
+        teardownOf (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> unit) =
+                    try act () with _ -> ()
+                """
+        )
+    )
 
     Assert.False(
-        teardownOf
-            "module Test\nlet f (s: System.IO.Stream) (bytes: byte[]) =\n    try s.Write(bytes, 0, bytes.Length) with _ -> ()"
+        teardownOf (
+            fsharp
+                """
+                module Test
+                let f (s: System.IO.Stream) (bytes: byte[]) =
+                    try s.Write(bytes, 0, bytes.Length) with _ -> ()
+                """
+        )
     )
 
 [<Fact>]
@@ -383,47 +689,105 @@ let ``a fallback that is a variable, a sentinel or a tuple carrying a default di
 
     Assert.Equal(
         Some "path",
-        fallbackOf
-            "module Test\nlet create (path: string) =\n    try\n        System.IO.Directory.CreateDirectory path |> ignore\n        path\n    with _ ->\n        path"
+        fallbackOf (
+            fsharp
+                """
+                module Test
+                let create (path: string) =
+                    try
+                        System.IO.Directory.CreateDirectory path |> ignore
+                        path
+                    with _ ->
+                        path
+                """
+        )
     )
 
     Assert.Equal(
         Some "(state, Completed None)",
-        fallbackOf
-            "module Test\ntype Step =\n    | Completed of int option\nlet run (state: int) (f: int -> int * Step) =\n    try f state\n    with _ -> (state, Completed None)"
+        fallbackOf (
+            fsharp
+                """
+                module Test
+                type Step =
+                    | Completed of int option
+                let run (state: int) (f: int -> int * Step) =
+                    try f state
+                    with _ -> (state, Completed None)
+                """
+        )
     )
 
     Assert.Equal(
         Some "System.Int32.MaxValue",
-        fallbackOf "module Test\nlet index (s: string) =\n    try int32 s\n    with _ -> System.Int32.MaxValue"
+        fallbackOf (
+            fsharp
+                """
+                module Test
+                let index (s: string) =
+                    try int32 s
+                    with _ -> System.Int32.MaxValue
+                """
+        )
     )
 
     Assert.Equal(
         Some "System.DateTime.MaxValue",
-        fallbackOf
-            "module Test\nlet stamp (p: string) =\n    try\n        let fi = System.IO.FileInfo p\n        System.IO.File.GetLastWriteTime fi.FullName\n    with _ ->\n        System.DateTime.MaxValue"
+        fallbackOf (
+            fsharp
+                """
+                module Test
+                let stamp (p: string) =
+                    try
+                        let fi = System.IO.FileInfo p
+                        System.IO.File.GetLastWriteTime fi.FullName
+                    with _ ->
+                        System.DateTime.MaxValue
+                """
+        )
     )
 
     // a tuple of plain names carries no default: it is a computed answer
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet run (state: int) (other: int) (f: int -> int * int) =\n    try f state\n    with _ -> (state, other)"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let run (state: int) (other: int) (f: int -> int * int) =
+                    try f state
+                    with _ -> (state, other)
+                """
+        )
     )
 
 [<Fact>]
 let ``a guard that never looks at the exception still swallows every one`` () =
     // fsdocs: `with _ when watch -> ()`
     match
-        swallowedIn
-            "module Test\nlet copy (watch: bool) (src: string) (dst: string) =\n    try System.IO.File.Copy(src, dst, true)\n    with _ when watch -> ()"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let copy (watch: bool) (src: string) (dst: string) =
+                    try System.IO.File.Copy(src, dst, true)
+                    with _ when watch -> ()
+                """
+        )
     with
     | [ s ] -> Assert.Equal("_ when watch", s.PatternText)
     | other -> failwithf "Expected exactly one guarded swallow note, got %A" other
 
     // a guard on the exception itself is a decision
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet copy (src: string) (dst: string) =\n    try System.IO.File.Copy(src, dst, true)\n    with ex when ex.Message.Contains \"locked\" -> ()"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let copy (src: string) (dst: string) =
+                    try System.IO.File.Copy(src, dst, true)
+                    with ex when ex.Message.Contains "locked" -> ()
+                """
+        )
     )
 
 [<Fact>]
@@ -437,26 +801,60 @@ let ``a try around a probe that answers for a missing path should go`` () =
 
     Assert.Equal(
         Some "File.Exists",
-        probeOf "module Test\nlet has (p: string) =\n    try System.IO.File.Exists p\n    with _ -> false"
+        probeOf (
+            fsharp
+                """
+                module Test
+                let has (p: string) =
+                    try System.IO.File.Exists p
+                    with _ -> false
+                """
+        )
     )
 
     Assert.Equal(
         Some "Directory.Exists",
-        probeOf
-            "module Test\nlet has (p: string) =\n    (try\n        System.IO.Directory.Exists(p)\n     with _ ->\n        false)"
+        probeOf (
+            fsharp
+                """
+                module Test
+                let has (p: string) =
+                    (try
+                        System.IO.Directory.Exists(p)
+                     with _ ->
+                        false)
+                """
+        )
     )
 
     Assert.Equal(
         Some "File.GetLastWriteTime",
-        probeOf
-            "module Test\nlet stamp (p: string) =\n    try System.IO.File.GetLastWriteTime p\n    with _ -> System.DateTime.MaxValue"
+        probeOf (
+            fsharp
+                """
+                module Test
+                let stamp (p: string) =
+                    try System.IO.File.GetLastWriteTime p
+                    with _ -> System.DateTime.MaxValue
+                """
+        )
     )
 
     // a body doing more than the probe is not a probe
     Assert.Equal(
         None,
-        probeOf
-            "module Test\nlet stamp (p: string) =\n    try\n        let fi = System.IO.FileInfo p\n        System.IO.File.GetLastWriteTime fi.FullName\n    with _ ->\n        System.DateTime.MaxValue"
+        probeOf (
+            fsharp
+                """
+                module Test
+                let stamp (p: string) =
+                    try
+                        let fi = System.IO.FileInfo p
+                        System.IO.File.GetLastWriteTime fi.FullName
+                    with _ ->
+                        System.DateTime.MaxValue
+                """
+        )
     )
 
 // ---- FR0054 RaiseInSpecialMember ----
@@ -468,8 +866,15 @@ let private objectRulesIn (source: string) =
 [<Fact>]
 let ``failwith inside GetHashCode is noted`` () =
     let _, _, raises =
-        objectRulesIn
-            "module Test\ntype T() =\n    override _.Equals(o) = false\n    override _.GetHashCode() = failwith \"no hash\""
+        objectRulesIn (
+            fsharp
+                """
+                module Test
+                type T() =
+                    override _.Equals(o) = false
+                    override _.GetHashCode() = failwith "no hash"
+                """
+        )
 
     match raises with
     | [ s ] -> Assert.Equal("GetHashCode", s.MemberName)
@@ -478,7 +883,14 @@ let ``failwith inside GetHashCode is noted`` () =
 [<Fact>]
 let ``ToString returning a value is fine`` () =
     let _, _, raises =
-        objectRulesIn "module Test\ntype T() =\n    override _.ToString() = \"t\""
+        objectRulesIn (
+            fsharp
+                """
+                module Test
+                type T() =
+                    override _.ToString() = "t"
+                """
+        )
 
     Assert.Empty raises
 
@@ -487,8 +899,20 @@ let ``FR0054: a Dispose that catches its own flush failure throws nothing to its
     // the raise sits under a try/with inside the member: the member handles
     // it, so nothing escapes into the using block that disposes it
     let _, _, raises =
-        objectRulesIn
-            "module Test\ntype Session(conn: System.IO.Stream) =\n    interface System.IDisposable with\n        member _.Dispose() =\n            try\n                if not conn.CanWrite then failwith \"stream already closed\"\n                conn.Flush()\n            with ex ->\n                eprintfn \"flush on dispose failed: %s\" ex.Message"
+        objectRulesIn (
+            fsharp
+                """
+                module Test
+                type Session(conn: System.IO.Stream) =
+                    interface System.IDisposable with
+                        member _.Dispose() =
+                            try
+                                if not conn.CanWrite then failwith "stream already closed"
+                                conn.Flush()
+                            with ex ->
+                                eprintfn "flush on dispose failed: %s" ex.Message
+                """
+        )
 
     Assert.Empty raises
 
@@ -501,8 +925,17 @@ let private recursiveSeqIn (source: string) =
 [<Fact>]
 let ``a rec function yielding itself through seq is noted`` () =
     match
-        recursiveSeqIn
-            "module Test\nlet rec countDown n = seq {\n    yield n\n    if n > 0 then yield! countDown (n - 1)\n    yield -1\n}"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                let rec countDown n = seq {
+                    yield n
+                    if n > 0 then yield! countDown (n - 1)
+                    yield -1
+                }
+                """
+        )
     with
     | [ s ] ->
         Assert.Equal("countDown", s.FunctionName)
@@ -512,20 +945,46 @@ let ``a rec function yielding itself through seq is noted`` () =
 [<Fact>]
 let ``self-reference via Seq collect inside the seq is also caught`` () =
     match
-        recursiveSeqIn
-            "module Test\nlet rec walk (xs: int list list) = seq {\n    yield xs.Length\n    yield! Seq.collect walk []\n}"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                let rec walk (xs: int list list) = seq {
+                    yield xs.Length
+                    yield! Seq.collect walk []
+                }
+                """
+        )
     with
     | [ s ] -> Assert.Equal("walk", s.FunctionName)
     | other -> failwithf "Expected exactly one collect-form note, got %A" other
 
 [<Fact>]
 let ``a non-recursive seq is fine`` () =
-    Assert.Empty(recursiveSeqIn "module Test\nlet numbers n = seq {\n    for i in 1..n do\n        yield i * i\n}")
+    Assert.Empty(
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                let numbers n = seq {
+                    for i in 1..n do
+                        yield i * i
+                }
+                """
+        )
+    )
 
 [<Fact>]
 let ``recursion outside any seq is fine`` () =
     Assert.Empty(
-        recursiveSeqIn "module Test\nlet rec fact n = if n <= 1 then 1 else n * fact (n - 1)\nlet s = seq { yield 1 }"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                let rec fact n = if n <= 1 then 1 else n * fact (n - 1)
+                let s = seq { yield 1 }
+                """
+        )
     )
 
 // ---- FR0057 XmlDocParams ----
@@ -537,8 +996,15 @@ let private xmlDocsIn (source: string) =
 [<Fact>]
 let ``a missing param tag is noted`` () =
     match
-        xmlDocsIn
-            "module Test\n/// <summary>Scales.</summary>\n/// <param name=\"value\">The value.</param>\nlet scale (value: int) (factor: int) = value * factor"
+        xmlDocsIn (
+            fsharp
+                """
+                module Test
+                /// <summary>Scales.</summary>
+                /// <param name="value">The value.</param>
+                let scale (value: int) (factor: int) = value * factor
+                """
+        )
     with
     | [ s ] ->
         Assert.Equal("scale", s.BindingName)
@@ -548,19 +1014,46 @@ let ``a missing param tag is noted`` () =
 [<Fact>]
 let ``fully documented parameters are fine`` () =
     Assert.Empty(
-        xmlDocsIn
-            "module Test\n/// <summary>Scales.</summary>\n/// <param name=\"value\">The value.</param>\n/// <param name=\"factor\">The factor.</param>\nlet scale (value: int) (factor: int) = value * factor"
+        xmlDocsIn (
+            fsharp
+                """
+                module Test
+                /// <summary>Scales.</summary>
+                /// <param name="value">The value.</param>
+                /// <param name="factor">The factor.</param>
+                let scale (value: int) (factor: int) = value * factor
+                """
+        )
     )
 
 [<Fact>]
 let ``undocumented functions are a style choice`` () =
-    Assert.Empty(xmlDocsIn "module Test\n/// Scales a value.\nlet scale (value: int) (factor: int) = value * factor")
+    Assert.Empty(
+        xmlDocsIn (
+            fsharp
+                """
+                module Test
+                /// Scales a value.
+                let scale (value: int) (factor: int) = value * factor
+                """
+        )
+    )
 
 [<Fact>]
 let ``a custom operation documents the DSL keyword not the signature`` () =
     Assert.Empty(
-        xmlDocsIn
-            "module Test\ntype Cfg() =\n    member _.Yield(_: unit) = 0\n    /// <summary>Sets the width.</summary>\n    /// <param name=\"w\">The width.</param>\n    [<CustomOperation \"width\">]\n    member _.Width(state: int, w: int) = state + w"
+        xmlDocsIn (
+            fsharp
+                """
+                module Test
+                type Cfg() =
+                    member _.Yield(_: unit) = 0
+                    /// <summary>Sets the width.</summary>
+                    /// <param name="w">The width.</param>
+                    [<CustomOperation "width">]
+                    member _.Width(state: int, w: int) = state + w
+                """
+        )
     )
 
 [<Fact>]
@@ -568,29 +1061,65 @@ let ``sync-over-async inside an object expression member is found`` () =
     // corpus regression: Dispose bodies in `{ new IDisposable with ... }`
     // hid GetResult calls from the walker
     match
-        blockingIn
-            "module Test\nopen System\nopen System.Threading.Tasks\nlet scope (t: Task) =\n    { new IDisposable with\n        member _.Dispose() = t.GetAwaiter().GetResult() }"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System
+                open System.Threading.Tasks
+                let scope (t: Task) =
+                    { new IDisposable with
+                        member _.Dispose() = t.GetAwaiter().GetResult() }
+                """
+        )
     with
     | [ _ ] -> ()
     | other -> failwithf "Expected exactly one blocking note, got %A" other
 
 [<Fact>]
 let ``catch-all substituting an empty string is noted`` () =
-    match swallowedIn "module Test\nlet f (read: unit -> string) =\n    try read ()\n    with _ -> \"\"" with
+    match
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (read: unit -> string) =
+                    try read ()
+                    with _ -> ""
+                """
+        )
+    with
     | [ s ] -> Assert.Equal(Some "\"\"", s.FallbackText)
     | other -> failwithf "Expected exactly one fallback note, got %A" other
 
 [<Fact>]
 let ``catch-all substituting zero is noted`` () =
-    match swallowedIn "module Test\nlet f (count: unit -> int) =\n    try count ()\n    with _ -> 0" with
+    match
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (count: unit -> int) =
+                    try count ()
+                    with _ -> 0
+                """
+        )
+    with
     | [ s ] -> Assert.Equal(Some "0", s.FallbackText)
     | other -> failwithf "Expected exactly one zero-fallback note, got %A" other
 
 [<Fact>]
 let ``catch-all substituting defaultof is noted`` () =
     match
-        swallowedIn
-            "module Test\nlet f (get: unit -> string) =\n    try get ()\n    with _ -> Unchecked.defaultof<string>"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (get: unit -> string) =
+                    try get ()
+                    with _ -> Unchecked.defaultof<string>
+                """
+        )
     with
     | [ _ ] -> ()
     | other -> failwithf "Expected exactly one defaultof-fallback note, got %A" other
@@ -599,15 +1128,33 @@ let ``catch-all substituting defaultof is noted`` () =
 let ``the bool probe idiom stays quiet`` () =
     // `try ping (); true with _ -> false` — the failure IS the answer
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet canPing (ping: unit -> unit) =\n    try\n        ping ()\n        true\n    with _ -> false"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let canPing (ping: unit -> unit) =
+                    try
+                        ping ()
+                        true
+                    with _ -> false
+                """
+        )
     )
 
 [<Fact>]
 let ``the inverted did-it-throw probe stays quiet too`` () =
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet throws (act: unit -> unit) =\n    try\n        act ()\n        false\n    with _ -> true"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let throws (act: unit -> unit) =
+                    try
+                        act ()
+                        false
+                    with _ -> true
+                """
+        )
     )
 
 [<Fact>]
@@ -615,8 +1162,15 @@ let ``a false fallback on a non-probe body is a disguise`` () =
     // the body computes a real bool; the catch-all rewrites failure as
     // `false`, indistinguishable from an honest negative
     match
-        swallowedIn
-            "module Test\nlet isValid (parse: string -> bool) (s: string) =\n    try parse s\n    with _ -> false"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let isValid (parse: string -> bool) (s: string) =
+                    try parse s
+                    with _ -> false
+                """
+        )
     with
     | [ s ] -> Assert.Equal(Some "false", s.FallbackText)
     | other -> failwithf "Expected one swallowed-exception finding, got %A" other
@@ -624,8 +1178,15 @@ let ``a false fallback on a non-probe body is a disguise`` () =
 [<Fact>]
 let ``a ValueNone fallback is a disguise`` () =
     match
-        swallowedIn
-            "module Test\nlet tryRead (read: unit -> int) =\n    try ValueSome(read ())\n    with _ -> ValueNone"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let tryRead (read: unit -> int) =
+                    try ValueSome(read ())
+                    with _ -> ValueNone
+                """
+        )
     with
     | [ s ] -> Assert.Equal(Some "ValueNone", s.FallbackText)
     | other -> failwithf "Expected one swallowed-exception finding, got %A" other
@@ -633,15 +1194,31 @@ let ``a ValueNone fallback is a disguise`` () =
 [<Fact>]
 let ``a specific exception with a default is a decision`` () =
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet f (read: unit -> string) =\n    try read ()\n    with :? System.IO.FileNotFoundException -> \"\""
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (read: unit -> string) =
+                    try read ()
+                    with :? System.IO.FileNotFoundException -> ""
+                """
+        )
     )
 
 [<Fact>]
 let ``a string accumulator becomes String.concat, not a quadratic fold`` () =
     let folds, _ =
-        accumulationIn
-            "module Test\nlet joinAll (xs: string list) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + x\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                module Test
+                let joinAll (xs: string list) =
+                    let mutable acc = ""
+                    for x in xs do
+                        acc <- acc + x
+                    acc
+                """
+        )
 
     match folds with
     | [ s ] -> Assert.Equal("xs |> String.concat \"\"", s.ReplacementText)
@@ -650,8 +1227,17 @@ let ``a string accumulator becomes String.concat, not a quadratic fold`` () =
 [<Fact>]
 let ``a projected string accumulator maps then concats`` () =
     let folds, _ =
-        accumulationIn
-            "module Test\nlet render (xs: int list) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + string x\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                module Test
+                let render (xs: int list) =
+                    let mutable acc = ""
+                    for x in xs do
+                        acc <- acc + string x
+                    acc
+                """
+        )
 
     match folds with
     | [ s ] -> Assert.Equal("xs |> List.map (fun x -> string x) |> String.concat \"\"", s.ReplacementText)
@@ -660,8 +1246,17 @@ let ``a projected string accumulator maps then concats`` () =
 [<Fact>]
 let ``a non-empty seed prefixes the concatenation`` () =
     let folds, _ =
-        accumulationIn
-            "module Test\nlet render (xs: string list) =\n    let mutable acc = \"head:\"\n    for x in xs do\n        acc <- acc + x\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                module Test
+                let render (xs: string list) =
+                    let mutable acc = "head:"
+                    for x in xs do
+                        acc <- acc + x
+                    acc
+                """
+        )
 
     match folds with
     | [ s ] -> Assert.Equal("\"head:\" + (xs |> String.concat \"\")", s.ReplacementText)
@@ -671,7 +1266,15 @@ let ``a non-empty seed prefixes the concatenation`` () =
 let ``ValueTask Result blocks like Task Result`` () =
     // post-core BCL async I/O returns ValueTask everywhere
     let suggestions =
-        blockingIn "let f (vt: System.Threading.Tasks.ValueTask<int>) =\n    task {\n        return vt.Result\n    }"
+        blockingIn (
+            fsharp
+                """
+                let f (vt: System.Threading.Tasks.ValueTask<int>) =
+                    task {
+                        return vt.Result
+                    }
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal(SyncOverAsync.BlockKind.TaskResult, s.Kind)
@@ -680,8 +1283,16 @@ let ``ValueTask Result blocks like Task Result`` () =
 [<Fact>]
 let ``Task WaitAll is a blocking wait too`` () =
     let suggestions =
-        blockingIn
-            "let f (t1: System.Threading.Tasks.Task) =\n    task {\n        System.Threading.Tasks.Task.WaitAll [| t1 |]\n        return 1\n    }"
+        blockingIn (
+            fsharp
+                """
+                let f (t1: System.Threading.Tasks.Task) =
+                    task {
+                        System.Threading.Tasks.Task.WaitAll [| t1 |]
+                        return 1
+                    }
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal(SyncOverAsync.BlockKind.TaskWait, s.Kind)
@@ -691,8 +1302,19 @@ let ``Task WaitAll is a blocking wait too`` () =
 let ``a Thread.Sleep inside a nested seq gets no do-fix`` () =
     // `do!` in the seq body would call a Bind the seq builder lacks
     let suggestions =
-        blockingIn
-            "let f () =\n    async {\n        let xs = seq {\n            System.Threading.Thread.Sleep 100\n            yield 1\n        }\n        return Seq.length xs\n    }"
+        blockingIn (
+            fsharp
+                """
+                let f () =
+                    async {
+                        let xs = seq {
+                            System.Threading.Thread.Sleep 100
+                            yield 1
+                        }
+                        return Seq.length xs
+                    }
+                """
+        )
 
     Assert.NotEmpty suggestions
     Assert.True(suggestions |> List.forall (fun s -> s.Fixes.IsEmpty))
@@ -700,8 +1322,14 @@ let ``a Thread.Sleep inside a nested seq gets no do-fix`` () =
 [<Fact>]
 let ``a field-held concurrent queue count is an emptiness check too`` () =
     let suggestions =
-        countsIn
-            "type H() =\n    member val Queue = System.Collections.Concurrent.ConcurrentQueue<int>() with get\n    member this.Check() = this.Queue.Count = 0"
+        countsIn (
+            fsharp
+                """
+                type H() =
+                    member val Queue = System.Collections.Concurrent.ConcurrentQueue<int>() with get
+                    member this.Check() = this.Queue.Count = 0
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal("this.Queue.IsEmpty", s.ReplacementText)
@@ -712,8 +1340,18 @@ let ``a recursive member yielding itself through seq is noted`` () =
     // members are implicitly recursive — no `rec` keyword to find — and
     // OO-style tree APIs are where recursive seqs live
     let suggestions =
-        recursiveSeqIn
-            "module Test\ntype Node(children: Node list) =\n    member this.Descendants() : seq<int> = seq {\n        yield 1\n        for c in children do\n            yield! c.Descendants()\n    }"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                type Node(children: Node list) =
+                    member this.Descendants() : seq<int> = seq {
+                        yield 1
+                        for c in children do
+                            yield! c.Descendants()
+                    }
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal("Descendants", s.FunctionName)
@@ -722,8 +1360,16 @@ let ``a recursive member yielding itself through seq is noted`` () =
 [<Fact>]
 let ``quadratic List.append in a loop is noted`` () =
     let _, quadratics =
-        accumulationIn
-            "let f (xs: int list) =\n    let mutable acc: int list = []\n    for x in xs do\n        if x > 0 then acc <- List.append acc [ x ]\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable acc: int list = []
+                    for x in xs do
+                        if x > 0 then acc <- List.append acc [ x ]
+                    acc
+                """
+        )
 
     match quadratics with
     | [ s ] -> Assert.Equal("acc", s.Name)
@@ -732,8 +1378,16 @@ let ``quadratic List.append in a loop is noted`` () =
 [<Fact>]
 let ``quadratic append through a ref cell is noted`` () =
     let _, quadratics =
-        accumulationIn
-            "let f (xs: int list) =\n    let acc = ref ([]: int list)\n    for x in xs do\n        acc.Value <- acc.Value @ [ x ]\n    acc.Value"
+        accumulationIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ref ([]: int list)
+                    for x in xs do
+                        acc.Value <- acc.Value @ [ x ]
+                    acc.Value
+                """
+        )
 
     match quadratics with
     | [ s ] -> Assert.Equal("acc", s.Name)
@@ -744,7 +1398,14 @@ let ``a plain seq source still sums with the Seq module`` () =
     // the module-resolved output names List/Array when it can; a true
     // seq has nothing better than Seq.sum
     assertFold
-        "let f (xs: float seq) =\n    let mutable total = 0.0\n    for x in xs do\n        total <- total + x\n    total"
+        (fsharp
+            """
+            let f (xs: float seq) =
+                let mutable total = 0.0
+                for x in xs do
+                    total <- total + x
+                total
+            """)
         "xs |> Seq.sum"
 
 [<Fact>]
@@ -752,8 +1413,19 @@ let ``quadratic string building in a while loop is noted`` () =
     // measured: 57.8µs and 1MB per 1000 pieces against 1.6µs/4.6KB for a
     // StringBuilder — the worst string builder there is
     let _, quadratics =
-        accumulationIn
-            "let f (next: unit -> string option) =\n    let mutable acc = \"\"\n    let mutable go = true\n    while go do\n        match next () with\n        | Some s -> acc <- acc + s\n        | None -> go <- false\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                let f (next: unit -> string option) =
+                    let mutable acc = ""
+                    let mutable go = true
+                    while go do
+                        match next () with
+                        | Some s -> acc <- acc + s
+                        | None -> go <- false
+                    acc
+                """
+        )
 
     match quadratics with
     | [ s ] ->
@@ -764,8 +1436,19 @@ let ``quadratic string building in a while loop is noted`` () =
 [<Fact>]
 let ``numeric accumulation with plus is ordinary code`` () =
     let _, quadratics =
-        accumulationIn
-            "let f (next: unit -> int option) =\n    let mutable total = 0\n    let mutable go = true\n    while go do\n        match next () with\n        | Some n -> total <- total + n\n        | None -> go <- false\n    total"
+        accumulationIn (
+            fsharp
+                """
+                let f (next: unit -> int option) =
+                    let mutable total = 0
+                    let mutable go = true
+                    while go do
+                        match next () with
+                        | Some n -> total <- total + n
+                        | None -> go <- false
+                    total
+                """
+        )
 
     Assert.Empty quadratics
 
@@ -774,8 +1457,16 @@ let ``the FR0050 string shape gets the fix, not the note`` () =
     // the fold fix rewrites this whole shape into one String.concat; a
     // note on the same site would nag about code the fix removes
     let folds, quadratics =
-        accumulationIn
-            "let render (xs: int list) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + string x\n    acc"
+        accumulationIn (
+            fsharp
+                """
+                let render (xs: int list) =
+                    let mutable acc = ""
+                    for x in xs do
+                        acc <- acc + string x
+                    acc
+                """
+        )
 
     Assert.Single folds |> ignore
     Assert.Empty quadratics
@@ -785,7 +1476,14 @@ let ``a seq source materializes before String concat`` () =
     // the lazy-seq path through String.concat measured 42.7µs/194KB per
     // 1000 pieces against 2.6µs/2KB once materialized
     assertFold
-        "let render (xs: int seq) =\n    let mutable acc = \"\"\n    for x in xs do\n        acc <- acc + string x\n    acc"
+        (fsharp
+            """
+            let render (xs: int seq) =
+                let mutable acc = ""
+                for x in xs do
+                    acc <- acc + string x
+                acc
+            """)
         "xs |> Seq.map (fun x -> string x) |> Seq.toArray |> String.concat \"\""
 
 [<Fact>]
@@ -793,20 +1491,43 @@ let ``a pure let prefix folds into the exists lambda`` () =
     // the opensSystem shape from our own code review: a let-bound
     // projection before the flag test is still an exists question
     assertFlagRewrite
-        "let f (lines: string list) =\n    let mutable found = false\n    for l in lines do\n        let t = l.Trim()\n        if t = \"open System\" then found <- true\n    found"
-        "let found = lines |> List.exists (fun l -> let t = l.Trim() in t = \"open System\")"
+        (fsharp
+            """
+            let f (lines: string list) =
+                let mutable found = false
+                for l in lines do
+                    let t = l.Trim()
+                    if t = "open System" then found <- true
+                found
+            """)
+        """let found = lines |> List.exists (fun l -> let t = l.Trim() in t = "open System")"""
 
 [<Fact>]
 let ``a mutable let in the body keeps the flag loop`` () =
     Assert.Empty(
-        flagLoopsIn
-            "let f (xs: int list) =\n    let mutable found = false\n    for x in xs do\n        let mutable y = x + 1\n        if y > 3 then found <- true\n    found"
+        flagLoopsIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable found = false
+                    for x in xs do
+                        let mutable y = x + 1
+                        if y > 3 then found <- true
+                    found
+                """
+        )
     )
 
 [<Fact>]
 let ``a GetResult binding inside task becomes a let bang bind`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let x = t.GetAwaiter().GetResult()\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = task {
+                let x = t.GetAwaiter().GetResult()
+                return x + 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -870,7 +1591,13 @@ let ``a ValueTask GetResult binding inside async is not rewritten`` () =
     // async { } binds a Task via Async.AwaitTask — but AwaitTask has no
     // ValueTask overload, so a ValueTaskAwaiter drain stays advice
     let source =
-        "let f (t: System.Threading.Tasks.ValueTask<int>) = async {\n    let x = t.GetAwaiter().GetResult()\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.ValueTask<int>) = async {
+                let x = t.GetAwaiter().GetResult()
+                return x + 1
+            }
+            """
 
     for s in blockingIn source do
         Assert.Empty s.Fixes
@@ -880,7 +1607,16 @@ let ``a GetResult binding in a finally block keeps its hands off`` () =
     // let!/do! are illegal inside finally — the pre-existing Sleep fix
     // shared this hole
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = task {\n    try\n        return 1\n    finally\n        let x = t.GetAwaiter().GetResult()\n        ignore x\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = task {
+                try
+                    return 1
+                finally
+                    let x = t.GetAwaiter().GetResult()
+                    ignore x
+            }
+            """
 
     for s in blockingIn source do
         Assert.Empty s.Fixes
@@ -888,7 +1624,15 @@ let ``a GetResult binding in a finally block keeps its hands off`` () =
 [<Fact>]
 let ``Thread Sleep in a finally block keeps its blocking form`` () =
     let source =
-        "let f () = task {\n    try\n        return 1\n    finally\n        System.Threading.Thread.Sleep 100\n}"
+        fsharp
+            """
+            let f () = task {
+                try
+                    return 1
+                finally
+                    System.Threading.Thread.Sleep 100
+            }
+            """
 
     for s in blockingIn source do
         Assert.Empty s.Fixes
@@ -896,7 +1640,13 @@ let ``Thread Sleep in a finally block keeps its blocking form`` () =
 [<Fact>]
 let ``a type-annotated GetResult binding stays advice`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let x: int = t.GetAwaiter().GetResult()\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = task {
+                let x: int = t.GetAwaiter().GetResult()
+                return x + 1
+            }
+            """
 
     for s in blockingIn source do
         Assert.Empty s.Fixes
@@ -911,7 +1661,13 @@ let private applyAll (source: string) (fixes: (FSharp.Compiler.Text.range * stri
 [<Fact>]
 let ``RunSynchronously binding inside async becomes a native bind`` () =
     let source =
-        "let f (comp: Async<int>) = async {\n    let x = comp |> Async.RunSynchronously\n    return x + 1\n}"
+        fsharp
+            """
+            let f (comp: Async<int>) = async {
+                let x = comp |> Async.RunSynchronously
+                return x + 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -926,7 +1682,13 @@ let ``RunSynchronously binding inside task binds the async directly`` () =
     // the task builder's medium-priority overload binds Async<'T> with a
     // plain let! — no StartAsTask adapter needed
     let source =
-        "let f (comp: Async<int>) = task {\n    let x = Async.RunSynchronously comp\n    return x + 1\n}"
+        fsharp
+            """
+            let f (comp: Async<int>) = task {
+                let x = Async.RunSynchronously comp
+                return x + 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -939,7 +1701,13 @@ let ``RunSynchronously binding inside task binds the async directly`` () =
 [<Fact>]
 let ``RunSynchronously with a timeout tuple stays advice`` () =
     let source =
-        "let f (comp: Async<int>) = async {\n    let x = Async.RunSynchronously(comp, timeout = 100)\n    return x + 1\n}"
+        fsharp
+            """
+            let f (comp: Async<int>) = async {
+                let x = Async.RunSynchronously(comp, timeout = 100)
+                return x + 1
+            }
+            """
 
     for s in blockingIn source do
         Assert.Empty s.Fixes
@@ -947,7 +1715,13 @@ let ``RunSynchronously with a timeout tuple stays advice`` () =
 [<Fact>]
 let ``a GetResult binding inside async binds via AwaitTask`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = async {\n    let x = t.GetAwaiter().GetResult()\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = async {
+                let x = t.GetAwaiter().GetResult()
+                return x + 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -960,7 +1734,13 @@ let ``a GetResult binding inside async binds via AwaitTask`` () =
 [<Fact>]
 let ``a Result binding inside task becomes a plain bind`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let x = t.Result\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = task {
+                let x = t.Result
+                return x + 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -973,7 +1753,14 @@ let ``a Result binding inside task becomes a plain bind`` () =
 [<Fact>]
 let ``a Result binding on a call inside async parenthesizes the AwaitTask arg`` () =
     let source =
-        "let g () = System.Threading.Tasks.Task.FromResult 2\nlet f () = async {\n    let x = (g ()).Result\n    return x + 1\n}"
+        fsharp
+            """
+            let g () = System.Threading.Tasks.Task.FromResult 2
+            let f () = async {
+                let x = (g ()).Result
+                return x + 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -987,7 +1774,13 @@ let ``a Result binding on a call inside async parenthesizes the AwaitTask arg`` 
 let ``a ValueTask Result binding inside async stays advice`` () =
     // Async.AwaitTask has no ValueTask overload — no fix to offer there
     let source =
-        "let f (t: System.Threading.Tasks.ValueTask<int>) = async {\n    let x = t.Result\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.ValueTask<int>) = async {
+                let x = t.Result
+                return x + 1
+            }
+            """
 
     for s in blockingIn source do
         Assert.Empty s.Fixes
@@ -1001,7 +1794,15 @@ let private cancellationIn (source: string) =
 [<Fact>]
 let ``an omitted token is appended from the in-scope parameter`` () =
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet pause (ct: CancellationToken) = task {\n    do! Task.Delay(100)\n    return 1\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let pause (ct: CancellationToken) = task {
+                do! Task.Delay(100)
+                return 1
+            }
+            """
 
     match cancellationIn source with
     | [ s ] ->
@@ -1019,7 +1820,27 @@ let private unobservedLoopsIn (source: string) =
 [<Fact>]
 let ``FR0118: a loop under a token that never reads it is noted once, at the outermost loop`` () =
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet pump (ct: CancellationToken) (next: unit -> int option) (handle: int -> Task) = task {\n    let mutable go = true\n    while go do\n        match next () with\n        | Some v ->\n            do! handle v\n            while v > 0 do\n                do! handle (v - 1)\n        | None -> go <- false\n    return 0\n}\nlet items (ct: CancellationToken) (xs: int list) (handle: int -> Task) = task {\n    for x in xs do\n        do! handle x\n    return 0\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let pump (ct: CancellationToken) (next: unit -> int option) (handle: int -> Task) = task {
+                let mutable go = true
+                while go do
+                    match next () with
+                    | Some v ->
+                        do! handle v
+                        while v > 0 do
+                            do! handle (v - 1)
+                    | None -> go <- false
+                return 0
+            }
+            let items (ct: CancellationToken) (xs: int list) (handle: int -> Task) = task {
+                for x in xs do
+                    do! handle x
+                return 0
+            }
+            """
 
     match unobservedLoopsIn source with
     | [ a; b ] ->
@@ -1035,12 +1856,22 @@ let ``FR0118: a loop under a token that never reads it is noted once, at the out
             let patched = applyEdit (applyEdit source rb tb) ra ta
 
             Assert.Contains(
-                "    while go do\n        ct.ThrowIfCancellationRequested()\n        match next () with",
+                fsharp
+                    """
+                        while go do
+                            ct.ThrowIfCancellationRequested()
+                            match next () with
+                    """,
                 patched
             )
 
             Assert.Contains(
-                "    for x in xs do\n        ct.ThrowIfCancellationRequested()\n        do! handle x",
+                fsharp
+                    """
+                        for x in xs do
+                            ct.ThrowIfCancellationRequested()
+                            do! handle x
+                    """,
                 patched
             )
 
@@ -1051,7 +1882,15 @@ let ``FR0118: a loop under a token that never reads it is noted once, at the out
 [<Fact>]
 let ``FR0118: a one-line loop body gets the note without the fix`` () =
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet items (ct: CancellationToken) (xs: int list) (handle: int -> Task) = task {\n    for x in xs do do! handle x\n    return 0\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let items (ct: CancellationToken) (xs: int list) (handle: int -> Task) = task {
+                for x in xs do do! handle x
+                return 0
+            }
+            """
 
     match unobservedLoopsIn source with
     | [ s ] -> Assert.True(s.Fix.IsNone, "a body on the header's line has no first statement to lead")
@@ -1060,7 +1899,45 @@ let ``FR0118: a one-line loop body gets the note without the fix`` () =
 [<Fact>]
 let ``FR0118: a loop that observes the token, sits in async, or has the token fix inside stays quiet`` () =
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet checks (ct: CancellationToken) (handle: int -> Task) = task {\n    let mutable i = 0\n    while i < 10 do\n        ct.ThrowIfCancellationRequested()\n        do! handle i\n        i <- i + 1\n    return 0\n}\nlet passes (ct: CancellationToken) (handle: int * CancellationToken -> Task) = task {\n    let mutable i = 0\n    while i < 10 do\n        do! handle (i, ct)\n        i <- i + 1\n    return 0\n}\nlet inAsync (ct: CancellationToken) (handle: int -> Async<unit>) = async {\n    let mutable i = 0\n    while i < 10 do\n        do! handle i\n        i <- i + 1\n    return 0\n}\nlet fixable (ct: CancellationToken) = task {\n    let mutable i = 0\n    while i < 10 do\n        do! Task.Delay(100)\n        i <- i + 1\n    return 0\n}\nlet plainFor (ct: CancellationToken) (xs: int list) =\n    let mutable total = 0\n    for x in xs do\n        total <- total + x\n    total"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let checks (ct: CancellationToken) (handle: int -> Task) = task {
+                let mutable i = 0
+                while i < 10 do
+                    ct.ThrowIfCancellationRequested()
+                    do! handle i
+                    i <- i + 1
+                return 0
+            }
+            let passes (ct: CancellationToken) (handle: int * CancellationToken -> Task) = task {
+                let mutable i = 0
+                while i < 10 do
+                    do! handle (i, ct)
+                    i <- i + 1
+                return 0
+            }
+            let inAsync (ct: CancellationToken) (handle: int -> Async<unit>) = async {
+                let mutable i = 0
+                while i < 10 do
+                    do! handle i
+                    i <- i + 1
+                return 0
+            }
+            let fixable (ct: CancellationToken) = task {
+                let mutable i = 0
+                while i < 10 do
+                    do! Task.Delay(100)
+                    i <- i + 1
+                return 0
+            }
+            let plainFor (ct: CancellationToken) (xs: int list) =
+                let mutable total = 0
+                for x in xs do
+                    total <- total + x
+                total
+            """
 
     Assert.Empty(unobservedLoopsIn source)
 
@@ -1070,14 +1947,47 @@ let ``FR0118: a synchronous drain and a loop stepping a local built with the tok
     // already holds, and an async enumerator created with the token observes
     // it at every MoveNextAsync
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nopen System.Collections.Generic\nlet drain (ct: CancellationToken) (reader: Channels.ChannelReader<int>) (sink: int -> unit) =\n    let mutable tok = 0\n    while reader.TryRead(&tok) do\n        sink tok\nlet stream (ct: CancellationToken) (source: IAsyncEnumerable<int>) (sink: int -> unit) = task {\n    let enumerator = source.GetAsyncEnumerator ct\n    let mutable go = true\n    while go do\n        let! hasNext = enumerator.MoveNextAsync().AsTask()\n        if hasNext then sink enumerator.Current else go <- false\n    return 0\n}\nlet stepped (ct: CancellationToken) = task {\n    let step () = Task.Delay(10, ct)\n    let mutable i = 0\n    while i < 10 do\n        do! step ()\n        i <- i + 1\n    return i\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            open System.Collections.Generic
+            let drain (ct: CancellationToken) (reader: Channels.ChannelReader<int>) (sink: int -> unit) =
+                let mutable tok = 0
+                while reader.TryRead(&tok) do
+                    sink tok
+            let stream (ct: CancellationToken) (source: IAsyncEnumerable<int>) (sink: int -> unit) = task {
+                let enumerator = source.GetAsyncEnumerator ct
+                let mutable go = true
+                while go do
+                    let! hasNext = enumerator.MoveNextAsync().AsTask()
+                    if hasNext then sink enumerator.Current else go <- false
+                return 0
+            }
+            let stepped (ct: CancellationToken) = task {
+                let step () = Task.Delay(10, ct)
+                let mutable i = 0
+                while i < 10 do
+                    do! step ()
+                    i <- i + 1
+                return i
+            }
+            """
 
     Assert.Empty(unobservedLoopsIn source)
 
 [<Fact>]
 let ``CancellationToken None is replaced by the in-scope token`` () =
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet pause (ct: CancellationToken) = task {\n    do! Task.Delay(100, CancellationToken.None)\n    return 1\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let pause (ct: CancellationToken) = task {
+                do! Task.Delay(100, CancellationToken.None)
+                return 1
+            }
+            """
 
     match cancellationIn source with
     | [ s ] ->
@@ -1090,21 +2000,48 @@ let ``CancellationToken None is replaced by the in-scope token`` () =
 [<Fact>]
 let ``no token in scope means no suggestion`` () =
     Assert.Empty(
-        cancellationIn "open System.Threading.Tasks\nlet pause () = task {\n    do! Task.Delay(100)\n    return 1\n}"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading.Tasks
+                let pause () = task {
+                    do! Task.Delay(100)
+                    return 1
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``two tokens in scope make the choice a human call`` () =
     Assert.Empty(
-        cancellationIn
-            "open System.Threading\nopen System.Threading.Tasks\nlet pause (a: CancellationToken) (b: CancellationToken) = task {\n    do! Task.Delay(100)\n    return 1\n}"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let pause (a: CancellationToken) (b: CancellationToken) = task {
+                    do! Task.Delay(100)
+                    return 1
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``a call already passing the token is left alone`` () =
     Assert.Empty(
-        cancellationIn
-            "open System.Threading\nopen System.Threading.Tasks\nlet pause (ct: CancellationToken) = task {\n    do! Task.Delay(100, ct)\n    return 1\n}"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let pause (ct: CancellationToken) = task {
+                    do! Task.Delay(100, ct)
+                    return 1
+                }
+                """
+        )
     )
 
 [<Fact>]
@@ -1112,7 +2049,15 @@ let ``a trailing lambda argument is wrapped before the token is appended`` () =
     // Paket's PackageResolver.fs: `ContinueWith(fun (_: Task) -> (), ct)`
     // made the lambda return `unit * CancellationToken`
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet f (ct: CancellationToken) (t: Task) = task {\n    do! t.ContinueWith(fun (_: Task) -> ())\n    return 1\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let f (ct: CancellationToken) (t: Task) = task {
+                do! t.ContinueWith(fun (_: Task) -> ())
+                return 1
+            }
+            """
 
     match cancellationIn source with
     | [ s ] ->
@@ -1126,8 +2071,14 @@ let ``a token passed as the PAYLOAD is not appended again`` () =
     // CreateLinkedTokenSource(ct) takes the token as its argument — a
     // params/two-token sibling overload would happily compile `(ct, ct)`
     Assert.Empty(
-        cancellationIn
-            "open System.Threading\nlet link (ct: CancellationToken) =\n    CancellationTokenSource.CreateLinkedTokenSource(ct)"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                let link (ct: CancellationToken) =
+                    CancellationTokenSource.CreateLinkedTokenSource(ct)
+                """
+        )
     )
 
 [<Fact>]
@@ -1135,14 +2086,32 @@ let ``a NAMED argument defeats arity counting and vetoes the append`` () =
     // `cancellationToken = ct` may well BE the token; appending `, ct`
     // after a named argument is a syntax error besides
     Assert.Empty(
-        cancellationIn
-            "open System.Threading\nopen System.Threading.Tasks\ntype C() =\n    member _.Get(a: int) = Task.FromResult a\n    member _.Get(a: int, ct: CancellationToken) = Task.FromResult a\nlet f (c: C) (ct: CancellationToken) = task {\n    let! x = c.Get(a = 1)\n    return x\n}"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                type C() =
+                    member _.Get(a: int) = Task.FromResult a
+                    member _.Get(a: int, ct: CancellationToken) = Task.FromResult a
+                let f (c: C) (ct: CancellationToken) = task {
+                    let! x = c.Get(a = 1)
+                    return x
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``a method with no token overload is left alone`` () =
     Assert.Empty(
-        cancellationIn "open System.Threading\nlet check (ct: CancellationToken) (s: string) = s.Contains(\"x\")"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                let check (ct: CancellationToken) (s: string) = s.Contains("x")
+                """
+        )
     )
 
 [<Fact>]
@@ -1150,8 +2119,15 @@ let ``a stored None binding is not rewritten`` () =
     // not an argument: replacing a binding's RHS rewrites intent the
     // scan cannot see
     Assert.Empty(
-        cancellationIn
-            "open System.Threading\nlet keep (ct: CancellationToken) =\n    let none = CancellationToken.None\n    none"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                let keep (ct: CancellationToken) =
+                    let none = CancellationToken.None
+                    none
+                """
+        )
     )
 
 // ---- FR0119 AwaitableOverload ----
@@ -1168,7 +2144,14 @@ let private applyAwaitable (source: string) (s: AwaitableOverload.Suggestion) =
 [<Fact>]
 let ``a blocking read inside task becomes its async twin`` () =
     let source =
-        "open System.IO\nlet head (reader: TextReader) = task {\n    let line = reader.ReadLine()\n    return line\n}"
+        fsharp
+            """
+            open System.IO
+            let head (reader: TextReader) = task {
+                let line = reader.ReadLine()
+                return line
+            }
+            """
 
     match awaitableIn source with
     | [ s ] ->
@@ -1185,21 +2168,46 @@ let ``a call nested in another binding's RHS is not a let-bang site`` () =
     // its statement spine, so `let!` there cannot compile — 21 rollbacks in
     // one sweep repo were all this
     let source =
-        "open System.IO\nlet f (reader: TextReader) = task {\n    let pair =\n        let line = reader.ReadLine()\n        line, line.Length\n    return snd pair\n}"
+        fsharp
+            """
+            open System.IO
+            let f (reader: TextReader) = task {
+                let pair =
+                    let line = reader.ReadLine()
+                    line, line.Length
+                return snd pair
+            }
+            """
 
     Assert.Empty(awaitableIn source)
 
 [<Fact>]
 let ``a statement nested in another binding's RHS is not a do-bang site`` () =
     let source =
-        "open System.IO\nlet f (writer: TextWriter) (s: string) = task {\n    let n =\n        writer.Write(s)\n        1\n    return n\n}"
+        fsharp
+            """
+            open System.IO
+            let f (writer: TextWriter) (s: string) = task {
+                let n =
+                    writer.Write(s)
+                    1
+                return n
+            }
+            """
 
     Assert.Empty(awaitableIn source)
 
 [<Fact>]
 let ``a blocking statement inside task becomes do-bang`` () =
     let source =
-        "open System.IO\nlet push (writer: TextWriter) (s: string) = task {\n    writer.Write(s)\n    return 1\n}"
+        fsharp
+            """
+            open System.IO
+            let push (writer: TextWriter) (s: string) = task {
+                writer.Write(s)
+                return 1
+            }
+            """
 
     match awaitableIn source with
     | [ s ] ->
@@ -1211,7 +2219,14 @@ let ``a blocking statement inside task becomes do-bang`` () =
 [<Fact>]
 let ``inside async the twin bridges via AwaitTask`` () =
     let source =
-        "open System.IO\nlet head (reader: TextReader) = async {\n    let line = reader.ReadLine()\n    return line\n}"
+        fsharp
+            """
+            open System.IO
+            let head (reader: TextReader) = async {
+                let line = reader.ReadLine()
+                return line
+            }
+            """
 
     match awaitableIn source with
     | [ s ] ->
@@ -1222,32 +2237,75 @@ let ``inside async the twin bridges via AwaitTask`` () =
 
 [<Fact>]
 let ``outside any CE the blocking call is fine`` () =
-    Assert.Empty(awaitableIn "open System.IO\nlet head (reader: TextReader) = reader.ReadLine()")
+    Assert.Empty(
+        awaitableIn (
+            fsharp
+                """
+                open System.IO
+                let head (reader: TextReader) = reader.ReadLine()
+                """
+        )
+    )
 
 [<Fact>]
 let ``inside a lambda within the task nothing fires`` () =
     Assert.Empty(
-        awaitableIn
-            "open System.IO\nlet all (readers: TextReader list) = task {\n    let lines = readers |> List.map (fun r -> r.ReadLine())\n    return lines\n}"
+        awaitableIn (
+            fsharp
+                """
+                open System.IO
+                let all (readers: TextReader list) = task {
+                    let lines = readers |> List.map (fun r -> r.ReadLine())
+                    return lines
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``a method with no async twin is left alone`` () =
-    Assert.Empty(awaitableIn "let f (s: string) = task {\n    let u = s.ToUpperInvariant()\n    return u\n}")
+    Assert.Empty(
+        awaitableIn (
+            fsharp
+                """
+                let f (s: string) = task {
+                    let u = s.ToUpperInvariant()
+                    return u
+                }
+                """
+        )
+    )
 
 [<Fact>]
 let ``FR0119 a local function inside the task is a plain function`` () =
     // its body is a closure the AST does not spell as a Lambda — a do!
     // injected there would land in ordinary code
     let source =
-        "open System.IO\nlet go (writer: TextWriter) (s: string) = task {\n    let flushTwice () =\n        writer.Write(s)\n        writer.Write(s)\n    flushTwice ()\n    return 1\n}"
+        fsharp
+            """
+            open System.IO
+            let go (writer: TextWriter) (s: string) = task {
+                let flushTwice () =
+                    writer.Write(s)
+                    writer.Write(s)
+                flushTwice ()
+                return 1
+            }
+            """
 
     Assert.Empty(awaitableIn source)
 
 [<Fact>]
 let ``FR0119 the juxtaposed atomic argument is the common F# spelling`` () =
     let source =
-        "open System.IO\nlet push (writer: TextWriter) (s: string) = task {\n    writer.Write s\n    return 1\n}"
+        fsharp
+            """
+            open System.IO
+            let push (writer: TextWriter) (s: string) = task {
+                writer.Write s
+                return 1
+            }
+            """
 
     match awaitableIn source with
     | [ s ] ->
@@ -1280,13 +2338,35 @@ let private applyTaskify (source: string) (s: Taskify.Suggestion) =
 [<Fact>]
 let ``a private boundary drain becomes a task and its caller awaits`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let private fetch (x: int) =
+                let t = Task.Run(fun () -> x)
+                t.GetAwaiter().GetResult()
+            let consume () = task {
+                let s = fetch 1
+                return s
+            }
+            """
 
     match taskifyIn source with
     | [ s ] ->
         Assert.Equal("fetch", s.Name)
         let patched = applyTaskify source s
-        Assert.Contains("    task {\n        let t = Task.Run(fun () -> x)\n        return! t\n    }", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                    task {
+                        let t = Task.Run(fun () -> x)
+                        return! t
+                    }
+                """,
+            patched
+        )
+
         Assert.Contains("let! s = fetch 1", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one taskify suggestion, got %A" other
@@ -1295,7 +2375,18 @@ let ``a private boundary drain becomes a task and its caller awaits`` () =
 let ``an async caller bridges with Async.AwaitTask`` () =
     // `.Result` raised AggregateException already, as `Async.AwaitTask` does
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.Result\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let private fetch (x: int) =
+                let t = Task.Run(fun () -> x)
+                t.Result
+            let consume () = async {
+                let s = fetch 2
+                return s
+            }
+            """
 
     match taskifyIn source with
     | [ s ] ->
@@ -1307,7 +2398,17 @@ let ``an async caller bridges with Async.AwaitTask`` () =
 [<Fact>]
 let ``a return-position caller becomes return-bang`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    return fetch 3\n}"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let private fetch (x: int) =
+                let t = Task.Run(fun () -> x)
+                t.GetAwaiter().GetResult()
+            let consume () = task {
+                return fetch 3
+            }
+            """
 
     match taskifyIn source with
     | [ s ] ->
@@ -1319,38 +2420,95 @@ let ``a return-position caller becomes return-bang`` () =
 [<Fact>]
 let ``a public function is a wider refactor and stays`` () =
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    t.GetAwaiter().GetResult()
+                let consume () = task {
+                    let s = fetch 1
+                    return s
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``a caller outside any CE vetoes the rewrite`` () =
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = fetch 1 + 1"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let private fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    t.GetAwaiter().GetResult()
+                let consume () = fetch 1 + 1
+                """
+        )
     )
 
 [<Fact>]
 let ``a caller under a lambda inside the CE vetoes the rewrite`` () =
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let xs = [ 1; 2 ] |> List.map (fun i -> fetch i)\n    return xs\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let private fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    t.GetAwaiter().GetResult()
+                let consume () = task {
+                    let xs = [ 1; 2 ] |> List.map (fun i -> fetch i)
+                    return xs
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``a blocking site under a lambda in the body vetoes the rewrite`` () =
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private sum (xs: Task<int> list) =\n    xs |> List.map (fun t -> t.GetAwaiter().GetResult()) |> List.sum\nlet consume () = task {\n    let s = sum []\n    return s\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let private sum (xs: Task<int> list) =
+                    xs |> List.map (fun t -> t.GetAwaiter().GetResult()) |> List.sum
+                let consume () = task {
+                    let s = sum []
+                    return s
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``an internal boundary drain taskifies across files under api-changes`` () =
     let sourceA =
-        "module A\nlet internal fetch (x: int) =\n    let t = System.Threading.Tasks.Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()"
+        fsharp
+            """
+            module A
+            let internal fetch (x: int) =
+                let t = System.Threading.Tasks.Task.Run(fun () -> x)
+                t.GetAwaiter().GetResult()
+            """
 
     let sourceB =
-        "module B\nlet consume () = task {\n    let s = A.fetch 1\n    return s\n}"
+        fsharp
+            """
+            module B
+            let consume () = task {
+                let s = A.fetch 1
+                return s
+            }
+            """
 
     let treeA, sourceTextA, checkA, projectResults, _, _, recheck =
         parseAndCheckPair sourceA sourceB
@@ -1384,10 +2542,23 @@ let ``an internal boundary drain taskifies across files under api-changes`` () =
 [<Fact>]
 let ``an internal drain without api-changes stays a note`` () =
     let sourceA =
-        "module A\nlet internal fetch2 (x: int) =\n    let t = System.Threading.Tasks.Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()"
+        fsharp
+            """
+            module A
+            let internal fetch2 (x: int) =
+                let t = System.Threading.Tasks.Task.Run(fun () -> x)
+                t.GetAwaiter().GetResult()
+            """
 
     let sourceB =
-        "module B\nlet consume () = task {\n    let s = A.fetch2 1\n    return s\n}"
+        fsharp
+            """
+            module B
+            let consume () = task {
+                let s = A.fetch2 1
+                return s
+            }
+            """
 
     let treeA, sourceTextA, checkA, projectResults, _, _, _ =
         parseAndCheckPair sourceA sourceB
@@ -1401,7 +2572,14 @@ let ``a fold whose body looks up a member on the accumulator hands the tuple ove
     // fable-library List.fs); `(init, xs) ||> List.fold ...` is checked
     // tuple-first and both types are known inside the lambda
     let source =
-        "let f (xs: int list) =\n    let mutable node = System.Text.StringBuilder()\n    for x in xs do\n        node <- node.Append x\n    node.ToString()"
+        fsharp
+            """
+            let f (xs: int list) =
+                let mutable node = System.Text.StringBuilder()
+                for x in xs do
+                    node <- node.Append x
+                node.ToString()
+            """
 
     match accumulationIn source with
     | [ s ], _ ->
@@ -1415,7 +2593,28 @@ let ``a blocking call in a match arm of an async body, after use bindings, still
     // CarmelNet's shape: `async { let! res = ... |> Async.Catch; match res with ... }`
     // with the blocking ReadToEnd two `use` bindings deep in an arm
     let source =
-        "module Test\nopen System\nopen System.IO\nopen System.Net\nlet f (client: Net.Http.HttpClient) =\n    async {\n        let! res = async { return 1 } |> Async.Catch\n        match res with\n        | Choice1Of2 x -> return string x, None\n        | Choice2Of2 e when not (String.IsNullOrEmpty e.Message) -> return e.Message, Some e\n        | Choice2Of2 e ->\n            match e with\n            | :? WebException as wex when not (isNull wex.Response) ->\n                use stream = wex.Response.GetResponseStream()\n                use reader = new StreamReader(stream)\n                let err = reader.ReadToEnd()\n                return err, Some e\n            | _ -> return \"\", Some e\n    }"
+        fsharp
+            """
+            module Test
+            open System
+            open System.IO
+            open System.Net
+            let f (client: Net.Http.HttpClient) =
+                async {
+                    let! res = async { return 1 } |> Async.Catch
+                    match res with
+                    | Choice1Of2 x -> return string x, None
+                    | Choice2Of2 e when not (String.IsNullOrEmpty e.Message) -> return e.Message, Some e
+                    | Choice2Of2 e ->
+                        match e with
+                        | :? WebException as wex when not (isNull wex.Response) ->
+                            use stream = wex.Response.GetResponseStream()
+                            use reader = new StreamReader(stream)
+                            let err = reader.ReadToEnd()
+                            return err, Some e
+                        | _ -> return "", Some e
+                }
+            """
 
     match awaitableIn source with
     | [] -> failwith "Expected the ReadToEnd twin to be offered"
@@ -1429,46 +2628,115 @@ let private variantHasTwin (source: string) =
 [<Fact>]
 let ``variant A: plain let, no use, no match`` () =
     Assert.True(
-        variantHasTwin
-            "module Test\nopen System.IO\nlet f (reader: StreamReader) =\n    async {\n        let err = reader.ReadToEnd()\n        return err\n    }"
+        variantHasTwin (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (reader: StreamReader) =
+                    async {
+                        let err = reader.ReadToEnd()
+                        return err
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``variant B: after use bindings`` () =
     Assert.True(
-        variantHasTwin
-            "module Test\nopen System.IO\nlet f (stream: Stream) =\n    async {\n        use reader = new StreamReader(stream)\n        let err = reader.ReadToEnd()\n        return err\n    }"
+        variantHasTwin (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (stream: Stream) =
+                    async {
+                        use reader = new StreamReader(stream)
+                        let err = reader.ReadToEnd()
+                        return err
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``variant C: inside a match arm`` () =
     Assert.True(
-        variantHasTwin
-            "module Test\nopen System.IO\nlet f (reader: StreamReader) (x: int option) =\n    async {\n        match x with\n        | Some _ ->\n            let err = reader.ReadToEnd()\n            return err\n        | None -> return \"\"\n    }"
+        variantHasTwin (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (reader: StreamReader) (x: int option) =
+                    async {
+                        match x with
+                        | Some _ ->
+                            let err = reader.ReadToEnd()
+                            return err
+                        | None -> return ""
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``variant D: after a let-bang`` () =
     Assert.True(
-        variantHasTwin
-            "module Test\nopen System.IO\nlet f (reader: StreamReader) =\n    async {\n        let! res = async { return 1 } |> Async.Catch\n        let err = reader.ReadToEnd()\n        return err\n    }"
+        variantHasTwin (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (reader: StreamReader) =
+                    async {
+                        let! res = async { return 1 } |> Async.Catch
+                        let err = reader.ReadToEnd()
+                        return err
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0057: the editor scaffold appends empty param tags after the last one`` () =
     let source =
-        "module Test\n/// <summary>Scales.</summary>\n/// <param name=\"value\">The value.</param>\nlet scale (value: int) (factor: int) (offset: int) = value * factor + offset"
+        fsharp
+            """
+            module Test
+            /// <summary>Scales.</summary>
+            /// <param name="value">The value.</param>
+            let scale (value: int) (factor: int) (offset: int) = value * factor + offset
+            """
 
     match xmlDocsIn source with
     | [ s ] ->
         match s.Insertion with
         | Some(at, text) ->
             Assert.Equal(3, at.StartLine)
-            Assert.Equal("\n/// <param name=\"factor\"></param>\n/// <param name=\"offset\"></param>", text)
+
+            Assert.Equal(
+                fsharp
+                    """
+
+                    /// <param name="factor"></param>
+                    /// <param name="offset"></param>
+                    """,
+                text
+            )
+
             let patched = applyEdit source at text
 
             Assert.Equal(
-                "module Test\n/// <summary>Scales.</summary>\n/// <param name=\"value\">The value.</param>\n/// <param name=\"factor\"></param>\n/// <param name=\"offset\"></param>\nlet scale (value: int) (factor: int) (offset: int) = value * factor + offset",
+                fsharp
+                    """
+                    module Test
+                    /// <summary>Scales.</summary>
+                    /// <param name="value">The value.</param>
+                    /// <param name="factor"></param>
+                    /// <param name="offset"></param>
+                    let scale (value: int) (factor: int) (offset: int) = value * factor + offset
+                    """,
                 patched
             )
         | None -> failwith "Expected a scaffold insertion"
@@ -1479,19 +2747,46 @@ let ``FR0058: a recursive yield! in tail position is a loop, not a nested enumer
     // FSharp.Data's CSV reader: `yield! readLines (n + 1)` as the body's
     // last step compiles to a jump
     Assert.Empty(
-        recursiveSeqIn "module Test\nlet rec readLines (n: int) = seq {\n    yield n\n    yield! readLines (n + 1)\n}"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                let rec readLines (n: int) = seq {
+                    yield n
+                    yield! readLines (n + 1)
+                }
+                """
+        )
     )
 
     Assert.Empty(
-        recursiveSeqIn
-            "module Test\nlet rec countDown n = seq {\n    yield n\n    if n > 0 then yield! countDown (n - 1) else ()\n}"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                let rec countDown n = seq {
+                    yield n
+                    if n > 0 then yield! countDown (n - 1) else ()
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0058: a recursive yield! under a for is still noted`` () =
     match
-        recursiveSeqIn
-            "module Test\ntype Node = { Value: int; Children: Node list }\nlet rec walk (node: Node) = seq {\n    yield node.Value\n    for c in node.Children do\n        yield! walk c\n}"
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                type Node = { Value: int; Children: Node list }
+                let rec walk (node: Node) = seq {
+                    yield node.Value
+                    for c in node.Children do
+                        yield! walk c
+                }
+                """
+        )
     with
     | [ s ] -> Assert.Equal("walk", s.FunctionName)
     | other -> failwithf "Expected exactly one recursive-seq note, got %A" other
@@ -1500,8 +2795,22 @@ let ``FR0058: a recursive yield! under a for is still noted`` () =
 let ``FR0058: a self-call yielding a plain value nests nothing`` () =
     // FSharp.Data's innerText': the recursion returns a string, not a sequence
     Assert.Empty(
-        recursiveSeqIn
-            "module Test\ntype Node = | Text of string | Elem of Node list\nlet rec innerText (n: Node) =\n    match n with\n    | Text t -> t\n    | Elem content ->\n        seq {\n            for e in content do\n                yield innerText e\n        }\n        |> String.concat \"\""
+        recursiveSeqIn (
+            fsharp
+                """
+                module Test
+                type Node = | Text of string | Elem of Node list
+                let rec innerText (n: Node) =
+                    match n with
+                    | Text t -> t
+                    | Elem content ->
+                        seq {
+                            for e in content do
+                                yield innerText e
+                        }
+                        |> String.concat ""
+                """
+        )
     )
 
 [<Fact>]
@@ -1509,8 +2818,16 @@ let ``FR0049: a blocking call inside a lambda within the computation is marked a
     // FSharp.Data's CsvFile: `Func<_>(fun () -> ... |> Async.RunSynchronously)`
     // built inside async { } — the builder's bind cannot reach it
     match
-        blockingIn
-            "let read () = async { return 1 }\nlet f () = async {\n    let reader = System.Func<int>(fun () -> read () |> Async.RunSynchronously)\n    return reader.Invoke()\n}"
+        blockingIn (
+            fsharp
+                """
+                let read () = async { return 1 }
+                let f () = async {
+                    let reader = System.Func<int>(fun () -> read () |> Async.RunSynchronously)
+                    return reader.Invoke()
+                }
+                """
+        )
     with
     | [ s ] ->
         Assert.Equal(Some "async", s.Builder)
@@ -1522,8 +2839,16 @@ let ``FR0049: a blocking call inside a lambda within the computation is marked a
 let ``FR0020: an abstract member reached through an assignment's right-hand side is a ctor-time call`` () =
     // Fable's ObjectExprBase: `do x.Value <- this.dup x.contents`
     let _, ctorCalls, _ =
-        objectRulesIn
-            "module Test\n[<AbstractClass>]\ntype ObjectExprBase (x: int ref) as this =\n    do x.Value <- this.dup x.contents\n    abstract member dup: int -> int"
+        objectRulesIn (
+            fsharp
+                """
+                module Test
+                [<AbstractClass>]
+                type ObjectExprBase (x: int ref) as this =
+                    do x.Value <- this.dup x.contents
+                    abstract member dup: int -> int
+                """
+        )
 
     match ctorCalls with
     | [ c ] -> Assert.Equal("dup", c.MemberName)
@@ -1532,8 +2857,15 @@ let ``FR0020: an abstract member reached through an assignment's right-hand side
 [<Fact>]
 let ``FR0054: a Dispose inside an interface block that raises is caught`` () =
     let _, _, raises =
-        objectRulesIn
-            "module Test\ntype R() =\n    interface System.IDisposable with\n        member _.Dispose() = failwith \"simulated\""
+        objectRulesIn (
+            fsharp
+                """
+                module Test
+                type R() =
+                    interface System.IDisposable with
+                        member _.Dispose() = failwith "simulated"
+                """
+        )
 
     match raises with
     | [ r ] -> Assert.Equal("Dispose", r.MemberName)
@@ -1542,8 +2874,14 @@ let ``FR0054: a Dispose inside an interface block that raises is caught`` () =
 [<Fact>]
 let ``FR0054: a pipe-shaped raise counts`` () =
     let _, _, raises =
-        objectRulesIn
-            "module Test\ntype R() =\n    override _.GetHashCode() = raise <| System.InvalidOperationException \"no hash\""
+        objectRulesIn (
+            fsharp
+                """
+                module Test
+                type R() =
+                    override _.GetHashCode() = raise <| System.InvalidOperationException "no hash"
+                """
+        )
 
     match raises with
     | [ r ] -> Assert.Equal("GetHashCode", r.MemberName)
@@ -1554,7 +2892,11 @@ let ``FR0054: a pipe-shaped raise counts`` () =
 [<Fact>]
 let ``FR0055: a pure division body gets the guard, and the catch goes`` () =
     let source =
-        "module Test\nlet ratio (total: int) (count: int) = try total / count with _ -> 0"
+        fsharp
+            """
+            module Test
+            let ratio (total: int) (count: int) = try total / count with _ -> 0
+            """
 
     match swallowedIn source with
     | [ s ] ->
@@ -1565,7 +2907,11 @@ let ``FR0055: a pure division body gets the guard, and the catch goes`` () =
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(
-            "module Test\nlet ratio (total: int) (count: int) = if count = 0 then 0 else total / count",
+            fsharp
+                """
+                module Test
+                let ratio (total: int) (count: int) = if count = 0 then 0 else total / count
+                """,
             patched
         )
 
@@ -1575,7 +2921,14 @@ let ``FR0055: a pure division body gets the guard, and the catch goes`` () =
 [<Fact>]
 let ``FR0055: a one-call Parse body becomes TryParse`` () =
     let source =
-        "module Test\nlet parse (s: string) =\n    try Some(System.Int32.Parse s) with _ -> None\nlet parse2 (s: string) =\n    try System.Int32.Parse s with _ -> 0"
+        fsharp
+            """
+            module Test
+            let parse (s: string) =
+                try Some(System.Int32.Parse s) with _ -> None
+            let parse2 (s: string) =
+                try System.Int32.Parse s with _ -> 0
+            """
 
     match swallowedIn source with
     | [ _; second ] ->
@@ -1588,7 +2941,12 @@ let ``FR0055: a one-call Parse body becomes TryParse`` () =
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Contains(
-            "match System.Int32.TryParse s with\n    | true, parsed -> parsed\n    | false, _ -> 0",
+            fsharp
+                """
+                match System.Int32.TryParse s with
+                    | true, parsed -> parsed
+                    | false, _ -> 0
+                """,
             patched
         )
 
@@ -1598,7 +2956,12 @@ let ``FR0055: a one-call Parse body becomes TryParse`` () =
 [<Fact>]
 let ``FR0055: a Some-wrapped Parse body pairs with its None fallback`` () =
     let source =
-        "module Test\nlet parse (s: string) =\n    try Some(System.Int32.Parse s) with _ -> None"
+        fsharp
+            """
+            module Test
+            let parse (s: string) =
+                try Some(System.Int32.Parse s) with _ -> None
+            """
 
     match swallowedIn source with
     | [ s ] ->
@@ -1610,7 +2973,12 @@ let ``FR0055: a Some-wrapped Parse body pairs with its None fallback`` () =
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Contains(
-            "match System.Int32.TryParse s with\n    | true, parsed -> Some parsed\n    | false, _ -> None",
+            fsharp
+                """
+                match System.Int32.TryParse s with
+                    | true, parsed -> Some parsed
+                    | false, _ -> None
+                """,
             patched
         )
 
@@ -1626,7 +2994,20 @@ let ``FR0055: a Parse argument that may throw on its own - a Value on the way, a
     ()
     =
     let source =
-        "module Test\nopen System\nopen System.Collections.Generic\nlet a (o: string option) = try Int32.Parse(o.Value.Trim()) with _ -> 0\nlet b (xs: string list) = try Int32.Parse(List.head xs) with _ -> 0\nlet c (xs: string list) = try Int32.Parse(xs |> List.head) with _ -> 0\nlet d (n: int64) = try Int32.Parse(string (Checked.int n)) with _ -> 0\nlet e (kv: KeyValuePair<string, string>) = try Int32.Parse kv.Value with _ -> 0\nlet f (s: string) = try Int32.Parse(s.Trim()) with _ -> 0\nlet g (o: obj) = try Int32.Parse(o :?> string) with _ -> 0\nlet h (m: Map<string, string>) = try Int32.Parse(Map.pick (fun k v -> if k = \"a\" then Some v else None) m) with _ -> 0"
+        fsharp
+            """
+            module Test
+            open System
+            open System.Collections.Generic
+            let a (o: string option) = try Int32.Parse(o.Value.Trim()) with _ -> 0
+            let b (xs: string list) = try Int32.Parse(List.head xs) with _ -> 0
+            let c (xs: string list) = try Int32.Parse(xs |> List.head) with _ -> 0
+            let d (n: int64) = try Int32.Parse(string (Checked.int n)) with _ -> 0
+            let e (kv: KeyValuePair<string, string>) = try Int32.Parse kv.Value with _ -> 0
+            let f (s: string) = try Int32.Parse(s.Trim()) with _ -> 0
+            let g (o: obj) = try Int32.Parse(o :?> string) with _ -> 0
+            let h (m: Map<string, string>) = try Int32.Parse(Map.pick (fun k v -> if k = "a" then Some v else None) m) with _ -> 0
+            """
 
     let found = parseControlFlowIn source |> List.sortBy (fun s -> s.Range.StartLine)
     Assert.Equal<int list>([ 4; 5; 6; 7; 8; 9; 10; 11 ], found |> List.map (fun s -> s.Range.StartLine))
@@ -1641,7 +3022,23 @@ let ``FR0055: a Parse argument that may throw on its own - a Value on the way, a
 [<Fact>]
 let ``FR0055: a Parse caught narrowly for its own failures is TryParse as control flow`` () =
     let source =
-        "module Test\nopen System\nlet parse (s: string) =\n    try Int32.Parse s with :? FormatException | :? OverflowException -> 0\nlet parse2 (s: string) =\n    try\n        Some(Decimal.Parse s)\n    with\n    | :? FormatException\n    | :? OverflowException as e -> None\nlet parse3 (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> None"
+        fsharp
+            """
+            module Test
+            open System
+            let parse (s: string) =
+                try Int32.Parse s with :? FormatException | :? OverflowException -> 0
+            let parse2 (s: string) =
+                try
+                    Some(Decimal.Parse s)
+                with
+                | :? FormatException
+                | :? OverflowException as e -> None
+            let parse3 (s: string) =
+                try Some(Int32.Parse s) with
+                | :? FormatException -> None
+                | :? OverflowException -> None
+            """
 
     match parseControlFlowIn source with
     | [ a; b; c ] ->
@@ -1665,7 +3062,12 @@ let ``FR0055: a Parse caught narrowly for its own failures is TryParse as contro
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Contains(
-            "match Decimal.TryParse s with\n    | true, parsed -> Some parsed\n    | false, _ -> None",
+            fsharp
+                """
+                match Decimal.TryParse s with
+                    | true, parsed -> Some parsed
+                    | false, _ -> None
+                """,
             patched
         )
     | other -> failwithf "Expected three findings, got %A" other
@@ -1675,7 +3077,17 @@ let ``FR0055: a FormatException catch alone around a numeric parse is noted with
     // CR0166's line: an overflow propagated here and would fall back after
     // the rewrite; a type that cannot overflow keeps the offer
     let source =
-        "module Test\nopen System\nlet numeric (s: string) =\n    try Int32.Parse s with :? FormatException -> 0\nlet exact (s: string) =\n    try Guid.Parse s with :? FormatException -> Guid.Empty\nlet covered (s: string) =\n    try Int32.Parse s with :? FormatException | :? OverflowException -> 0"
+        fsharp
+            """
+            module Test
+            open System
+            let numeric (s: string) =
+                try Int32.Parse s with :? FormatException -> 0
+            let exact (s: string) =
+                try Guid.Parse s with :? FormatException -> Guid.Empty
+            let covered (s: string) =
+                try Int32.Parse s with :? FormatException | :? OverflowException -> 0
+            """
 
     match parseControlFlowIn source with
     | [ a; b; c ] ->
@@ -1687,7 +3099,23 @@ let ``FR0055: a FormatException catch alone around a numeric parse is noted with
 [<Fact>]
 let ``FR0055: a narrow catch that does more than answer a value, or catches something else, stays quiet`` () =
     let source =
-        "module Test\nopen System\nlet logged (s: string) (log: string -> unit) =\n    try Int32.Parse s with :? FormatException as e -> log e.Message; 0\nlet io (s: string) =\n    try Int32.Parse s with :? IO.IOException -> 0\nlet mixed (s: string) =\n    try Some(Int32.Parse s) with\n    | :? FormatException -> None\n    | :? OverflowException -> Some 0\nlet readsBinder (s: string) =\n    try Int32.Parse s with e -> e.HResult\nlet guarded (s: string) =\n    try Int32.Parse s with :? FormatException when s.Length > 3 -> 0"
+        fsharp
+            """
+            module Test
+            open System
+            let logged (s: string) (log: string -> unit) =
+                try Int32.Parse s with :? FormatException as e -> log e.Message; 0
+            let io (s: string) =
+                try Int32.Parse s with :? IO.IOException -> 0
+            let mixed (s: string) =
+                try Some(Int32.Parse s) with
+                | :? FormatException -> None
+                | :? OverflowException -> Some 0
+            let readsBinder (s: string) =
+                try Int32.Parse s with e -> e.HResult
+            let guarded (s: string) =
+                try Int32.Parse s with :? FormatException when s.Length > 3 -> 0
+            """
 
     Assert.Empty(parseControlFlowIn source)
 
@@ -1696,7 +3124,17 @@ let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow 
     // CR0166 takes `catch (Exception)` and a bare `catch` the same way: the
     // rewrite drops the try, and the catch-all that hid every other failure
     let source =
-        "module Test\nopen System\nlet catchAll (s: string) =\n    try Int32.Parse s with _ -> 0\nlet wrapped (s: string) =\n    try Some(Guid.Parse s) with :? Exception -> None\nlet unreadBinder (s: string) (fallback: decimal) =\n    try Decimal.Parse s with ex -> fallback"
+        fsharp
+            """
+            module Test
+            open System
+            let catchAll (s: string) =
+                try Int32.Parse s with _ -> 0
+            let wrapped (s: string) =
+                try Some(Guid.Parse s) with :? Exception -> None
+            let unreadBinder (s: string) (fallback: decimal) =
+                try Decimal.Parse s with ex -> fallback
+            """
 
     match parseControlFlowIn source with
     | [ a; b; c ] ->
@@ -1713,10 +3151,23 @@ let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow 
                     |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) acc)
                 source
 
-        Assert.Contains("    match Int32.TryParse s with\n    | true, parsed -> parsed\n    | false, _ -> 0", patched)
+        Assert.Contains(
+            fsharp
+                """
+                    match Int32.TryParse s with
+                    | true, parsed -> parsed
+                    | false, _ -> 0
+                """,
+            patched
+        )
 
         Assert.Contains(
-            "    match Guid.TryParse s with\n    | true, parsed -> Some parsed\n    | false, _ -> None",
+            fsharp
+                """
+                    match Guid.TryParse s with
+                    | true, parsed -> Some parsed
+                    | false, _ -> None
+                """,
             patched
         )
 
@@ -1733,7 +3184,32 @@ let ``FR0168: an argument that can throw on its own keeps the try, whatever the 
     // field, a module value, a user getter or a Trim are taken as reads:
     // the fix by default, a getter that throws the accepted residual
     let source =
-        "module Test\nopen System\ntype R = { Text: string }\nmodule Defaults =\n    let text = \"1\"\nlet sub (s: string) =\n    try Int32.Parse(s.Substring 5) with _ -> 0\nlet index (args: string[]) =\n    try Int32.Parse args.[1] with _ -> 0\nlet narrow (s: string) =\n    try Int32.Parse(s.Substring 5) with :? FormatException | :? OverflowException | :? ArgumentException -> 0\nlet converted (x: float) =\n    try Int32.Parse(string (int x)) with _ -> 0\ntype C() =\n    member _.Text = \"1\"\nlet getter (c: C) =\n    try Int32.Parse c.Text with _ -> 0\nlet trimmed (s: string) =\n    try Int32.Parse(s.Trim()) with _ -> 0\nlet field (r: R) =\n    try Int32.Parse r.Text with _ -> 0\nlet moduleValue () =\n    try Int32.Parse Defaults.text with _ -> 0"
+        fsharp
+            """
+            module Test
+            open System
+            type R = { Text: string }
+            module Defaults =
+                let text = "1"
+            let sub (s: string) =
+                try Int32.Parse(s.Substring 5) with _ -> 0
+            let index (args: string[]) =
+                try Int32.Parse args.[1] with _ -> 0
+            let narrow (s: string) =
+                try Int32.Parse(s.Substring 5) with :? FormatException | :? OverflowException | :? ArgumentException -> 0
+            let converted (x: float) =
+                try Int32.Parse(string (int x)) with _ -> 0
+            type C() =
+                member _.Text = "1"
+            let getter (c: C) =
+                try Int32.Parse c.Text with _ -> 0
+            let trimmed (s: string) =
+                try Int32.Parse(s.Trim()) with _ -> 0
+            let field (r: R) =
+                try Int32.Parse r.Text with _ -> 0
+            let moduleValue () =
+                try Int32.Parse Defaults.text with _ -> 0
+            """
 
     match parseControlFlowIn source with
     | [ sub; index; narrow; converted; getter; trimmed; field; moduleValue ] ->
@@ -1767,7 +3243,16 @@ let ``FR0168: an argument that can throw on its own keeps the try, whatever the 
 let ``FR0168: a bare name is a read, a static property opened by open type included`` () =
     // a getter that throws is the accepted residual: the fix by default
     let source =
-        "module Test\nopen System\ntype Cfg =\n    static member Port: string = failwith \"no config\"\nopen type Cfg\nlet a () = try Int32.Parse Port with _ -> 0\nlet b (port: string) = try Int32.Parse port with _ -> 0"
+        fsharp
+            """
+            module Test
+            open System
+            type Cfg =
+                static member Port: string = failwith "no config"
+            open type Cfg
+            let a () = try Int32.Parse Port with _ -> 0
+            let b (port: string) = try Int32.Parse port with _ -> 0
+            """
 
     match parseControlFlowIn source with
     | [ a; b ] ->
@@ -1779,7 +3264,15 @@ let ``FR0168: a bare name is a read, a static property opened by open type inclu
 [<Fact>]
 let ``FR0168: a TimeSpan overflows, so a FormatException catch alone keeps the note`` () =
     let source =
-        "module Test\nopen System\nlet narrow (s: string) =\n    try TimeSpan.Parse s with :? FormatException -> TimeSpan.Zero\nlet covered (s: string) =\n    try TimeSpan.Parse s with :? FormatException | :? OverflowException -> TimeSpan.Zero"
+        fsharp
+            """
+            module Test
+            open System
+            let narrow (s: string) =
+                try TimeSpan.Parse s with :? FormatException -> TimeSpan.Zero
+            let covered (s: string) =
+                try TimeSpan.Parse s with :? FormatException | :? OverflowException -> TimeSpan.Zero
+            """
 
     match parseControlFlowIn source with
     | [ narrow; covered ] ->
@@ -1796,7 +3289,11 @@ let ``FR0168: a TimeSpan overflows, so a FormatException catch alone keeps the n
 [<Fact>]
 let ``FR0055: a file-IO body gets the narrower catch`` () =
     let source =
-        "module Test\nlet read (path: string) = try System.IO.File.ReadAllText path with ex -> \"\""
+        fsharp
+            """
+            module Test
+            let read (path: string) = try System.IO.File.ReadAllText path with ex -> ""
+            """
 
     match swallowedIn source with
     | [ s ] ->
@@ -1814,7 +3311,17 @@ let ``FR0055: a file-IO body gets the narrower catch`` () =
 [<Fact>]
 let ``FR0055: a file that logs through MEL gets a log line in its own idiom`` () =
     let source =
-        "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet work (logger: ILogger) (id: int) =\n    logger.LogError(null, \"started {Id}\", [| box id |])\n    try\n        printfn \"%d\" id\n    with _ -> ()"
+        fsharp
+            """
+            module Test
+            type ILogger =
+                abstract LogError: exn * string * obj[] -> unit
+            let work (logger: ILogger) (id: int) =
+                logger.LogError(null, "started {Id}", [| box id |])
+                try
+                    printfn "%d" id
+                with _ -> ()
+            """
 
     match swallowedIn source with
     | [ s ] ->
@@ -1828,7 +3335,7 @@ let ``FR0055: a file that logs through MEL gets a log line in its own idiom`` ()
 
         Assert.True(
             patched.Contains
-                "logger.LogError(ex, \"Exception: {Message} in method {Method} with parameter {id}\", ex.Message, \"work\", id)",
+                """logger.LogError(ex, "Exception: {Message} in method {Method} with parameter {id}", ex.Message, "work", id)""",
             patched
         )
     | other -> failwithf "Expected one finding, got %A" other
@@ -1836,7 +3343,13 @@ let ``FR0055: a file that logs through MEL gets a log line in its own idiom`` ()
 [<Fact>]
 let ``FR0055: the guard spells the zero of the divisor's type, never for a float, and stays away without a type`` () =
     let source =
-        "module Test\nlet a (total: float) (count: float) = try total / count with _ -> 0.0\nlet b (total: int64) (count: int64) = try total / count with _ -> 0L\nlet c (total: decimal) (count: decimal) = try total / count with _ -> 0m"
+        fsharp
+            """
+            module Test
+            let a (total: float) (count: float) = try total / count with _ -> 0.0
+            let b (total: int64) (count: int64) = try total / count with _ -> 0L
+            let c (total: decimal) (count: decimal) = try total / count with _ -> 0m
+            """
 
     let guards =
         swallowedIn source
@@ -1858,7 +3371,13 @@ let ``FR0055: the guard spells the zero of the divisor's type, never for a float
 
     let untyped =
         let tree, sourceText =
-            parse "module Test\nlet a (total: int) (count: int) = try total / count with _ -> 0"
+            parse (
+                fsharp
+                    """
+                    module Test
+                    let a (total: int) (count: int) = try total / count with _ -> 0
+                    """
+            )
 
         SwallowedException.find tree sourceText None
 
@@ -1876,7 +3395,13 @@ let private applyFixes (source: string) (fixes: (FSharp.Compiler.Text.range * st
 [<Fact>]
 let ``FR0049: a statement-position Wait inside task becomes do-bang`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task) = task {\n    t.Wait()\n    return 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task) = task {
+                t.Wait()
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -1890,7 +3415,13 @@ let ``FR0049: a statement-position Wait inside task becomes do-bang`` () =
 [<Fact>]
 let ``FR0049: WaitAll inside task becomes do-bang WhenAll`` () =
     let source =
-        "let f (a: System.Threading.Tasks.Task) (b: System.Threading.Tasks.Task) = task {\n    System.Threading.Tasks.Task.WaitAll(a, b)\n    return 1\n}"
+        fsharp
+            """
+            let f (a: System.Threading.Tasks.Task) (b: System.Threading.Tasks.Task) = task {
+                System.Threading.Tasks.Task.WaitAll(a, b)
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -1904,7 +3435,13 @@ let ``FR0049: WaitAll inside task becomes do-bang WhenAll`` () =
 [<Fact>]
 let ``FR0049: a Wait on a generic task inside async awaits the upcast task`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = async {\n    t.Wait()\n    return 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = async {
+                t.Wait()
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -1919,7 +3456,12 @@ let ``FR0049: a Wait on a generic task inside async awaits the upcast task`` () 
 let ``FR0049: a final WaitAll of generic tasks has no bind shape`` () =
     // `let! _ =` cannot end a block, `do!` cannot take a Task<T[]>
     let source =
-        "let f (a: System.Threading.Tasks.Task<int>) (b: System.Threading.Tasks.Task<int>) = task {\n    System.Threading.Tasks.Task.WaitAll(a, b)\n}"
+        fsharp
+            """
+            let f (a: System.Threading.Tasks.Task<int>) (b: System.Threading.Tasks.Task<int>) = task {
+                System.Threading.Tasks.Task.WaitAll(a, b)
+            }
+            """
 
     match blockingIn source with
     | [ s ] -> Assert.Empty s.Fixes
@@ -1928,7 +3470,19 @@ let ``FR0049: a final WaitAll of generic tasks has no bind shape`` () =
 [<Fact>]
 let ``FR0049: a blocking call inside Assert.Throws moves with the assert`` () =
     let source =
-        "module Xunit\nopen System\nopen System.Threading.Tasks\ntype Assert =\n    static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>\n    static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : Task<'E> = Task.FromResult Unchecked.defaultof<'E>\nlet f (t: Task<int>) = task {\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n    return ex.Message\n}"
+        fsharp
+            """
+            module Xunit
+            open System
+            open System.Threading.Tasks
+            type Assert =
+                static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>
+                static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : Task<'E> = Task.FromResult Unchecked.defaultof<'E>
+            let f (t: Task<int>) = task {
+                let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())
+                return ex.Message
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -1954,15 +3508,54 @@ let ``FR0055: a file that opens a test framework gets no notes`` () =
     // is the observation, and the guard would be noise
     let body = "let ratio (total: int) (count: int) = try total / count with _ -> 0"
 
-    Assert.NotEmpty(swallowedIn ("module Tests\nmodule Xunit =\n    let marker = 1\n" + body))
-    Assert.Empty(swallowedIn ("module Tests\nmodule Xunit =\n    let marker = 1\nopen Xunit\n" + body))
+    Assert.NotEmpty(
+        swallowedIn (
+            fsharp
+                """
+                module Tests
+                module Xunit =
+                    let marker = 1
+
+                """
+            + body
+        )
+    )
+
+    Assert.Empty(
+        swallowedIn (
+            fsharp
+                """
+                module Tests
+                module Xunit =
+                    let marker = 1
+                open Xunit
+
+                """
+            + body
+        )
+    )
 
 [<Fact>]
 let ``FR0049: an Assert.Throws inside a nested lambda stays advice`` () =
     // the `let ex =` sits in a List.iter callback: a `let!` there would not
     // compile, so the assert is left where it is
     let source =
-        "module Xunit\nopen System\nopen System.Threading.Tasks\ntype Assert =\n    static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>\n    static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : Task<'E> = Task.FromResult Unchecked.defaultof<'E>\nlet f (ts: Task<int> list) = task {\n    ts\n    |> List.iter (fun t ->\n        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n        ignore ex)\n    return 1\n}"
+        fsharp
+            """
+            module Xunit
+            open System
+            open System.Threading.Tasks
+            type Assert =
+                static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>
+                static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : Task<'E> = Task.FromResult Unchecked.defaultof<'E>
+            let f (ts: Task<int> list) = task {
+                ts
+                |> List.iter (fun t ->
+                    let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())
+                    ignore ex)
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -1975,8 +3568,18 @@ let ``FR0049: a bounded Wait and a Result after WaitForExit outside a CE are the
     // prismatic's scripts: stdout is read asynchronously, WaitForExit blocks,
     // then .Result drains a task that already completed
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Diagnostics\nlet run (psi: ProcessStartInfo) =\n    use proc = Process.Start psi\n    let output = proc.StandardOutput.ReadToEndAsync()\n    proc.WaitForExit()\n    output.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Diagnostics
+                let run (psi: ProcessStartInfo) =
+                    use proc = Process.Start psi
+                    let output = proc.StandardOutput.ReadToEndAsync()
+                    proc.WaitForExit()
+                    output.Result
+                """
+        )
     )
 
     Assert.Empty(blockingIn "let stop (t: System.Threading.Tasks.Task) = t.Wait(System.TimeSpan.FromSeconds 10.0)")
@@ -1989,14 +3592,28 @@ let ``FR0055: the IO-only catch is offered for a body that is the IO call, not a
     // Kasino: a multi-line block computing a path, then calling native SDL —
     // narrowing to IOException would let the native failures through
     let block =
-        "module Test\nlet icon (dir: string) =\n    try\n        let p = System.IO.Path.Combine(dir, \"icon.png\")\n        let handle = System.Runtime.InteropServices.GCHandle.Alloc(p)\n        handle.Free()\n    with _ -> ()"
+        fsharp
+            """
+            module Test
+            let icon (dir: string) =
+                try
+                    let p = System.IO.Path.Combine(dir, "icon.png")
+                    let handle = System.Runtime.InteropServices.GCHandle.Alloc(p)
+                    handle.Free()
+                with _ -> ()
+            """
 
     match swallowedIn block with
     | [ s ] -> Assert.Empty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
     | other -> failwithf "Expected one finding, got %A" other
 
     let single =
-        "module Test\nlet firstFont (dir: string) =\n    try System.IO.Directory.GetFiles(dir, \"*.ttf\") |> Array.tryHead with _ -> None"
+        fsharp
+            """
+            module Test
+            let firstFont (dir: string) =
+                try System.IO.Directory.GetFiles(dir, "*.ttf") |> Array.tryHead with _ -> None
+            """
 
     match swallowedIn single with
     | [ s ] -> Assert.NotEmpty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
@@ -2008,7 +3625,18 @@ let ``FR0055: the log line lands above a fallback that already sits on its own l
     // prismatic: `with _ ->` then `false` on the next line gained a blank
     // line and an over-indented pair
     let source =
-        "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet isActive (logger: ILogger) (pid: int) =\n    logger.LogError(null, \"started {Pid}\", [| box pid |])\n    try\n        pid > 0\n    with _ ->\n        false"
+        fsharp
+            """
+            module Test
+            type ILogger =
+                abstract LogError: exn * string * obj[] -> unit
+            let isActive (logger: ILogger) (pid: int) =
+                logger.LogError(null, "started {Pid}", [| box pid |])
+                try
+                    pid > 0
+                with _ ->
+                    false
+            """
 
     match swallowedIn source with
     | [ s ] ->
@@ -2021,7 +3649,19 @@ let ``FR0055: the log line lands above a fallback that already sits on its own l
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(
-            "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet isActive (logger: ILogger) (pid: int) =\n    logger.LogError(null, \"started {Pid}\", [| box pid |])\n    try\n        pid > 0\n    with ex ->\n        logger.LogError(ex, \"Exception: {Message} in method {Method} with parameter {pid}\", ex.Message, \"isActive\", pid)\n        false",
+            fsharp
+                """
+                module Test
+                type ILogger =
+                    abstract LogError: exn * string * obj[] -> unit
+                let isActive (logger: ILogger) (pid: int) =
+                    logger.LogError(null, "started {Pid}", [| box pid |])
+                    try
+                        pid > 0
+                    with ex ->
+                        logger.LogError(ex, "Exception: {Message} in method {Method} with parameter {pid}", ex.Message, "isActive", pid)
+                        false
+                """,
             patched
         )
 
@@ -2030,23 +3670,56 @@ let ``FR0055: the log line lands above a fallback that already sits on its own l
 [<Fact>]
 let ``FR0055: a comment on the handler is the author's acknowledgement`` () =
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet f (g: unit -> unit) =\n    try g () with _ -> () // best effort: the icon is cosmetic"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (g: unit -> unit) =
+                    try g () with _ -> () // best effort: the icon is cosmetic
+                """
+        )
     )
 
     Assert.Empty(
-        swallowedIn
-            "module Test\nlet f (g: unit -> int) =\n    try g ()\n    with _ ->\n        0 // the length is not important"
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (g: unit -> int) =
+                    try g ()
+                    with _ ->
+                        0 // the length is not important
+                """
+        )
     )
 
-    Assert.NotEmpty(swallowedIn "module Test\nlet f (g: unit -> int) =\n    try g () with _ -> 0")
+    Assert.NotEmpty(
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let f (g: unit -> int) =
+                    try g () with _ -> 0
+                """
+        )
+    )
 
 [<Fact>]
 let ``FR0055: the log line is offered only where its receiver is in scope`` () =
     // Fuuga: a `logger` parameter of one function was written into catches
     // of six functions that have none
     let source =
-        "module Test\ntype ILogger =\n    abstract LogError: exn * string * obj[] -> unit\nlet a (logger: ILogger) (id: int) =\n    logger.LogError(null, \"started {Id}\", [| box id |])\n    try id with _ -> 0\nlet b (x: int) =\n    try x with _ -> 0"
+        fsharp
+            """
+            module Test
+            type ILogger =
+                abstract LogError: exn * string * obj[] -> unit
+            let a (logger: ILogger) (id: int) =
+                logger.LogError(null, "started {Id}", [| box id |])
+                try id with _ -> 0
+            let b (x: int) =
+                try x with _ -> 0
+            """
 
     match swallowedIn source with
     | [ inA; inB ] ->
@@ -2059,7 +3732,16 @@ let ``FR0055: a multi-line body that reads a file and then parses it gets no IO-
     // FSharp.Azure.Quantum's loadMolFile: the parse after the read throws
     // its own exceptions
     let source =
-        "module Test\nlet loadMolFile (path: string) =\n    try\n        let content = System.IO.File.ReadAllText(path)\n        Some content.Length\n    with\n    | _ -> None"
+        fsharp
+            """
+            module Test
+            let loadMolFile (path: string) =
+                try
+                    let content = System.IO.File.ReadAllText(path)
+                    Some content.Length
+                with
+                | _ -> None
+            """
 
     match swallowedIn source with
     | [ s ] -> Assert.Empty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
@@ -2072,13 +3754,29 @@ let ``FR0050: a fold followed by nothing but the accumulator collapses into the 
     // `let flags = .. |> Array.fold ..` was left with a bare `flags` line
     // after it on Mibo and the compiler: binding and use are the expression
     let source =
-        "let f (xs: int[]) =\n    let mutable flags = 0\n    for x in xs do\n        flags <- flags ||| x\n    flags"
+        fsharp
+            """
+            let f (xs: int[]) =
+                let mutable flags = 0
+                for x in xs do
+                    flags <- flags ||| x
+                flags
+            """
 
     match accumulationIn source with
     | [ s ], _ ->
         Assert.Equal("xs |> Array.fold (fun flags x -> flags ||| x) 0", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.Equal("let f (xs: int[]) =\n    xs |> Array.fold (fun flags x -> flags ||| x) 0", patched)
+
+        Assert.Equal(
+            fsharp
+                """
+                let f (xs: int[]) =
+                    xs |> Array.fold (fun flags x -> flags ||| x) 0
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
@@ -2086,21 +3784,45 @@ let ``FR0050: a fold followed by nothing but the accumulator collapses into the 
 let ``FR0050: an annotated mutable keeps its annotation on the folded binding`` () =
     // Mibo's `let mutable sum: IAdaptiveValue<int> = ..` lost its annotation
     let source =
-        "let f (xs: int list) =\n    let mutable total: int64 = 0L\n    for x in xs do\n        total <- total + int64 x\n    total"
+        fsharp
+            """
+            let f (xs: int list) =
+                let mutable total: int64 = 0L
+                for x in xs do
+                    total <- total + int64 x
+                total
+            """
 
     match accumulationIn source with
     | [ s ], _ ->
         Assert.Equal("let total: int64 = xs |> List.fold (fun total x -> total + int64 x) 0L", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.EndsWith("\n    total", patched)
+
+        Assert.EndsWith(
+            fsharp
+                """
+
+                    total
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
 [<Fact>]
 let ``FR0050: a fold that would land past column 100 is withheld`` () =
     let folds, _ =
-        accumulationIn
-            "let f (xs: int list) =\n    let mutable accumulatedRunningTotalOfEverything = 1\n    for element in xs do\n        accumulatedRunningTotalOfEverything <- max accumulatedRunningTotalOfEverything (element % 7)\n    accumulatedRunningTotalOfEverything * 2"
+        accumulationIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable accumulatedRunningTotalOfEverything = 1
+                    for element in xs do
+                        accumulatedRunningTotalOfEverything <- max accumulatedRunningTotalOfEverything (element % 7)
+                    accumulatedRunningTotalOfEverything * 2
+                """
+        )
 
     Assert.Empty folds
 
@@ -2111,22 +3833,45 @@ let ``FR0118: Task.Run never gains the token`` () =
     // with an already-cancelled token Task.Run never runs the delegate,
     // so the socket bind and the cell completion inside it never happen
     Assert.Empty(
-        cancellationIn
-            "open System\nopen System.Threading\nopen System.Threading.Tasks\nlet start (ct: CancellationToken) =\n    Task.Run(Func<Task>(fun () -> Task.CompletedTask))"
+        cancellationIn (
+            fsharp
+                """
+                open System
+                open System.Threading
+                open System.Threading.Tasks
+                let start (ct: CancellationToken) =
+                    Task.Run(Func<Task>(fun () -> Task.CompletedTask))
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0118: Task.Factory.StartNew never gains the token`` () =
     Assert.Empty(
-        cancellationIn
-            "open System.Threading\nopen System.Threading.Tasks\nlet start (ct: CancellationToken) =\n    Task.Factory.StartNew(fun () -> 1)"
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let start (ct: CancellationToken) =
+                    Task.Factory.StartNew(fun () -> 1)
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0118: an explicit None on Task.Run is the author's choice`` () =
     Assert.Empty(
-        cancellationIn
-            "open System\nopen System.Threading\nopen System.Threading.Tasks\nlet start (ct: CancellationToken) =\n    Task.Run(Func<Task>(fun () -> Task.CompletedTask), CancellationToken.None)"
+        cancellationIn (
+            fsharp
+                """
+                open System
+                open System.Threading
+                open System.Threading.Tasks
+                let start (ct: CancellationToken) =
+                    Task.Run(Func<Task>(fun () -> Task.CompletedTask), CancellationToken.None)
+                """
+        )
     )
 
 
@@ -2138,14 +3883,28 @@ let ``FR0119 a Dispose statement inside task is never offered DisposeAsync`` () 
     // `do! File.Create(path).DisposeAsync()` — a ValueTask twin with no
     // work to await; Dispose stays Dispose
     let source =
-        "open System.IO\nlet touch (path: string) = task {\n    File.Create(path).Dispose()\n    return 1\n}"
+        fsharp
+            """
+            open System.IO
+            let touch (path: string) = task {
+                File.Create(path).Dispose()
+                return 1
+            }
+            """
 
     Assert.Empty(awaitableIn source)
 
 [<Fact>]
 let ``FR0119 a stream flush inside task still becomes do-bang FlushAsync`` () =
     let source =
-        "open System.IO\nlet flush (stream: Stream) = task {\n    stream.Flush()\n    return 1\n}"
+        fsharp
+            """
+            open System.IO
+            let flush (stream: Stream) = task {
+                stream.Flush()
+                return 1
+            }
+            """
 
     match awaitableIn source with
     | [ s ] ->
@@ -2161,65 +3920,161 @@ let ``FR0049: a Result read under its own completion probe never waits`` () =
     // suave's ValueTask fast path: the read happens only when the task is
     // already complete, the else branch awaits it
     let fastPath =
-        "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) : ValueTask<int> =\n    if vt.IsCompletedSuccessfully then\n        ValueTask<int>(vt.Result + 1)\n    else\n        ValueTask<int>(task {\n            let! n = vt\n            return n + 1\n        })"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let read (vt: ValueTask<int>) : ValueTask<int> =
+                if vt.IsCompletedSuccessfully then
+                    ValueTask<int>(vt.Result + 1)
+                else
+                    ValueTask<int>(task {
+                        let! n = vt
+                        return n + 1
+                    })
+            """
 
     Assert.Empty(blockingIn fastPath)
 
     // conjoined, negated, and inside a task { } the same way
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) (fast: bool) =\n    if fast && vt.IsCompleted then vt.Result else 0"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (vt: ValueTask<int>) (fast: bool) =
+                    if fast && vt.IsCompleted then vt.Result else 0
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) =\n    if not vt.IsCompletedSuccessfully then 0 else vt.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (vt: ValueTask<int>) =
+                    if not vt.IsCompletedSuccessfully then 0 else vt.Result
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet read (vt: ValueTask<int>) = task {\n    if vt.IsCompletedSuccessfully then\n        let _ = vt.Result\n        return 1\n    else\n        let! _ = vt\n        return 2\n}"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (vt: ValueTask<int>) = task {
+                    if vt.IsCompletedSuccessfully then
+                        let _ = vt.Result
+                        return 1
+                    else
+                        let! _ = vt
+                        return 2
+                }
+                """
+        )
     )
 
     // a probe on ANOTHER task proves nothing about this one
     Assert.NotEmpty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet read (a: ValueTask<int>) (b: ValueTask<int>) =\n    if a.IsCompletedSuccessfully then b.Result else 0"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (a: ValueTask<int>) (b: ValueTask<int>) =
+                    if a.IsCompletedSuccessfully then b.Result else 0
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0049: a Result read behind a probe in the same condition, or on a WhenAny winner, never waits`` () =
     // the right operand of && runs only when the probe held
     Assert.Empty(
-        blockingIn "module Test\nopen System.Threading.Tasks\nlet read (t: Task<bool>) =\n    t.IsCompleted && t.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (t: Task<bool>) =
+                    t.IsCompleted && t.Result
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet read (t: Task<bool>) =\n    not t.IsCompleted || t.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (t: Task<bool>) =
+                    not t.IsCompleted || t.Result
+                """
+        )
     )
 
     // the WhenAny race: the task compared equal to the winner is complete,
     // and the && keeps the read from running when the timer won
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet race (work: Task<bool>) (timer: Task) = task {\n    let! winner = Task.WhenAny(work, timer)\n    if winner = work && work.IsCompleted && work.Result then return 1 else return 0\n}"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let race (work: Task<bool>) (timer: Task) = task {
+                    let! winner = Task.WhenAny(work, timer)
+                    if winner = work && work.IsCompleted && work.Result then return 1 else return 0
+                }
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet race (work: Task<bool>) (timer: Task) = task {\n    let! winner = Task.WhenAny(work, timer)\n    return winner = work && work.Result\n}"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let race (work: Task<bool>) (timer: Task) = task {
+                    let! winner = Task.WhenAny(work, timer)
+                    return winner = work && work.Result
+                }
+                """
+        )
     )
 
     // `<>` proves nothing in the right operand, and || runs it when the
     // probe held, not when it failed
     Assert.NotEmpty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet race (work: Task<bool>) (timer: Task) = task {\n    let! winner = Task.WhenAny(work, timer)\n    return winner <> work && work.Result\n}"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let race (work: Task<bool>) (timer: Task) = task {
+                    let! winner = Task.WhenAny(work, timer)
+                    return winner <> work && work.Result
+                }
+                """
+        )
     )
 
     Assert.NotEmpty(
-        blockingIn "module Test\nopen System.Threading.Tasks\nlet read (t: Task<bool>) =\n    t.IsCompleted || t.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let read (t: Task<bool>) =
+                    t.IsCompleted || t.Result
+                """
+        )
     )
 
 [<Fact>]
@@ -2230,16 +4085,39 @@ let ``FR0049: the antecedent of a ContinueWith continuation is complete by defin
     let onlyAntecedentAdvice (source: string) =
         Assert.All(blockingIn source, (fun s -> Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind)))
 
-    onlyAntecedentAdvice
-        "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith(fun (ante: Task<int>) -> ante.Result + 1)"
+    onlyAntecedentAdvice (
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let f (t: Task<int>) =
+                t.ContinueWith(fun (ante: Task<int>) -> ante.Result + 1)
+            """
+    )
 
-    onlyAntecedentAdvice
-        "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) =\n    let routine (finished: Task<int>) =\n        if finished.IsFaulted then 0 else finished.Result\n    t.ContinueWith(routine, TaskScheduler.Default)"
+    onlyAntecedentAdvice (
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let f (t: Task<int>) =
+                let routine (finished: Task<int>) =
+                    if finished.IsFaulted then 0 else finished.Result
+                t.ContinueWith(routine, TaskScheduler.Default)
+            """
+    )
 
     // another task drained inside the continuation still blocks
     Assert.NotEmpty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) (other: Task<int>) =\n    t.ContinueWith(fun (ante: Task<int>) -> other.Result + 1)"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f (t: Task<int>) (other: Task<int>) =
+                    t.ContinueWith(fun (ante: Task<int>) -> other.Result + 1)
+                """
+        )
     )
 
 [<Fact>]
@@ -2247,7 +4125,18 @@ let ``FR0049: a wait in the finally block of an async is named as such and gets 
     // FCS's DiagnosticsLogger and BuildGraph: `do!` cannot appear in a
     // finally block, so the bind the plain message asks for cannot compile
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet f (t: Task) (work: Async<int>) = async {\n    try\n        let! r = work\n        return r\n    finally\n        t.Wait()\n}"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let f (t: Task) (work: Async<int>) = async {
+                try
+                    let! r = work
+                    return r
+                finally
+                    t.Wait()
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2261,81 +4150,197 @@ let ``FR0049: the console's blocking point is not a boundary note`` () =
     // suave's Http2Demo main, fantomas' DaemonCommand runner (exit code
     // after the wait), and a script's top-level statements
     Assert.Empty(
-        blockingIn
-            "module Program\nopen System.Threading.Tasks\n[<EntryPoint>]\nlet main argv =\n    let server = Task.Delay 10\n    server.Wait()\n    0"
+        blockingIn (
+            fsharp
+                """
+                module Program
+                open System.Threading.Tasks
+                [<EntryPoint>]
+                let main argv =
+                    let server = Task.Delay 10
+                    server.Wait()
+                    0
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Program\nopen System.Threading.Tasks\nlet runDaemon (closed: Task) : int =\n    closed.GetAwaiter().GetResult()\n    0"
+        blockingIn (
+            fsharp
+                """
+                module Program
+                open System.Threading.Tasks
+                let runDaemon (closed: Task) : int =
+                    closed.GetAwaiter().GetResult()
+                    0
+                """
+        )
     )
 
     // the test harness checks every source as Test.fsx: top-level
     // statements, a for loop included, are the script's main
     Assert.Empty(
-        blockingIn
-            "open System.Threading.Tasks\nlet run (n: int) = Task.Delay n\n(run 1).Wait()\nfor n in [ 1; 2 ] do\n    (run n).Wait()"
+        blockingIn (
+            fsharp
+                """
+                open System.Threading.Tasks
+                let run (n: int) = Task.Delay n
+                (run 1).Wait()
+                for n in [ 1; 2 ] do
+                    (run n).Wait()
+                """
+        )
     )
 
     // a value-returning helper, a lambda inside main, and a member are
     // boundaries of their own
     Assert.NotEmpty(
-        blockingIn
-            "module Program\nopen System.Threading.Tasks\nlet wait (t: Task<int>) = t.GetAwaiter().GetResult()\n[<EntryPoint>]\nlet main argv = wait (Task.FromResult 1)"
+        blockingIn (
+            fsharp
+                """
+                module Program
+                open System.Threading.Tasks
+                let wait (t: Task<int>) = t.GetAwaiter().GetResult()
+                [<EntryPoint>]
+                let main argv = wait (Task.FromResult 1)
+                """
+        )
     )
 
     Assert.NotEmpty(
-        blockingIn
-            "module Program\nopen System.Threading.Tasks\n[<EntryPoint>]\nlet main argv =\n    let handler = fun (t: Task) -> t.Wait()\n    handler (Task.Delay 1)\n    0"
+        blockingIn (
+            fsharp
+                """
+                module Program
+                open System.Threading.Tasks
+                [<EntryPoint>]
+                let main argv =
+                    let handler = fun (t: Task) -> t.Wait()
+                    handler (Task.Delay 1)
+                    0
+                """
+        )
     )
 
     Assert.NotEmpty(
-        blockingIn
-            "module Program\nopen System.Threading.Tasks\ntype Runner() =\n    member _.Run(t: Task) =\n        t.Wait()\n        0"
+        blockingIn (
+            fsharp
+                """
+                module Program
+                open System.Threading.Tasks
+                type Runner() =
+                    member _.Run(t: Task) =
+                        t.Wait()
+                        0
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0049: WaitAll with a timeout or a token outside a CE is the bounded idiom`` () =
     // Mibo's benchmark: `while not (Task.WaitAll(tasks, 1)) do pump ()`
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet pump (tasks: Task[]) =\n    while not (Task.WaitAll(tasks, 1)) do\n        ()"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let pump (tasks: Task[]) =
+                    while not (Task.WaitAll(tasks, 1)) do
+                        ()
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet pump (tasks: Task[]) (cts: System.Threading.CancellationTokenSource) =\n    Task.WaitAll(tasks, cts.Token)"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let pump (tasks: Task[]) (cts: System.Threading.CancellationTokenSource) =
+                    Task.WaitAll(tasks, cts.Token)
+                """
+        )
     )
 
     // two tasks params-style is the unbounded wait
     Assert.NotEmpty(
-        blockingIn "module Test\nopen System.Threading.Tasks\nlet join (a: Task) (b: Task) =\n    Task.WaitAll(a, b)"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let join (a: Task) (b: Task) =
+                    Task.WaitAll(a, b)
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0049: a task complete from birth is drained without a wait`` () =
     // the test-fixture habit: `.Result` on a `Task.FromResult` stand-in
-    Assert.Empty(blockingIn "module Test\nopen System.Threading.Tasks\nlet v = (Task.FromResult 1).Result")
-
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet f () =\n    let t = Task.FromResult 1\n    t.Result + 1"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let v = (Task.FromResult 1).Result
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet fixture = Task.FromResult 1\nlet f () = task { return fixture.Result + 1 }"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f () =
+                    let t = Task.FromResult 1
+                    t.Result + 1
+                """
+        )
     )
 
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet f () =\n    let t = ValueTask.FromResult 1\n    t.GetAwaiter().GetResult()"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let fixture = Task.FromResult 1
+                let f () = task { return fixture.Result + 1 }
+                """
+        )
+    )
+
+    Assert.Empty(
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f () =
+                    let t = ValueTask.FromResult 1
+                    t.GetAwaiter().GetResult()
+                """
+        )
     )
 
     // a task from anywhere else is not known complete
     Assert.NotEmpty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet f (make: unit -> Task<int>) =\n    let t = make ()\n    t.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f (make: unit -> Task<int>) =
+                    let t = make ()
+                    t.Result
+                """
+        )
     )
 
 [<Fact>]
@@ -2343,14 +4348,32 @@ let ``FR0049: a Result read after the receiver's own Wait drains what was waited
     // suave's Testing.send: `send.Wait(timeout, token)` is the bounded wait
     // two lines above the `send.Result` that only reads the outcome
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet send (t: Task<int>) (timeout: System.TimeSpan) =\n    let completed = t.Wait timeout\n    if not completed then failwith \"timeout\"\n    t.Result"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let send (t: Task<int>) (timeout: System.TimeSpan) =
+                    let completed = t.Wait timeout
+                    if not completed then failwith "timeout"
+                    t.Result
+                """
+        )
     )
 
     // an unbounded Wait above keeps its own note; the read after it is quiet
     match
-        blockingIn
-            "module Test\nopen System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    t.Wait()\n    return t.Result\n}"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f (t: Task<int>) = task {
+                    t.Wait()
+                    return t.Result
+                }
+                """
+        )
     with
     | [ s ] -> Assert.Equal(SyncOverAsync.BlockKind.TaskWait, s.Kind)
     | other -> failwithf "Expected the Wait alone, got %A" other
@@ -2359,7 +4382,16 @@ let ``FR0049: a Result read after the receiver's own Wait drains what was waited
 let ``FR0049: a synchronisation primitive's wait inside a task is named and left to the author`` () =
     // Mibo's tests: `doneSignal.Wait()` before `do! worker` in task { }
     let source =
-        "module Test\nopen System.Threading\nopen System.Threading.Tasks\nlet f (doneSignal: ManualResetEventSlim) (worker: Task) = task {\n    doneSignal.Wait()\n    do! worker\n}"
+        fsharp
+            """
+            module Test
+            open System.Threading
+            open System.Threading.Tasks
+            let f (doneSignal: ManualResetEventSlim) (worker: Task) = task {
+                doneSignal.Wait()
+                do! worker
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2369,8 +4401,19 @@ let ``FR0049: a synchronisation primitive's wait inside a task is named and left
     | other -> failwithf "Expected one primitive wait, got %A" other
 
     match
-        blockingIn
-            "module Test\nopen System.Threading\nlet f (sem: SemaphoreSlim) (ev: ManualResetEvent) (th: Thread) = async {\n    sem.Wait()\n    ev.WaitOne() |> ignore\n    th.Join()\n    return 1\n}"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading
+                let f (sem: SemaphoreSlim) (ev: ManualResetEvent) (th: Thread) = async {
+                    sem.Wait()
+                    ev.WaitOne() |> ignore
+                    th.Join()
+                    return 1
+                }
+                """
+        )
         |> List.map (fun s -> s.Kind)
     with
     | [ SyncOverAsync.BlockKind.PrimitiveWait a
@@ -2383,8 +4426,16 @@ let ``FR0049: a synchronisation primitive's wait inside a task is named and left
 
     // outside a CE the primitives are ordinary synchronous code
     Assert.Empty(
-        blockingIn
-            "module Test\nopen System.Threading\nlet f (doneSignal: ManualResetEventSlim) (th: Thread) =\n    doneSignal.Wait()\n    th.Join()"
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading
+                let f (doneSignal: ManualResetEventSlim) (th: Thread) =
+                    doneSignal.Wait()
+                    th.Join()
+                """
+        )
     )
 
 [<Fact>]
@@ -2392,21 +4443,56 @@ let ``a thread-choreographed private drain is not taskified`` () =
     // the body waits on a signal and continues on that thread; task-returning
     // it would not — the same refusal as FR0142's
     let source =
-        "module Test\nopen System.Threading\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let signal = new ManualResetEventSlim(false)\n    let t = Task.Run(fun () -> signal.Set(); x)\n    signal.Wait()\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+        fsharp
+            """
+            module Test
+            open System.Threading
+            open System.Threading.Tasks
+            let private fetch (x: int) =
+                let signal = new ManualResetEventSlim(false)
+                let t = Task.Run(fun () -> signal.Set(); x)
+                signal.Wait()
+                t.GetAwaiter().GetResult()
+            let consume () = task {
+                let s = fetch 1
+                return s
+            }
+            """
 
     Assert.Empty(taskifyIn source)
 
 [<Fact>]
 let ``a thread-choreographed task body gets no async-overload rewrite`` () =
     let source =
-        "open System.IO\nopen System.Threading\nlet head (reader: TextReader) = task {\n    let signal = new ManualResetEventSlim(false)\n    signal.Wait()\n    let line = reader.ReadLine()\n    return line\n}"
+        fsharp
+            """
+            open System.IO
+            open System.Threading
+            let head (reader: TextReader) = task {
+                let signal = new ManualResetEventSlim(false)
+                signal.Wait()
+                let line = reader.ReadLine()
+                return line
+            }
+            """
 
     Assert.Empty(awaitableIn source)
 
 [<Fact>]
 let ``a wait inside a thread-choreographed task body is noted without a fix`` () =
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet f () = task {\n    let signal = new ManualResetEventSlim(false)\n    let t = Task.Run(fun () -> signal.Set())\n    signal.Wait()\n    t.Wait()\n    return 1\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let f () = task {
+                let signal = new ManualResetEventSlim(false)
+                let t = Task.Run(fun () -> signal.Set())
+                signal.Wait()
+                t.Wait()
+                return 1
+            }
+            """
 
     match
         blockingIn source
@@ -2420,7 +4506,12 @@ let ``a wait inside a thread-choreographed task body is noted without a fix`` ()
 [<Fact>]
 let ``FR0049: Result on a ContinueWith antecedent is noted for its AggregateException, never as blocking`` () =
     let source =
-        "open System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith(fun (a: Task<int>) -> a.Result + 1)"
+        fsharp
+            """
+            open System.Threading.Tasks
+            let f (t: Task<int>) =
+                t.ContinueWith(fun (a: Task<int>) -> a.Result + 1)
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2432,7 +4523,17 @@ let ``FR0049: Result on a ContinueWith antecedent is noted for its AggregateExce
         // rule exists to remove
         match s.Fixes with
         | [ (r, _, replacement) ] ->
-            Assert.Equal("task {\n        let! r = t\n        return r + 1\n    }", replacement)
+            Assert.Equal(
+                fsharp
+                    """
+                    task {
+                            let! r = t
+                            return r + 1
+                        }
+                    """,
+                replacement
+            )
+
             let patched = applyEdit source r replacement
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | other -> failwithf "Expected one bind edit, got %A" other
@@ -2446,14 +4547,26 @@ let ``FR0049: Result on a ContinueWith antecedent is noted for its AggregateExce
     // a continuation that handles the antecedent itself keeps the note and
     // gets no rewrite; so does one handed a scheduler
     let handled =
-        blockingIn
-            "open System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith(fun (a: Task<int>) -> if a.IsFaulted then 0 else a.Result + 1)"
+        blockingIn (
+            fsharp
+                """
+                open System.Threading.Tasks
+                let f (t: Task<int>) =
+                    t.ContinueWith(fun (a: Task<int>) -> if a.IsFaulted then 0 else a.Result + 1)
+                """
+        )
 
     Assert.All(handled, (fun s -> Assert.Empty s.Fixes))
 
     let scheduled =
-        blockingIn
-            "open System.Threading.Tasks\nlet f (t: Task<int>) =\n    t.ContinueWith((fun (a: Task<int>) -> a.Result + 1), TaskScheduler.Default)"
+        blockingIn (
+            fsharp
+                """
+                open System.Threading.Tasks
+                let f (t: Task<int>) =
+                    t.ContinueWith((fun (a: Task<int>) -> a.Result + 1), TaskScheduler.Default)
+                """
+        )
 
     Assert.All(scheduled, (fun s -> Assert.Empty s.Fixes))
 
@@ -2462,7 +4575,12 @@ let ``FR0049: an antecedent read with no free binder name is noted without a rew
     // every candidate binder is already a name in the body: the note stands,
     // the rewrite steps aside (it must not raise out of the analyzer)
     let source =
-        "open System.Threading.Tasks\nlet f (t: Task<int>) (r: int) (result: int) (aValue: int) =\n    t.ContinueWith(fun (a: Task<int>) -> a.Result + r + result + aValue)"
+        fsharp
+            """
+            open System.Threading.Tasks
+            let f (t: Task<int>) (r: int) (result: int) (aValue: int) =
+                t.ContinueWith(fun (a: Task<int>) -> a.Result + r + result + aValue)
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2476,7 +4594,14 @@ let ``FR0049: Task.Run around a RunSynchronously becomes Async.StartAsTask`` () 
     // Async.StartAsTask does exactly that without parking a pool thread on the
     // result, so the lambda (and the blocking wait inside it) goes away
     let source =
-        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)\n    return x\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)
+                return x
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2495,7 +4620,14 @@ let ``FR0049: an ignored Task.Run keeps do-bang through an upcast`` () =
     // Async.StartAsTask returns Task<'T>, which `do!` refuses, so the fix
     // upcasts rather than changing the statement into a bind it cannot end on
     let source =
-        "let comp = async { return 1 }\nlet f () = task {\n    do! System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously |> ignore)\n    return 1\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                do! System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously |> ignore)
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2511,7 +4643,14 @@ let ``FR0049: a Task.Run lambda that does more than block keeps the note alone``
     // the rewrite only holds when the lambda is nothing but the blocking call;
     // anything else in there still has to run on the pool
     let source =
-        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> let v = comp |> Async.RunSynchronously in v + 1)\n    return x\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                let! x = System.Threading.Tasks.Task.Run(fun () -> let v = comp |> Async.RunSynchronously in v + 1)
+                return x
+            }
+            """
 
     match blockingIn source with
     | [ s ] -> Assert.Empty s.Fixes
@@ -2523,7 +4662,15 @@ let ``FR0049: a thread-choreographed body still gets the Task.Run rewrite`` () =
     // this rewrite adds no bind and moves no continuation, so it stands even
     // next to the SynchronizationContext that trips the veto
     let source =
-        "let comp = async { return 1 }\nlet f () = task {\n    let ctx = System.Threading.SynchronizationContext.Current\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)\n    return x + (if isNull ctx then 0 else 1)\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                let ctx = System.Threading.SynchronizationContext.Current
+                let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)
+                return x + (if isNull ctx then 0 else 1)
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2540,7 +4687,15 @@ let ``FR0049: a name merely ENDING in Thread is not thread choreography`` () =
     // and every other VS threading helper, they are all spelled that way -
     // counted as choreography and withheld the fixes for a whole file
     let source =
-        "let throwIfNotOnUIThread () = ()\nlet f (t: System.Threading.Tasks.Task) = task {\n    throwIfNotOnUIThread()\n    t.Wait()\n    return 1\n}"
+        fsharp
+            """
+            let throwIfNotOnUIThread () = ()
+            let f (t: System.Threading.Tasks.Task) = task {
+                throwIfNotOnUIThread()
+                t.Wait()
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] ->
@@ -2555,7 +4710,15 @@ let ``FR0049: a name merely ENDING in Thread is not thread choreography`` () =
 let ``FR0049: a real Thread construction is still thread choreography`` () =
     // the narrowing must not cost the case the veto exists for
     let source =
-        "let f (t: System.Threading.Tasks.Task) = task {\n    let worker = System.Threading.Thread(System.Threading.ThreadStart(fun () -> ()))\n    worker.Start()\n    t.Wait()\n    return 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task) = task {
+                let worker = System.Threading.Thread(System.Threading.ThreadStart(fun () -> ()))
+                worker.Start()
+                t.Wait()
+                return 1
+            }
+            """
 
     match blockingIn source with
     | [ s ] -> Assert.Empty s.Fixes
@@ -2564,7 +4727,15 @@ let ``FR0049: a real Thread construction is still thread choreography`` () =
 [<Fact>]
 let ``FR0049: a bare Thread member is still thread choreography`` () =
     let source =
-        "open System.Threading\nlet f (t: System.Threading.Tasks.Task) = task {\n    let id = Thread.CurrentThread.ManagedThreadId\n    t.Wait()\n    return id\n}"
+        fsharp
+            """
+            open System.Threading
+            let f (t: System.Threading.Tasks.Task) = task {
+                let id = Thread.CurrentThread.ManagedThreadId
+                t.Wait()
+                return id
+            }
+            """
 
     match blockingIn source with
     | [ s ] -> Assert.Empty s.Fixes
@@ -2573,7 +4744,15 @@ let ``FR0049: a bare Thread member is still thread choreography`` () =
 [<Fact>]
 let ``FR0168: a try in the middle of a line rewrites to a match whose arms compile`` () =
     let source =
-        "module Test\nopen System\nlet parse (s: string) =\n    let n = try Int32.Parse s with _ -> 0\n    n + 1\nlet inline' (s: string) = 1 + (try Int32.Parse s with _ -> 0)"
+        fsharp
+            """
+            module Test
+            open System
+            let parse (s: string) =
+                let n = try Int32.Parse s with _ -> 0
+                n + 1
+            let inline' (s: string) = 1 + (try Int32.Parse s with _ -> 0)
+            """
 
     match parseControlFlowIn source with
     | [ a; b ] ->
@@ -2596,19 +4775,48 @@ let ``FR0119 inside async a site under try-with keeps its blocking call`` () =
     // `Async.AwaitTask` surfaces a faulted task as AggregateException, so
     // `with :? IOException` would stop catching what ReadLine threw bare
     let source =
-        "open System.IO\nlet head (reader: TextReader) = async {\n    try\n        let line = reader.ReadLine()\n        return line\n    with :? IOException -> return \"\"\n}"
+        fsharp
+            """
+            open System.IO
+            let head (reader: TextReader) = async {
+                try
+                    let line = reader.ReadLine()
+                    return line
+                with :? IOException -> return ""
+            }
+            """
 
     Assert.Empty(awaitableIn source)
 
     // a try/with around the run of the computation catches the same way
     let outer =
-        "open System.IO\nlet head (reader: TextReader) =\n    try\n        async {\n            let line = reader.ReadLine()\n            return line\n        }\n        |> Async.RunSynchronously\n    with :? IOException -> \"\""
+        fsharp
+            """
+            open System.IO
+            let head (reader: TextReader) =
+                try
+                    async {
+                        let line = reader.ReadLine()
+                        return line
+                    }
+                    |> Async.RunSynchronously
+                with :? IOException -> ""
+            """
 
     Assert.Empty(awaitableIn outer)
 
     // task { } awaits the bare exception: still fixed there
     let inTask =
-        "open System.IO\nlet head (reader: TextReader) = task {\n    try\n        let line = reader.ReadLine()\n        return line\n    with :? IOException -> return \"\"\n}"
+        fsharp
+            """
+            open System.IO
+            let head (reader: TextReader) = task {
+                try
+                    let line = reader.ReadLine()
+                    return line
+                with :? IOException -> return ""
+            }
+            """
 
     Assert.Single(awaitableIn inTask) |> ignore
 
@@ -2618,19 +4826,66 @@ let ``FR0119 inside async a site under try-with keeps its blocking call`` () =
 let ``FR0049 taskify leaves a drain inside a local function or object expression alone`` () =
     // `let!` inside `let g () = ...` lands in a plain function — FS0750
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    let g () =\n        let r = t.Result\n        r + 1\n    g ()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let private fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    let g () =
+                        let r = t.Result
+                        r + 1
+                    g ()
+                let consume () = task {
+                    let s = fetch 1
+                    return s
+                }
+                """
+        )
     )
 
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    let o =\n        { new Object() with\n            member _.ToString() =\n                let r = t.Result\n                string r }\n    o.ToString()\nlet consume () = task {\n    let s = fetch 1\n    return s\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System
+                open System.Threading.Tasks
+                let private fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    let o =
+                        { new Object() with
+                            member _.ToString() =
+                                let r = t.Result
+                                string r }
+                    o.ToString()
+                let consume () = task {
+                    let s = fetch 1
+                    return s
+                }
+                """
+        )
     )
 
     // a caller inside a local function of the CE cannot bind either
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = task {\n    let h () =\n        let s = fetch 1\n        s\n    return h ()\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let private fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    t.GetAwaiter().GetResult()
+                let consume () = task {
+                    let h () =
+                        let s = fetch 1
+                        s
+                    return h ()
+                }
+                """
+        )
     )
 
 [<Fact>]
@@ -2638,8 +4893,20 @@ let ``FR0049 taskify keeps a GetResult drain whose caller is async`` () =
     // GetResult threw the task's exception bare; `Async.AwaitTask` raises
     // AggregateException, so the caller's `with :? IOException` stops catching
     Assert.Empty(
-        taskifyIn
-            "module Test\nopen System.Threading.Tasks\nlet private fetch (x: int) =\n    let t = Task.Run(fun () -> x)\n    t.GetAwaiter().GetResult()\nlet consume () = async {\n    let s = fetch 2\n    return s\n}"
+        taskifyIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let private fetch (x: int) =
+                    let t = Task.Run(fun () -> x)
+                    t.GetAwaiter().GetResult()
+                let consume () = async {
+                    let s = fetch 2
+                    return s
+                }
+                """
+        )
     )
 
 // ---- FR0118 CancellationOverload: cleanup callbacks, handlers, shadowed names ----
@@ -2649,7 +4916,14 @@ let ``FR0118 no token is handed to a call inside the token's Register callback``
     // the callback runs BECAUSE the token was cancelled: the call would
     // throw OperationCanceledException instead of cleaning up
     let source =
-        "open System.IO\nopen System.Threading\nlet watch (s: Stream) (ct: CancellationToken) =\n    ct.Register(fun () -> s.FlushAsync() |> ignore) |> ignore\n    0"
+        fsharp
+            """
+            open System.IO
+            open System.Threading
+            let watch (s: Stream) (ct: CancellationToken) =
+                ct.Register(fun () -> s.FlushAsync() |> ignore) |> ignore
+                0
+            """
 
     Assert.Empty(cancellationIn source)
 
@@ -2657,7 +4931,13 @@ let ``FR0118 no token is handed to a call inside the token's Register callback``
 let ``FR0118 a name shadowing the token is not taken for it`` () =
     // `ct` inside the comprehension is the string, not the token
     let source =
-        "open System.Net.Http\nopen System.Threading\nlet fetch (client: HttpClient) (ct: CancellationToken) =\n    [ for ct in [ \"a\" ] -> client.GetStringAsync(\"u\") ]"
+        fsharp
+            """
+            open System.Net.Http
+            open System.Threading
+            let fetch (client: HttpClient) (ct: CancellationToken) =
+                [ for ct in [ "a" ] -> client.GetStringAsync("u") ]
+            """
 
     Assert.Empty(cancellationIn source)
 
@@ -2665,7 +4945,21 @@ let ``FR0118 a name shadowing the token is not taken for it`` () =
 let ``FR0118 a loop inside a with handler gets no cancellation check`` () =
     // the handler is cleanup: a check there throws on the way out
     let source =
-        "open System.Threading\nopen System.Threading.Tasks\nlet f (ct: CancellationToken) (handle: int -> Task) = task {\n    try\n        return 1\n    with _ ->\n        let mutable i = 0\n        while i < 3 do\n            do! handle i\n            i <- i + 1\n        return 0\n}"
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let f (ct: CancellationToken) (handle: int -> Task) = task {
+                try
+                    return 1
+                with _ ->
+                    let mutable i = 0
+                    while i < 3 do
+                        do! handle i
+                        i <- i + 1
+                    return 0
+            }
+            """
 
     Assert.Empty(unobservedLoopsIn source)
 

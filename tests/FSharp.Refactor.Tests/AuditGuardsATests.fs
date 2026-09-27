@@ -20,8 +20,6 @@ open FSharp.Compiler.Text
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 
-let private lines (xs: string list) = String.concat "\n" xs
-
 let private applyAll (source: string) (edits: (range * string * string) list) =
     edits
     |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
@@ -52,62 +50,62 @@ let private assertFlagRewrite (source: string) (expected: string) =
 [<Fact>]
 let ``FR0107: a same-file function whose body only computes still becomes exists`` () =
     assertFlagRewrite
-        (lines
-            [
-                "module T"
-                "let isValid (x: string) = x.Length > 3"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if isValid file then found <- true"
-                "    found"
-            ])
+        (fsharp
+            """
+            module T
+            let isValid (x: string) = x.Length > 3
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if isValid file then found <- true
+                found
+            """)
         "let found = files |> List.exists (fun file -> isValid file)"
 
 [<Fact>]
 let ``FR0107: a same-file predicate is followed through the functions it calls`` () =
     // isLong calls isValid: two declarations deep, both compute only
     assertFlagRewrite
-        (lines
-            [
-                "module T"
-                "let isValid (x: string) = x.Length > 3"
-                "let isLong (x: string) = isValid x && x.EndsWith \".fs\""
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if isLong file then found <- true"
-                "    found"
-            ])
+        (fsharp
+            """
+            module T
+            let isValid (x: string) = x.Length > 3
+            let isLong (x: string) = isValid x && x.EndsWith ".fs"
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if isLong file then found <- true
+                found
+            """)
         "let found = files |> List.exists (fun file -> isLong file)"
 
 [<Fact>]
 let ``FR0107: a local function of the enclosing body counts as declared in the file`` () =
     assertFlagRewrite
-        (lines
-            [
-                "module T"
-                "let check (files: string list) ="
-                "    let isValid (x: string) = x.Length > 3"
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if isValid file then found <- true"
-                "    found"
-            ])
+        (fsharp
+            """
+            module T
+            let check (files: string list) =
+                let isValid (x: string) = x.Length > 3
+                let mutable found = false
+                for file in files do
+                    if isValid file then found <- true
+                found
+            """)
         "let found = files |> List.exists (fun file -> isValid file)"
 
 [<Fact>]
 let ``FR0107: a method on another type in the predicate keeps the loop`` () =
     let source =
-        lines
-            [
-                "module T"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if System.IO.File.Exists file then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if System.IO.File.Exists file then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
@@ -116,16 +114,16 @@ let ``FR0107: a method on another type in the predicate keeps the loop`` () =
 let ``FR0107: an effectful FSharp.Core call in the predicate keeps the loop`` () =
     // `lock` runs its lambda under a monitor; exists would take it fewer times
     let source =
-        lines
-            [
-                "module T"
-                "let gate = obj ()"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if lock gate (fun () -> file.Length > 3) then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            let gate = obj ()
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if lock gate (fun () -> file.Length > 3) then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
@@ -133,16 +131,16 @@ let ``FR0107: an effectful FSharp.Core call in the predicate keeps the loop`` ()
 [<Fact>]
 let ``FR0107: a record field holding a function is a call and keeps the loop`` () =
     let source =
-        lines
-            [
-                "module T"
-                "type Rules = { Validate: string -> bool }"
-                "let check (rules: Rules) (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if rules.Validate file then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            type Rules = { Validate: string -> bool }
+            let check (rules: Rules) (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if rules.Validate file then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
@@ -150,19 +148,19 @@ let ``FR0107: a record field holding a function is a call and keeps the loop`` (
 [<Fact>]
 let ``FR0107: a same-file chain deeper than three declarations keeps the loop`` () =
     let source =
-        lines
-            [
-                "module T"
-                "let d (x: string) = x.Length > 3"
-                "let c (x: string) = d x"
-                "let b (x: string) = c x"
-                "let a (x: string) = b x"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if a file then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            let d (x: string) = x.Length > 3
+            let c (x: string) = d x
+            let b (x: string) = c x
+            let a (x: string) = b x
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if a file then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
@@ -172,16 +170,16 @@ let ``FR0107: a mutable holding a function is an unknown callee and keeps the lo
     // `validator` may be reassigned before the loop runs; its initial
     // lambda says nothing about what a call runs
     let source =
-        lines
-            [
-                "module T"
-                "let mutable validator = fun (x: string) -> x.Length > 3"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if validator file then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            let mutable validator = fun (x: string) -> x.Length > 3
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if validator file then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
@@ -189,16 +187,16 @@ let ``FR0107: a mutable holding a function is an unknown callee and keeps the lo
 [<Fact>]
 let ``FR0107: an annotated same-file predicate is still followed into its body`` () =
     assertFlagRewrite
-        (lines
-            [
-                "module T"
-                "let isValid: string -> bool = fun x -> x.Length > 3"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if isValid file then found <- true"
-                "    found"
-            ])
+        (fsharp
+            """
+            module T
+            let isValid: string -> bool = fun x -> x.Length > 3
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if isValid file then found <- true
+                found
+            """)
         "let found = files |> List.exists (fun file -> isValid file)"
 
 [<Fact>]
@@ -206,49 +204,49 @@ let ``FR0107: a partial FSharp.Core function in the predicate keeps the loop`` (
     // `List.head` throws on an empty list: the loop threw on its first
     // element, `exists` may stop before it ever gets there
     let source =
-        lines
-            [
-                "module T"
-                "let check (files: string list) (firsts: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if List.head firsts = file then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            let check (files: string list) (firsts: string list) =
+                let mutable found = false
+                for file in files do
+                    if List.head firsts = file then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
 
     // Operators.max over two values is total, and still passes
     assertFlagRewrite
-        (lines
-            [
-                "module T"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if max file.Length 3 > 3 then found <- true"
-                "    found"
-            ])
+        (fsharp
+            """
+            module T
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if max file.Length 3 > 3 then found <- true
+                found
+            """)
         "let found = files |> List.exists (fun file -> max file.Length 3 > 3)"
 
 [<Fact>]
 let ``FR0107: an extension member on a BCL type in the predicate keeps the loop`` () =
     // System.String is the apparent owner; the body is the user's
     let source =
-        lines
-            [
-                "module T"
-                "type System.String with"
-                "    member s.Shout() ="
-                "        printfn \"%s\" s"
-                "        s.Length > 3"
-                "let check (files: string list) ="
-                "    let mutable found = false"
-                "    for file in files do"
-                "        if file.Shout() then found <- true"
-                "    found"
-            ]
+        fsharp
+            """
+            module T
+            type System.String with
+                member s.Shout() =
+                    printfn "%s" s
+                    s.Length > 3
+            let check (files: string list) =
+                let mutable found = false
+                for file in files do
+                    if file.Shout() then found <- true
+                found
+            """
 
     assertTypechecks source
     Assert.Empty(flagLoopsIn source)
@@ -272,32 +270,36 @@ let ``FR0071: a local mutable read beside a printfn still hoists`` () =
     // the loop calls FSharp.Core alone, which cannot write `total`, and the
     // loop's own text does not assign it
     assertHoisted
-        (lines
-            [
-                "module T"
-                "let run (xs: int list) ="
-                "    let mutable total = 0"
-                "    total <- 5"
-                "    for x in xs do"
-                "        let c = total + 3"
-                "        printfn \"%d\" (x + c)"
-                "    total"
-            ])
-        "    let c = total + 3\n    for x in xs do"
+        (fsharp
+            """
+            module T
+            let run (xs: int list) =
+                let mutable total = 0
+                total <- 5
+                for x in xs do
+                    let c = total + 3
+                    printfn "%d" (x + c)
+                total
+            """)
+        (fsharp
+            """
+                let c = total + 3
+                for x in xs do
+            """)
 
 [<Fact>]
 let ``FR0071: a local mutable assigned in the loop stays in it`` () =
     let source =
-        lines
-            [
-                "module T"
-                "let run (xs: int list) ="
-                "    let mutable total = 0"
-                "    for x in xs do"
-                "        let c = total + 3"
-                "        total <- total + x + c"
-                "    total"
-            ]
+        fsharp
+            """
+            module T
+            let run (xs: int list) =
+                let mutable total = 0
+                for x in xs do
+                    let c = total + 3
+                    total <- total + x + c
+                total
+            """
 
     assertTypechecks source
     Assert.Empty(invariantsIn source)
@@ -307,18 +309,18 @@ let ``FR0071: a local mutable a same-scope closure writes stays in the loop`` ()
     // since F# 4.0 `bump` captures `total` as a ref cell: hoisted, `c`
     // would stay 3 while the loop's `total` climbs
     let source =
-        lines
-            [
-                "module T"
-                "let run (xs: int list) ="
-                "    let mutable total = 0"
-                "    let bump () = total <- total + 1"
-                "    for x in xs do"
-                "        let c = total + 3"
-                "        bump ()"
-                "        printfn \"%d %d\" x c"
-                "    total"
-            ]
+        fsharp
+            """
+            module T
+            let run (xs: int list) =
+                let mutable total = 0
+                let bump () = total <- total + 1
+                for x in xs do
+                    let c = total + 3
+                    bump ()
+                    printfn "%d %d" x c
+                total
+            """
 
     assertTypechecks source
     Assert.Empty(invariantsIn source)
@@ -328,19 +330,19 @@ let ``FR0071: a pipeline head that writes the mutable keeps the binding in the l
     // the hoisted binding lands above the whole pipeline, so `produce ()`
     // runs between it and the lambda; the lambda's body alone was scanned
     let source =
-        lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "let produce () ="
-                "    offset <- offset + 1"
-                "    [ 1; 2 ]"
-                "let run () ="
-                "    produce ()"
-                "    |> List.map (fun x ->"
-                "        let c = offset + 3"
-                "        x + c)"
-            ]
+        fsharp
+            """
+            module T
+            let mutable offset = 0
+            let produce () =
+                offset <- offset + 1
+                [ 1; 2 ]
+            let run () =
+                produce ()
+                |> List.map (fun x ->
+                    let c = offset + 3
+                    x + c)
+            """
 
     assertTypechecks source
     Assert.Empty(invariantsIn source)
@@ -348,99 +350,108 @@ let ``FR0071: a pipeline head that writes the mutable keeps the binding in the l
     // a head that is a plain value leaves nothing to run, and the lambda
     // still hoists
     assertHoisted
-        (lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "let run (xs: int list) ="
-                "    xs"
-                "    |> List.map (fun x ->"
-                "        let c = offset + 3"
-                "        x + c)"
-            ])
-        "    let c = offset + 3\n    xs\n    |> List.map (fun x ->"
+        (fsharp
+            """
+            module T
+            let mutable offset = 0
+            let run (xs: int list) =
+                xs
+                |> List.map (fun x ->
+                    let c = offset + 3
+                    x + c)
+            """)
+        (fsharp
+            """
+                let c = offset + 3
+                xs
+                |> List.map (fun x ->
+            """)
 
 [<Fact>]
 let ``FR0071: a function-typed field, a user getter and an active pattern are callees the rule cannot follow`` () =
     let viaField =
-        lines
-            [
-                "module T"
-                "type Ops = { Bump: unit -> unit }"
-                "let mutable offset = 0"
-                "let run (ops: Ops) (xs: int list) ="
-                "    for x in xs do"
-                "        let c = offset + 3"
-                "        ops.Bump ()"
-                "        ignore (x + c)"
-            ]
+        fsharp
+            """
+            module T
+            type Ops = { Bump: unit -> unit }
+            let mutable offset = 0
+            let run (ops: Ops) (xs: int list) =
+                for x in xs do
+                    let c = offset + 3
+                    ops.Bump ()
+                    ignore (x + c)
+            """
 
     assertTypechecks viaField
     Assert.Empty(invariantsIn viaField)
 
     let viaGetter =
-        lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "type Counter() ="
-                "    member _.Next ="
-                "        offset <- offset + 1"
-                "        offset"
-                "let run (counter: Counter) (xs: int list) ="
-                "    for x in xs do"
-                "        let c = offset + 3"
-                "        ignore (counter.Next + x + c)"
-            ]
+        fsharp
+            """
+            module T
+            let mutable offset = 0
+            type Counter() =
+                member _.Next =
+                    offset <- offset + 1
+                    offset
+            let run (counter: Counter) (xs: int list) =
+                for x in xs do
+                    let c = offset + 3
+                    ignore (counter.Next + x + c)
+            """
 
     assertTypechecks viaGetter
     Assert.Empty(invariantsIn viaGetter)
 
     let viaActivePattern =
-        lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "let (|Bumped|) (n: int) ="
-                "    offset <- offset + 1"
-                "    n"
-                "let run (xs: int list) ="
-                "    for x in xs do"
-                "        let c = offset + 3"
-                "        match x with"
-                "        | Bumped n -> ignore (n + c)"
-            ]
+        fsharp
+            """
+            module T
+            let mutable offset = 0
+            let (|Bumped|) (n: int) =
+                offset <- offset + 1
+                n
+            let run (xs: int list) =
+                for x in xs do
+                    let c = offset + 3
+                    match x with
+                    | Bumped n -> ignore (n + c)
+            """
 
     assertTypechecks viaActivePattern
     Assert.Empty(invariantsIn viaActivePattern)
 
     // a BCL getter cannot reach a mutable of this file
     assertHoisted
-        (lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "let run (xs: int list) ="
-                "    for x in xs do"
-                "        let c = offset + 3"
-                "        ignore (xs.Length + x + c)"
-            ])
-        "    let c = offset + 3\n    for x in xs do"
+        (fsharp
+            """
+            module T
+            let mutable offset = 0
+            let run (xs: int list) =
+                for x in xs do
+                    let c = offset + 3
+                    ignore (xs.Length + x + c)
+            """)
+        (fsharp
+            """
+                let c = offset + 3
+                for x in xs do
+            """)
 
 [<Fact>]
 let ``FR0071: a module mutable read beside a call into another assembly stays in the loop`` () =
     // Console.WriteLine is neither this file's nor FSharp.Core's: for all
     // the typed tree can tell it writes `offset`
     let source =
-        lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "let run (xs: int list) ="
-                "    for x in xs do"
-                "        let c = offset + 3"
-                "        System.Console.WriteLine(x + c)"
-            ]
+        fsharp
+            """
+            module T
+            let mutable offset = 0
+            let run (xs: int list) =
+                for x in xs do
+                    let c = offset + 3
+                    System.Console.WriteLine(x + c)
+            """
 
     assertTypechecks source
     Assert.Empty(invariantsIn source)
@@ -448,18 +459,18 @@ let ``FR0071: a module mutable read beside a call into another assembly stays in
 [<Fact>]
 let ``FR0071: a module mutable written two calls deep stays in the loop`` () =
     let source =
-        lines
-            [
-                "module T"
-                "let mutable offset = 0"
-                "let bump () = offset <- offset + 1"
-                "let step () = bump ()"
-                "let run (xs: int list) ="
-                "    for x in xs do"
-                "        let c = offset + 3"
-                "        step ()"
-                "        ignore (x + c)"
-            ]
+        fsharp
+            """
+            module T
+            let mutable offset = 0
+            let bump () = offset <- offset + 1
+            let step () = bump ()
+            let run (xs: int list) =
+                for x in xs do
+                    let c = offset + 3
+                    step ()
+                    ignore (x + c)
+            """
 
     assertTypechecks source
     Assert.Empty(invariantsIn source)
@@ -467,30 +478,34 @@ let ``FR0071: a module mutable written two calls deep stays in the loop`` () =
 [<Fact>]
 let ``FR0071: a division and a remainder by a non-zero literal hoist`` () =
     assertHoisted
-        (lines
-            [
-                "module T"
-                "let sink (n: int) = ()"
-                "let run (a: int) (xs: int list) ="
-                "    for x in xs do"
-                "        let c = a / 2 + a % 4"
-                "        sink (x + c)"
-            ])
-        "    let c = a / 2 + a % 4\n    for x in xs do"
+        (fsharp
+            """
+            module T
+            let sink (n: int) = ()
+            let run (a: int) (xs: int list) =
+                for x in xs do
+                    let c = a / 2 + a % 4
+                    sink (x + c)
+            """)
+        (fsharp
+            """
+                let c = a / 2 + a % 4
+                for x in xs do
+            """)
 
 [<Fact>]
 let ``FR0071: a division by a variable stays in the loop`` () =
     // the divisor may be zero on a loop that never ran
     let source =
-        lines
-            [
-                "module T"
-                "let sink (n: int) = ()"
-                "let run (a: int) (b: int) (xs: int list) ="
-                "    for x in xs do"
-                "        let c = a / b"
-                "        sink (x + c)"
-            ]
+        fsharp
+            """
+            module T
+            let sink (n: int) = ()
+            let run (a: int) (b: int) (xs: int list) =
+                for x in xs do
+                    let c = a / b
+                    sink (x + c)
+            """
 
     assertTypechecks source
     Assert.Empty(invariantsIn source)
@@ -533,18 +548,18 @@ let private unionsIn (source: string) =
 let ``FR0157: an unguarded null arm is dead and goes with the wildcard`` () =
     // every source is a literal, so null never arrives
     let source =
-        lines
-            [
-                "module T"
-                "let describe (region: string) ="
-                "    match region with"
-                "    | null -> \"none\""
-                "    | \"eu\" -> \"Europe\""
-                "    | \"uk\" -> \"Britain\""
-                "    | _ -> failwith \"?\""
-                "let a = describe \"eu\""
-                "let b = describe \"uk\""
-            ]
+        fsharp
+            """
+            module T
+            let describe (region: string) =
+                match region with
+                | null -> "none"
+                | "eu" -> "Europe"
+                | "uk" -> "Britain"
+                | _ -> failwith "?"
+            let a = describe "eu"
+            let b = describe "uk"
+            """
 
     match unionsIn source with
     | [ s ] ->
@@ -561,19 +576,19 @@ let ``FR0157: an unguarded null arm is dead and goes with the wildcard`` () =
 [<Fact>]
 let ``FR0157: a guarded null arm stays open and the rule stands down`` () =
     let source =
-        lines
-            [
-                "module T"
-                "let debug = true"
-                "let describe (region: string) ="
-                "    match region with"
-                "    | null when debug -> \"none\""
-                "    | \"eu\" -> \"Europe\""
-                "    | \"uk\" -> \"Britain\""
-                "    | _ -> failwith \"?\""
-                "let a = describe \"eu\""
-                "let b = describe \"uk\""
-            ]
+        fsharp
+            """
+            module T
+            let debug = true
+            let describe (region: string) =
+                match region with
+                | null when debug -> "none"
+                | "eu" -> "Europe"
+                | "uk" -> "Britain"
+                | _ -> failwith "?"
+            let a = describe "eu"
+            let b = describe "uk"
+            """
 
     assertTypechecks source
     Assert.Empty(unionsIn source)
@@ -583,35 +598,35 @@ let ``FR0157: a null beside a literal in one or-pattern stands the rule down`` (
     // read as a dead catch-all AND a literal arm, the clause was deleted
     // while its literal half was edited too
     let source =
-        lines
-            [
-                "module T"
-                "let describe (region: string) ="
-                "    match region with"
-                "    | null | \"na\" -> \"none\""
-                "    | \"eu\" -> \"Europe\""
-                "    | \"uk\" -> \"Britain\""
-                "    | _ -> failwith \"?\""
-                "let a = describe \"eu\""
-                "let b = describe \"uk\""
-            ]
+        fsharp
+            """
+            module T
+            let describe (region: string) =
+                match region with
+                | null | "na" -> "none"
+                | "eu" -> "Europe"
+                | "uk" -> "Britain"
+                | _ -> failwith "?"
+            let a = describe "eu"
+            let b = describe "uk"
+            """
 
     assertTypechecks source
     Assert.Empty(unionsIn source)
 
     let literalFirst =
-        lines
-            [
-                "module T"
-                "let describe (region: string) ="
-                "    match region with"
-                "    | \"na\" | null -> \"none\""
-                "    | \"eu\" -> \"Europe\""
-                "    | \"uk\" -> \"Britain\""
-                "    | _ -> failwith \"?\""
-                "let a = describe \"eu\""
-                "let b = describe \"uk\""
-            ]
+        fsharp
+            """
+            module T
+            let describe (region: string) =
+                match region with
+                | "na" | null -> "none"
+                | "eu" -> "Europe"
+                | "uk" -> "Britain"
+                | _ -> failwith "?"
+            let a = describe "eu"
+            let b = describe "uk"
+            """
 
     assertTypechecks literalFirst
     Assert.Empty(unionsIn literalFirst)
@@ -626,14 +641,14 @@ let private compositionsIn (source: string) =
 let ``FR0003: a field read through a mutable record keeps the lambda`` () =
     // `cfg.N` reads differently once `cfg` is reassigned
     let source =
-        lines
-            [
-                "module T"
-                "type Config = { N: int }"
-                "let mutable cfg = { N = 3 }"
-                "let addN (n: int) (x: int) = x + n"
-                "let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)"
-            ]
+        fsharp
+            """
+            module T
+            type Config = { N: int }
+            let mutable cfg = { N = 3 }
+            let addN (n: int) (x: int) = x + n
+            let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)
+            """
 
     assertTypechecks source
     Assert.Empty(compositionsIn source)
@@ -641,14 +656,14 @@ let ``FR0003: a field read through a mutable record keeps the lambda`` () =
 [<Fact>]
 let ``FR0003: a mutable field read keeps the lambda`` () =
     let source =
-        lines
-            [
-                "module T"
-                "type Config = { mutable N: int }"
-                "let cfg = { N = 3 }"
-                "let addN (n: int) (x: int) = x + n"
-                "let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)"
-            ]
+        fsharp
+            """
+            module T
+            type Config = { mutable N: int }
+            let cfg = { N = 3 }
+            let addN (n: int) (x: int) = x + n
+            let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)
+            """
 
     assertTypechecks source
     Assert.Empty(compositionsIn source)
@@ -656,14 +671,14 @@ let ``FR0003: a mutable field read keeps the lambda`` () =
 [<Fact>]
 let ``FR0003: an immutable record's field still composes`` () =
     let source =
-        lines
-            [
-                "module T"
-                "type Config = { N: int }"
-                "let cfg = { N = 3 }"
-                "let addN (n: int) (x: int) = x + n"
-                "let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)"
-            ]
+        fsharp
+            """
+            module T
+            type Config = { N: int }
+            let cfg = { N = 3 }
+            let addN (n: int) (x: int) = x + n
+            let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)
+            """
 
     match compositionsIn source with
     | [ s ] ->
@@ -675,11 +690,11 @@ let ``FR0003: an immutable record's field still composes`` () =
 let ``FR0003: a module-qualified stage still composes`` () =
     // `String` on the path is an entity, not a value
     let source =
-        lines
-            [
-                "module T"
-                "let f (xs: string list) = xs |> List.map (fun s -> s |> String.length |> string)"
-            ]
+        fsharp
+            """
+            module T
+            let f (xs: string list) = xs |> List.map (fun s -> s |> String.length |> string)
+            """
 
     match compositionsIn source with
     | [ s ] ->
@@ -696,25 +711,49 @@ let private conversionsIn (source: string) =
 [<Fact>]
 let ``FR0004: a lambda calling AddRange, Sort or UnionWith keeps the eager copy`` () =
     Assert.Empty(
-        conversionsIn
-            "module T\nlet f (xs: seq<int>) (sink: ResizeArray<int>) =\n    xs |> Seq.toList |> List.iter (fun x -> sink.AddRange [ x ])"
+        conversionsIn (
+            fsharp
+                """
+                module T
+                let f (xs: seq<int>) (sink: ResizeArray<int>) =
+                    xs |> Seq.toList |> List.iter (fun x -> sink.AddRange [ x ])
+                """
+        )
     )
 
     Assert.Empty(
-        conversionsIn
-            "module T\nlet f (xs: seq<int>) (sink: ResizeArray<int>) =\n    xs |> Seq.toList |> List.iter (fun _ -> sink.Sort())"
+        conversionsIn (
+            fsharp
+                """
+                module T
+                let f (xs: seq<int>) (sink: ResizeArray<int>) =
+                    xs |> Seq.toList |> List.iter (fun _ -> sink.Sort())
+                """
+        )
     )
 
     Assert.Empty(
-        conversionsIn
-            "module T\nlet f (xs: seq<int>) (sink: System.Collections.Generic.HashSet<int>) =\n    xs |> Seq.toList |> List.iter (fun x -> sink.UnionWith [ x ])"
+        conversionsIn (
+            fsharp
+                """
+                module T
+                let f (xs: seq<int>) (sink: System.Collections.Generic.HashSet<int>) =
+                    xs |> Seq.toList |> List.iter (fun x -> sink.UnionWith [ x ])
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0004: a lambda that only queries a collection still drops the conversion`` () =
     match
-        conversionsIn
-            "module T\nlet f (xs: ResizeArray<int>) (sink: ResizeArray<int>) =\n    xs |> Seq.toList |> List.iter (fun x -> sink.Contains x |> ignore)"
+        conversionsIn (
+            fsharp
+                """
+                module T
+                let f (xs: ResizeArray<int>) (sink: ResizeArray<int>) =
+                    xs |> Seq.toList |> List.iter (fun x -> sink.Contains x |> ignore)
+                """
+        )
     with
     | [ s ] -> Assert.Equal("Seq.iter (fun x -> sink.Contains x |> ignore)", s.ReplacementText)
     | other -> failwithf "Expected exactly one suggestion, got %A" other
@@ -729,29 +768,29 @@ let private optionsIn (source: string) =
 let ``FR0002: a member arm calling itself through its self identifier keeps the match`` () =
     // `this.Walk` in arm position is the tail call `let rec loop` makes
     let viaThis =
-        lines
-            [
-                "module T"
-                "type Walker() ="
-                "    member this.Walk (xs: int list) (acc: int) : int ="
-                "        match List.tryHead xs with"
-                "        | Some v -> this.Walk (List.tail xs) (acc + v)"
-                "        | None -> acc"
-            ]
+        fsharp
+            """
+            module T
+            type Walker() =
+                member this.Walk (xs: int list) (acc: int) : int =
+                    match List.tryHead xs with
+                    | Some v -> this.Walk (List.tail xs) (acc + v)
+                    | None -> acc
+            """
 
     assertTypechecks viaThis
     Assert.Empty(optionsIn viaThis)
 
     let viaOwnName =
-        lines
-            [
-                "module T"
-                "type Walker() ="
-                "    member w.Walk (xs: int list) (acc: int) : int ="
-                "        match List.tryHead xs with"
-                "        | Some v -> w.Walk (List.tail xs) (acc + v)"
-                "        | None -> acc"
-            ]
+        fsharp
+            """
+            module T
+            type Walker() =
+                member w.Walk (xs: int list) (acc: int) : int =
+                    match List.tryHead xs with
+                    | Some v -> w.Walk (List.tail xs) (acc + v)
+                    | None -> acc
+            """
 
     assertTypechecks viaOwnName
     Assert.Empty(optionsIn viaOwnName)
@@ -760,15 +799,15 @@ let ``FR0002: a member arm calling itself through its self identifier keeps the 
 let ``FR0002: a static member calling itself through the type's name keeps the match`` () =
     // `Walker.Walk` in arm position is the same tail call as `this.Walk`
     let viaTypeName =
-        lines
-            [
-                "module T"
-                "type Walker() ="
-                "    static member Walk (xs: int list) (acc: int) : int ="
-                "        match List.tryHead xs with"
-                "        | Some v -> Walker.Walk (List.tail xs) (acc + v)"
-                "        | None -> acc"
-            ]
+        fsharp
+            """
+            module T
+            type Walker() =
+                static member Walk (xs: int list) (acc: int) : int =
+                    match List.tryHead xs with
+                    | Some v -> Walker.Walk (List.tail xs) (acc + v)
+                    | None -> acc
+            """
 
     assertTypechecks viaTypeName
     Assert.Empty(optionsIn viaTypeName)
@@ -776,15 +815,15 @@ let ``FR0002: a static member calling itself through the type's name keeps the m
     // a module's `let rec` called through the module's name (a recursive
     // module, where the qualified spelling resolves)
     let viaModuleName =
-        lines
-            [
-                "module T"
-                "module rec M ="
-                "    let rec loop (xs: int list) (acc: int) : int ="
-                "        match List.tryHead xs with"
-                "        | Some v -> M.loop (List.tail xs) (acc + v)"
-                "        | None -> acc"
-            ]
+        fsharp
+            """
+            module T
+            module rec M =
+                let rec loop (xs: int list) (acc: int) : int =
+                    match List.tryHead xs with
+                    | Some v -> M.loop (List.tail xs) (acc + v)
+                    | None -> acc
+            """
 
     assertTypechecks viaModuleName
     Assert.Empty(optionsIn viaModuleName)
@@ -792,16 +831,16 @@ let ``FR0002: a static member calling itself through the type's name keeps the m
 [<Fact>]
 let ``FR0002: a member whose arm calls another member still folds`` () =
     let source =
-        lines
-            [
-                "module T"
-                "type Walker() ="
-                "    member _.Weight (v: int) = v * 2"
-                "    member this.Step (xs: int list) (acc: int) : int ="
-                "        match List.tryHead xs with"
-                "        | Some v -> acc + this.Weight v"
-                "        | None -> acc"
-            ]
+        fsharp
+            """
+            module T
+            type Walker() =
+                member _.Weight (v: int) = v * 2
+                member this.Step (xs: int list) (acc: int) : int =
+                    match List.tryHead xs with
+                    | Some v -> acc + this.Weight v
+                    | None -> acc
+            """
 
     match optionsIn source with
     | [ s ] ->
@@ -815,15 +854,15 @@ let ``FR0002: a member whose arm calls another member still folds`` () =
 let ``FR0101: a string source in a Fable project keeps its index`` () =
     // Fable's Rust target has no string enumerator
     let source =
-        lines
-            [
-                "module T"
-                "let count (value: string) ="
-                "    let mutable n = 0"
-                "    for i in 0 .. value.Length - 1 do"
-                "        if value.[i] = 'a' then n <- n + 1"
-                "    n"
-            ]
+        fsharp
+            """
+            module T
+            let count (value: string) =
+                let mutable n = 0
+                for i in 0 .. value.Length - 1 do
+                    if value.[i] = 'a' then n <- n + 1
+                n
+            """
 
     let tree, sourceText, check = parseAndCheck source
     Assert.Empty(IndexedLoop.findWith tree sourceText (IndexedLoop.SourceGate.NoStrings(Some check)))
@@ -838,15 +877,15 @@ let ``FR0101: a string source in a Fable project keeps its index`` () =
 [<Fact>]
 let ``FR0101: an array source in a Fable project still iterates directly`` () =
     let source =
-        lines
-            [
-                "module T"
-                "let count (values: int[]) ="
-                "    let mutable n = 0"
-                "    for i in 0 .. values.Length - 1 do"
-                "        if values.[i] > 3 then n <- n + 1"
-                "    n"
-            ]
+        fsharp
+            """
+            module T
+            let count (values: int[]) =
+                let mutable n = 0
+                for i in 0 .. values.Length - 1 do
+                    if values.[i] > 3 then n <- n + 1
+                n
+            """
 
     let tree, sourceText, check = parseAndCheck source
 

@@ -50,7 +50,13 @@ let ``Array sum of a non-primitive is left alone`` () =
 let ``a record-field array aggregation is noted`` () =
     // the field resolves as FSharpField, not a member-or-value
     let suggestions =
-        vectorizedIn "type State = { Buffer: int[] }\nlet f (state: State) = state.Buffer |> Array.sum"
+        vectorizedIn (
+            fsharp
+                """
+                type State = { Buffer: int[] }
+                let f (state: State) = state.Buffer |> Array.sum
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal("state.Buffer", s.ArrayName)
@@ -85,15 +91,32 @@ let ``a contains inside a query expression stays quiet`` () =
     // SQLProvider turns Array.contains into SQL IN, and the Enumerable
     // spelling may not translate at all
     Assert.Empty(
-        vectorizedIn
-            "let f (values: int[]) (xs: int list) =\n    query {\n        for x in xs do\n            where (values |> Array.contains x)\n            select x\n    }"
+        vectorizedIn (
+            fsharp
+                """
+                let f (values: int[]) (xs: int list) =
+                    query {
+                        for x in xs do
+                            where (values |> Array.contains x)
+                            select x
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``a sum inside a query expression stays quiet too`` () =
     Assert.Empty(
-        vectorizedIn
-            "let f (values: int[]) (xs: int list) =\n    query {\n        for x in xs do\n            select (Array.sum values + x)\n    }"
+        vectorizedIn (
+            fsharp
+                """
+                let f (values: int[]) (xs: int list) =
+                    query {
+                        for x in xs do
+                            select (Array.sum values + x)
+                    }
+                """
+        )
     )
 
 [<Fact>]
@@ -106,7 +129,11 @@ let ``FR0041: a blocked-account lookup over an int array is swept to Enumerable.
         [
             "let isBlocked (blocked: int[]) (account: int) = Array.contains account blocked",
             "System.Linq.Enumerable.Contains(blocked, account)"
-            "open System.Linq\nlet isBlocked (blocked: int64[]) (account: int64) = blocked |> Array.contains account",
+            fsharp
+                """
+                open System.Linq
+                let isBlocked (blocked: int64[]) (account: int64) = blocked |> Array.contains account
+                """,
             "Enumerable.Contains(blocked, account)"
             "let isBlocked (blocked: int[]) (account: int) = not (Array.contains (account + 1) blocked)",
             "not (System.Linq.Enumerable.Contains(blocked, (account + 1)))"
@@ -124,8 +151,13 @@ let ``FR0041: a blocked-account lookup over an int array is swept to Enumerable.
     // the direct form read the probe before the array: a call probed against
     // a property path would swap the order of two reads
     match
-        vectorizedIn
-            "type Book = { Blocked: int[] }\nlet isBlocked (book: Book) (next: unit -> int) = Array.contains (next ()) book.Blocked"
+        vectorizedIn (
+            fsharp
+                """
+                type Book = { Blocked: int[] }
+                let isBlocked (book: Book) (next: unit -> int) = Array.contains (next ()) book.Blocked
+                """
+        )
     with
     | [ s ] -> Assert.Equal(None, s.ReplacementText)
     | other -> failwithf "Expected exactly one contains note, got %A" other

@@ -25,15 +25,34 @@ let ``a piped Seq call on an array becomes Array`` () =
 
 [<Fact>]
 let ``a direct Seq call on an array becomes Array`` () =
-    assertRewrite "module Test\nlet f (xs: string[]) = Seq.forall (fun x -> x <> \"\") xs" "forall"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f (xs: string[]) = Seq.forall (fun x -> x <> "") xs
+            """)
+        "forall"
 
 [<Fact>]
 let ``a curried predicate call still resolves the array`` () =
-    assertRewrite "module Test\nlet f (xs: int[]) = xs |> Seq.exists (fun x -> x > 2)" "exists"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f (xs: int[]) = xs |> Seq.exists (fun x -> x > 2)
+            """)
+        "exists"
 
 [<Fact>]
 let ``a record field typed as an array is rewritten too`` () =
-    assertRewrite "module Test\ntype S = { Buffer: int[] }\nlet f (s: S) = s.Buffer |> Seq.isEmpty" "isEmpty"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            type S = { Buffer: int[] }
+            let f (s: S) = s.Buffer |> Seq.isEmpty
+            """)
+        "isEmpty"
 
 [<Fact>]
 let ``a LIST is left alone — Seq there can be deliberate`` () =
@@ -59,7 +78,15 @@ let ``item keeps its Seq spelling — the exception types differ`` () =
 [<Fact>]
 let ``a collection-returning function would change the type`` () =
     // Seq.map returns seq<'b>, Array.map returns 'b[]
-    Assert.Empty(seqOnArrayIn "module Test\nlet f (xs: int[]) = xs |> Seq.map (fun x -> x + 1)")
+    Assert.Empty(
+        seqOnArrayIn (
+            fsharp
+                """
+                module Test
+                let f (xs: int[]) = xs |> Seq.map (fun x -> x + 1)
+                """
+        )
+    )
 
 [<Fact>]
 let ``contains on an int array defaults to LINQ, with Array offered beside it`` () =
@@ -76,7 +103,16 @@ let ``contains on an int array defaults to LINQ, with Array offered beside it`` 
 
 [<Fact>]
 let ``an open System.Linq shortens the alternative`` () =
-    match seqOnArrayIn "module Test\nopen System.Linq\nlet f (xs: int[]) = xs |> Seq.contains 3" with
+    match
+        seqOnArrayIn (
+            fsharp
+                """
+                module Test
+                open System.Linq
+                let f (xs: int[]) = xs |> Seq.contains 3
+                """
+        )
+    with
     | [ s ] ->
         match s.LinqSpelling with
         | Some(_, linq) -> Assert.Equal("Enumerable.Contains(xs, 3)", linq)
@@ -92,11 +128,27 @@ let ``contains on a STRING array gets no rule at all`` () =
 [<Fact>]
 let ``iter is left alone — measured a wash on .NET 10`` () =
     // 236.6 against 235.4 ns: half a percent is not a refactoring
-    Assert.Empty(seqOnArrayIn "module Test\nlet f (xs: int[]) = xs |> Seq.iter (printfn \"%d\")")
+    Assert.Empty(
+        seqOnArrayIn (
+            fsharp
+                """
+                module Test
+                let f (xs: int[]) = xs |> Seq.iter (printfn "%d")
+                """
+        )
+    )
 
 [<Fact>]
 let ``a user-defined Seq module is not the FSharp.Core one`` () =
     // swapping this to Array would name a function nobody wrote
     Assert.Empty(
-        seqOnArrayIn "module Test\nmodule Seq =\n    let describe (_: int[]) = 1\nlet f (xs: int[]) = Seq.describe xs"
+        seqOnArrayIn (
+            fsharp
+                """
+                module Test
+                module Seq =
+                    let describe (_: int[]) = 1
+                let f (xs: int[]) = Seq.describe xs
+                """
+        )
     )

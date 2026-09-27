@@ -30,8 +30,16 @@ let ``consecutive Array maps over fst fuse into a composition`` () =
 let ``the parenthesized juxtaposed spelling fuses the same way`` () =
     // the shape from the field: xs |> Array.map(fst) |> Array.map(fun x -> ...)
     assertPatched
-        "module Test\nlet f xs = xs |> Seq.toArray |> Array.map(fst) |> Array.map(fun x -> x + 1)"
-        "module Test\nlet f xs = xs |> Seq.toArray |> Array.map (fst >> fun x -> x + 1)"
+        (fsharp
+            """
+            module Test
+            let f xs = xs |> Seq.toArray |> Array.map(fst) |> Array.map(fun x -> x + 1)
+            """)
+        (fsharp
+            """
+            module Test
+            let f xs = xs |> Seq.toArray |> Array.map (fst >> fun x -> x + 1)
+            """)
 
 [<Fact>]
 let ``snd fuses on List`` () =
@@ -46,8 +54,21 @@ let ``a leading map id disappears entirely`` () =
 [<Fact>]
 let ``multi-line pipeline stages fuse onto one line`` () =
     assertPatched
-        "module Test\nlet f g xs =\n    xs\n    |> Array.map fst\n    |> Array.map g"
-        "module Test\nlet f g xs =\n    xs\n    |> Array.map (fst >> g)"
+        (fsharp
+            """
+            module Test
+            let f g xs =
+                xs
+                |> Array.map fst
+                |> Array.map g
+            """)
+        (fsharp
+            """
+            module Test
+            let f g xs =
+                xs
+                |> Array.map (fst >> g)
+            """)
 
 [<Fact>]
 let ``an arbitrary first mapper is not fused — interleaving would reorder its effects`` () =
@@ -61,17 +82,40 @@ let ``maps of different modules never fuse`` () =
 
 [<Fact>]
 let ``a second stage spanning lines is left alone`` () =
-    assertNoSuggestion "module Test\nlet f xs = xs |> Array.map fst |> Array.map (fun x ->\n    x + 1)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f xs = xs |> Array.map fst |> Array.map (fun x ->
+                x + 1)
+            """
+    )
 
 [<Fact>]
 let ``a composed second mapper folds into one chain`` () =
     assertPatched
-        "module Test\nlet f g h xs = xs |> List.map fst |> List.map (g >> h)"
-        "module Test\nlet f g h xs = xs |> List.map (fst >> g >> h)"
+        (fsharp
+            """
+            module Test
+            let f g h xs = xs |> List.map fst |> List.map (g >> h)
+            """)
+        (fsharp
+            """
+            module Test
+            let f g h xs = xs |> List.map (fst >> g >> h)
+            """)
 
 [<Fact>]
 let ``a backward composition keeps its parentheses`` () =
     // `fst >> f << g` is `(fst >> f) << g`: a different function
     assertPatched
-        "module Test\nlet f g h xs = xs |> List.map fst |> List.map (g << h)"
-        "module Test\nlet f g h xs = xs |> List.map (fst >> (g << h))"
+        (fsharp
+            """
+            module Test
+            let f g h xs = xs |> List.map fst |> List.map (g << h)
+            """)
+        (fsharp
+            """
+            module Test
+            let f g h xs = xs |> List.map (fst >> (g << h))
+            """)

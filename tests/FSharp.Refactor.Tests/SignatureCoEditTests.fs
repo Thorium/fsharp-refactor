@@ -50,7 +50,14 @@ let ``FR0130 carries the literal into the signature`` () =
             Assert.Equal(2, s.SignatureEdits.Length)
 
             Assert.Equal(
-                "module M\n\n[<Literal>]\nval answer: int = 42\n",
+                fsharp
+                    """
+                    module M
+
+                    [<Literal>]
+                    val answer: int = 42
+
+                    """,
                 patchSignature "module M\n\nval answer: int\n" s.SignatureEdits
             )
         | other -> failwithf "Expected one literal fix carrying its signature, got %A" other)
@@ -67,9 +74,19 @@ let ``FR0130 leaves a value the signature does not declare alone`` () =
 
 [<Fact>]
 let ``FR0130 withholds where the signature already attributes the value`` () =
-    withSignature "module M\n\nlet answer = 42\n" "module M\n\n[<Literal>]\nval answer: int = 42\n" (fun implPath _ ->
-        let tree, sourceText = parseNamed implPath (File.ReadAllText implPath)
-        Assert.Empty(LiteralConst.find true tree sourceText))
+    withSignature
+        "module M\n\nlet answer = 42\n"
+        (fsharp
+            """
+            module M
+
+            [<Literal>]
+            val answer: int = 42
+
+            """)
+        (fun implPath _ ->
+            let tree, sourceText = parseNamed implPath (File.ReadAllText implPath)
+            Assert.Empty(LiteralConst.find true tree sourceText))
 
 [<Fact>]
 let ``FR0130 withholds where the signature cannot be read`` () =
@@ -93,10 +110,26 @@ let ``FR0130 withholds where the signature cannot be read`` () =
 [<Fact>]
 let ``FR0016 carries the Struct attribute into the signature`` () =
     let impl =
-        "module M\n\ntype Shape =\n    | Circle of radius: float\n    | Square of side: float\n"
+        fsharp
+            """
+            module M
+
+            type Shape =
+                | Circle of radius: float
+                | Square of side: float
+
+            """
 
     let signature =
-        "module M\n\ntype Shape =\n    | Circle of radius: float\n    | Square of side: float\n"
+        fsharp
+            """
+            module M
+
+            type Shape =
+                | Circle of radius: float
+                | Square of side: float
+
+            """
 
     withSignature impl signature (fun implPath _ ->
         let tree, sourceText = parseNamed implPath impl
@@ -104,7 +137,16 @@ let ``FR0016 carries the Struct attribute into the signature`` () =
         match StructDu.find true tree sourceText with
         | [ s ] ->
             Assert.Equal(
-                "module M\n\n[<Struct>]\ntype Shape =\n    | Circle of radius: float\n    | Square of side: float\n",
+                fsharp
+                    """
+                    module M
+
+                    [<Struct>]
+                    type Shape =
+                        | Circle of radius: float
+                        | Square of side: float
+
+                    """,
                 patchSignature signature s.SignatureEdits
             )
         | other -> failwithf "Expected one struct fix carrying its signature, got %A" other)
@@ -115,14 +157,35 @@ let ``FR0133 renames the signature's val alongside every use`` () =
     // signature can declare; the attribute type is declared in the source
     // so the fixture needs no test framework
     let impl =
-        "module A\n\ntype FactAttribute() =\n    inherit System.Attribute()\n\n[<Fact>]\nlet thisIsMyVeryComplexTestCase () = ()\n"
+        fsharp
+            """
+            module A
+
+            type FactAttribute() =
+                inherit System.Attribute()
+
+            [<Fact>]
+            let thisIsMyVeryComplexTestCase () = ()
+
+            """
 
     let treeA, sourceTextA, checkA, projectResults, pathA, _, _ =
         parseAndCheckPair impl "module B\n"
 
     File.WriteAllText(
         Path.ChangeExtension(pathA, ".fsi"),
-        "module A\n\ntype FactAttribute =\n    inherit System.Attribute\n    new: unit -> FactAttribute\n\n[<Fact>]\nval thisIsMyVeryComplexTestCase: unit -> unit\n"
+        fsharp
+            """
+            module A
+
+            type FactAttribute =
+                inherit System.Attribute
+                new: unit -> FactAttribute
+
+            [<Fact>]
+            val thisIsMyVeryComplexTestCase: unit -> unit
+
+            """
     )
 
     match NameQuoting.find false treeA sourceTextA checkA (Some projectResults) with

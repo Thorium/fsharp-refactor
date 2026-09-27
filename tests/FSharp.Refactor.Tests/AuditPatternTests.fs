@@ -43,12 +43,27 @@ let ``B2: a for variable keeps the module form`` () =
     // `o` is typed by `xs`, whose type is inferred from this very use:
     // `o.IsSome` is FS0072 "lookup on object of indeterminate type"
     Assert.Empty(
-        simplificationsIn
-            "let anyPresent xs =\n    let mutable found = false\n    for o in xs do\n        if Option.isSome o then found <- true\n    found"
+        simplificationsIn (
+            fsharp
+                """
+                let anyPresent xs =
+                    let mutable found = false
+                    for o in xs do
+                        if Option.isSome o then found <- true
+                    found
+                """
+        )
     )
 
     assertSimplification
-        "let anyPresent xs =\n    let mutable found = false\n    for o in xs do\n        if o <> None then found <- true\n    found"
+        (fsharp
+            """
+            let anyPresent xs =
+                let mutable found = false
+                for o in xs do
+                    if o <> None then found <- true
+                found
+            """)
         "o |> Option.isSome"
 
 [<Fact>]
@@ -59,20 +74,37 @@ let ``B2: a let bound to a generic projection keeps the module form`` () =
 [<Fact>]
 let ``B2: a primary-constructor parameter keeps the module form`` () =
     assertOptionMatch
-        "type Holder(x) =\n    member _.Present = match x with | Some _ -> true | None -> false"
+        (fsharp
+            """
+            type Holder(x) =
+                member _.Present = match x with | Some _ -> true | None -> false
+            """)
         "Option.isSome"
         "x |> Option.isSome"
 
 [<Fact>]
 let ``B2: a match-bound name keeps the module form`` () =
     assertOptionMatch
-        "let firstSet ys =\n    match ys with\n    | o :: _ -> (match o with | Some _ -> true | None -> false)\n    | [] -> false"
+        (fsharp
+            """
+            let firstSet ys =
+                match ys with
+                | o :: _ -> (match o with | Some _ -> true | None -> false)
+                | [] -> false
+            """)
         "Option.isSome"
         "o |> Option.isSome"
 
 [<Fact>]
 let ``B2: a tuple-destructured let keeps the module form`` () =
-    assertSimplification "let f (y: int option * int) =\n    let (a, _) = y\n    a <> None" "a |> Option.isSome"
+    assertSimplification
+        (fsharp
+            """
+            let f (y: int option * int) =
+                let (a, _) = y
+                a <> None
+            """)
+        "a |> Option.isSome"
 
 [<Fact>]
 let ``B2: an annotated parameter still takes the property`` () =
@@ -83,15 +115,35 @@ let ``B2: an annotated parameter still takes the property`` () =
 
 [<Fact>]
 let ``B2: a let settled by its right-hand side still takes the property`` () =
-    assertSimplification "let f (n: int) =\n    let x = if n > 0 then Some n else None\n    Option.isNone x" "x.IsNone"
+    assertSimplification
+        (fsharp
+            """
+            let f (n: int) =
+                let x = if n > 0 then Some n else None
+                Option.isNone x
+            """)
+        "x.IsNone"
 
     // the declared return type of List.tryFind is an option whatever the
     // element type turns out to be
-    assertSimplification "let f ys =\n    let a = List.tryFind (fun v -> v > 0) ys\n    a <> None" "a.IsSome"
+    assertSimplification
+        (fsharp
+            """
+            let f ys =
+                let a = List.tryFind (fun v -> v > 0) ys
+                a <> None
+            """)
+        "a.IsSome"
 
 [<Fact>]
 let ``B2: a record field on a settled root still takes the property`` () =
-    assertSimplification "type R = { Age: int option }\nlet f (r: R) = Option.isSome r.Age" "r.Age.IsSome"
+    assertSimplification
+        (fsharp
+            """
+            type R = { Age: int option }
+            let f (r: R) = Option.isSome r.Age
+            """)
+        "r.Age.IsSome"
 
 [<Fact>]
 let ``B2: a module-level value read from a later declaration takes the property`` () =
@@ -112,8 +164,14 @@ let private applyExtraction (source: string) (s: RecGroup.Suggestion) =
 let ``B3: a sibling called inside an interpolation hole keeps the member in the group`` () =
     // extracted above `size`, `describe` would not compile (FS0039)
     Assert.Empty(
-        recGroupsIn
-            "module Test\nlet rec size n = if n = 0 then 0 else 1 + size (n - 1)\nand describe n = $\"size is {size n}\""
+        recGroupsIn (
+            fsharp
+                """
+                module Test
+                let rec size n = if n = 0 then 0 else 1 + size (n - 1)
+                and describe n = $"size is {size n}"
+                """
+        )
     )
 
 [<Fact>]
@@ -144,7 +202,12 @@ let ``B3: a char literal quote does not hide the self-call after it`` () =
 [<Fact>]
 let ``B3: a name in an interpolated string's text is still no reference`` () =
     let source =
-        "module Test\nlet rec run (n: int) : int = if n = 0 then 0 else helper n\nand helper (n: int) : int = if n < 0 then failwith $\"helper: negative {n}\" else n - 1"
+        fsharp
+            """
+            module Test
+            let rec run (n: int) : int = if n = 0 then 0 else helper n
+            and helper (n: int) : int = if n < 0 then failwith $"helper: negative {n}" else n - 1
+            """
 
     match recGroupsIn source with
     | [ s ] ->
@@ -159,7 +222,18 @@ let ``B3: a name in an interpolated string's text is still no reference`` () =
 [<Fact>]
 let ``B12: an active pattern under #if carries the module's indentation`` () =
     let source =
-        "namespace N\nmodule M =\n    let isBig (i: int) = i > 10\n    let f i =\n        match i with\n#if !FABLE_COMPILER\n        | x when isBig x -> x\n#endif\n        | _ -> 0"
+        fsharp
+            """
+            namespace N
+            module M =
+                let isBig (i: int) = i > 10
+                let f i =
+                    match i with
+            #if !FABLE_COMPILER
+                    | x when isBig x -> x
+            #endif
+                    | _ -> 0
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
 
@@ -169,7 +243,24 @@ let ``B12: an active pattern under #if carries the module's indentation`` () =
         let patched = applyEdit patched s.InsertRange s.InsertText
 
         Assert.Equal(
-            "namespace N\nmodule M =\n    let isBig (i: int) = i > 10\n#if !FABLE_COMPILER\n    [<return: Struct>]\n    let inline private (|IsBig|_|) input =\n        if isBig input then ValueSome input else ValueNone\n#endif\n\n    let f i =\n        match i with\n#if !FABLE_COMPILER\n        | IsBig x -> x\n#endif\n        | _ -> 0",
+            fsharp
+                """
+                namespace N
+                module M =
+                    let isBig (i: int) = i > 10
+                #if !FABLE_COMPILER
+                    [<return: Struct>]
+                    let inline private (|IsBig|_|) input =
+                        if isBig input then ValueSome input else ValueNone
+                #endif
+
+                    let f i =
+                        match i with
+                #if !FABLE_COMPILER
+                        | IsBig x -> x
+                #endif
+                        | _ -> 0
+                """,
             patched
         )
 
@@ -179,17 +270,49 @@ let ``B12: an active pattern under #if carries the module's indentation`` () =
 [<Fact>]
 let ``B12: a rec group member under #if carries the module's indentation`` () =
     let source =
-        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else g x\n#if !FOO\n    and g (y: int) : int = y + 1\n#endif"
+        fsharp
+            """
+            namespace N
+            module M =
+                let rec f (x: int) : int = if x = 0 then 0 else g x
+            #if !FOO
+                and g (y: int) : int = y + 1
+            #endif
+            """
 
     match recGroupsIn source with
     | [ s ] ->
         Assert.Equal("g", s.MemberName)
         Assert.Equal(0, s.InsertRange.StartColumn)
-        Assert.Equal("#if !FOO\n    let g (y: int) : int = y + 1\n#endif\n\n", s.InsertText)
+
+        Assert.Equal(
+            fsharp
+                """
+                #if !FOO
+                    let g (y: int) : int = y + 1
+                #endif
+
+
+                """,
+            s.InsertText
+        )
+
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "namespace N\nmodule M =\n#if !FOO\n    let g (y: int) : int = y + 1\n#endif\n\n    let rec f (x: int) : int = if x = 0 then 0 else g x\n#if !FOO\n\n#endif",
+            fsharp
+                """
+                namespace N
+                module M =
+                #if !FOO
+                    let g (y: int) : int = y + 1
+                #endif
+
+                    let rec f (x: int) : int = if x = 0 then 0 else g x
+                #if !FOO
+
+                #endif
+                """,
             patched
         )
 
@@ -199,7 +322,13 @@ let ``B12: a rec group member under #if carries the module's indentation`` () =
 [<Fact>]
 let ``B12: an unconditioned extraction still rides on the group's indentation`` () =
     let source =
-        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else g x\n    and g (y: int) : int = y + 1"
+        fsharp
+            """
+            namespace N
+            module M =
+                let rec f (x: int) : int = if x = 0 then 0 else g x
+                and g (y: int) : int = y + 1
+            """
 
     match recGroupsIn source with
     | [ s ] ->
@@ -217,17 +346,43 @@ let ``every member that can leave goes in one pass, in dependency order`` () =
     // the group, so the order compiles. Adjacent blocks merge into one
     // removal
     let source =
-        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x\nand g (y: int) : int = y + 1\nand h (z: int) : int = g z * 2"
+        fsharp
+            """
+            module Test
+            let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x
+            and g (y: int) : int = y + 1
+            and h (z: int) : int = g z * 2
+            """
 
     match recGroupsIn source with
     | [ s ] ->
         Assert.Equal<(string * bool) list>([ "g", false; "h", false ], s.Members)
         Assert.Equal(1, s.Removes.Length)
-        Assert.Equal("let g (y: int) : int = y + 1\n\nlet h (z: int) : int = g z * 2\n\n", s.InsertText)
+
+        Assert.Equal(
+            fsharp
+                """
+                let g (y: int) : int = y + 1
+
+                let h (z: int) : int = g z * 2
+
+
+                """,
+            s.InsertText
+        )
+
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "module Test\nlet g (y: int) : int = y + 1\n\nlet h (z: int) : int = g z * 2\n\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x",
+            fsharp
+                """
+                module Test
+                let g (y: int) : int = y + 1
+
+                let h (z: int) : int = g z * 2
+
+                let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x
+                """,
             patched
         )
 
@@ -239,14 +394,28 @@ let ``the last member leaves no whitespace-only line behind`` () =
     // ProvidedTypes.fs:10841 - the removed block began after the line's
     // indentation, which stayed as a line of eight spaces
     let source =
-        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x\n\n    and g (y: int) : int = y + 1"
+        fsharp
+            """
+            namespace N
+            module M =
+                let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x
+
+                and g (y: int) : int = y + 1
+            """
 
     match recGroupsIn source with
     | [ s ] ->
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "namespace N\nmodule M =\n    let g (y: int) : int = y + 1\n\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x",
+            fsharp
+                """
+                namespace N
+                module M =
+                    let g (y: int) : int = y + 1
+
+                    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x
+                """,
             patched
         )
 
@@ -257,15 +426,36 @@ let ``the last member leaves no whitespace-only line behind`` () =
 let ``a plain comment directly above the member travels with it`` () =
     // left behind, `// REVIEW ...` headed whatever binding came next
     let source =
-        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x\n// REVIEW: write into an accumulating buffer\nand g (y: int) : int = y + 1"
+        fsharp
+            """
+            module Test
+            let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x
+            // REVIEW: write into an accumulating buffer
+            and g (y: int) : int = y + 1
+            """
 
     match recGroupsIn source with
     | [ s ] ->
-        Assert.StartsWith("// REVIEW: write into an accumulating buffer\nlet g", s.InsertText)
+        Assert.StartsWith(
+            fsharp
+                """
+                // REVIEW: write into an accumulating buffer
+                let g
+                """,
+            s.InsertText
+        )
+
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "module Test\n// REVIEW: write into an accumulating buffer\nlet g (y: int) : int = y + 1\n\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x",
+            fsharp
+                """
+                module Test
+                // REVIEW: write into an accumulating buffer
+                let g (y: int) : int = y + 1
+
+                let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x
+                """,
             patched
         )
 
@@ -278,7 +468,15 @@ let ``a commented member and the plain last member leave as one removal`` () =
     // line; as two removals the second's tail trim reached back into the
     // first and the edits overlapped
     let source =
-        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x\n    // g's note\n    and g (y: int) : int = y + 1\n    and h (z: int) : int = z * 2"
+        fsharp
+            """
+            namespace N
+            module M =
+                let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x
+                // g's note
+                and g (y: int) : int = y + 1
+                and h (z: int) : int = z * 2
+            """
 
     match recGroupsIn source with
     | [ s ] ->
@@ -286,7 +484,17 @@ let ``a commented member and the plain last member leave as one removal`` () =
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "namespace N\nmodule M =\n    // g's note\n    let g (y: int) : int = y + 1\n\n    let h (z: int) : int = z * 2\n\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x",
+            fsharp
+                """
+                namespace N
+                module M =
+                    // g's note
+                    let g (y: int) : int = y + 1
+
+                    let h (z: int) : int = z * 2
+
+                    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x
+                """,
             patched
         )
 
@@ -297,12 +505,28 @@ let ``a commented member and the plain last member leave as one removal`` () =
 let ``a member referencing a sibling under #if waits for it`` () =
     // g leaves alone on its own pass (it is last, so its block spans no directive); h references it and must wait, or it would sit above the group with g still below
     let source =
-        "module Test\nlet rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x\nand h (z: int) : int = g z * 2\n#if !FOO\nand g (y: int) : int = y + 1\n#endif"
+        fsharp
+            """
+            module Test
+            let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x
+            and h (z: int) : int = g z * 2
+            #if !FOO
+            and g (y: int) : int = y + 1
+            #endif
+            """
 
     match recGroupsIn source with
     | [ s ] ->
         Assert.Equal<(string * bool) list>([ "g", false ], s.Members)
-        Assert.StartsWith("#if !FOO\nlet g", s.InsertText)
+
+        Assert.StartsWith(
+            fsharp
+                """
+                #if !FOO
+                let g
+                """,
+            s.InsertText
+        )
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -311,7 +535,16 @@ let ``a merged removal headed by a comment ends at column 0 before a staying mem
     // blocks after it ended at the next `and`'s column, and that `and`
     // was left at the margin
     let source =
-        "namespace N\nmodule M =\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x + k x\n    // g's note\n    and g (y: int) : int = y + 1\n    and h (z: int) : int = g z * 2\n    and k (w: int) : int = f w + 1"
+        fsharp
+            """
+            namespace N
+            module M =
+                let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x + k x
+                // g's note
+                and g (y: int) : int = y + 1
+                and h (z: int) : int = g z * 2
+                and k (w: int) : int = f w + 1
+            """
 
     match recGroupsIn source with
     | [ s ] ->
@@ -319,7 +552,18 @@ let ``a merged removal headed by a comment ends at column 0 before a staying mem
         let patched = applyExtraction source s
 
         Assert.Equal(
-            "namespace N\nmodule M =\n    // g's note\n    let g (y: int) : int = y + 1\n\n    let h (z: int) : int = g z * 2\n\n    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x + k x\n    and k (w: int) : int = f w + 1",
+            fsharp
+                """
+                namespace N
+                module M =
+                    // g's note
+                    let g (y: int) : int = y + 1
+
+                    let h (z: int) : int = g z * 2
+
+                    let rec f (x: int) : int = if x = 0 then 0 else f (x - 1) + g x + h x + k x
+                    and k (w: int) : int = f w + 1
+                """,
             patched
         )
 

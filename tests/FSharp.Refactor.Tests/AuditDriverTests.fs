@@ -115,18 +115,18 @@ let ``absolutizeArgs rebases the path-carrying arguments against the project dir
     // an absolute directory is rooted the way the platform roots one
     let absolute =
         if OperatingSystem.IsWindows() then
-            "C:\\absolute\\dir"
+            """C:\absolute\dir"""
         else
             "/absolute/dir"
 
     let args =
         [|
             "--keyfile:../../Key.snk"
-            "--doc:bin\\Debug\\Lib.xml"
-            "-r:..\\..\\packages\\A.dll"
-            "--resource:res\\a.txt,Lib.a.txt,public"
+            """--doc:bin\Debug\Lib.xml"""
+            """-r:..\..\packages\A.dll"""
+            """--resource:res\a.txt,Lib.a.txt,public"""
             $"--lib:..\\lib;{absolute}"
-            "-o:obj\\Debug\\Lib.dll"
+            """-o:obj\Debug\Lib.dll"""
             "--target:library"
             "--define:DEBUG"
             "Library.fs"
@@ -138,11 +138,11 @@ let ``absolutizeArgs rebases the path-carrying arguments against the project dir
         Path.GetFullPath(Path.Combine(projectDir, relative))
 
     let key = expect "../../Key.snk"
-    let doc = expect "bin\\Debug\\Lib.xml"
-    let reference = expect "..\\..\\packages\\A.dll"
-    let resource = expect "res\\a.txt"
-    let lib = expect "..\\lib"
-    let out = expect "obj\\Debug\\Lib.dll"
+    let doc = expect """bin\Debug\Lib.xml"""
+    let reference = expect """..\..\packages\A.dll"""
+    let resource = expect """res\a.txt"""
+    let lib = expect """..\lib"""
+    let out = expect """obj\Debug\Lib.dll"""
 
     Assert.Equal($"--keyfile:{key}", rebased.[0])
     Assert.Equal($"--doc:{doc}", rebased.[1])
@@ -190,7 +190,16 @@ let ``a relative AssemblyKeyFile attribute resolves against the project director
 
         File.WriteAllText(
             assemblyInfo,
-            "namespace Lib\n\nopen System.Reflection\n\n[<assembly: AssemblyKeyFile(\"../../Key.snk\")>]\ndo ()\n"
+            fsharp
+                """
+                namespace Lib
+
+                open System.Reflection
+
+                [<assembly: AssemblyKeyFile("../../Key.snk")>]
+                do ()
+
+                """
         )
 
         File.WriteAllText(library, "module Lib.Library\n\nlet answer = 42\n")
@@ -242,16 +251,68 @@ let ``a pass broken by a fix in a file the errors never name keeps every other f
         let extra = Path.Combine(root, "Extra.fs")
         let result = Path.Combine(root, "Result.fs")
 
-        let testDataBefore = "module TestData\n\nlet lat = 13.06\n"
-        let testDataAfter = "module TestData\n\n[<Literal>]\nlet lat = 13.06\n"
-        let extraBefore = "module Extra\n\nlet twice (n: int) = n + n\n"
-        let extraAfter = "module Extra\n\nlet twice (n: int) = 2 * n\n"
+        let testDataBefore =
+            fsharp
+                """
+                module TestData
+
+                let lat = 13.06
+
+                """
+
+        let testDataAfter =
+            fsharp
+                """
+                module TestData
+
+                [<Literal>]
+                let lat = 13.06
+
+                """
+
+        let extraBefore =
+            fsharp
+                """
+                module Extra
+
+                let twice (n: int) = n + n
+
+                """
+
+        let extraAfter =
+            fsharp
+                """
+                module Extra
+
+                let twice (n: int) = 2 * n
+
+                """
 
         let resultBefore =
-            "module Result\n\nopen TestData\n\nlet describe (x: float) =\n    match x with\n    | lat -> id lat\n"
+            fsharp
+                """
+                module Result
+
+                open TestData
+
+                let describe (x: float) =
+                    match x with
+                    | lat -> id lat
+
+                """
 
         let resultAfter =
-            "module Result\n\nopen TestData\n\nlet describe (x: float) =\n    match x with\n    | lat -> lat\n"
+            fsharp
+                """
+                module Result
+
+                open TestData
+
+                let describe (x: float) =
+                    match x with
+                    | lat -> lat
+
+                """
 
         // the tree as the pass left it
         File.WriteAllText(testData, testDataAfter)
@@ -268,7 +329,18 @@ let ``a pass broken by a fix in a file the errors never name keeps every other f
                 OtherOptions = Array.append plain.OtherOptions [| "--warnaserror:3190" |]
             }
 
-        let literalFix = fix 3 0 15 "let lat = 13.06" "[<Literal>]\nlet lat = 13.06"
+        let literalFix =
+            fix
+                3
+                0
+                15
+                "let lat = 13.06"
+                (fsharp
+                    """
+                    [<Literal>]
+                    let lat = 13.06
+                    """)
+
         let extraFix = fix 3 21 26 "n + n" "2 * n"
         let resultFix = fix 7 13 19 "id lat" "lat"
 
@@ -325,13 +397,45 @@ let ``a pass whose error-site fixes are the culprits still rolls back only those
         let a = Path.Combine(root, "A.fs")
         let b = Path.Combine(root, "B.fs")
 
-        let aBefore = "module A\n\nlet twice (n: int) = n + n\n"
-        let aAfter = "module A\n\nlet twice (n: int) = 2 * n\n"
+        let aBefore =
+            fsharp
+                """
+                module A
+
+                let twice (n: int) = n + n
+
+                """
+
+        let aAfter =
+            fsharp
+                """
+                module A
+
+                let twice (n: int) = 2 * n
+
+                """
 
         let bBefore =
-            "module B\n\nlet four () = A.twice 2\n\nlet text (s: string) = s + \"\"\n"
+            fsharp
+                """
+                module B
+
+                let four () = A.twice 2
+
+                let text (s: string) = s + ""
+
+                """
         // the second fix is wrong: an int where a string is expected
-        let bAfter = "module B\n\nlet four () = A.twice 2\n\nlet text (s: string) = s + 1\n"
+        let bAfter =
+            fsharp
+                """
+                module B
+
+                let four () = A.twice 2
+
+                let text (s: string) = s + 1
+
+                """
 
         File.WriteAllText(a, aAfter)
         File.WriteAllText(b, bAfter)
@@ -468,17 +572,69 @@ let ``a file whose only directives are INTERACTIVE or COMPILED sweeps once acros
             path
 
         let interactiveOnly =
-            write "A.fs" "module A\n\n#if INTERACTIVE\nlet send () = ()\n#else\nlet send () = Mail.send ()\n#endif\n"
+            write
+                "A.fs"
+                (fsharp
+                    """
+                    module A
+
+                    #if INTERACTIVE
+                    let send () = ()
+                    #else
+                    let send () = Mail.send ()
+                    #endif
+
+                    """)
 
         let negated =
-            write "B.fs" "module B\n\n#if !INTERACTIVE && COMPILED // both spellings\nlet x = 1\n#endif\n"
+            write
+                "B.fs"
+                (fsharp
+                    """
+                    module B
+
+                    #if !INTERACTIVE && COMPILED // both spellings
+                    let x = 1
+                    #endif
+
+                    """)
 
         let framework =
-            write "C.fs" "module C\n\n#if NET8_0_OR_GREATER\nlet x = 1\n#endif\n"
+            write
+                "C.fs"
+                (fsharp
+                    """
+                    module C
 
-        let mixed = write "D.fs" "module D\n\n#if INTERACTIVE || DEBUG\nlet x = 1\n#endif\n"
+                    #if NET8_0_OR_GREATER
+                    let x = 1
+                    #endif
 
-        let plain = write "E.fs" "module E\n\nlet x = 1\n"
+                    """)
+
+        let mixed =
+            write
+                "D.fs"
+                (fsharp
+                    """
+                    module D
+
+                    #if INTERACTIVE || DEBUG
+                    let x = 1
+                    #endif
+
+                    """)
+
+        let plain =
+            write
+                "E.fs"
+                (fsharp
+                    """
+                    module E
+
+                    let x = 1
+
+                    """)
 
         Assert.True(Program.isDirectiveFree interactiveOnly)
         Assert.True(Program.isDirectiveFree negated)
@@ -504,12 +660,65 @@ let ``files the bisection blames are back on disk, not only in the report`` () =
         let b = Path.Combine(root, "B.fs")
         let n = Path.Combine(root, "N.fs")
 
-        let aBefore = "module A\n\nlet value = 1\n"
-        let aAfter = "module A\n\nlet valueA = 1\n"
-        let bBefore = "module B\n\nlet value = 2\n"
-        let bAfter = "module B\n\nlet valueB = 2\n"
-        let nBefore = "module N\n\nopen A\nopen B\n\nlet r : int = value + 0\n"
-        let nAfter = "module N\n\nopen A\nopen B\n\nlet r : int = value\n"
+        let aBefore =
+            fsharp
+                """
+                module A
+
+                let value = 1
+
+                """
+
+        let aAfter =
+            fsharp
+                """
+                module A
+
+                let valueA = 1
+
+                """
+
+        let bBefore =
+            fsharp
+                """
+                module B
+
+                let value = 2
+
+                """
+
+        let bAfter =
+            fsharp
+                """
+                module B
+
+                let valueB = 2
+
+                """
+
+        let nBefore =
+            fsharp
+                """
+                module N
+
+                open A
+                open B
+
+                let r : int = value + 0
+
+                """
+
+        let nAfter =
+            fsharp
+                """
+                module N
+
+                open A
+                open B
+
+                let r : int = value
+
+                """
 
         File.WriteAllText(a, aAfter)
         File.WriteAllText(b, bAfter)

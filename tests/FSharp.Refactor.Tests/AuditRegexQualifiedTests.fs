@@ -28,7 +28,17 @@ let ``FR0147: uses under a #if inside a function body get no open`` () =
     // the line after the `#if` is in expression position: an `open` there
     // is FS0010. Note only
     let source =
-        "module Test\nlet f () =\n#if !WINDOWS\n    System.Runtime.InteropServices.Marshal.AllocHGlobal 1 |> ignore\n    System.Runtime.InteropServices.Marshal.AllocHGlobal 2 |> ignore\n    System.Runtime.InteropServices.Marshal.AllocHGlobal 3 |> ignore\n#endif\n    ()"
+        fsharp
+            """
+            module Test
+            let f () =
+            #if !WINDOWS
+                System.Runtime.InteropServices.Marshal.AllocHGlobal 1 |> ignore
+                System.Runtime.InteropServices.Marshal.AllocHGlobal 2 |> ignore
+                System.Runtime.InteropServices.Marshal.AllocHGlobal 3 |> ignore
+            #endif
+                ()
+            """
 
     match qualifiedIn source with
     | [ s ] ->
@@ -41,20 +51,45 @@ let ``FR0147: a whole file under #if takes its open under the module line, not a
     // the `#if` sits above `module Test`; the line after it is the header
     // itself, so the open goes under the header - still inside the region
     let source =
-        "#if !FABLE_COMPILER\nmodule Test\nlet a = System.Text.RegularExpressions.Regex.Escape \"a\"\nlet b = System.Text.RegularExpressions.Regex.Escape \"b\"\nlet c = System.Text.RegularExpressions.Regex.Escape \"c\"\n#endif"
+        fsharp
+            """
+            #if !FABLE_COMPILER
+            module Test
+            let a = System.Text.RegularExpressions.Regex.Escape "a"
+            let b = System.Text.RegularExpressions.Regex.Escape "b"
+            let c = System.Text.RegularExpressions.Regex.Escape "c"
+            #endif
+            """
 
     match qualifiedIn source with
     | [ s ] ->
         match opensOf s with
         | [ (r, _, text) ] ->
-            Assert.Equal("open System.Text.RegularExpressions\n", text)
+            Assert.Equal(
+                fsharp
+                    """
+                    open System.Text.RegularExpressions
+
+                    """,
+                text
+            )
+
             Assert.Equal(3, r.StartLine)
         | other -> failwithf "Expected one open under the module line, got %A" other
 
         let patched = applyAll source s.Edits
 
         Assert.Equal(
-            "#if !FABLE_COMPILER\nmodule Test\nopen System.Text.RegularExpressions\nlet a = Regex.Escape \"a\"\nlet b = Regex.Escape \"b\"\nlet c = Regex.Escape \"c\"\n#endif",
+            fsharp
+                """
+                #if !FABLE_COMPILER
+                module Test
+                open System.Text.RegularExpressions
+                let a = Regex.Escape "a"
+                let b = Regex.Escape "b"
+                let c = Regex.Escape "c"
+                #endif
+                """,
             patched
         )
 
@@ -64,13 +99,30 @@ let ``FR0147: a whole file under #if takes its open under the module line, not a
 [<Fact>]
 let ``FR0147: a #if between two top-level declarations still takes the open under it`` () =
     let source =
-        "module Test\nlet g = 1\n#if !FOO\nlet a = System.Text.Encoding.UTF8\nlet b = System.Text.Encoding.ASCII\nlet c = System.Text.Encoding.Unicode\n#endif"
+        fsharp
+            """
+            module Test
+            let g = 1
+            #if !FOO
+            let a = System.Text.Encoding.UTF8
+            let b = System.Text.Encoding.ASCII
+            let c = System.Text.Encoding.Unicode
+            #endif
+            """
 
     match qualifiedIn source with
     | [ s ] ->
         match opensOf s with
         | [ (r, _, text) ] ->
-            Assert.Equal("open System.Text\n", text)
+            Assert.Equal(
+                fsharp
+                    """
+                    open System.Text
+
+                    """,
+                text
+            )
+
             Assert.Equal(4, r.StartLine)
         | other -> failwithf "Expected one open inside the #if, got %A" other
 
@@ -85,7 +137,14 @@ let ``FR0147: a script's open lands after its leading hash directives`` () =
     // the `#r` is what makes the namespace exist: an open above it is
     // FS0039
     let source =
-        "#r \"System.Text.RegularExpressions\"\n#I \".\"\nlet a = System.Text.RegularExpressions.Regex.Escape \"a\"\nlet b = System.Text.RegularExpressions.Regex.Escape \"b\"\nlet c = System.Text.RegularExpressions.Regex.Escape \"c\""
+        fsharp
+            """
+            #r "System.Text.RegularExpressions"
+            #I "."
+            let a = System.Text.RegularExpressions.Regex.Escape "a"
+            let b = System.Text.RegularExpressions.Regex.Escape "b"
+            let c = System.Text.RegularExpressions.Regex.Escape "c"
+            """
 
     match qualifiedIn source with
     | [ s ] ->
@@ -96,7 +155,15 @@ let ``FR0147: a script's open lands after its leading hash directives`` () =
         let patched = applyAll source s.Edits
 
         Assert.Equal(
-            "#r \"System.Text.RegularExpressions\"\n#I \".\"\nopen System.Text.RegularExpressions\nlet a = Regex.Escape \"a\"\nlet b = Regex.Escape \"b\"\nlet c = Regex.Escape \"c\"",
+            fsharp
+                """
+                #r "System.Text.RegularExpressions"
+                #I "."
+                open System.Text.RegularExpressions
+                let a = Regex.Escape "a"
+                let b = Regex.Escape "b"
+                let c = Regex.Escape "c"
+                """,
             patched
         )
 
@@ -106,14 +173,29 @@ let ``FR0147: a script's open lands after its leading hash directives`` () =
 [<Fact>]
 let ``FR0147: a first declaration's doc block keeps its let`` () =
     let source =
-        "/// The first task.\n/// Two lines of it.\nlet a = System.Threading.Tasks.Task.FromResult 1\nlet b = System.Threading.Tasks.Task.Delay 10\nlet c (t: System.Threading.Tasks.Task<int>) = t.Result"
+        fsharp
+            """
+            /// The first task.
+            /// Two lines of it.
+            let a = System.Threading.Tasks.Task.FromResult 1
+            let b = System.Threading.Tasks.Task.Delay 10
+            let c (t: System.Threading.Tasks.Task<int>) = t.Result
+            """
 
     match qualifiedIn source with
     | [ s ] ->
         let patched = applyAll source s.Edits
 
         Assert.Equal(
-            "open System.Threading.Tasks\n/// The first task.\n/// Two lines of it.\nlet a = Task.FromResult 1\nlet b = Task.Delay 10\nlet c (t: Task<int>) = t.Result",
+            fsharp
+                """
+                open System.Threading.Tasks
+                /// The first task.
+                /// Two lines of it.
+                let a = Task.FromResult 1
+                let b = Task.Delay 10
+                let c (t: Task<int>) = t.Result
+                """,
             patched
         )
 
@@ -123,7 +205,12 @@ let ``FR0147: a first declaration's doc block keeps its let`` () =
 [<Fact>]
 let ``FR0147: a file without a header and without directives still opens before its first declaration`` () =
     let source =
-        "let a = System.Threading.Tasks.Task.FromResult 1\nlet b = System.Threading.Tasks.Task.Delay 10\nlet c (t: System.Threading.Tasks.Task<int>) = t.Result"
+        fsharp
+            """
+            let a = System.Threading.Tasks.Task.FromResult 1
+            let b = System.Threading.Tasks.Task.Delay 10
+            let c (t: System.Threading.Tasks.Task<int>) = t.Result
+            """
 
     match qualifiedIn source with
     | [ s ] ->
@@ -147,7 +234,12 @@ let ``FR0015: a Replace replacement with an escaped backslash keeps the engine``
     // the replacement text is a\nb, four characters; re-emitted inside a
     // regular literal it would be a newline
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.Replace(s, \"abc\", \"a\\\\nb\")"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let f (s: string) = Regex.Replace(s, "abc", "a\\nb")
+            """
 
     Assert.Empty(stringOperations source)
 
@@ -155,20 +247,30 @@ let ``FR0015: a Replace replacement with an escaped backslash keeps the engine``
 let ``FR0015: a verbatim backslash replacement keeps the engine`` () =
     // `@"\"` re-emitted as `"\"` is an unterminated string
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet toWindows (p: string) = Regex.Replace(p, \"/\", @\"\\\")"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let toWindows (p: string) = Regex.Replace(p, "/", @"\")
+            """
 
     Assert.Empty(stringOperations source)
 
 [<Fact>]
 let ``FR0015: a plain Replace replacement still becomes String.Replace`` () =
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.Replace(s, \"abc\", \"x\")"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let f (s: string) = Regex.Replace(s, "abc", "x")
+            """
 
     match stringOperations source with
     | [ s ] ->
         match s.Edits with
         | [ (r, _, replacement) ] ->
-            Assert.Equal("s.Replace(\"abc\", \"x\")", replacement)
+            Assert.Equal("""s.Replace("abc", "x")""", replacement)
             let patched = applyEdit source r replacement
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | other -> failwithf "Expected one edit, got %A" other
@@ -189,7 +291,13 @@ let private hoistPatched (source: string) =
 [<Fact>]
 let ``FR0015: a hoisted Match keeps its Success continuation on the call`` () =
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet g (xs: string list) =\n    xs |> List.map (fun x -> Regex.Match(x, \"b+\").Success)"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let g (xs: string list) =
+                xs |> List.map (fun x -> Regex.Match(x, "b+").Success)
+            """
 
     let patched = hoistPatched source
     Assert.Contains("gRegex.Match(x).Success", patched)
@@ -199,7 +307,13 @@ let ``FR0015: a hoisted Match keeps its Success continuation on the call`` () =
 let ``FR0015: a hoisted Split keeps its index continuation on the call`` () =
     // a real pattern: a literal one is FR0015's String.Split rewrite instead
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet g (xs: string list) =\n    xs |> List.map (fun s -> Regex.Split(s, \"p+\").[0])"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let g (xs: string list) =
+                xs |> List.map (fun s -> Regex.Split(s, "p+").[0])
+            """
 
     let patched = hoistPatched source
     Assert.Contains("gRegex.Split(s).[0]", patched)
@@ -208,12 +322,27 @@ let ``FR0015: a hoisted Split keeps its index continuation on the call`` () =
 [<Fact>]
 let ``FR0015: a hoisted IsMatch is a parenthesised call`` () =
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for s in xs do\n        if Regex.IsMatch(s, \"a.c\") then printfn \"%s\" s"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let f (xs: string list) =
+                for s in xs do
+                    if Regex.IsMatch(s, "a.c") then printfn "%s" s
+            """
 
     let patched = hoistPatched source
 
     Assert.Equal(
-        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if fRegex.IsMatch(s) then printfn \"%s\" s",
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let private fRegex = Regex "a.c"
+            let f (xs: string list) =
+                for s in xs do
+                    if fRegex.IsMatch(s) then printfn "%s" s
+            """,
         patched
     )
 
@@ -242,17 +371,35 @@ let private assertNoWiden (source: string) =
 let ``FR0105: arithmetic already widened by the author gets no widening offer`` () =
     // `int64 (int64 seconds * 1_000_000L) |> Checked.int` flipped the
     // function's result type from int64 to int
-    assertNoWiden "module Test\nlet k (seconds: int) = int64 (seconds * 1_000_000)"
+    assertNoWiden (
+        fsharp
+            """
+            module Test
+            let k (seconds: int) = int64 (seconds * 1_000_000)
+            """
+    )
 
 [<Fact>]
 let ``FR0105: arithmetic inside a method argument gets no widening offer`` () =
     // the paren held a tuple: `int64 (seconds * 1_000_000, 0)`
-    assertNoWiden "module Test\nlet m (seconds: int) = System.Math.Max(seconds * 1_000_000, 0)"
+    assertNoWiden (
+        fsharp
+            """
+            module Test
+            let m (seconds: int) = System.Math.Max(seconds * 1_000_000, 0)
+            """
+    )
 
 [<Fact>]
 let ``FR0105: arithmetic on one side of a comparison gets no widening offer`` () =
     // `|> Checked.int` binds looser than `<`: Checked.int of a bool
-    assertNoWiden "module Test\nlet f (limit: int) (seconds: int) = if limit < seconds * 1_000_000 then 1 else 0"
+    assertNoWiden (
+        fsharp
+            """
+            module Test
+            let f (limit: int) (seconds: int) = if limit < seconds * 1_000_000 then 1 else 0
+            """
+    )
 
 [<Fact>]
 let ``FR0105: a binding's whole right-hand side still widens, as a prefix call`` () =
@@ -271,7 +418,13 @@ let ``FR0105: a binding's whole right-hand side still widens, as a prefix call``
 [<Fact>]
 let ``FR0105: a local binding and an assignment widen too`` () =
     let local =
-        "module Test\nlet f (seconds: int) =\n    let micros = seconds * 1_000_000\n    micros"
+        fsharp
+            """
+            module Test
+            let f (seconds: int) =
+                let micros = seconds * 1_000_000
+                micros
+            """
 
     match checkedIn local with
     | [ s ] ->
@@ -284,7 +437,14 @@ let ``FR0105: a local binding and an assignment widen too`` () =
     | other -> failwithf "Expected one finding, got %A" other
 
     let assignment =
-        "module Test\nlet f (seconds: int) =\n    let mutable total = 0\n    total <- seconds * 1_000_000\n    total"
+        fsharp
+            """
+            module Test
+            let f (seconds: int) =
+                let mutable total = 0
+                total <- seconds * 1_000_000
+                total
+            """
 
     match checkedIn assignment with
     | [ s ] ->

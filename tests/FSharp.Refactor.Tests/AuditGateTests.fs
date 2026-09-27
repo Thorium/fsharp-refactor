@@ -101,7 +101,14 @@ let ``FR0006 spells a nullness-annotated parameter as the plain type`` () =
 [<Fact>]
 let ``FR0006 still annotates an overloaded member's parameter`` () =
     let source =
-        "module Test\nlet describe (p: string) =\n    match p with\n    | p when System.IO.Path.IsPathRooted p -> \"rooted\"\n    | p -> p"
+        fsharp
+            """
+            module Test
+            let describe (p: string) =
+                match p with
+                | p when System.IO.Path.IsPathRooted p -> "rooted"
+                | p -> p
+            """
 
     let tree, sourceText, check = parseAndCheck source
 
@@ -254,7 +261,7 @@ let ``FR0009 withholds the FSharp.Core 9 rewrite from the restore's own record o
 
     File.WriteAllText(
         Path.Combine(projectDir, "obj", "project.assets.json"),
-        "{ \"version\": 3, \"targets\": { \"netstandard2.0\": { \"FSharp.Core/6.0.4\": {} }, \"net9.0\": { \"FSharp.Core/9.0.300\": {} } } }"
+        """{ "version": 3, "targets": { "netstandard2.0": { "FSharp.Core/6.0.4": {} }, "net9.0": { "FSharp.Core/9.0.300": {} } } }"""
     )
 
     let fixes =
@@ -269,8 +276,16 @@ let ``FR0009 withholds Result.iter when a narrower framework's FSharp.Core preda
     // parity set in FSharp.Core 6.0.6; 6.0.0-6.0.5 share its assembly
     // version 6.0.0.0 and have only map, bind and mapError
     let ctx =
-        scriptContext
-            "let show (r: Result<int, string>) =\n    match r with\n    | Ok v -> printfn \"%d\" v\n    | Error _ -> ()\n"
+        scriptContext (
+            fsharp
+                """
+                let show (r: Result<int, string>) =
+                    match r with
+                    | Ok v -> printfn "%d" v
+                    | Error _ -> ()
+
+                """
+        )
 
     let fixes =
         withMinCore "6.0.0.0" (fun () -> Analyzers.resultModuleCliAnalyzer ctx |> Async.RunSynchronously |> fixTexts)
@@ -303,29 +318,65 @@ let private resultSuggestions (source: string) =
 let ``FR0009 does not rewrite a Result module's own isOk into Result.isOk`` () =
     // FsToolkit src/Result.fs: `module Result = let inline isOk ...`
     Assert.Empty(
-        resultSuggestions
-            "module Test\n[<RequireQualifiedAccess>]\nmodule Result =\n    let inline isOk (value: Result<'ok, 'error>) : bool =\n        match value with\n        | Ok _ -> true\n        | Error _ -> false"
+        resultSuggestions (
+            fsharp
+                """
+                module Test
+                [<RequireQualifiedAccess>]
+                module Result =
+                    let inline isOk (value: Result<'ok, 'error>) : bool =
+                        match value with
+                        | Ok _ -> true
+                        | Error _ -> false
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0009 does not rewrite a Result module's own map into Result.map`` () =
     Assert.Empty(
-        resultSuggestions
-            "module Test\nmodule Result =\n    let inline map ([<InlineIfLambda>] mapper: 'a -> 'b) (input: Result<'a, 'e>) : Result<'b, 'e> =\n        match input with\n        | Ok x -> Ok(mapper x)\n        | Error e -> Error e"
+        resultSuggestions (
+            fsharp
+                """
+                module Test
+                module Result =
+                    let inline map ([<InlineIfLambda>] mapper: 'a -> 'b) (input: Result<'a, 'e>) : Result<'b, 'e> =
+                        match input with
+                        | Ok x -> Ok(mapper x)
+                        | Error e -> Error e
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0009 does not rewrite the namesake in a file-level Result module`` () =
     Assert.Empty(
-        resultSuggestions
-            "module Lib.Result\nlet inline defaultValue (ifError: 'ok) (result: Result<'ok, 'error>) : 'ok =\n    match result with\n    | Ok x -> x\n    | Error _ -> ifError"
+        resultSuggestions (
+            fsharp
+                """
+                module Lib.Result
+                let inline defaultValue (ifError: 'ok) (result: Result<'ok, 'error>) : 'ok =
+                    match result with
+                    | Ok x -> x
+                    | Error _ -> ifError
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0009 still rewrites a differently named function inside a Result module`` () =
     match
-        resultSuggestions
-            "module Test\nmodule Result =\n    let check (value: Result<int, string>) : bool =\n        match value with\n        | Ok _ -> true\n        | Error _ -> false"
+        resultSuggestions (
+            fsharp
+                """
+                module Test
+                module Result =
+                    let check (value: Result<int, string>) : bool =
+                        match value with
+                        | Ok _ -> true
+                        | Error _ -> false
+                """
+        )
     with
     | [ s ] -> Assert.Equal("Result.isOk", s.Target)
     | other -> failwithf "Expected one suggestion, got %A" other
@@ -333,8 +384,17 @@ let ``FR0009 still rewrites a differently named function inside a Result module`
 [<Fact>]
 let ``FR0009 still rewrites an isOk defined outside a Result module`` () =
     match
-        resultSuggestions
-            "module Test\nmodule Checks =\n    let isOk (value: Result<int, string>) : bool =\n        match value with\n        | Ok _ -> true\n        | Error _ -> false"
+        resultSuggestions (
+            fsharp
+                """
+                module Test
+                module Checks =
+                    let isOk (value: Result<int, string>) : bool =
+                        match value with
+                        | Ok _ -> true
+                        | Error _ -> false
+                """
+        )
     with
     | [ s ] -> Assert.Equal("Result.isOk", s.Target)
     | other -> failwithf "Expected one suggestion, got %A" other
@@ -352,54 +412,134 @@ let ``FR0005 withholds the return! strip inside a builder with its own Source co
     // FsToolkit IcedTasks tests: cancellableTaskResult's return! turns the
     // async's Choice into a Result; `return Choice1Of2 data` is a type error
     Assert.Empty(
-        returnBangStrips
-            "module Test\nlet f (data: int) =\n    let ctr = cancellableTaskResult { return! async { return Choice1Of2 data } }\n    ctr"
+        returnBangStrips (
+            fsharp
+                """
+                module Test
+                let f (data: int) =
+                    let ctr = cancellableTaskResult { return! async { return Choice1Of2 data } }
+                    ctr
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0005 withholds the return! strip inside any builder it does not know`` () =
-    Assert.Empty(returnBangStrips "module Test\nlet f (data: int) = taskResult { return! task { return data } }")
-    Assert.Empty(returnBangStrips "module Test\nlet f (data: int) = asyncResult { return! async { return data } }")
-    Assert.Empty(returnBangStrips "module Test\nlet f (data: int) = valueTask { return! task { return data } }")
+    Assert.Empty(
+        returnBangStrips (
+            fsharp
+                """
+                module Test
+                let f (data: int) = taskResult { return! task { return data } }
+                """
+        )
+    )
+
+    Assert.Empty(
+        returnBangStrips (
+            fsharp
+                """
+                module Test
+                let f (data: int) = asyncResult { return! async { return data } }
+                """
+        )
+    )
+
+    Assert.Empty(
+        returnBangStrips (
+            fsharp
+                """
+                module Test
+                let f (data: int) = valueTask { return! task { return data } }
+                """
+        )
+    )
 
 [<Fact>]
 let ``FR0005 withholds the return! strip of a task inside async`` () =
     // async's return! takes no Task: not even the original compiles
-    Assert.Empty(returnBangStrips "module Test\nlet f (data: int) = async { return! task { return data } }")
+    Assert.Empty(
+        returnBangStrips (
+            fsharp
+                """
+                module Test
+                let f (data: int) = async { return! task { return data } }
+                """
+        )
+    )
 
 [<Fact>]
 let ``FR0005 still strips an async returned from a task`` () =
     let source =
-        "module Test\nlet f (data: int) = task { return! async { return data } }"
+        fsharp
+            """
+            module Test
+            let f (data: int) = task { return! async { return data } }
+            """
 
     match returnBangStrips source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.Equal("module Test\nlet f (data: int) = task { return data }", patched)
+
+        Assert.Equal(
+            fsharp
+                """
+                module Test
+                let f (data: int) = task { return data }
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one strip, got %A" other
 
 [<Fact>]
 let ``FR0005 still strips an async returned from an async`` () =
     let source =
-        "module Test\nlet f (data: int) = async { return! async { return data } }"
+        fsharp
+            """
+            module Test
+            let f (data: int) = async { return! async { return data } }
+            """
 
     match returnBangStrips source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.Equal("module Test\nlet f (data: int) = async { return data }", patched)
+
+        Assert.Equal(
+            fsharp
+                """
+                module Test
+                let f (data: int) = async { return data }
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one strip, got %A" other
 
 [<Fact>]
 let ``FR0005 still strips a task returned from a backgroundTask`` () =
     let source =
-        "module Test\nlet f (t: System.Threading.Tasks.Task<int>) = backgroundTask { return! task { return! t } }"
+        fsharp
+            """
+            module Test
+            let f (t: System.Threading.Tasks.Task<int>) = backgroundTask { return! task { return! t } }
+            """
 
     match returnBangStrips source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.Equal("module Test\nlet f (t: System.Threading.Tasks.Task<int>) = backgroundTask { return! t }", patched)
+
+        Assert.Equal(
+            fsharp
+                """
+                module Test
+                let f (t: System.Threading.Tasks.Task<int>) = backgroundTask { return! t }
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one strip, got %A" other
 
@@ -414,45 +554,103 @@ let ``FR0007 keeps a mutable whose comment above says it defeats inlining`` () =
     // SageFs LiveValueTreeTests.fs: immutable, the Release optimiser folds
     // the constant into the closure and the test's assertion fails
     Assert.Empty(
-        mutableSuggestions
-            "let f () =\n    // Use a non-constant capture so the compiler cannot inline it away.\n    let mutable captured = 42\n    let g = fun (x: int) -> x + captured\n    g 1"
+        mutableSuggestions (
+            fsharp
+                """
+                let f () =
+                    // Use a non-constant capture so the compiler cannot inline it away.
+                    let mutable captured = 42
+                    let g = fun (x: int) -> x + captured
+                    g 1
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0007 keeps a mutable whose trailing comment mentions folding`` () =
     Assert.Empty(
-        mutableSuggestions
-            "let f () =\n    let mutable captured = 7 // keeps the constant from being folded\n    captured + 1"
+        mutableSuggestions (
+            fsharp
+                """
+                let f () =
+                    let mutable captured = 7 // keeps the constant from being folded
+                    captured + 1
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0007 keeps a mutable whose comment mentions the optimiser`` () =
     Assert.Empty(
-        mutableSuggestions
-            "let f () =\n    // the OPTIMIZER must not see through this\n    let mutable captured = 7\n    captured + 1"
+        mutableSuggestions (
+            fsharp
+                """
+                let f () =
+                    // the OPTIMIZER must not see through this
+                    let mutable captured = 7
+                    captured + 1
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0007 keeps a type-level mutable whose comment above says it defeats inlining`` () =
     Assert.Empty(
-        mutableSuggestions
-            "type T() =\n    // a real field, not an inlined constant\n    let mutable captured = 42\n    member _.Value = captured"
+        mutableSuggestions (
+            fsharp
+                """
+                type T() =
+                    // a real field, not an inlined constant
+                    let mutable captured = 42
+                    member _.Value = captured
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0007 still removes a mutable under an unrelated comment`` () =
-    match mutableSuggestions "let f () =\n    // the answer\n    let mutable x = 42\n    x + 1" with
+    match
+        mutableSuggestions (
+            fsharp
+                """
+                let f () =
+                    // the answer
+                    let mutable x = 42
+                    x + 1
+                """
+        )
+    with
     | [ s ] -> Assert.Equal("x", s.Name)
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
 let ``FR0007 reads only the line directly above`` () =
-    match mutableSuggestions "let f () =\n    // cannot inline this\n\n    let mutable x = 42\n    x + 1" with
+    match
+        mutableSuggestions (
+            fsharp
+                """
+                let f () =
+                    // cannot inline this
+
+                    let mutable x = 42
+                    x + 1
+                """
+        )
+    with
     | [ s ] -> Assert.Equal("x", s.Name)
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
 let ``FR0007 ignores a fold in the binding's code`` () =
-    match mutableSuggestions "let f (xs: int list) =\n    let mutable acc = List.fold (+) 0 xs\n    acc + 1" with
+    match
+        mutableSuggestions (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let mutable acc = List.fold (+) 0 xs
+                    acc + 1
+                """
+        )
+    with
     | [ s ] -> Assert.Equal("acc", s.Name)
     | other -> failwithf "Expected one suggestion, got %A" other

@@ -19,27 +19,56 @@ let private assertReraise (source: string) =
 
 [<Fact>]
 let ``raise of the caught exception becomes reraise`` () =
-    assertReraise
-        "let f (act: unit -> int) =\n    try act ()\n    with ex ->\n        printfn \"%s\" ex.Message\n        raise ex"
+    assertReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                try act ()
+                with ex ->
+                    printfn "%s" ex.Message
+                    raise ex
+            """
+    )
 
 [<Fact>]
 let ``typed catch with as-binding is also covered`` () =
-    assertReraise
-        "let f (act: unit -> int) =\n    try act ()\n    with :? System.IO.IOException as ex ->\n        printfn \"%s\" ex.Message\n        raise ex"
+    assertReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                try act ()
+                with :? System.IO.IOException as ex ->
+                    printfn "%s" ex.Message
+                    raise ex
+            """
+    )
 
 [<Fact>]
 let ``raising a different exception is intentional`` () =
     Assert.Empty(
-        reraiseIn
-            "let f (act: unit -> int) =\n    try act ()\n    with ex ->\n        raise (System.InvalidOperationException(\"wrap\", ex))"
+        reraiseIn (
+            fsharp
+                """
+                let f (act: unit -> int) =
+                    try act ()
+                    with ex ->
+                        raise (System.InvalidOperationException("wrap", ex))
+                """
+        )
     )
 
 [<Fact>]
 let ``raise inside a lambda cannot become reraise`` () =
     // reraise () does not compile inside a closure
     Assert.Empty(
-        reraiseIn
-            "let f (act: unit -> int) (defer: (unit -> int) -> int) =\n    try act ()\n    with ex -> defer (fun () -> raise ex)"
+        reraiseIn (
+            fsharp
+                """
+                let f (act: unit -> int) (defer: (unit -> int) -> int) =
+                    try act ()
+                    with ex -> defer (fun () -> raise ex)
+                """
+        )
     )
 
 [<Fact>]
@@ -48,22 +77,48 @@ let ``raise in a handler inside a computation expression stays put`` () =
     // task { } desugars its handler into a lambda passed to builder.TryWith,
     // where reraise () is error FS0413
     Assert.Empty(
-        reraiseIn
-            "let f (act: unit -> System.Threading.Tasks.Task) =\n    task {\n        try do! act ()\n        with ex ->\n            printfn \"%s\" ex.Message\n            raise ex\n    }"
+        reraiseIn (
+            fsharp
+                """
+                let f (act: unit -> System.Threading.Tasks.Task) =
+                    task {
+                        try do! act ()
+                        with ex ->
+                            printfn "%s" ex.Message
+                            raise ex
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``a lambda body inside a computation expression is ordinary code again`` () =
     // the lambda compiles to its own method; its handler is a real catch
     // block again, so reraise () is fine there
-    assertReraise
-        "let f (act: unit -> int) =\n    async {\n        let g = fun () -> try act () with ex -> raise ex\n        return g ()\n    }"
+    assertReraise (
+        fsharp
+            """
+            let f (act: unit -> int) =
+                async {
+                    let g = fun () -> try act () with ex -> raise ex
+                    return g ()
+                }
+            """
+    )
 
 [<Fact>]
 let ``raise inside a nested handler refers to the inner exception`` () =
     Assert.Empty(
-        reraiseIn
-            "let f (act: unit -> int) (cleanup: unit -> int) =\n    try act ()\n    with ex ->\n        try cleanup ()\n        with _ -> raise ex"
+        reraiseIn (
+            fsharp
+                """
+                let f (act: unit -> int) (cleanup: unit -> int) =
+                    try act ()
+                    with ex ->
+                        try cleanup ()
+                        with _ -> raise ex
+                """
+        )
     )
 
 // ---- FR0045 NaNComparison ----
@@ -106,8 +161,14 @@ let ``FR0045: a file-local nan sentinel is an ordinary value and its equality st
     // names `nan`; the bare `nan` must resolve to FSharp.Core's operator
     // before `x = nan` is the always-false comparison
     Assert.Empty(
-        nanIn
-            "let nan = -9999.0\nlet isMissing (reading: float) = reading = nan\nlet hasValue (reading: float) = reading <> nan"
+        nanIn (
+            fsharp
+                """
+                let nan = -9999.0
+                let isMissing (reading: float) = reading = nan
+                let hasValue (reading: float) = reading <> nan
+                """
+        )
     )
 
 // ---- FR0046 WeakLock ----
@@ -118,7 +179,7 @@ let private locksIn (source: string) =
 
 [<Fact>]
 let ``locking on a string literal is noted`` () =
-    match locksIn "let f () = lock \"cache\" (fun () -> 1)" with
+    match locksIn """let f () = lock "cache" (fun () -> 1)""" with
     | [ s ] -> Assert.Equal(WeakLock.WeakKind.StringValue, s.Kind)
     | other -> failwithf "Expected exactly one weak-lock note, got %A" other
 
@@ -141,8 +202,18 @@ let private designIn (source: string) =
 [<Fact>]
 let ``disposable field missing from Dispose is noted`` () =
     let _, _, undisposed =
-        designIn
-            "type Holder() =\n    let stream = new System.IO.MemoryStream()\n    let backup = new System.IO.MemoryStream()\n    member _.Size = stream.Length + backup.Length\n\n    interface System.IDisposable with\n        member _.Dispose() = stream.Dispose()"
+        designIn (
+            fsharp
+                """
+                type Holder() =
+                    let stream = new System.IO.MemoryStream()
+                    let backup = new System.IO.MemoryStream()
+                    member _.Size = stream.Length + backup.Length
+
+                    interface System.IDisposable with
+                        member _.Dispose() = stream.Dispose()
+                """
+        )
 
     match undisposed with
     | [ s ] -> Assert.Equal("backup", s.FieldName)
@@ -151,8 +222,17 @@ let ``disposable field missing from Dispose is noted`` () =
 [<Fact>]
 let ``fields the Dispose touches are fine`` () =
     let _, _, undisposed =
-        designIn
-            "type Holder() =\n    let stream = new System.IO.MemoryStream()\n    member _.Size = stream.Length\n\n    interface System.IDisposable with\n        member _.Dispose() = stream.Dispose()"
+        designIn (
+            fsharp
+                """
+                type Holder() =
+                    let stream = new System.IO.MemoryStream()
+                    member _.Size = stream.Length
+
+                    interface System.IDisposable with
+                        member _.Dispose() = stream.Dispose()
+                """
+        )
 
     Assert.Empty undisposed
 
@@ -164,7 +244,15 @@ let private formatsIn (source: string) =
 
 [<Fact>]
 let ``missing format argument is noted`` () =
-    match formatsIn "module Test\nlet f (x: int) = System.String.Format(\"{0} of {1}\", x)" with
+    match
+        formatsIn (
+            fsharp
+                """
+                module Test
+                let f (x: int) = System.String.Format("{0} of {1}", x)
+                """
+        )
+    with
     | [ s ] ->
         Assert.Equal(1, s.MissingIndex)
         Assert.Equal(1, s.ArgCount)
@@ -172,11 +260,27 @@ let ``missing format argument is noted`` () =
 
 [<Fact>]
 let ``matching arguments are fine`` () =
-    Assert.Empty(formatsIn "module Test\nlet f (x: int) (y: int) = System.String.Format(\"{0} of {1}\", x, y)")
+    Assert.Empty(
+        formatsIn (
+            fsharp
+                """
+                module Test
+                let f (x: int) (y: int) = System.String.Format("{0} of {1}", x, y)
+                """
+        )
+    )
 
 [<Fact>]
 let ``escaped braces are not placeholders`` () =
-    Assert.Empty(formatsIn "module Test\nlet f (x: int) = System.String.Format(\"{{0}} literal {0}\", x)")
+    Assert.Empty(
+        formatsIn (
+            fsharp
+                """
+                module Test
+                let f (x: int) = System.String.Format("{{0}} literal {0}", x)
+                """
+        )
+    )
 
 // ---- FR0105 CheckedArithmetic ----
 
@@ -201,8 +305,14 @@ let ``a hex constant is a mask, not a magnitude`` () =
 [<Fact>]
 let ``a file that opens Checked has made its choice`` () =
     Assert.Empty(
-        checkedIn
-            "module Test\nopen Microsoft.FSharp.Core.Operators.Checked\nlet f (balance: int) = balance + 2_000_000_000"
+        checkedIn (
+            fsharp
+                """
+                module Test
+                open Microsoft.FSharp.Core.Operators.Checked
+                let f (balance: int) = balance + 2_000_000_000
+                """
+        )
     )
 
 [<Fact>]
@@ -216,8 +326,19 @@ let ``FR0032: a field the type disposes itself is managed, not ownerless`` () =
     // FSharp.Data's FileWatcher: the watcher is disposed when the last
     // subscriber leaves — a protocol, not a leak
     let disposables, _, _ =
-        designIn
-            "module Test\nopen System.IO\ntype Watcher(path: string) =\n    let watcher = new FileSystemWatcher(path)\n    let mutable count = 1\n    member _.Unsubscribe() =\n        count <- count - 1\n        if count = 0 then watcher.Dispose()"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Watcher(path: string) =
+                    let watcher = new FileSystemWatcher(path)
+                    let mutable count = 1
+                    member _.Unsubscribe() =
+                        count <- count - 1
+                        if count = 0 then watcher.Dispose()
+                """
+        )
 
     Assert.Empty disposables
 
@@ -226,15 +347,37 @@ let ``FR0047: a Dispose that delegates to DisposeAsync disposes through the asyn
     // FsAutoComplete's ServerProgressReport: cts is disposed in DisposeAsync,
     // and Dispose only forwards — the field is not missed
     let _, _, undisposed =
-        designIn
-            "module Test\nopen System\nopen System.Threading\nopen System.Threading.Tasks\ntype Reporter() =\n    let cts = new CancellationTokenSource()\n    interface IAsyncDisposable with\n        member _.DisposeAsync() =\n            cts.Dispose()\n            ValueTask()\n    interface IDisposable with\n        member x.Dispose() = (x :> IAsyncDisposable).DisposeAsync() |> ignore"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System
+                open System.Threading
+                open System.Threading.Tasks
+                type Reporter() =
+                    let cts = new CancellationTokenSource()
+                    interface IAsyncDisposable with
+                        member _.DisposeAsync() =
+                            cts.Dispose()
+                            ValueTask()
+                    interface IDisposable with
+                        member x.Dispose() = (x :> IAsyncDisposable).DisposeAsync() |> ignore
+                """
+        )
 
     Assert.Empty undisposed
 
 [<Fact>]
 let ``FR0105: MaxValue plus something overflows, MaxValue minus something is a sentinel`` () =
     match
-        checkedIn "module Test\nlet a (n: int) = System.Int32.MaxValue + n\nlet b (n: int) = System.Int32.MaxValue - n"
+        checkedIn (
+            fsharp
+                """
+                module Test
+                let a (n: int) = System.Int32.MaxValue + n
+                let b (n: int) = System.Int32.MaxValue - n
+                """
+        )
     with
     | [ s ] -> Assert.Equal("System.Int32.MaxValue", s.ConstantText)
     | other -> failwithf "Expected one near-limit finding, got %A" other
@@ -242,8 +385,17 @@ let ``FR0105: MaxValue plus something overflows, MaxValue minus something is a s
 [<Fact>]
 let ``FR0046: locking this is a weak lock, spelled with a pipe too`` () =
     match
-        locksIn
-            "module Test\ntype Cache() =\n    let mutable n = 0\n    member this.Bump() =\n        lock this\n        <| fun () -> n <- n + 1"
+        locksIn (
+            fsharp
+                """
+                module Test
+                type Cache() =
+                    let mutable n = 0
+                    member this.Bump() =
+                        lock this
+                        <| fun () -> n <- n + 1
+                """
+        )
     with
     | [ s ] ->
         Assert.Equal(WeakLock.WeakKind.SelfObject, s.Kind)
@@ -252,7 +404,15 @@ let ``FR0046: locking this is a weak lock, spelled with a pipe too`` () =
 
 [<Fact>]
 let ``FR0046: a lock on stdout is noted without a fix`` () =
-    match locksIn "module Test\nlet say (s: string) = lock stdout (fun () -> printfn \"%s\" s)" with
+    match
+        locksIn (
+            fsharp
+                """
+                module Test
+                let say (s: string) = lock stdout (fun () -> printfn "%s" s)
+                """
+        )
+    with
     | [ s ] ->
         Assert.Equal(WeakLock.WeakKind.SharedSingleton "stdout", s.Kind)
         Assert.Empty s.Fix
@@ -261,7 +421,12 @@ let ``FR0046: a lock on stdout is noted without a fix`` () =
 [<Fact>]
 let ``FR0046: a lock on a string literal gets a lock object before the binding`` () =
     let source =
-        "module Test\nlet mutable count = 0\nlet bump () = lock \"cache\" (fun () -> count <- count + 1)"
+        fsharp
+            """
+            module Test
+            let mutable count = 0
+            let bump () = lock "cache" (fun () -> count <- count + 1)
+            """
 
     match locksIn source with
     | [ s ] ->
@@ -273,7 +438,14 @@ let ``FR0046: a lock on a string literal gets a lock object before the binding``
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(
-            "module Test\nlet mutable count = 0\nlet private bumpLock = obj ()\n\nlet bump () = lock bumpLock (fun () -> count <- count + 1)",
+            fsharp
+                """
+                module Test
+                let mutable count = 0
+                let private bumpLock = obj ()
+
+                let bump () = lock bumpLock (fun () -> count <- count + 1)
+                """,
             patched
         )
 
@@ -283,7 +455,13 @@ let ``FR0046: a lock on a string literal gets a lock object before the binding``
 [<Fact>]
 let ``FR0046: a lock on a module string value gets its lock object next to that value`` () =
     let source =
-        "module Test\nlet key = \"cache\"\nlet mutable count = 0\nlet bump () = lock key (fun () -> count <- count + 1)"
+        fsharp
+            """
+            module Test
+            let key = "cache"
+            let mutable count = 0
+            let bump () = lock key (fun () -> count <- count + 1)
+            """
 
     match locksIn source with
     | [ s ] ->
@@ -293,7 +471,14 @@ let ``FR0046: a lock on a module string value gets its lock object next to that 
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(
-            "module Test\nlet key = \"cache\"\nlet private keyLock = obj ()\nlet mutable count = 0\nlet bump () = lock keyLock (fun () -> count <- count + 1)",
+            fsharp
+                """
+                module Test
+                let key = "cache"
+                let private keyLock = obj ()
+                let mutable count = 0
+                let bump () = lock keyLock (fun () -> count <- count + 1)
+                """,
             patched
         )
 
@@ -350,7 +535,13 @@ let ``FR0105: the widening rewrites the whole arithmetic expression and narrows 
 [<Fact>]
 let ``FR0046: a lock in a nested module gets its lock object in that module, indented`` () =
     let source =
-        "module Test\nmodule Inner =\n    let mutable count = 0\n    let bump () = lock \"cache\" (fun () -> count <- count + 1)"
+        fsharp
+            """
+            module Test
+            module Inner =
+                let mutable count = 0
+                let bump () = lock "cache" (fun () -> count <- count + 1)
+            """
 
     match locksIn source with
     | [ s ] ->
@@ -360,7 +551,15 @@ let ``FR0046: a lock in a nested module gets its lock object in that module, ind
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(
-            "module Test\nmodule Inner =\n    let mutable count = 0\n    let private bumpLock = obj ()\n\n    let bump () = lock bumpLock (fun () -> count <- count + 1)",
+            fsharp
+                """
+                module Test
+                module Inner =
+                    let mutable count = 0
+                    let private bumpLock = obj ()
+
+                    let bump () = lock bumpLock (fun () -> count <- count + 1)
+                """,
             patched
         )
 
@@ -378,14 +577,21 @@ let private processSinksIn (source: string) =
 let ``FR0126: a Process.Start template splits into an argument list, a shell's command line does not`` () =
     // prismatic: `chmod +x "path"` and a cmd.exe command line
     let source =
-        "module Test\nopen System.Diagnostics\nlet make (target: string) (cmd: string) =\n    Process.Start(\"chmod\", $\"+x \\\"{target}\\\"\") |> ignore\n    Process.Start(\"cmd.exe\", $\"/c \\\"{cmd}\\\"\") |> ignore"
+        fsharp
+            """
+            module Test
+            open System.Diagnostics
+            let make (target: string) (cmd: string) =
+                Process.Start("chmod", $"+x \"{target}\"") |> ignore
+                Process.Start("cmd.exe", $"/c \"{cmd}\"") |> ignore
+            """
 
     match processSinksIn source with
     | [ chmod; shell ] ->
         match chmod.Fix with
         | Some(_, original, replacement) ->
             Assert.Equal("$\"+x \\\"{target}\\\"\"", original)
-            Assert.Equal("[| \"+x\"; target |]", replacement)
+            Assert.Equal("""[| "+x"; target |]""", replacement)
         | None -> failwith "expected the list alternative for chmod"
 
         Assert.Equal(None, shell.Fix)
@@ -394,14 +600,30 @@ let ``FR0126: a Process.Start template splits into an argument list, a shell's c
 [<Fact>]
 let ``FR0126: an Arguments template becomes one ArgumentList.Add per argument, quoted templates are left`` () =
     let source =
-        "module Test\nopen System.Diagnostics\nlet run (script: string) (command: string) (inner: string) =\n    let psi = ProcessStartInfo()\n    psi.Arguments <- $\"-ExecutionPolicy Bypass -File {script}.ps1 {command}\"\n    psi.Arguments <- $\"/s /c \\\"{inner}\\\"\"\n    psi"
+        fsharp
+            """
+            module Test
+            open System.Diagnostics
+            let run (script: string) (command: string) (inner: string) =
+                let psi = ProcessStartInfo()
+                psi.Arguments <- $"-ExecutionPolicy Bypass -File {script}.ps1 {command}"
+                psi.Arguments <- $"/s /c \"{inner}\""
+                psi
+            """
 
     match processSinksIn source with
     | [ plain; quoted ] ->
         match plain.Fix with
         | Some(_, _, replacement) ->
             Assert.Equal(
-                "psi.ArgumentList.Add \"-ExecutionPolicy\"\n    psi.ArgumentList.Add \"Bypass\"\n    psi.ArgumentList.Add \"-File\"\n    psi.ArgumentList.Add $\"{script}.ps1\"\n    psi.ArgumentList.Add command",
+                fsharp
+                    """
+                    psi.ArgumentList.Add "-ExecutionPolicy"
+                        psi.ArgumentList.Add "Bypass"
+                        psi.ArgumentList.Add "-File"
+                        psi.ArgumentList.Add $"{script}.ps1"
+                        psi.ArgumentList.Add command
+                    """,
                 replacement
             )
         | None -> failwith "expected the list alternative"
@@ -414,15 +636,43 @@ let ``FR0044: a rethrow-only handler inside a task goes with its try`` () =
     // reraise () is FS0413 inside a computation expression; the handler
     // guards nothing, so the try/with is removed and the body stays
     let source =
-        "open System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    try\n        let! x = t\n        return x + 1\n    with ex -> return raise ex\n}"
+        fsharp
+            """
+            open System.Threading.Tasks
+            let f (t: Task<int>) = task {
+                try
+                    let! x = t
+                    return x + 1
+                with ex -> return raise ex
+            }
+            """
 
     match reraiseIn source with
     | [ s ] ->
         match s.Removal with
         | Some(r, _, replacement) ->
-            Assert.Equal("let! x = t\n    return x + 1", replacement)
+            Assert.Equal(
+                fsharp
+                    """
+                    let! x = t
+                        return x + 1
+                    """,
+                replacement
+            )
+
             let patched = applyEdit source r replacement
-            Assert.Contains("task {\n    let! x = t\n    return x + 1\n}", patched.Replace("\r", ""))
+
+            Assert.Contains(
+                fsharp
+                    """
+                    task {
+                        let! x = t
+                        return x + 1
+                    }
+                    """,
+                patched.Replace("\r", "")
+            )
+
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | None -> failwith "Expected the removal edit"
     | other -> failwithf "Expected exactly one suggestion, got %A" other
@@ -430,8 +680,20 @@ let ``FR0044: a rethrow-only handler inside a task goes with its try`` () =
 [<Fact>]
 let ``FR0044: a handler that logs before rethrowing inside a task stays`` () =
     Assert.Empty(
-        reraiseIn
-            "open System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    try\n        let! x = t\n        return x + 1\n    with ex ->\n        printfn \"%s\" ex.Message\n        return raise ex\n}"
+        reraiseIn (
+            fsharp
+                """
+                open System.Threading.Tasks
+                let f (t: Task<int>) = task {
+                    try
+                        let! x = t
+                        return x + 1
+                    with ex ->
+                        printfn "%s" ex.Message
+                        return raise ex
+                }
+                """
+        )
     )
 
 [<Fact>]
@@ -439,8 +701,18 @@ let ``FR0047: a Dispose that only cancels the field never releases it`` () =
     // fantomas' LSPFantomasService and CloudAgent's connection factory both
     // cancel the token source and leave the handle
     let _, _, undisposed =
-        designIn
-            "open System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface System.IDisposable with\n        member _.Dispose() = cts.Cancel()"
+        designIn (
+            fsharp
+                """
+                open System.Threading
+                type Service() =
+                    let cts = new CancellationTokenSource()
+                    member _.Token = cts.Token
+
+                    interface System.IDisposable with
+                        member _.Dispose() = cts.Cancel()
+                """
+        )
 
     match undisposed with
     | [ s ] ->
@@ -451,16 +723,41 @@ let ``FR0047: a Dispose that only cancels the field never releases it`` () =
 [<Fact>]
 let ``FR0047: cancel followed by dispose is complete`` () =
     let _, _, undisposed =
-        designIn
-            "open System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface System.IDisposable with\n        member _.Dispose() =\n            cts.Cancel()\n            cts.Dispose()"
+        designIn (
+            fsharp
+                """
+                open System.Threading
+                type Service() =
+                    let cts = new CancellationTokenSource()
+                    member _.Token = cts.Token
+
+                    interface System.IDisposable with
+                        member _.Dispose() =
+                            cts.Cancel()
+                            cts.Dispose()
+                """
+        )
 
     Assert.Empty undisposed
 
 [<Fact>]
 let ``FR0047: an upcast Dispose on the field counts as releasing it`` () =
     let _, _, undisposed =
-        designIn
-            "open System\nopen System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() =\n            cts.Cancel()\n            (cts :> IDisposable).Dispose()"
+        designIn (
+            fsharp
+                """
+                open System
+                open System.Threading
+                type Service() =
+                    let cts = new CancellationTokenSource()
+                    member _.Token = cts.Token
+
+                    interface IDisposable with
+                        member _.Dispose() =
+                            cts.Cancel()
+                            (cts :> IDisposable).Dispose()
+                """
+        )
 
     Assert.Empty undisposed
 
@@ -469,16 +766,45 @@ let ``FR0047: a file that opens Rx is left alone`` () =
     // Rx hands out disposables whose Dispose is an unsubscribe and composes
     // them on purpose; "not disposed here" is the design there
     let _, _, undisposed =
-        designIn
-            "open System.Reactive.Disposables\nopen System.Threading\ntype Service() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface System.IDisposable with\n        member _.Dispose() = cts.Cancel()"
+        designIn (
+            fsharp
+                """
+                namespace System.Reactive.Disposables
+                type CompositeDisposable() =
+                    class
+                    end
+
+                namespace Test
+                open System.Reactive.Disposables
+                open System.Threading
+                type Service() =
+                    let cts = new CancellationTokenSource()
+                    member _.Token = cts.Token
+
+                    interface System.IDisposable with
+                        member _.Dispose() = cts.Cancel()
+                """
+        )
 
     Assert.Empty undisposed
 
 [<Fact>]
 let ``FR0047: a Dispose handing off to its base is not second-guessed`` () =
     let _, _, undisposed =
-        designIn
-            "open System.Threading\nopen System.IO\ntype Service() =\n    inherit MemoryStream()\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n    override _.Dispose(disposing: bool) =\n        cts.Cancel()\n        base.Dispose(disposing)"
+        designIn (
+            fsharp
+                """
+                open System.Threading
+                open System.IO
+                type Service() =
+                    inherit MemoryStream()
+                    let cts = new CancellationTokenSource()
+                    member _.Token = cts.Token
+                    override _.Dispose(disposing: bool) =
+                        cts.Cancel()
+                        base.Dispose(disposing)
+                """
+        )
 
     Assert.Empty undisposed
 
@@ -487,16 +813,40 @@ let ``FR0047: a field handed to a helper is that helper's to release`` () =
     // the loosened rule claimed 'add cts.Dispose()' here, which would
     // dispose it twice: `cleanup cts` releases it one hop away
     let _, _, undisposed =
-        designIn
-            "open System\nopen System.Threading\ntype ViaHelper() =\n    let cts = new CancellationTokenSource()\n    let cleanup (c: CancellationTokenSource) = c.Dispose()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() = cleanup cts"
+        designIn (
+            fsharp
+                """
+                open System
+                open System.Threading
+                type ViaHelper() =
+                    let cts = new CancellationTokenSource()
+                    let cleanup (c: CancellationTokenSource) = c.Dispose()
+                    member _.Token = cts.Token
+
+                    interface IDisposable with
+                        member _.Dispose() = cleanup cts
+                """
+        )
 
     Assert.Empty undisposed
 
 [<Fact>]
 let ``FR0047: a field added to something in Dispose is handed off too`` () =
     let _, _, undisposed =
-        designIn
-            "open System\nopen System.Threading\ntype ViaAdd() =\n    let cts = new CancellationTokenSource()\n    let owned = ResizeArray<IDisposable>()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() = owned.Add cts"
+        designIn (
+            fsharp
+                """
+                open System
+                open System.Threading
+                type ViaAdd() =
+                    let cts = new CancellationTokenSource()
+                    let owned = ResizeArray<IDisposable>()
+                    member _.Token = cts.Token
+
+                    interface IDisposable with
+                        member _.Dispose() = owned.Add cts
+                """
+        )
 
     Assert.Empty undisposed
 
@@ -505,8 +855,21 @@ let ``FR0047: being the receiver is not being handed off`` () =
     // cts.Token.Register(...) reads the field and disposes only the
     // registration: the token source itself is still never released
     let _, _, undisposed =
-        designIn
-            "open System\nopen System.Threading\ntype ViaRegister() =\n    let cts = new CancellationTokenSource()\n    member _.Token = cts.Token\n\n    interface IDisposable with\n        member _.Dispose() =\n            let reg = cts.Token.Register(fun () -> ())\n            reg.Dispose()"
+        designIn (
+            fsharp
+                """
+                open System
+                open System.Threading
+                type ViaRegister() =
+                    let cts = new CancellationTokenSource()
+                    member _.Token = cts.Token
+
+                    interface IDisposable with
+                        member _.Dispose() =
+                            let reg = cts.Token.Register(fun () -> ())
+                            reg.Dispose()
+                """
+        )
 
     match undisposed with
     | [ s ] ->

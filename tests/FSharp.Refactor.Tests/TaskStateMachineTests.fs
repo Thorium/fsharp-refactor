@@ -24,8 +24,17 @@ let private awaits n =
 [<Fact>]
 let ``let rec inside a task is flagged regardless of size`` () =
     let suggestions =
-        adviceIn
-            "module Test\nlet f () = task {\n    let rec loop (n: int) = if n = 0 then 0 else loop (n - 1)\n    let! c = System.Threading.Tasks.Task.FromResult 3\n    return loop c\n}"
+        adviceIn (
+            fsharp
+                """
+                module Test
+                let f () = task {
+                    let rec loop (n: int) = if n = 0 then 0 else loop (n - 1)
+                    let! c = System.Threading.Tasks.Task.FromResult 3
+                    return loop c
+                }
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal(TaskStateMachine.AdviceKind.HoistRecursiveFunction, s.Kind)
@@ -34,15 +43,31 @@ let ``let rec inside a task is flagged regardless of size`` () =
 [<Fact>]
 let ``let rec inside a nested lambda is not resumable code`` () =
     Assert.Empty(
-        adviceIn
-            "module Test\nlet f () = task {\n    let g = fun (n: int) -> (let rec loop m = if m = 0 then 0 else loop (m - 1) in loop n)\n    let! c = System.Threading.Tasks.Task.FromResult 3\n    return g c\n}"
+        adviceIn (
+            fsharp
+                """
+                module Test
+                let f () = task {
+                    let g = fun (n: int) -> (let rec loop m = if m = 0 then 0 else loop (m - 1) in loop n)
+                    let! c = System.Threading.Tasks.Task.FromResult 3
+                    return g c
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``leading plain lets in an oversized task are counted`` () =
     let suggestions =
         adviceIn (
-            "module Test\nlet f () = task {\n    let a = 1\n    let b = 2\n"
+            fsharp
+                """
+                module Test
+                let f () = task {
+                    let a = 1
+                    let b = 2
+
+                """
             + awaits 8
             + "\n    return a + b + x1\n}"
         )
@@ -58,7 +83,21 @@ let ``a directive block below the branch blocks the hoist`` () =
     // configuration compiles, and the build check never sees them: it
     // compiles the one configuration in front of it, where the file is fine
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n\n        match c with\n        | 1 -> return x\n        | _ -> return -1\n#if EXTRA\n        | 2 -> return x + 100\n#endif\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+
+                    match c with
+                    | 1 -> return x
+                    | _ -> return -1
+            #if EXTRA
+                    | 2 -> return x + 100
+            #endif
+                }
+            """
 
     Assert.Empty(
         adviceIn source
@@ -74,9 +113,24 @@ let ``a plain let under a try is never hoisted out of the handler`` () =
     // there: lifting it above the builder would let the exception escape past
     // `with`. Only lets the try does not cover may travel
     let source =
-        "module Test\nlet i = 0\nlet f () =\n    task {\n        try\n            let x = 4 / i\n"
+        fsharp
+            """
+            module Test
+            let i = 0
+            let f () =
+                task {
+                    try
+                        let x = 4 / i
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
-        + "\n            return x1 + x\n        with _ -> return 42\n    }"
+        + fsharp
+            """
+
+                        return x1 + x
+                    with _ -> return 42
+                }
+            """
 
     Assert.Empty(
         adviceIn source
@@ -89,9 +143,25 @@ let ``a plain let under a try is never hoisted out of the handler`` () =
 [<Fact>]
 let ``hoisting stops at the try, taking only the lets above it`` () =
     let source =
-        "module Test\nlet i = 0\nlet f () =\n    task {\n        let p = 1\n        try\n            let x = 4 / i\n"
+        fsharp
+            """
+            module Test
+            let i = 0
+            let f () =
+                task {
+                    let p = 1
+                    try
+                        let x = 4 / i
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
-        + "\n            return x1 + x + p\n        with _ -> return 42\n    }"
+        + fsharp
+            """
+
+                        return x1 + x + p
+                    with _ -> return 42
+                }
+            """
 
     match
         adviceIn source
@@ -110,7 +180,15 @@ let ``hoisting stops at the try, taking only the lets above it`` () =
 [<Fact>]
 let ``a let whose own rhs is a try still hoists - the handler travels too`` () =
     let source =
-        "module Test\nlet i = 0\nlet f () =\n    task {\n        let r = try 4 / i with _ -> 0\n"
+        fsharp
+            """
+            module Test
+            let i = 0
+            let f () =
+                task {
+                    let r = try 4 / i with _ -> 0
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
         + "\n        return x1 + r\n    }"
 
@@ -129,7 +207,13 @@ let ``a let whose own rhs is a try still hoists - the handler travels too`` () =
 [<Fact>]
 let ``oversized branching where both arms await suggests a split`` () =
     let source =
-        "module Test\nlet f (cond: bool) = task {\n    if cond then\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) = task {
+                if cond then
+
+            """
         + awaits 4
         + "\n        return x1\n    else\n"
         + awaits 4
@@ -147,7 +231,16 @@ let ``long tail after the last await in an oversized task suggests extraction`` 
     let source =
         "module Test\nlet f () = task {\n"
         + awaits 8
-        + "\n    let b = x1 + 1\n    let c = b * 2\n    let d = c - 3\n    let e = d + x2\n    return e\n}"
+        + fsharp
+            """
+
+                let b = x1 + 1
+                let c = b * 2
+                let d = c - 3
+                let e = d + x2
+                return e
+            }
+            """
 
     match adviceIn source with
     | [ s ] ->
@@ -159,16 +252,40 @@ let ``long tail after the last await in an oversized task suggests extraction`` 
 [<Fact>]
 let ``a lean task yields no advice`` () =
     Assert.Empty(
-        adviceIn
-            "module Test\nlet f () = task {\n    let a = 1\n    let! c = System.Threading.Tasks.Task.FromResult 3\n    return a + c\n}"
+        adviceIn (
+            fsharp
+                """
+                module Test
+                let f () = task {
+                    let a = 1
+                    let! c = System.Threading.Tasks.Task.FromResult 3
+                    return a + c
+                }
+                """
+        )
     )
 
 [<Fact>]
 let ``a tail touching a local mutable is not extracted`` () =
     let source =
-        "module Test\nlet f () = task {\n    let mutable acc = 0\n"
+        fsharp
+            """
+            module Test
+            let f () = task {
+                let mutable acc = 0
+
+            """
         + awaits 8
-        + "\n    acc <- acc + x1\n    let s2 = acc + 2\n    let s3 = s2 + 3\n    let s4 = s3 + 4\n    return s4\n}"
+        + fsharp
+            """
+
+                acc <- acc + x1
+                let s2 = acc + 2
+                let s3 = s2 + 3
+                let s4 = s3 + 4
+                return s4
+            }
+            """
 
     let tails =
         adviceIn source
@@ -206,7 +323,15 @@ let private editsOfKind kind (suggestions: TaskStateMachine.Suggestion list) =
 [<Fact>]
 let ``leading plain lets hoist above the builder and the result typechecks`` () =
     let source =
-        "module Test\nlet f () =\n    task {\n        let a = 1\n        let b = a * 2\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+                    let a = 1
+                    let b = a * 2
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
         + "\n        return a + b + x1\n    }"
 
@@ -218,7 +343,17 @@ let ``leading plain lets hoist above the builder and the result typechecks`` () 
 
     Assert.NotEmpty edits
     let patched = applyEdits source edits
-    Assert.Contains("    let a = 1\n    let b = a * 2\n    task {", patched)
+
+    Assert.Contains(
+        fsharp
+            """
+                let a = 1
+                let b = a * 2
+                task {
+            """,
+        patched
+    )
+
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
@@ -226,7 +361,19 @@ let ``the documenting comment block hoists with its binding`` () =
     // both /// runs above the let travel, blank line between them intact;
     // the blank line above the block stays inside the task
     let source =
-        "module Test\nlet f () =\n    task {\n\n        /// HERE WE GO WITH a\n\n        /// a value\n        let a = 1\n        let b = a * 2\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+                    /// HERE WE GO WITH a
+
+                    /// a value
+                    let a = 1
+                    let b = a * 2
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
         + "\n        return a + b + x1\n    }"
 
@@ -238,15 +385,42 @@ let ``the documenting comment block hoists with its binding`` () =
 
     Assert.NotEmpty edits
     let patched = applyEdits source edits
-    Assert.Contains("/// HERE WE GO WITH a\n\n    /// a value\n    let a = 1\n    let b = a * 2\n    task {", patched)
+
+    Assert.Contains(
+        fsharp
+            """
+            /// HERE WE GO WITH a
+
+                /// a value
+                let a = 1
+                let b = a * 2
+                task {
+            """,
+        patched
+    )
+
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
 let ``a mutable leading let stops the hoist before it`` () =
     let source =
-        "module Test\nlet f () =\n    task {\n        let a = 1\n        let mutable m = a\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+                    let a = 1
+                    let mutable m = a
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        m <- m + x1\n        return a + m\n    }"
+        + fsharp
+            """
+
+                    m <- m + x1
+                    return a + m
+                }
+            """
 
     match
         adviceIn source
@@ -268,9 +442,24 @@ let ``a mutable leading let stops the hoist before it`` () =
 [<Fact>]
 let ``the non-awaiting tail wraps into a local function and typechecks`` () =
     let source =
-        "module Test\nlet f () =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        // combine everything\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        return s1 + s2 + s3\n    }"
+        + fsharp
+            """
+
+                    // combine everything
+                    let s1 = x1 + 1
+                    let s2 = s1 + 2
+                    let s3 = s2 + 3
+                    return s1 + s2 + s3
+                }
+            """
 
     let edits =
         adviceIn source
@@ -294,9 +483,23 @@ let ``a return whose value hides behind a block comment keeps its keyword`` () =
     // continuation. The plain closure stands down; the task-returning
     // wrapper, which keeps the `return`, is still fine
     let source =
-        "module Test\nlet f () =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        return (*{Sum = *) s1 + s2 + s3 //; }\n    }"
+        + fsharp
+            """
+
+                    let s1 = x1 + 1
+                    let s2 = s1 + 2
+                    let s3 = s2 + 3
+                    return (*{Sum = *) s1 + s2 + s3 //; }
+                }
+            """
 
     let edits =
         adviceIn source
@@ -312,9 +515,25 @@ let ``a return whose value hides behind a block comment keeps its keyword`` () =
 [<Fact>]
 let ``an already extracted tail is not wrapped again`` () =
     let source =
-        "module Test\nlet f () =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        let runTail () =\n            let s1 = x1 + 1\n            let s2 = s1 + 2\n            let s3 = s2 + 3\n            s1 + s2 + s3\n        return runTail ()\n    }"
+        + fsharp
+            """
+
+                    let runTail () =
+                        let s1 = x1 + 1
+                        let s2 = s1 + 2
+                        let s3 = s2 + 3
+                        s1 + s2 + s3
+                    return runTail ()
+                }
+            """
 
     let tails =
         adviceIn source
@@ -335,7 +554,23 @@ let ``a tiny tail after a binding whose bangs sit in a nested CE is not wrapped`
     let source =
         "module Test\nlet f (cache: ResizeArray<int>) = task {\n"
         + awaits 8
-        + "\n    let inner =\n        task {\n            let! b = System.Threading.Tasks.Task.FromResult 9\n            return b + x1\n        }\n        |> fun t ->\n            let a = t\n            let b2 = a\n            let c = b2\n            c\n    cache.Clear()\n    return inner\n}"
+        + fsharp
+            """
+
+                let inner =
+                    task {
+                        let! b = System.Threading.Tasks.Task.FromResult 9
+                        return b + x1
+                    }
+                    |> fun t ->
+                        let a = t
+                        let b2 = a
+                        let c = b2
+                        c
+                cache.Clear()
+                return inner
+            }
+            """
 
     let tailEdits =
         adviceIn source
@@ -351,7 +586,28 @@ let ``a tail that is already one wrapped thunk is never re-wrapped`` () =
     let source =
         "module Test\nlet f () = task {\n"
         + awaits 8
-        + "\n    let inner =\n        task {\n            let! b = System.Threading.Tasks.Task.FromResult 9\n            return b + x1\n        }\n        |> fun t ->\n            let a = t\n            let b2 = a\n            let c = b2\n            c\n    let runTail () =\n        ignore inner\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        s1 + s2 + s3\n    return runTail ()\n}"
+        + fsharp
+            """
+
+                let inner =
+                    task {
+                        let! b = System.Threading.Tasks.Task.FromResult 9
+                        return b + x1
+                    }
+                    |> fun t ->
+                        let a = t
+                        let b2 = a
+                        let c = b2
+                        c
+                let runTail () =
+                    ignore inner
+                    let s1 = x1 + 1
+                    let s2 = s1 + 2
+                    let s3 = s2 + 3
+                    s1 + s2 + s3
+                return runTail ()
+            }
+            """
 
     let tailEdits =
         adviceIn source
@@ -370,7 +626,16 @@ let ``a tail holding a use never becomes a plain closure`` () =
     let source =
         "module Test\nlet f () = task {\n"
         + awaits 8
-        + "\n    use r = new System.IO.MemoryStream()\n    let s1 = x1 + 1\n    let s2 = s1 + 2\n    let s3 = s2 + 3\n    return s1 + s2 + s3 + int r.Length\n}"
+        + fsharp
+            """
+
+                use r = new System.IO.MemoryStream()
+                let s1 = x1 + 1
+                let s2 = s1 + 2
+                let s3 = s2 + 3
+                return s1 + s2 + s3 + int r.Length
+            }
+            """
 
     let edits =
         adviceIn source
@@ -391,9 +656,25 @@ let ``a tail whose branches all return hoists the return instead of extracting``
     // answer to the same tail: one keyword moves, no function is invented,
     // and the branches stop being separate exits through the builder
     let source =
-        "module Test\nlet f (c: bool) =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f (c: bool) =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        if c then\n            return 0\n        else\n            let s2 = x1 + 2\n            let s3 = s2 + 3\n            return s3\n    }"
+        + fsharp
+            """
+
+                    if c then
+                        return 0
+                    else
+                        let s2 = x1 + 2
+                        let s3 = s2 + 3
+                        return s3
+                }
+            """
 
     let hoists =
         adviceIn source
@@ -413,7 +694,19 @@ let ``a one-line branch keeps its hoisted return on the same line`` () =
     // branch's line, so `return` alone with the payload underneath left the
     // brace inside the payload's offside context and the file stopped parsing
     let source =
-        "module Test\nlet g (c: bool) : System.Threading.Tasks.Task<bool> = task { return c }\nlet f (c: bool) =\n    task {\n        let! r =\n            task {\n                let! result = g c\n                if result then return None else return (Some \"failed\") }\n        return r\n    }"
+        fsharp
+            """
+            module Test
+            let g (c: bool) : System.Threading.Tasks.Task<bool> = task { return c }
+            let f (c: bool) =
+                task {
+                    let! r =
+                        task {
+                            let! result = g c
+                            if result then return None else return (Some "failed") }
+                    return r
+                }
+            """
 
     let hoists =
         adviceIn source
@@ -423,13 +716,20 @@ let ``a one-line branch keeps its hoisted return on the same line`` () =
 
     Assert.NotEmpty hoists
     let patched = applyEdits source hoists
-    Assert.Contains("return if result then None else (Some \"failed\") }", patched)
+    Assert.Contains("""return if result then None else (Some "failed") }""", patched)
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
 let ``an oversized if split produces two tasks and typechecks`` () =
     let source =
-        "module Test\nlet f (cond: bool) =\n    task {\n        if cond then\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) =
+                task {
+                    if cond then
+
+            """
         + (awaits 4).Replace("    let!", "            let!")
         + "\n            return x1\n        else\n"
         + (awaits 4).Replace("    let!", "            let!")
@@ -450,11 +750,25 @@ let ``an oversized if split produces two tasks and typechecks`` () =
 [<Fact>]
 let ``an elif chain stays advice only`` () =
     let source =
-        "module Test\nlet f (a: bool) (b: bool) =\n    task {\n        if a then\n"
+        fsharp
+            """
+            module Test
+            let f (a: bool) (b: bool) =
+                task {
+                    if a then
+
+            """
         + (awaits 4).Replace("    let!", "            let!")
         + "\n            return x1\n        elif b then\n"
         + (awaits 4).Replace("    let!", "            let!")
-        + "\n            return x2\n        else\n            return 0\n    }"
+        + fsharp
+            """
+
+                        return x2
+                    else
+                        return 0
+                }
+            """
 
     for s in adviceIn source do
         match s.Kind with
@@ -464,7 +778,14 @@ let ``an elif chain stays advice only`` () =
 [<Fact>]
 let ``a backgroundTask split keeps its builder`` () =
     let source =
-        "module Test\nlet f (cond: bool) =\n    backgroundTask {\n        if cond then\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) =
+                backgroundTask {
+                    if cond then
+
+            """
         + (awaits 4).Replace("    let!", "            let!")
         + "\n            return x1\n        else\n"
         + (awaits 4).Replace("    let!", "            let!")
@@ -486,7 +807,17 @@ let ``a backgroundTask split keeps its builder`` () =
 [<Fact>]
 let ``a split fires when only one arm awaits`` () =
     let source =
-        "module Test\nlet f (cond: bool) =\n    task {\n        if cond then\n            let r = 0\n            return r\n        else\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) =
+                task {
+                    if cond then
+                        let r = 0
+                        return r
+                    else
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
         + "\n            return x1\n    }"
 
@@ -511,7 +842,13 @@ let ``the embedding-generator shape splits`` () =
     let source =
         "module Probe\n"
         + "open System.Threading\nopen System.Threading.Tasks\n"
-        + "let gate = new SemaphoreSlim(1)\nlet inferenceLock = new SemaphoreSlim(4)\nlet lockSlots = 4\n"
+        + fsharp
+            """
+            let gate = new SemaphoreSlim(1)
+            let inferenceLock = new SemaphoreSlim(4)
+            let lockSlots = 4
+
+            """
         + "let private generate (inputs: string[]) (ct: CancellationToken) : Task<int> =\n"
         + "    task {\n"
         + "        if inputs.Length = 0 then\n"
@@ -564,9 +901,25 @@ let ``an early-return tail hoists its return ahead of the branch`` () =
     // task-returning wrapper. Hoisting the return is cheaper: the lets stay
     // where they are and only the branch stops being an exit per arm
     let source =
-        "module Test\nlet f (flag: bool) =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f (flag: bool) =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        if flag then\n            return s1\n        else\n            return s2\n    }"
+        + fsharp
+            """
+
+                    let s1 = x1 + 1
+                    let s2 = s1 + 2
+                    if flag then
+                        return s1
+                    else
+                        return s2
+                }
+            """
 
     let hoists =
         adviceIn source
@@ -587,7 +940,15 @@ let ``awaiting match arms stay advice without a fix`` () =
     // task { .. }` wrap once nested a machine into every awaiting arm of
     // suave's HttpOutput.fs, a shape the doc never promised
     let source =
-        "module Test\nlet f (cond: bool) =\n    task {\n        match cond with\n        | true ->\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) =
+                task {
+                    match cond with
+                    | true ->
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
         + "\n            return x1\n        | false ->\n"
         + (awaits 8).Replace("    let!", "            let!").Replace("x", "y")
@@ -603,7 +964,16 @@ let ``awaiting match arms stay advice without a fix`` () =
 [<Fact>]
 let ``awaiting match-bang arms stay advice without a fix`` () =
     let source =
-        "module Test\nlet g () = System.Threading.Tasks.Task.FromResult true\nlet f () =\n    task {\n        match! g () with\n        | true ->\n"
+        fsharp
+            """
+            module Test
+            let g () = System.Threading.Tasks.Task.FromResult true
+            let f () =
+                task {
+                    match! g () with
+                    | true ->
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
         + "\n            return x1\n        | false ->\n"
         + (awaits 8).Replace("    let!", "            let!").Replace("x", "y")
@@ -619,9 +989,25 @@ let ``awaiting match-bang arms stay advice without a fix`` () =
 [<Fact>]
 let ``a match arm reading a foreign mutable keeps the note`` () =
     let source =
-        "module Test\nlet f (cond: bool) =\n    task {\n        let mutable acc = 0\n        match cond with\n        | true ->\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) =
+                task {
+                    let mutable acc = 0
+                    match cond with
+                    | true ->
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
-        + "\n            acc <- x1\n            return acc\n        | false ->\n"
+        + fsharp
+            """
+
+                        acc <- x1
+                        return acc
+                    | false ->
+
+            """
         + (awaits 8).Replace("    let!", "            let!").Replace("x", "y")
         + "\n            return y2\n    }"
 
@@ -659,7 +1045,14 @@ let private tailBody (useLine: string) =
     + awaits 8
     + "\n"
     + useLine
-    + "    let s1 = x1 + 1\n    let s2 = s1 + 2\n    let s3 = s2 + 3\n    return s1 + s2 + s3\n}"
+    + fsharp
+        """
+            let s1 = x1 + 1
+            let s2 = s1 + 2
+            let s3 = s2 + 3
+            return s1 + s2 + s3
+        }
+        """
 
 [<Fact>]
 let ``the control without a use takes the plain closure`` () =
@@ -685,7 +1078,16 @@ let ``a use in the middle of the tail is caught too`` () =
     let source =
         "module Test\nlet f () = task {\n"
         + awaits 8
-        + "\n    let s1 = x1 + 1\n    use r = new System.IO.MemoryStream()\n    let s2 = s1 + 2\n    let s3 = s2 + 3\n    return s1 + s2 + s3 + int r.Length\n}"
+        + fsharp
+            """
+
+                let s1 = x1 + 1
+                use r = new System.IO.MemoryStream()
+                let s2 = s1 + 2
+                let s3 = s2 + 3
+                return s1 + s2 + s3 + int r.Length
+            }
+            """
 
     let edits = tailEditsFor source
 
@@ -700,7 +1102,16 @@ let ``an async tail with a use keeps CE syntax as well`` () =
         "module Test\nlet f () = async {\n"
         + ([ for i in 1..8 -> $"    let! x%d{i} = async {{ return %d{i} }}" ]
            |> String.concat "\n")
-        + "\n    use r = new System.IO.MemoryStream()\n    let s1 = x1 + 1\n    let s2 = s1 + 2\n    let s3 = s2 + 3\n    return s1 + s2 + s3 + int r.Length\n}"
+        + fsharp
+            """
+
+                use r = new System.IO.MemoryStream()
+                let s1 = x1 + 1
+                let s2 = s1 + 2
+                let s3 = s2 + 3
+                return s1 + s2 + s3 + int r.Length
+            }
+            """
 
     let edits = tailEditsFor source
 
@@ -714,7 +1125,15 @@ let ``an async tail with a use keeps CE syntax as well`` () =
 [<Fact>]
 let ``a hot-path comment inside the binding keeps every move advice-only`` () =
     let source =
-        "module Test\nlet f (cond: bool) =\n    // hot path: hand-tuned to avoid allocation\n    task {\n        if cond then\n"
+        fsharp
+            """
+            module Test
+            let f (cond: bool) =
+                // hot path: hand-tuned to avoid allocation
+                task {
+                    if cond then
+
+            """
         + (awaits 4).Replace("    let!", "            let!")
         + "\n            return x1\n        else\n"
         + (awaits 4).Replace("    let!", "            let!")
@@ -729,7 +1148,15 @@ let ``a hot-path comment inside the binding keeps every move advice-only`` () =
 [<Fact>]
 let ``a perf comment outside the binding does not withhold the split`` () =
     let source =
-        "module Test\n// perf notes for the module\nlet f (cond: bool) =\n    task {\n        if cond then\n"
+        fsharp
+            """
+            module Test
+            // perf notes for the module
+            let f (cond: bool) =
+                task {
+                    if cond then
+
+            """
         + (awaits 4).Replace("    let!", "            let!")
         + "\n            return x1\n        else\n"
         + (awaits 4).Replace("    let!", "            let!")
@@ -758,9 +1185,28 @@ let ``FR0029: exception handlers and a finally block after the last await are no
     // + an Error arm followed the last `do!` — six lines of handlers, no
     // business logic to extract
     let source =
-        "module Test\nlet f (fs: System.IO.Stream) (ok: bool) = task {\n"
+        fsharp
+            """
+            module Test
+            let f (fs: System.IO.Stream) (ok: bool) = task {
+
+            """
         + awaits 8
-        + "\n    if ok then\n        try\n            try\n                do! System.Threading.Tasks.Task.Delay 1\n            with ex ->\n                raise ex\n        finally\n            fs.Dispose()\n    else\n        failwith \"error\"\n}"
+        + fsharp
+            """
+
+                if ok then
+                    try
+                        try
+                            do! System.Threading.Tasks.Task.Delay 1
+                        with ex ->
+                            raise ex
+                    finally
+                        fs.Dispose()
+                else
+                    failwith "error"
+            }
+            """
 
     Assert.Empty(tailsIn source)
 
@@ -769,9 +1215,26 @@ let ``FR0029: a multi-line return-bang is an await, not lines that follow one`` 
     // suave's Proxy: `return! (...) ctx` spanning five lines inside a `with`
     // handler counted as a non-awaiting tail from its own first line
     let source =
-        "module Test\nlet handle (ctx: int) : System.Threading.Tasks.Task<int> = task { return ctx }\nlet f (ctx: int) = task {\n"
+        fsharp
+            """
+            module Test
+            let handle (ctx: int) : System.Threading.Tasks.Task<int> = task { return ctx }
+            let f (ctx: int) = task {
+
+            """
         + awaits 8
-        + "\n    try\n        return x1\n    with _ ->\n        return!\n            (\n                handle\n            ) ctx\n}"
+        + fsharp
+            """
+
+                try
+                    return x1
+                with _ ->
+                    return!
+                        (
+                            handle
+                        ) ctx
+            }
+            """
 
     Assert.Empty(tailsIn source)
 
@@ -782,7 +1245,19 @@ let ``FR0029: a loop body that re-awaits is not a tail and the note sits on the 
     let looping =
         "module Test\nlet f (log: string -> unit) = task {\n"
         + awaits 8
-        + "\n    let mutable go = true\n    while go do\n        do! System.Threading.Tasks.Task.Delay 1\n        log \"a\"\n        log \"b\"\n        log \"c\"\n        log \"d\"\n        go <- false\n}"
+        + fsharp
+            """
+
+                let mutable go = true
+                while go do
+                    do! System.Threading.Tasks.Task.Delay 1
+                    log "a"
+                    log "b"
+                    log "c"
+                    log "d"
+                    go <- false
+            }
+            """
 
     Assert.Empty(tailsIn looping)
 
@@ -791,7 +1266,17 @@ let ``FR0029: a loop body that re-awaits is not a tail and the note sits on the 
     let source =
         "module Test\nlet f () = task {\n"
         + awaits 8
-        + "\n\n    let b = x1 + 1\n    let c = b * 2\n    let d = c - 3\n    let e = d + x2\n    return e\n}"
+        + fsharp
+            """
+
+
+                let b = x1 + 1
+                let c = b * 2
+                let d = c - 3
+                let e = d + x2
+                return e
+            }
+            """
 
     match tailsIn source with
     | [ s ] ->
@@ -815,7 +1300,20 @@ let ``FR0029: a tail inside the arm that holds the last await is advice only`` (
     let source =
         "module Test\nlet f (ok: bool) = task {\n"
         + awaits 8
-        + "\n    match ok with\n    | false -> return 0\n    | true ->\n        let! y = System.Threading.Tasks.Task.FromResult 5\n        let b = y + 1\n        let c = b * 2\n        let d = c - 3\n        let e = d + x2\n        return e\n}"
+        + fsharp
+            """
+
+                match ok with
+                | false -> return 0
+                | true ->
+                    let! y = System.Threading.Tasks.Task.FromResult 5
+                    let b = y + 1
+                    let c = b * 2
+                    let d = c - 3
+                    let e = d + x2
+                    return e
+            }
+            """
 
     match tailsIn source with
     | [ s ] ->
@@ -829,9 +1327,24 @@ let ``the tail threshold is a parameter, not a constant`` () =
     // five non-awaiting lines: extracted at a threshold of four, left alone at
     // ten. The default is ten - four lines is a thin trade for a new function
     let source =
-        "module Test\nlet f () =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        let s4 = s3 + 4\n        return s4\n    }"
+        + fsharp
+            """
+
+                    let s1 = x1 + 1
+                    let s2 = s1 + 2
+                    let s3 = s2 + 3
+                    let s4 = s3 + 4
+                    return s4
+                }
+            """
 
     let tree, sourceText = parse source
 
@@ -848,14 +1361,36 @@ let ``the tail threshold is a parameter, not a constant`` () =
 [<Fact>]
 let ``async is left alone unless hoistReturnOnAsync is turned on`` () =
     let source =
-        "module Test\nlet f (c: int) =\n    async {\n        let! x = async { return 1 }\n\n        match c with\n        | 1 -> return x\n        | _ -> return -1\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                async {
+                    let! x = async { return 1 }
+
+                    match c with
+                    | 1 -> return x
+                    | _ -> return -1
+                }
+            """
 
     Assert.Empty(adviceIn source)
 
 [<Fact>]
 let ``hoistReturnOnAsync hoists the return in an async block`` () =
     let source =
-        "module Test\nlet f (c: int) =\n    async {\n        let! x = async { return 1 }\n\n        match c with\n        | 1 -> return x\n        | _ -> return -1\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                async {
+                    let! x = async { return 1 }
+
+                    match c with
+                    | 1 -> return x
+                    | _ -> return -1
+                }
+            """
 
     let hoists =
         adviceInAsyncOn source
@@ -865,7 +1400,16 @@ let ``hoistReturnOnAsync hoists the return in an async block`` () =
 
     Assert.NotEmpty hoists
     let patched = applyEdits source hoists
-    Assert.Contains("return\n", patched)
+
+    Assert.Contains(
+        fsharp
+            """
+            return
+
+            """,
+        patched
+    )
+
     Assert.DoesNotContain("| 1 -> return x", patched)
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
@@ -875,11 +1419,29 @@ let ``hoistReturnOnAsync brings only the hoist, never the FS3511 advice`` () =
     // dynamic fallback: no let-rec advice, no let hoist, no branch split and
     // no tail extraction, however oversized the block is
     let source =
-        "module Test\nlet f (c: int) =\n    async {\n        let a = 1\n        let b = 2\n"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                async {
+                    let a = 1
+                    let b = 2
+
+            """
         + (awaits 8)
             .Replace("System.Threading.Tasks.Task.FromResult", "async.Return")
             .Replace("    let!", "        let!")
-        + "\n        let rec loop (n: int) = if n = 0 then 0 else loop (n - 1)\n        let s1 = x1 + a + b\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        let s4 = s3 + 4\n        return s4 + loop c\n    }"
+        + fsharp
+            """
+
+                    let rec loop (n: int) = if n = 0 then 0 else loop (n - 1)
+                    let s1 = x1 + a + b
+                    let s2 = s1 + 2
+                    let s3 = s2 + 3
+                    let s4 = s3 + 4
+                    return s4 + loop c
+                }
+            """
 
     let kinds = adviceInAsyncOn source |> List.map (fun s -> s.Kind)
 
@@ -899,7 +1461,20 @@ let ``a use inside the branch blocks the hoist`` () =
     // and "sync" after it, compiling clean either way - nothing would have
     // caught this at build time
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n\n        match c with\n        | 1 ->\n            use ms = new System.IO.MemoryStream()\n            return int ms.Length + x\n        | _ -> return x\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+
+                    match c with
+                    | 1 ->
+                        use ms = new System.IO.MemoryStream()
+                        return int ms.Length + x
+                    | _ -> return x
+                }
+            """
 
     Assert.Empty(
         adviceIn source
@@ -912,7 +1487,19 @@ let ``a use inside the branch blocks the hoist`` () =
 [<Fact>]
 let ``a use ahead of the branch still hoists - it stays CE code`` () =
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        use ms = new System.IO.MemoryStream()\n\n        match c with\n        | 1 -> return int ms.Length + x\n        | _ -> return x\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    use ms = new System.IO.MemoryStream()
+
+                    match c with
+                    | 1 -> return int ms.Length + x
+                    | _ -> return x
+                }
+            """
 
     let hoists =
         adviceIn source
@@ -931,9 +1518,26 @@ let ``a tail closing on a bare return extracts as a plain closure`` () =
     // fell through to the task-returning variant and bought a second state
     // machine for a tail that awaits nothing
     let source =
-        "module Test\nlet f () =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
-        + "\n        let s1 = x1 + 1\n        let s2 = s1 + 2\n        let s3 = s2 + 3\n        let s4 = s3 + 4\n        return\n            s4,\n            s3\n    }"
+        + fsharp
+            """
+
+                    let s1 = x1 + 1
+                    let s2 = s1 + 2
+                    let s3 = s2 + 3
+                    let s4 = s3 + 4
+                    return
+                        s4,
+                        s3
+                }
+            """
 
     let edits =
         adviceIn source
@@ -955,7 +1559,13 @@ let ``the tail extraction is a quickfix or nothing, never a note`` () =
     // below the bar the rule says nothing at all; above it, it fixes. The
     // compiler settles which bar applies: FS3511 names the task or it does not
     let source =
-        "module Test\nlet f () =\n    task {\n"
+        fsharp
+            """
+            module Test
+            let f () =
+                task {
+
+            """
         + (awaits 8).Replace("    let!", "        let!")
         + "\n"
         + ([ for i in 1..12 -> $"        let s%d{i} = x1 + %d{i}" ] |> String.concat "\n")
@@ -993,7 +1603,17 @@ let ``a two-line member header keeps its leading lets inside the builder`` () =
     // hoisted to the builder's column are offside of the name line - the
     // sweep rolled them back - so the advice carries no edit here
     let source =
-        "module Test\ntype Tests() =\n    [<Xunit.Fact>] member test.\n     ``a test`` ()=\n        task {\n            let a = 1\n            let b = a * 2\n"
+        fsharp
+            """
+            module Test
+            type Tests() =
+                [<Xunit.Fact>] member test.
+                 ``a test`` ()=
+                    task {
+                        let a = 1
+                        let b = a * 2
+
+            """
         + (awaits 8).Replace("    let!", "            let!")
         + "\n            return a + b + x1\n        }"
 

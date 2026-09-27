@@ -20,43 +20,122 @@ let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 
 [<Fact>]
 let ``never-assigned mutable int is flagged`` () =
-    assertSingleSuggestion "let f () =\n    let mutable x = 0\n    x + 1" "let f () =\n    let x = 0\n    x + 1"
+    assertSingleSuggestion
+        (fsharp
+            """
+            let f () =
+                let mutable x = 0
+                x + 1
+            """)
+        (fsharp
+            """
+            let f () =
+                let x = 0
+                x + 1
+            """)
 
 [<Fact>]
 let ``never-assigned mutable string is flagged`` () =
     assertSingleSuggestion
-        "let f (s: string) =\n    let mutable name = s\n    name.Length"
-        "let f (s: string) =\n    let name = s\n    name.Length"
+        (fsharp
+            """
+            let f (s: string) =
+                let mutable name = s
+                name.Length
+            """)
+        (fsharp
+            """
+            let f (s: string) =
+                let name = s
+                name.Length
+            """)
 
 [<Fact>]
 let ``whitelisted struct is flagged`` () =
     assertSingleSuggestion
-        "let f () =\n    let mutable g = System.Guid.NewGuid()\n    g.ToString()"
-        "let f () =\n    let g = System.Guid.NewGuid()\n    g.ToString()"
+        (fsharp
+            """
+            let f () =
+                let mutable g = System.Guid.NewGuid()
+                g.ToString()
+            """)
+        (fsharp
+            """
+            let f () =
+                let g = System.Guid.NewGuid()
+                g.ToString()
+            """)
 
 [<Fact>]
 let ``assigned binding is not flagged`` () =
-    assertNoSuggestion "let f () =\n    let mutable x = 0\n    x <- 1\n    x"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f () =
+                let mutable x = 0
+                x <- 1
+                x
+            """
+    )
 
 [<Fact>]
 let ``assignment inside a closure is not flagged`` () =
-    assertNoSuggestion "let f () =\n    let mutable x = 0\n    let bump () = x <- x + 1\n    bump ()\n    x"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f () =
+                let mutable x = 0
+                let bump () = x <- x + 1
+                bump ()
+                x
+            """
+    )
 
 [<Fact>]
 let ``address-of use is not flagged`` () =
-    assertNoSuggestion
-        "let f () =\n    let mutable x = 0\n    System.Threading.Interlocked.Increment(&x) |> ignore\n    x"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f () =
+                let mutable x = 0
+                System.Threading.Interlocked.Increment(&x) |> ignore
+                x
+            """
+    )
 
 [<Fact>]
 let ``property assignment through the binding is not flagged`` () =
-    assertNoSuggestion
-        "type C() = member val P = 0 with get, set\nlet f () =\n    let mutable c = C()\n    c.P <- 1\n    c"
+    assertNoSuggestion (
+        fsharp
+            """
+            type C() = member val P = 0 with get, set
+            let f () =
+                let mutable c = C()
+                c.P <- 1
+                c
+            """
+    )
 
 [<Fact>]
 let ``non-whitelisted struct is not flagged`` () =
     // removing mutable would introduce defensive copies for member calls
-    assertNoSuggestion "[<Struct>] type S = { A: int }\nlet f () =\n    let mutable s = { A = 1 }\n    s.A"
+    assertNoSuggestion (
+        fsharp
+            """
+            [<Struct>] type S = { A: int }
+            let f () =
+                let mutable s = { A = 1 }
+                s.A
+            """
+    )
 
 [<Fact>]
 let ``module-level mutable is not flagged`` () =
-    assertNoSuggestion "module M\nlet mutable counter = 0\nlet read () = counter"
+    assertNoSuggestion (
+        fsharp
+            """
+            module M
+            let mutable counter = 0
+            let read () = counter
+            """
+    )

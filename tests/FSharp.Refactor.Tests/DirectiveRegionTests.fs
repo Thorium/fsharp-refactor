@@ -20,28 +20,57 @@ let private withFile (source: string) (test: string -> unit) =
 
 [<Fact>]
 let ``a DEBUG region is read with its lines and its name`` () =
-    withFile "module M\n#if DEBUG\nlet f x = x\n#else\nlet f x = x + 1\n#endif\nlet g = f 1" (fun path ->
-        match Text.directiveRegionsOf path with
-        | Some [ r ] ->
-            Assert.Equal(2, r.StartLine)
-            Assert.Equal(6, r.EndLine)
-            Assert.Equal<string list>([ "DEBUG" ], r.Names)
-        | other -> failwithf "Expected one region, got %A" other
+    withFile
+        (fsharp
+            """
+            module M
+            #if DEBUG
+            let f x = x
+            #else
+            let f x = x + 1
+            #endif
+            let g = f 1
+            """)
+        (fun path ->
+            match Text.directiveRegionsOf path with
+            | Some [ r ] ->
+                Assert.Equal(2, r.StartLine)
+                Assert.Equal(6, r.EndLine)
+                Assert.Equal<string list>([ "DEBUG" ], r.Names)
+            | other -> failwithf "Expected one region, got %A" other
 
-        Assert.True(Text.hasConfigurationConditional path))
+            Assert.True(Text.hasConfigurationConditional path))
 
 [<Fact>]
 let ``a condition names everything it tests`` () =
-    withFile "module M\n#if !DEBUG && NET8_0 || TRACE\nlet f x = x\n#endif" (fun path ->
-        match Text.directiveRegionsOf path with
-        | Some [ r ] -> Assert.Equal<string list>([ "DEBUG"; "NET8_0"; "TRACE" ], r.Names)
-        | other -> failwithf "Expected one region, got %A" other)
+    withFile
+        (fsharp
+            """
+            module M
+            #if !DEBUG && NET8_0 || TRACE
+            let f x = x
+            #endif
+            """)
+        (fun path ->
+            match Text.directiveRegionsOf path with
+            | Some [ r ] -> Assert.Equal<string list>([ "DEBUG"; "NET8_0"; "TRACE" ], r.Names)
+            | other -> failwithf "Expected one region, got %A" other)
 
 [<Fact>]
 let ``a framework region is no configuration conditional`` () =
-    withFile "module M\n#if NET8_0\nlet f x = x\n#else\nlet f x = x + 1\n#endif" (fun path ->
-        Assert.False(Text.hasConfigurationConditional path)
-        Assert.False(Text.namedInDirectiveRegion [ path ] "f"))
+    withFile
+        (fsharp
+            """
+            module M
+            #if NET8_0
+            let f x = x
+            #else
+            let f x = x + 1
+            #endif
+            """)
+        (fun path ->
+            Assert.False(Text.hasConfigurationConditional path)
+            Assert.False(Text.namedInDirectiveRegion [ path ] "f"))
 
 [<Fact>]
 let ``a directive quoted in a comment or a string is text`` () =
@@ -52,23 +81,43 @@ let ``a directive quoted in a comment or a string is text`` () =
 
 [<Fact>]
 let ``nested regions each get their own entry`` () =
-    withFile "module M\n#if NET8_0\n#if DEBUG\nlet f x = x\n#endif\n#endif" (fun path ->
-        match Text.directiveRegionsOf path with
-        | Some [ inner; outer ] ->
-            Assert.Equal((3, 5), (inner.StartLine, inner.EndLine))
-            Assert.Equal((2, 6), (outer.StartLine, outer.EndLine))
-        | other -> failwithf "Expected two regions, got %A" other
+    withFile
+        (fsharp
+            """
+            module M
+            #if NET8_0
+            #if DEBUG
+            let f x = x
+            #endif
+            #endif
+            """)
+        (fun path ->
+            match Text.directiveRegionsOf path with
+            | Some [ inner; outer ] ->
+                Assert.Equal((3, 5), (inner.StartLine, inner.EndLine))
+                Assert.Equal((2, 6), (outer.StartLine, outer.EndLine))
+            | other -> failwithf "Expected two regions, got %A" other
 
-        Assert.True(Text.namedInDirectiveRegion [ path ] "f"))
+            Assert.True(Text.namedInDirectiveRegion [ path ] "f"))
 
 [<Fact>]
 let ``a name inside a configuration region is found, one outside is not`` () =
-    withFile "module M\nlet g = 1\n#if DEBUG\nlet h = g + f 1\n#endif\nlet k = f 2" (fun path ->
-        Assert.True(Text.namedInDirectiveRegion [ path ] "f")
-        Assert.True(Text.namedInDirectiveRegion [ path ] "g")
-        Assert.False(Text.namedInDirectiveRegion [ path ] "k")
-        // a word, not a substring
-        Assert.False(Text.namedInDirectiveRegion [ path ] "ff"))
+    withFile
+        (fsharp
+            """
+            module M
+            let g = 1
+            #if DEBUG
+            let h = g + f 1
+            #endif
+            let k = f 2
+            """)
+        (fun path ->
+            Assert.True(Text.namedInDirectiveRegion [ path ] "f")
+            Assert.True(Text.namedInDirectiveRegion [ path ] "g")
+            Assert.False(Text.namedInDirectiveRegion [ path ] "k")
+            // a word, not a substring
+            Assert.False(Text.namedInDirectiveRegion [ path ] "ff"))
 
 [<Fact>]
 let ``an unreadable file is taken to branch`` () =
@@ -81,8 +130,25 @@ let ``an unreadable file is taken to branch`` () =
 
 [<Fact>]
 let ``a rewritten file is read again`` () =
-    withFile "module M\nlet f x = x" (fun path ->
-        Assert.False(Text.hasConfigurationConditional path)
-        File.WriteAllText(path, "module M\n#if DEBUG\nlet f x = x\n#endif")
-        File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds 5.0)
-        Assert.True(Text.hasConfigurationConditional path))
+    withFile
+        (fsharp
+            """
+            module M
+            let f x = x
+            """)
+        (fun path ->
+            Assert.False(Text.hasConfigurationConditional path)
+
+            File.WriteAllText(
+                path,
+                fsharp
+                    """
+                    module M
+                    #if DEBUG
+                    let f x = x
+                    #endif
+                    """
+            )
+
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds 5.0)
+            Assert.True(Text.hasConfigurationConditional path))

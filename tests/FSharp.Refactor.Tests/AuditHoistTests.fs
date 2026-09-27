@@ -52,24 +52,66 @@ let ``FR0029: a record payload continuing below its return keeps its field align
     // stripping `return ` pulled the first payload line 7 columns left while
     // its continuation stayed put: `Y = 2` then read as an argument of `x`
     let source =
-        "module Test\ntype R = { X: int; Y: int }\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 ->\n            return { X = x\n                     Y = 2 }\n        | _ -> return { X = 0; Y = 0 }\n    }"
+        fsharp
+            """
+            module Test
+            type R = { X: int; Y: int }
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    match c with
+                    | 1 ->
+                        return { X = x
+                                 Y = 2 }
+                    | _ -> return { X = 0; Y = 0 }
+                }
+            """
 
     let edits = hoistEditsIn source
     Assert.NotEmpty edits
     let patched = applyEdits source edits
     // `{` now sits where `return` was, and `Y` moved with `X`
-    Assert.Contains("                { X = x\n                  Y = 2 }", patched)
+    Assert.Contains(
+        fsharp
+            """
+                            { X = x
+                              Y = 2 }
+            """,
+        patched
+    )
+
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
 let ``FR0029: a list payload continuing below its return keeps its element alignment`` () =
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 ->\n            return [ x\n                     2 ]\n        | _ -> return []\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    match c with
+                    | 1 ->
+                        return [ x
+                                 2 ]
+                    | _ -> return []
+                }
+            """
 
     let edits = hoistEditsIn source
     Assert.NotEmpty edits
     let patched = applyEdits source edits
-    Assert.Contains("                [ x\n                  2 ]", patched)
+
+    Assert.Contains(
+        fsharp
+            """
+                            [ x
+                              2 ]
+            """,
+        patched
+    )
+
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
@@ -77,7 +119,19 @@ let ``FR0029: a continuation line with less indentation than the strip removes w
     // a continuation the parser lets undent (a lambda body) would land left
     // of the arm once the payload moves: nothing is emitted rather than a skew
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 ->\n            return [ 1 ] |> List.map (fun v ->\n                v + x)\n        | _ -> return []\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    match c with
+                    | 1 ->
+                        return [ 1 ] |> List.map (fun v ->
+                            v + x)
+                    | _ -> return []
+                }
+            """
 
     Assert.True(typechecksCleanly source, "the fixture itself must compile")
     Assert.Empty(hoistEditsIn source)
@@ -85,12 +139,33 @@ let ``FR0029: a continuation line with less indentation than the strip removes w
 [<Fact>]
 let ``FR0029: a single-line record payload still hoists`` () =
     let source =
-        "module Test\ntype R = { X: int; Y: int }\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 -> return { X = x; Y = 2 }\n        | _ -> return { X = 0; Y = 0 }\n    }"
+        fsharp
+            """
+            module Test
+            type R = { X: int; Y: int }
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    match c with
+                    | 1 -> return { X = x; Y = 2 }
+                    | _ -> return { X = 0; Y = 0 }
+                }
+            """
 
     let edits = hoistEditsIn source
     Assert.NotEmpty edits
     let patched = applyEdits source edits
-    Assert.Contains("return\n            match c with\n            | 1 -> { X = x; Y = 2 }", patched)
+
+    Assert.Contains(
+        fsharp
+            """
+            return
+                        match c with
+                        | 1 -> { X = x; Y = 2 }
+            """,
+        patched
+    )
+
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 // ---- B1: FR0029 return hoist over a string literal spanning lines ----
@@ -108,7 +183,20 @@ let ``FR0029: a triple-quoted string spanning lines inside the branch withholds 
 [<Fact>]
 let ``FR0029: a plain string spanning lines inside the branch withholds the hoist`` () =
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 ->\n            let s = \"first\nsecond\"\n            return s + string x\n        | _ -> return \"x\"\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    match c with
+                    | 1 ->
+                        let s = "first
+            second"
+                        return s + string x
+                    | _ -> return "x"
+                }
+            """
 
     Assert.True(typechecksCleanly source, "the fixture itself must compile")
     Assert.Empty(hoistEditsIn source)
@@ -116,7 +204,17 @@ let ``FR0029: a plain string spanning lines inside the branch withholds the hois
 [<Fact>]
 let ``FR0029: a single-line string in the branch still hoists`` () =
     let source =
-        "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 -> return \"one\"\n        | _ -> return string x\n    }"
+        fsharp
+            """
+            module Test
+            let f (c: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+                    match c with
+                    | 1 -> return "one"
+                    | _ -> return string x
+                }
+            """
 
     let edits = hoistEditsIn source
     Assert.NotEmpty edits
@@ -129,7 +227,22 @@ let ``FR0029: a single-line string in the branch still hoists`` () =
 let ``FR0047: a Dispose that only cancels the field disposes it after the cancel`` () =
     // `cts.Dispose(); cts.Cancel()` compiles and throws ObjectDisposedException
     let source =
-        "module Test\nopen System\nopen System.Threading\ntype Service =\n    interface\n        inherit IDisposable\n        abstract Run: unit -> unit\n    end\ntype Impl() =\n    let cts = new CancellationTokenSource()\n    interface Service with\n        member _.Dispose() = cts.Cancel()\n        member _.Run() = ()"
+        fsharp
+            """
+            module Test
+            open System
+            open System.Threading
+            type Service =
+                interface
+                    inherit IDisposable
+                    abstract Run: unit -> unit
+                end
+            type Impl() =
+                let cts = new CancellationTokenSource()
+                interface Service with
+                    member _.Dispose() = cts.Cancel()
+                    member _.Run() = ()
+            """
 
     let _, _, undisposed = designIn source
 
@@ -138,14 +251,32 @@ let ``FR0047: a Dispose that only cancels the field disposes it after the cancel
         Assert.True s.MentionedOnly
         let r, _, replacement = s.Fix.Value
         let patched = applyEdit source r replacement
-        Assert.Contains("member _.Dispose() = cts.Cancel()\n                             cts.Dispose()", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                member _.Dispose() = cts.Cancel()
+                                             cts.Dispose()
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected the cancel-without-dispose note, got %A" other
 
 [<Fact>]
 let ``FR0047: a mentioning Dispose whose last line carries a comment offers no fix`` () =
     let source =
-        "module Test\nopen System\nopen System.Threading\ntype Impl() =\n    let cts = new CancellationTokenSource()\n    interface IDisposable with\n        member _.Dispose() = cts.Cancel() // stop the work first"
+        fsharp
+            """
+            module Test
+            open System
+            open System.Threading
+            type Impl() =
+                let cts = new CancellationTokenSource()
+                interface IDisposable with
+                    member _.Dispose() = cts.Cancel() // stop the work first
+            """
 
     let _, _, undisposed = designIn source
 
@@ -158,7 +289,17 @@ let ``FR0047: a mentioning Dispose whose last line carries a comment offers no f
 [<Fact>]
 let ``FR0047: a mentioning Dispose closing on a branch offers no fix`` () =
     let source =
-        "module Test\nopen System\nopen System.Threading\ntype Impl() =\n    let cts = new CancellationTokenSource()\n    interface IDisposable with\n        member _.Dispose() =\n            if cts.IsCancellationRequested then () else cts.Cancel()"
+        fsharp
+            """
+            module Test
+            open System
+            open System.Threading
+            type Impl() =
+                let cts = new CancellationTokenSource()
+                interface IDisposable with
+                    member _.Dispose() =
+                        if cts.IsCancellationRequested then () else cts.Cancel()
+            """
 
     let _, _, undisposed = designIn source
 
@@ -173,7 +314,17 @@ let ``FR0047: an untouched field is still disposed first in Dispose`` () =
     // independent of what the body disposes (a reader over the stream would
     // put the stream last: ObjectDesignTests)
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let log = new FileStream(path + \".log\", FileMode.Open)\n    interface System.IDisposable with\n        member _.Dispose() =\n            log.Dispose()"
+        fsharp
+            """
+            module Test
+            open System.IO
+            type Holder(path: string) =
+                let stream = new FileStream(path, FileMode.Open)
+                let log = new FileStream(path + ".log", FileMode.Open)
+                interface System.IDisposable with
+                    member _.Dispose() =
+                        log.Dispose()
+            """
 
     let _, _, undisposed = designIn source
 
@@ -182,7 +333,16 @@ let ``FR0047: an untouched field is still disposed first in Dispose`` () =
         Assert.False s.MentionedOnly
         let r, _, replacement = s.Fix.Value
         let patched = applyEdit source r replacement
-        Assert.Contains("stream.Dispose()\n            log.Dispose()", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                stream.Dispose()
+                            log.Dispose()
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
@@ -196,10 +356,46 @@ let ``reindentBlock refuses a block whose continuation is inside a triple-quoted
 
 [<Fact>]
 let ``reindentBlock refuses plain and verbatim strings spanning lines and block comments`` () =
-    Assert.True((Text.reindentBlock 8 4 "let s = \"a\nb\"\n    printfn \"%s\" s").IsNone)
-    Assert.True((Text.reindentBlock 8 4 "let s = @\"a\nb\"\n    printfn \"%s\" s").IsNone)
+    Assert.True(
+        (Text.reindentBlock
+            8
+            4
+            (fsharp
+                """
+                let s = "a
+                b"
+                    printfn "%s" s
+                """))
+            .IsNone
+    )
+
+    Assert.True(
+        (Text.reindentBlock
+            8
+            4
+            (fsharp
+                """
+                let s = @"a
+                b"
+                    printfn "%s" s
+                """))
+            .IsNone
+    )
+
     Assert.True((Text.reindentBlock 8 4 "let s = $\"\"\"a\nb\"\"\"\n    printfn \"%s\" s").IsNone)
-    Assert.True((Text.reindentBlock 8 4 "(* a\n   b *)\n    printfn \"x\"").IsNone)
+
+    Assert.True(
+        (Text.reindentBlock
+            8
+            4
+            (fsharp
+                """
+                (* a
+                   b *)
+                    printfn "x"
+                """))
+            .IsNone
+    )
 
 [<Fact>]
 let ``reindentBlock still moves a block of single-line literals, chars and line comments`` () =
@@ -215,7 +411,20 @@ let ``reindentBlock still moves a block of single-line literals, chars and line 
 let ``FR0149: a handler that reraises offers no move`` () =
     // inside the computation the handler is a closure: FS0413
     let source =
-        "let work () = async { return 1 }\nlet run () =\n    try\n        async {\n            let! _ = work ()\n            ()\n        }\n        |> Async.Start\n    with e ->\n        printfn \"%s\" e.Message\n        reraise ()"
+        fsharp
+            """
+            let work () = async { return 1 }
+            let run () =
+                try
+                    async {
+                        let! _ = work ()
+                        ()
+                    }
+                    |> Async.Start
+                with e ->
+                    printfn "%s" e.Message
+                    reraise ()
+            """
 
     match unhandledStartsIn source with
     | [ s ] ->
@@ -226,16 +435,53 @@ let ``FR0149: a handler that reraises offers no move`` () =
 [<Fact>]
 let ``FR0149: a comment outside the moved body and handler offers no move`` () =
     let withComment (line: string) =
-        "let work () = async { return 1 }\nlet run () =\n    try\n        async {\n"
-        + line
-        + "            let! _ = work ()\n            ()\n        }\n        |> Async.Start\n    with e ->\n        printfn \"%s\" e.Message"
+        fsharp
+            """
+            let work () = async { return 1 }
+            let run () =
+                try
+                    async {
 
-    match unhandledStartsIn (withComment "            // fire and forget\n") with
+            """
+        + line
+        + fsharp
+            """
+                        let! _ = work ()
+                        ()
+                    }
+                    |> Async.Start
+                with e ->
+                    printfn "%s" e.Message
+            """
+
+    match
+        unhandledStartsIn (
+            withComment (
+                fsharp
+                    """
+                                // fire and forget
+
+                    """
+            )
+        )
+    with
     | [ s ] -> Assert.True(s.TryFix.IsNone, "the comment beside `async {` would be dropped")
     | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
 
     let afterBrace =
-        "let work () = async { return 1 }\nlet run () =\n    try\n        async {\n            let! _ = work ()\n            ()\n        } // detached\n        |> Async.Start\n    with e ->\n        printfn \"%s\" e.Message"
+        fsharp
+            """
+            let work () = async { return 1 }
+            let run () =
+                try
+                    async {
+                        let! _ = work ()
+                        ()
+                    } // detached
+                    |> Async.Start
+                with e ->
+                    printfn "%s" e.Message
+            """
 
     match unhandledStartsIn afterBrace with
     | [ s ] -> Assert.True(s.TryFix.IsNone, "the comment after `}` would be dropped")
@@ -253,17 +499,44 @@ let ``FR0149: a body holding a string spanning lines offers no move`` () =
 [<Fact>]
 let ``FR0149: a printfn handler with a comment inside the body still moves`` () =
     let source =
-        "let work () = async { return 1 }\nlet run () =\n    try\n        async {\n            let! _ = work ()\n            // done\n            ()\n        }\n        |> Async.Start\n    with e ->\n        printfn \"%s\" e.Message"
+        fsharp
+            """
+            let work () = async { return 1 }
+            let run () =
+                try
+                    async {
+                        let! _ = work ()
+                        // done
+                        ()
+                    }
+                    |> Async.Start
+                with e ->
+                    printfn "%s" e.Message
+            """
 
     match unhandledStartsIn source with
     | [ s ] ->
         match s.TryFix with
         | Some(r, _, replacement) ->
             let patched = applyEdit source r replacement
-            Assert.Contains("            // done\n", patched)
 
             Assert.Contains(
-                "        with e ->\n            printfn \"%s\" e.Message\n    }\n    |> Async.Start",
+                fsharp
+                    """
+                                // done
+
+                    """,
+                patched
+            )
+
+            Assert.Contains(
+                fsharp
+                    """
+                            with e ->
+                                printfn "%s" e.Message
+                        }
+                        |> Async.Start
+                    """,
                 patched
             )
 

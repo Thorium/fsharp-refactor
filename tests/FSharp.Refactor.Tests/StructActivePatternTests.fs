@@ -41,59 +41,162 @@ let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 let ``a body split by a directive is left alone`` () =
     // Thoth.Json.Core.Auto: only the active branch would turn ValueSome,
     // and the Fable-define build failed under the new attribute
-    assertNoSuggestion
-        "module Test\nlet private (|Even|_|) (n: int) =\n#if FABLE_COMPILER\n    if n % 2 = 0 then Some n else None\n#else\n    if n % 2 = 0 then Some n else None\n#endif"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let private (|Even|_|) (n: int) =
+            #if FABLE_COMPILER
+                if n % 2 = 0 then Some n else None
+            #else
+                if n % 2 = 0 then Some n else None
+            #endif
+            """
+    )
 
 [<Fact>]
 let ``if-based partial active pattern becomes struct-returning`` () =
     assertSingleSuggestion
-        "let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
-        "[<return: Struct>]\nlet private (|Even|_|) (n: int) = if n % 2 = 0 then ValueSome n else ValueNone\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+        (fsharp
+            """
+            let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """)
+        (fsharp
+            """
+            [<return: Struct>]
+            let private (|Even|_|) (n: int) = if n % 2 = 0 then ValueSome n else ValueNone
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """)
 
 [<Fact>]
 let ``match-based partial active pattern becomes struct-returning`` () =
     assertSingleSuggestion
-        "let private (|Positive|_|) (n: int) =\n    match n with\n    | n when n > 0 -> Some n\n    | _ -> None\nlet f x =\n    match x with\n    | Positive v -> v\n    | _ -> 0"
-        "[<return: Struct>]\nlet private (|Positive|_|) (n: int) =\n    match n with\n    | n when n > 0 -> ValueSome n\n    | _ -> ValueNone\nlet f x =\n    match x with\n    | Positive v -> v\n    | _ -> 0"
+        (fsharp
+            """
+            let private (|Positive|_|) (n: int) =
+                match n with
+                | n when n > 0 -> Some n
+                | _ -> None
+            let f x =
+                match x with
+                | Positive v -> v
+                | _ -> 0
+            """)
+        (fsharp
+            """
+            [<return: Struct>]
+            let private (|Positive|_|) (n: int) =
+                match n with
+                | n when n > 0 -> ValueSome n
+                | _ -> ValueNone
+            let f x =
+                match x with
+                | Positive v -> v
+                | _ -> 0
+            """)
 
 [<Fact>]
 let ``a public active pattern is left alone`` () =
     // the representation change is invisible to match sites but not to
     // explicit or first-class uses, which outside this assembly we cannot see
-    assertNoSuggestion
-        "let (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            let (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``a public active pattern is offered under api changes`` () =
     let source =
-        "let (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+        fsharp
+            """
+            let (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
 
     assertPatched
         (findWithApiChangesIn source)
         source
-        "[<return: Struct>]\nlet (|Even|_|) (n: int) = if n % 2 = 0 then ValueSome n else ValueNone\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+        (fsharp
+            """
+            [<return: Struct>]
+            let (|Even|_|) (n: int) = if n % 2 = 0 then ValueSome n else ValueNone
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """)
 
 [<Fact>]
 let ``pattern with existing attribute is not touched`` () =
-    assertNoSuggestion
-        "[<return: Struct>]\nlet private (|Even|_|) (n: int) = if n % 2 = 0 then ValueSome n else ValueNone\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            [<return: Struct>]
+            let private (|Even|_|) (n: int) = if n % 2 = 0 then ValueSome n else ValueNone
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``pattern with return annotation is not touched`` () =
     // the `option` annotation would need to become `voption`
-    assertNoSuggestion
-        "let private (|Even|_|) (n: int) : int option = if n % 2 = 0 then Some n else None\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private (|Even|_|) (n: int) : int option = if n % 2 = 0 then Some n else None
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``pattern delegating to a helper is not touched`` () =
     // the helper returns an option; the result shape is not literal Some/None
-    assertNoSuggestion
-        "let private check (n: int) = if n % 2 = 0 then Some n else None\nlet private (|Even|_|) (n: int) = check n\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private check (n: int) = if n % 2 = 0 then Some n else None
+            let private (|Even|_|) (n: int) = check n
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``total active pattern is not touched`` () =
-    assertNoSuggestion
-        "let private (|Odd|Even|) (n: int) = if n % 2 = 1 then Odd else Even\nlet f x =\n    match x with\n    | Odd -> 1\n    | Even -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private (|Odd|Even|) (n: int) = if n % 2 = 1 then Odd else Even
+            let f x =
+                match x with
+                | Odd -> 1
+                | Even -> 0
+            """
+    )
 
 [<Fact>]
 let ``ordinary function returning option is not touched`` () =

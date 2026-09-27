@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="TestSource.fs" />
     <Compile Include="Parsing.fs" />
     <Compile Include="ConfigurationTests.fs" />
     <Compile Include="RuleCatalogTests.fs" />

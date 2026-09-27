@@ -9,8 +9,19 @@ open FSharp.Refactor.Tests.Parsing
 let private header =
     "open System\nopen System.Linq\n"
     + "type State = Open = 0 | Closed = 1\n"
-    + "[<CLIMutable>]\ntype Order = { Id: int; State: State; Active: bool; Total: decimal; Name: string; Parent: Nullable<int> }\n"
-    + "type Row() =\n    member val Id = 0 with get, set\n    member this.Twice = this.Id * 2\n"
+    + fsharp
+        """
+        [<CLIMutable>]
+        type Order = { Id: int; State: State; Active: bool; Total: decimal; Name: string; Parent: Nullable<int> }
+
+        """
+    + fsharp
+        """
+        type Row() =
+            member val Id = 0 with get, set
+            member this.Twice = this.Id * 2
+
+        """
     + "let orders: IQueryable<Order> = Array.empty<Order>.AsQueryable()\n"
     + "let rows: IQueryable<Row> = Array.empty<Row>.AsQueryable()\n"
     + "let limit = 3\n"
@@ -69,8 +80,19 @@ let ``under the pipelines knob the pipeline copy moves after filter and map`` ()
 let ``a pipeline across lines keeps the copy on its own line`` () =
     assertRewritesWith
         true
-        "let r =\n    orders\n    |> Array.ofSeq\n    |> Array.filter (fun o -> o.Name <> null)"
-        "let r =\n    orders.Where(fun o -> o.Name <> null)\n    |> Array.ofSeq"
+        (fsharp
+            """
+            let r =
+                orders
+                |> Array.ofSeq
+                |> Array.filter (fun o -> o.Name <> null)
+            """)
+        (fsharp
+            """
+            let r =
+                orders.Where(fun o -> o.Name <> null)
+                |> Array.ofSeq
+            """)
         QueryCopy.Exact
 
 [<Fact>]
@@ -104,7 +126,7 @@ let ``a navigation column is no value: null without Include in memory, a join in
         header.Replace("Parent: Nullable<int> }", "Parent: Nullable<int>; Previous: Order }")
 
     let tree, source, check =
-        parseAndCheck (header + "let r = orders.ToList().Where(fun o -> o.Previous = null)")
+        parseAndCheck (header + "let r = orders.ToList().Where(fun o -> isNull (box o.Previous))")
 
     Assert.Empty(QueryCopy.find false tree source check)
 
@@ -116,8 +138,8 @@ let ``a navigation column is no value: null without Include in memory, a join in
 [<Fact>]
 let ``a string, decimal or nullable comparison is Near`` () =
     assertRewrites
-        "let r = orders.ToList().Where(fun o -> o.Name = \"a\")"
-        "orders.Where(fun o -> o.Name = \"a\").ToList()"
+        """let r = orders.ToList().Where(fun o -> o.Name = "a")"""
+        """orders.Where(fun o -> o.Name = "a").ToList()"""
         QueryCopy.Near
 
     assertRewrites
@@ -159,7 +181,11 @@ let ``a nullable parent id compared with a known id is exact, but not under a no
 
     // a Nullable value may itself be null: SQL `= NULL` is never true
     assertRewrites
-        "let none = Nullable<int>()\nlet r = orders.ToList().Where(fun o -> o.Parent = none)"
+        (fsharp
+            """
+            let none = Nullable<int>()
+            let r = orders.ToList().Where(fun o -> o.Parent = none)
+            """)
         "orders.Where(fun o -> o.Parent = none).ToList()"
         QueryCopy.Near
 
@@ -179,11 +205,21 @@ let ``a stage a provider might not translate stays in memory`` () =
     // a computed property, a call, arithmetic, a list that is no query,
     // a tuple projection, a filter reading a mutable
     Assert.Empty(found "let r = rows.ToList().Where(fun x -> x.Twice > 0)")
-    Assert.Empty(found "let r = orders.ToList().Where(fun o -> o.Name.StartsWith \"a\")")
+    Assert.Empty(found """let r = orders.ToList().Where(fun o -> o.Name.StartsWith "a")""")
     Assert.Empty(found "let r = orders.ToList().Where(fun o -> o.Id % 2 = 0)")
     Assert.Empty(found "let r (xs: ResizeArray<Order>) = xs.ToList().Where(fun o -> o.Id > 0)")
     Assert.Empty(found "let r = orders.ToList().Select(fun o -> (o.Id, o.Name))")
-    Assert.Empty(found "let mutable floor = 0\nlet r = orders.ToList().Where(fun o -> o.Id > floor)")
+
+    Assert.Empty(
+        found (
+            fsharp
+                """
+                let mutable floor = 0
+                let r = orders.ToList().Where(fun o -> o.Id > floor)
+                """
+        )
+    )
+
     Assert.Empty(foundWith true "let r = orders |> Seq.toList |> List.filter (fun o -> o.Id > 0 && o.Name.Length > 2)")
 
 [<Fact>]

@@ -42,20 +42,36 @@ let private writeSolution (root: string) (withCSharpConsumer: bool) =
 
     write
         "src/Lib/Library.fs"
-        "module Lib\n\nlet add (a: int, b: int) = a + b\n\nlet internal twice (x: int) = add (x, x)\n"
+        (fsharp
+            """
+            module Lib
+
+            let add (a: int, b: int) = a + b
+
+            let internal twice (x: int) = add (x, x)
+
+            """)
 
     write
         "tests/Tests/Tests.fsproj"
         $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Tests.fs\" />\n  </ItemGroup>\n  <ItemGroup>\n    <ProjectReference Include=\"../../src/Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
 
-    write "tests/Tests/Tests.fs" "module Tests\n\nlet three () = Lib.add (1, 2)\n"
+    write
+        "tests/Tests/Tests.fs"
+        (fsharp
+            """
+            module Tests
+
+            let three () = Lib.add (1, 2)
+
+            """)
 
     let projects =
         [
-            "Lib", "src\\Lib\\Lib.fsproj"
-            "Tests", "tests\\Tests\\Tests.fsproj"
+            "Lib", """src\Lib\Lib.fsproj"""
+            "Tests", """tests\Tests\Tests.fsproj"""
             if withCSharpConsumer then
-                "Consumer", "src\\Consumer\\Consumer.csproj"
+                "Consumer", """src\Consumer\Consumer.csproj"""
         ]
 
     if withCSharpConsumer then
@@ -157,7 +173,15 @@ let ``a test project's own public functions reshape without --api-changes; the l
 
         File.WriteAllText(
             Path.Combine(root, "tests", "Tests", "Tests.fs"),
-            "module Tests\n\nlet helper (a: int, b: int) = a + b\n\nlet three () = Lib.add (1, 2) + helper (1, 2)\n"
+            fsharp
+                """
+                module Tests
+
+                let helper (a: int, b: int) = a + b
+
+                let three () = Lib.add (1, 2) + helper (1, 2)
+
+                """
         )
 
         let code, output = runTool [| solution; "--codes"; "FR0090"; "--no-color" |]
@@ -191,7 +215,18 @@ let ``a function called inside an #if region keeps its shape: the other branch's
 
         File.WriteAllText(
             tests,
-            "module Tests\n\nlet three () =\n#if DEBUG\n    Lib.add (1, 2)\n#else\n    Lib.add (2, 1)\n#endif\n"
+            fsharp
+                """
+                module Tests
+
+                let three () =
+                #if DEBUG
+                    Lib.add (1, 2)
+                #else
+                    Lib.add (2, 1)
+                #endif
+
+                """
         )
 
         let _code, output =
@@ -216,7 +251,15 @@ let ``a function a string literal names keeps its shape: a template's calls are 
 
         File.WriteAllText(
             tests,
-            "module Tests\n\nlet three () = Lib.add (1, 2)\n\nlet template (name: string) = $\"let x = Lib.add ({name}, 2)\"\n"
+            fsharp
+                """
+                module Tests
+
+                let three () = Lib.add (1, 2)
+
+                let template (name: string) = $"let x = Lib.add ({name}, 2)"
+
+                """
         )
 
         let code, output =
@@ -238,7 +281,21 @@ let ``a project whose own sources branch on the configuration gets the other con
 
         File.WriteAllText(
             library,
-            "module Lib\n\nlet add (a: int, b: int) = a + b\n\nlet internal three () =\n#if DEBUG\n    add (1, 2)\n#else\n    let flag = if 2 > 1 then true else false\n    if flag then add (2, 1) else 0\n#endif\n"
+            fsharp
+                """
+                module Lib
+
+                let add (a: int, b: int) = a + b
+
+                let internal three () =
+                #if DEBUG
+                    add (1, 2)
+                #else
+                    let flag = if 2 > 1 then true else false
+                    if flag then add (2, 1) else 0
+                #endif
+
+                """
         )
 
         let project = Path.Combine(root, "src", "Lib", "Lib.fsproj")
@@ -268,12 +325,30 @@ let ``a script leaves the #loaded sources of a project to that project`` () : un
 
         File.WriteAllText(
             library,
-            "module Lib\n\n#if INTERACTIVE\nlet interactive = true\n#endif\n\nlet hex (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\")\n"
+            fsharp
+                """
+                module Lib
+
+                #if INTERACTIVE
+                let interactive = true
+                #endif
+
+                let hex (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace("-", "")
+
+                """
         )
 
         File.WriteAllText(
             script,
-            "#load \"Library.fs\"\n\nlet hex2 (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\")\n\nprintfn \"%s %s\" (Lib.hex [| 1uy |]) (hex2 [| 2uy |])\n"
+            fsharp
+                """
+                #load "Library.fs"
+
+                let hex2 (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace("-", "")
+
+                printfn "%s %s" (Lib.hex [| 1uy |]) (hex2 [| 2uy |])
+
+                """
         )
 
         let code, output = runTool [| script; "--codes"; "FR0053"; "--no-color" |]
@@ -509,10 +584,29 @@ let ``a public function matched on strings becomes a union together with the sib
 
         File.WriteAllText(
             library,
-            "module Lib\n\nlet describe (region: string) =\n    match region with\n    | \"eu\" -> 1\n    | \"uk\" -> 2\n    | _ -> failwith \"unsupported\"\n"
+            fsharp
+                """
+                module Lib
+
+                let describe (region: string) =
+                    match region with
+                    | "eu" -> 1
+                    | "uk" -> 2
+                    | _ -> failwith "unsupported"
+
+                """
         )
 
-        File.WriteAllText(tests, "module Tests\n\nlet three () = Lib.describe \"eu\" + Lib.describe \"uk\"\n")
+        File.WriteAllText(
+            tests,
+            fsharp
+                """
+                module Tests
+
+                let three () = Lib.describe "eu" + Lib.describe "uk"
+
+                """
+        )
 
         let code, output =
             runTool [| solution; "--api-changes"; "--codes"; "FR0157"; "--no-color" |]
@@ -538,12 +632,28 @@ let ``a public function matched on strings keeps its shape while a sibling passe
 
         File.WriteAllText(
             library,
-            "module Lib\n\nlet describe (region: string) =\n    match region with\n    | \"eu\" -> 1\n    | \"uk\" -> 2\n    | _ -> failwith \"unsupported\"\n"
+            fsharp
+                """
+                module Lib
+
+                let describe (region: string) =
+                    match region with
+                    | "eu" -> 1
+                    | "uk" -> 2
+                    | _ -> failwith "unsupported"
+
+                """
         )
 
         File.WriteAllText(
             tests,
-            "module Tests\n\nlet three (s: string) = Lib.describe \"eu\" + Lib.describe (s.Trim())\n"
+            fsharp
+                """
+                module Tests
+
+                let three (s: string) = Lib.describe "eu" + Lib.describe (s.Trim())
+
+                """
         )
 
         let code, output =

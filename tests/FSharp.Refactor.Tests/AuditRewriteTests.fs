@@ -33,17 +33,17 @@ let ``FR0147: a use inside a same-named local let keeps its prefix while the oth
     // System` shortened to `Version(...)`, which bound to something else
     // ("This value is not a function and cannot be applied")
     let source =
-        lines
-            [
-                "module Test"
-                "open System"
-                "let a () ="
-                "    let Version = 3"
-                "    let v = System.Version(1, 0, 0, 0)"
-                "    Version + v.Major"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            let a () =
+                let Version = 3
+                let v = System.Version(1, 0, 0, 0)
+                Version + v.Major
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System") with
     | [ s ] ->
@@ -58,14 +58,14 @@ let ``FR0147: a use inside a same-named local let keeps its prefix while the oth
 [<Fact>]
 let ``FR0147: a parameter of the same name keeps the prefix inside its function`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System"
-                "let a (Version: int) = System.Version(1, 0, 0, 0).Major + Version"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            let a (Version: int) = System.Version(1, 0, 0, 0).Major + Version
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System") with
     | [ s ] ->
@@ -78,16 +78,16 @@ let ``FR0147: a parameter of the same name keeps the prefix inside its function`
 [<Fact>]
 let ``FR0147: a class-level let of the name keeps the prefix throughout the type`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System"
-                "type C() ="
-                "    let Version = 3"
-                "    member _.V() = System.Version(1, 0, 0, 0).Major + Version"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            type C() =
+                let Version = 3
+                member _.V() = System.Version(1, 0, 0, 0).Major + Version
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System") with
     | [ s ] ->
@@ -102,26 +102,26 @@ let ``FR0147: a nullary union case brought by another open declines the shorteni
     // Expecto's [<AutoOpen>] Tests module nests CLIArguments, whose bare
     // `Version` case is what `Version(1, 0, 0, 0)` would bind to
     let lib =
-        lines
-            [
-                "namespace Lib"
-                "[<AutoOpen>]"
-                "module Tests ="
-                "    type CLIArguments ="
-                "        | Sequenced"
-                "        | Version"
-            ]
+        fsharp
+            """
+            namespace Lib
+            [<AutoOpen>]
+            module Tests =
+                type CLIArguments =
+                    | Sequenced
+                    | Version
+            """
 
     let user =
-        lines
-            [
-                "module Test"
-                "open System"
-                "open Lib"
-                "let a () = System.Version(1, 0, 0, 0)"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            open Lib
+            let a () = System.Version(1, 0, 0, 0)
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     let tree, sourceText, checkResults = parseAndCheckSecond lib user
     Assert.Empty(systemEdits (QualifiedNames.find 3 2 tree sourceText checkResults))
@@ -129,27 +129,27 @@ let ``FR0147: a nullary union case brought by another open declines the shorteni
 [<Fact>]
 let ``FR0147: the same union under RequireQualifiedAccess cannot capture the name, so the shortening goes in`` () =
     let lib =
-        lines
-            [
-                "namespace Lib"
-                "[<AutoOpen>]"
-                "module Tests ="
-                "    [<RequireQualifiedAccess>]"
-                "    type CLIArguments ="
-                "        | Sequenced"
-                "        | Version"
-            ]
+        fsharp
+            """
+            namespace Lib
+            [<AutoOpen>]
+            module Tests =
+                [<RequireQualifiedAccess>]
+                type CLIArguments =
+                    | Sequenced
+                    | Version
+            """
 
     let user =
-        lines
-            [
-                "module Test"
-                "open System"
-                "open Lib"
-                "let a () = System.Version(1, 0, 0, 0)"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            open Lib
+            let a () = System.Version(1, 0, 0, 0)
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     let tree, sourceText, checkResults = parseAndCheckSecond lib user
     let edits = systemEdits (QualifiedNames.find 3 2 tree sourceText checkResults)
@@ -159,36 +159,45 @@ let ``FR0147: the same union under RequireQualifiedAccess cannot capture the nam
 [<Fact>]
 let ``FR0147: a bare union case the file itself declares declines the shortening`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System"
-                "type Cmd ="
-                "    | Run"
-                "    | Version"
-                "let a () = System.Version(1, 0, 0, 0)"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            type Cmd =
+                | Run
+                | Version
+            let a () = System.Version(1, 0, 0, 0)
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     Assert.Empty(systemEdits (qualifiedIn source))
 
 [<Fact>]
 let ``FR0147: without any shadow the open-and-shorten still goes in`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "let a () = System.Version(1, 0, 0, 0)"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            let a () = System.Version(1, 0, 0, 0)
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     match qualifiedIn source with
     | [ s ] ->
         Assert.Equal("System", s.Namespace)
         let patched = applyAll source s.Edits
-        Assert.Contains("open System\nlet a () = Version(1, 0, 0, 0)", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                open System
+                let a () = Version(1, 0, 0, 0)
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one System finding, got %A" other
 
@@ -203,49 +212,49 @@ let ``FR0073: a binder mentioned in an anonymous-record field of an arm stays`` 
     // SageFs's Mcp.fs getStatus: two arms serialise `{| message = format
     // resolution |}`, and the walker never descends into those fields
     let source =
-        lines
-            [
-                "module Test"
-                "type Res = Gone of string | Faulted of string"
-                "let resolve () = task { return Gone \"x\" }"
-                "let format (r: Res) = \"\""
-                "let getStatus () ="
-                "  task {"
-                "    let! resolution = resolve ()"
-                "    match resolution with"
-                "    | Gone msg ->"
-                "      let! n = task { return 1 }"
-                "      return"
-                "        System.Text.Json.JsonSerializer.Serialize("
-                "          {| state = \"NoSession\""
-                "             message = format resolution"
-                "             available = n |})"
-                "    | Faulted sid ->"
-                "      return"
-                "        System.Text.Json.JsonSerializer.Serialize("
-                "          {| state = \"Faulted\""
-                "             message = format resolution |})"
-                "  }"
-            ]
+        fsharp
+            """
+            module Test
+            type Res = Gone of string | Faulted of string
+            let resolve () = task { return Gone "x" }
+            let format (r: Res) = ""
+            let getStatus () =
+              task {
+                let! resolution = resolve ()
+                match resolution with
+                | Gone msg ->
+                  let! n = task { return 1 }
+                  return
+                    System.Text.Json.JsonSerializer.Serialize(
+                      {| state = "NoSession"
+                         message = format resolution
+                         available = n |})
+                | Faulted sid ->
+                  return
+                    System.Text.Json.JsonSerializer.Serialize(
+                      {| state = "Faulted"
+                         message = format resolution |})
+              }
+            """
 
     Assert.Empty(matchBangsIn source)
 
 [<Fact>]
 let ``FR0073: the same shape without the field mention still collapses`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "type Res = Gone of string | Faulted of string"
-                "let resolve () = task { return Gone \"x\" }"
-                "let getStatus () ="
-                "  task {"
-                "    let! resolution = resolve ()"
-                "    match resolution with"
-                "    | Gone msg -> return {| state = \"NoSession\"; message = msg |}"
-                "    | Faulted sid -> return {| state = \"Faulted\"; message = sid |}"
-                "  }"
-            ]
+        fsharp
+            """
+            module Test
+            type Res = Gone of string | Faulted of string
+            let resolve () = task { return Gone "x" }
+            let getStatus () =
+              task {
+                let! resolution = resolve ()
+                match resolution with
+                | Gone msg -> return {| state = "NoSession"; message = msg |}
+                | Faulted sid -> return {| state = "Faulted"; message = sid |}
+              }
+            """
 
     match matchBangsIn source with
     | [ s ] ->
@@ -258,7 +267,13 @@ let ``FR0073: the same shape without the field mention still collapses`` () =
 [<Fact>]
 let ``the index sees an anonymous record's copy source and field values`` () =
     let tree, _ =
-        parse "module Test\nlet f (r: {| X: int |}) (v: int) = {| r with X = v |}"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (r: {| X: int |}) (v: int) = {| r with X = v |}
+                """
+        )
 
     let idents =
         (AstIndex.ofTree tree).Exprs
@@ -356,54 +371,54 @@ let ``FR0072: a None on a RequireQualifiedAccess union in scope leaves Option's 
     // farmer's ScaleActionDirection.None had every Option match spelled
     // `Option.None`
     assertExpanded
-        (lines
-            [
-                "[<RequireQualifiedAccess>]"
-                "type Direction ="
-                "    | Decrease"
-                "    | Increase"
-                "    | None"
-                "let f (o: int option) ="
-                "    match o with"
-                "    | Some v -> v"
-                "    | _ -> 0"
-            ])
+        (fsharp
+            """
+            [<RequireQualifiedAccess>]
+            type Direction =
+                | Decrease
+                | Increase
+                | None
+            let f (o: int option) =
+                match o with
+                | Some v -> v
+                | _ -> 0
+            """)
         "None"
 
 [<Fact>]
 let ``FR0072: the same union without the attribute still qualifies the case`` () =
     assertExpanded
-        (lines
-            [
-                "type Direction ="
-                "    | Decrease"
-                "    | Increase"
-                "    | None"
-                "let f (o: int option) ="
-                "    match o with"
-                "    | Some v -> v"
-                "    | _ -> 0"
-            ])
+        (fsharp
+            """
+            type Direction =
+                | Decrease
+                | Increase
+                | None
+            let f (o: int option) =
+                match o with
+                | Some v -> v
+                | _ -> 0
+            """)
         "Option.None"
 
 [<Fact>]
 let ``FR0072: a payload case named on a RequireQualifiedAccess union stays bare too`` () =
     // farmer's LinkedResource.Unmanaged _ beside NodeOSUpgradeChannel.Unmanaged
     assertExpanded
-        (lines
-            [
-                "type LinkedResource ="
-                "    | Managed of int"
-                "    | Unmanaged of int"
-                "[<RequireQualifiedAccess>]"
-                "type Channel ="
-                "    | NodeImage"
-                "    | Unmanaged"
-                "let f (r: LinkedResource) ="
-                "    match r with"
-                "    | Managed x -> x"
-                "    | _ -> 0"
-            ])
+        (fsharp
+            """
+            type LinkedResource =
+                | Managed of int
+                | Unmanaged of int
+            [<RequireQualifiedAccess>]
+            type Channel =
+                | NodeImage
+                | Unmanaged
+            let f (r: LinkedResource) =
+                match r with
+                | Managed x -> x
+                | _ -> 0
+            """)
         "Unmanaged _"
 
 // ---- FR0042 SprintfInterpolation: parentheses that only wrapped the call ----
@@ -425,14 +440,14 @@ let ``FR0042: the parentheses around a curried function's sprintf argument go wi
     // farmer's Tests: `(sprintf "Should have thrown for %d" days)` became
     // `($"Should have thrown for %d{days}")`
     assertSprintfPatched
-        (lines
-            [
-                "module Test"
-                "module Expect ="
-                "    let throws (f: unit -> unit) (msg: string) = ()"
-                "let check (days: int) ="
-                "    Expect.throws (fun _ -> ()) (sprintf \"Should have thrown for %d\" days)"
-            ])
+        (fsharp
+            """
+            module Test
+            module Expect =
+                let throws (f: unit -> unit) (msg: string) = ()
+            let check (days: int) =
+                Expect.throws (fun _ -> ()) (sprintf "Should have thrown for %d" days)
+            """)
         "Expect.throws (fun _ -> ()) $\"Should have thrown for %d{days}\""
 
 [<Fact>]
@@ -440,57 +455,85 @@ let ``FR0042: a prefix operator touching the parentheses gets a space`` () =
     // SQLProvider's `~~(sprintf "..." x)`: bare, `~~$"..."` lexes `~~$` as
     // one (invalid) operator name; 2562 sites rolled back across a run
     assertSprintfPatched
-        (lines
-            [
-                "module Test"
-                "let build (x: string) ="
-                "    let sb = System.Text.StringBuilder()"
-                "    let (~~) (t: string) = sb.Append t |> ignore"
-                "    ~~(sprintf \"INSERT %s;\" x)"
-                "    sb.ToString()"
-            ])
+        (fsharp
+            """
+            module Test
+            let build (x: string) =
+                let sb = System.Text.StringBuilder()
+                let (~~) (t: string) = sb.Append t |> ignore
+                ~~(sprintf "INSERT %s;" x)
+                sb.ToString()
+            """)
         "~~ $\"INSERT %s{x};\""
 
 [<Fact>]
 let ``FR0042: a quoted format keeps its escapes and loses the parentheses`` () =
     // Giraffe's HttpStatusCodeHandlers.fs
     assertSprintfPatched
-        (lines
-            [
-                "module Test"
-                "let setHttpHeader (k: string) (v: string) = ()"
-                "let unauthorized (scheme: string) (realm: string) ="
-                "    setHttpHeader \"WWW-Authenticate\" (sprintf \"%s realm=\\\"%s\\\"\" scheme realm)"
-            ])
+        (fsharp
+            """
+            module Test
+            let setHttpHeader (k: string) (v: string) = ()
+            let unauthorized (scheme: string) (realm: string) =
+                setHttpHeader "WWW-Authenticate" (sprintf "%s realm=\"%s\"" scheme realm)
+            """)
         "setHttpHeader \"WWW-Authenticate\" $\"%s{scheme} realm=\\\"%s{realm}\\\"\""
 
 [<Fact>]
 let ``FR0042: a binding's parenthesised value stands bare`` () =
     assertSprintfPatched
-        "module Test\nlet f (days: int) =\n    let s = (sprintf \"d %d\" days)\n    s"
+        (fsharp
+            """
+            module Test
+            let f (days: int) =
+                let s = (sprintf "d %d" days)
+                s
+            """)
         "let s = $\"d %d{days}\""
 
 [<Fact>]
 let ``FR0042: a method's argument list keeps its parentheses`` () =
     assertSprintfPatched
-        "module Test\ntype C() =\n    member _.M(s: string) = s.Length\nlet f (c: C) (days: int) = c.M (sprintf \"b %d\" days)"
-        "c.M ($\"b %d{days}\")"
+        (fsharp
+            """
+            module Test
+            type C() =
+                member _.M(s: string) = s.Length
+            let f (c: C) (days: int) = c.M (sprintf "b %d" days)
+            """)
+        """c.M ($"b %d{days}")"""
 
 [<Fact>]
 let ``FR0042: a call with no space keeps its parentheses`` () =
     assertSprintfPatched
-        "module Test\ntype C() =\n    member _.M(s: string) = s.Length\nlet f (c: C) (days: int) = c.M(sprintf \"c %d\" days)"
-        "c.M($\"c %d{days}\")"
+        (fsharp
+            """
+            module Test
+            type C() =
+                member _.M(s: string) = s.Length
+            let f (c: C) (days: int) = c.M(sprintf "c %d" days)
+            """)
+        """c.M($"c %d{days}")"""
 
 [<Fact>]
 let ``FR0042: a constructor's argument keeps its parentheses`` () =
     assertSprintfPatched
-        "module Test\nlet f (days: int) = System.Exception (sprintf \"x %d\" days)"
-        "System.Exception ($\"x %d{days}\")"
+        (fsharp
+            """
+            module Test
+            let f (days: int) = System.Exception (sprintf "x %d" days)
+            """)
+        """System.Exception ($"x %d{days}")"""
 
 [<Fact>]
 let ``FR0042: a receiver keeps its parentheses`` () =
-    assertSprintfPatched "module Test\nlet f (days: int) = (sprintf \"e %d\" days).Length" "($\"e %d{days}\").Length"
+    assertSprintfPatched
+        (fsharp
+            """
+            module Test
+            let f (days: int) = (sprintf "e %d" days).Length
+            """)
+        """($"e %d{days}").Length"""
 
 [<Fact>]
 let ``FR0042: a bare sprintf application is replaced as before`` () =
@@ -520,15 +563,15 @@ let ``FR0147: a primary-constructor parameter of the same name keeps the prefix 
     // `type C(Version: int)` binds `Version` for the whole type without a
     // binding node; the member's `System.Version(...)` must keep its prefix
     let source =
-        lines
-            [
-                "module Test"
-                "open System"
-                "type C(Version: int) ="
-                "    member _.V() = System.Version(1, 0, 0, 0).Major + Version"
-                "let b () = System.Version(2, 0, 0, 0)"
-                "let c () = System.Version(3, 0, 0, 0)"
-            ]
+        fsharp
+            """
+            module Test
+            open System
+            type C(Version: int) =
+                member _.V() = System.Version(1, 0, 0, 0).Major + Version
+            let b () = System.Version(2, 0, 0, 0)
+            let c () = System.Version(3, 0, 0, 0)
+            """
 
     match qualifiedIn source |> List.filter (fun s -> s.Namespace = "System") with
     | [ s ] ->
@@ -545,24 +588,24 @@ let ``FR0072: an arm indented deeper than its match keeps the cases on one line`
     // the match, past 100 columns with both cases; a case on a fresh line
     // under that `|` read as no or-pattern at all
     let source =
-        lines
-            [
-                "type CollectState<'T> ="
-                "    | NotStarted of 'T"
-                "    | HaveInputEnumerator of System.Collections.Generic.IEnumerator<'T>"
-                "    | HaveTheVeryLongNamedIntermediateState of int"
-                "    | Finished"
-                "let f (state: CollectState<int>) (x: int) ="
-                "    async {"
-                "                              match state with"
-                "                              | CollectState.NotStarted inp -> return inp > 0"
-                "                              | CollectState.HaveInputEnumerator e1 ->"
-                "                                  if x > 1 then"
-                "                                      return true"
-                "                                  else"
-                "                                      return e1.MoveNext ()"
-                "                                  | _ -> return false }"
-            ]
+        fsharp
+            """
+            type CollectState<'T> =
+                | NotStarted of 'T
+                | HaveInputEnumerator of System.Collections.Generic.IEnumerator<'T>
+                | HaveTheVeryLongNamedIntermediateState of int
+                | Finished
+            let f (state: CollectState<int>) (x: int) =
+                async {
+                                          match state with
+                                          | CollectState.NotStarted inp -> return inp > 0
+                                          | CollectState.HaveInputEnumerator e1 ->
+                                              if x > 1 then
+                                                  return true
+                                              else
+                                                  return e1.MoveNext ()
+                                              | _ -> return false }
+            """
 
     match wildcardsIn source with
     | [ s ] ->
@@ -580,28 +623,28 @@ let ``FR0147: a prefix whose remaining head is a union case in scope stays`` () 
     // `ReplyStatus.Error` - an expression resolves its first name among
     // the values and cases before any module
     let lib =
-        lines
-            [
-                "namespace Lib"
-                "[<AutoOpen>]"
-                "module Reply ="
-                "    type ReplyStatus ="
-                "        | Ok"
-                "        | Error"
-                "module Error ="
-                "    let NoErrorMessages = 0"
-            ]
+        fsharp
+            """
+            namespace Lib
+            [<AutoOpen>]
+            module Reply =
+                type ReplyStatus =
+                    | Ok
+                    | Error
+            module Error =
+                let NoErrorMessages = 0
+            """
 
     let user =
-        lines
-            [
-                "module Test"
-                "open Lib"
-                "let a = Lib.Error.NoErrorMessages"
-                "let b = Lib.Error.NoErrorMessages"
-                "let c = Lib.Error.NoErrorMessages"
-                "let status = Error"
-            ]
+        fsharp
+            """
+            module Test
+            open Lib
+            let a = Lib.Error.NoErrorMessages
+            let b = Lib.Error.NoErrorMessages
+            let c = Lib.Error.NoErrorMessages
+            let status = Error
+            """
 
     let tree, sourceText, checkResults = parseAndCheckSecond lib user
 
@@ -611,17 +654,22 @@ let ``FR0147: a prefix whose remaining head is a union case in scope stays`` () 
 [<Fact>]
 let ``FR0147: the same prefix shortens when nothing of the head's name is in scope`` () =
     let lib =
-        lines [ "namespace Lib"; "module Messages ="; "    let NoErrorMessages = 0" ]
+        fsharp
+            """
+            namespace Lib
+            module Messages =
+                let NoErrorMessages = 0
+            """
 
     let user =
-        lines
-            [
-                "module Test"
-                "open Lib"
-                "let a = Lib.Messages.NoErrorMessages"
-                "let b = Lib.Messages.NoErrorMessages"
-                "let c = Lib.Messages.NoErrorMessages"
-            ]
+        fsharp
+            """
+            module Test
+            open Lib
+            let a = Lib.Messages.NoErrorMessages
+            let b = Lib.Messages.NoErrorMessages
+            let c = Lib.Messages.NoErrorMessages
+            """
 
     let tree, sourceText, checkResults = parseAndCheckSecond lib user
 

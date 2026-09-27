@@ -61,7 +61,16 @@ let ``System.Object is obj`` () =
 [<Fact>]
 let ``a bare Int32 is left alone`` () =
     // what it resolves to depends on the opens and on what the file declares
-    Assert.Empty(abbreviationsIn "module Test\nopen System\nlet f (x: Int32) = x")
+    Assert.Empty(
+        abbreviationsIn (
+            fsharp
+                """
+                module Test
+                open System
+                let f (x: Int32) = x
+                """
+        )
+    )
 
 [<Fact>]
 let ``System.Void is left alone`` () =

@@ -27,8 +27,16 @@ let ``instance method call loses its parens`` () =
 [<Fact>]
 let ``char argument loses its parens`` () =
     assertPatched
-        "module Test\nlet f (sb: System.Text.StringBuilder) = sb.Append('c')"
-        "module Test\nlet f (sb: System.Text.StringBuilder) = sb.Append 'c'"
+        (fsharp
+            """
+            module Test
+            let f (sb: System.Text.StringBuilder) = sb.Append('c')
+            """)
+        (fsharp
+            """
+            module Test
+            let f (sb: System.Text.StringBuilder) = sb.Append 'c'
+            """)
 
 [<Fact>]
 let ``method call on a projected receiver loses its parens`` () =
@@ -56,30 +64,74 @@ let ``a pipe on the same line keeps the parens`` () =
 [<Fact>]
 let ``a continuation on a later line is clear enough to fix`` () =
     assertPatched
-        "module Test\nlet f (s: string) =\n    s.Contains(\"x\")\n    |> ignore"
-        "module Test\nlet f (s: string) =\n    s.Contains \"x\"\n    |> ignore"
+        (fsharp
+            """
+            module Test
+            let f (s: string) =
+                s.Contains("x")
+                |> ignore
+            """)
+        (fsharp
+            """
+            module Test
+            let f (s: string) =
+                s.Contains "x"
+                |> ignore
+            """)
 
 [<Fact>]
 let ``a structural parent on the same line still gets fixed`` () =
     // `if`/`match`/list elements read fine bare — only applications are the
     // shapes where dropping parens changes how the line reads
     assertPatched
-        "module Test\nlet f (s: string) = if s.Contains(\"x\") then 1 else 2"
-        "module Test\nlet f (s: string) = if s.Contains \"x\" then 1 else 2"
+        (fsharp
+            """
+            module Test
+            let f (s: string) = if s.Contains("x") then 1 else 2
+            """)
+        (fsharp
+            """
+            module Test
+            let f (s: string) = if s.Contains "x" then 1 else 2
+            """)
 
 [<Fact>]
 let ``a line aligned past the argument keeps the parens`` () =
     // fparsec's CharParsers.fs: two characters shorter, the `(flags <- ...`
     // block's continuation line stood right of `flags` and the block
     // re-parsed as an application
-    assertNoSuggestion
-        "module Test\nlet f (s: string) (flags: int) =\n    let mutable flags = flags\n    s.Contains(\"inf\") && (flags <- flags ||| 1\n                          true)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (s: string) (flags: int) =
+                let mutable flags = flags
+                s.Contains("inf") && (flags <- flags ||| 1
+                                      true)
+            """
+    )
 
 [<Fact>]
 let ``a deeper line that is a body, not an alignment, still gets fixed`` () =
     assertPatched
-        "module Test\nlet f (s: string) =\n    if s.Contains(\"x\") then\n        1\n    else\n        2"
-        "module Test\nlet f (s: string) =\n    if s.Contains \"x\" then\n        1\n    else\n        2"
+        (fsharp
+            """
+            module Test
+            let f (s: string) =
+                if s.Contains("x") then
+                    1
+                else
+                    2
+            """)
+        (fsharp
+            """
+            module Test
+            let f (s: string) =
+                if s.Contains "x" then
+                    1
+                else
+                    2
+            """)
 
 // --- constructors and static paths stay untouched ---
 
@@ -113,7 +165,13 @@ let ``a projection keeps the parens`` () =
 
 [<Fact>]
 let ``an applied argument keeps its parens`` () =
-    assertNoSuggestion "module Test\nlet f (s: string) (g: int -> int) = s.PadLeft(g 1)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (s: string) (g: int -> int) = s.PadLeft(g 1)
+            """
+    )
 
 // --- no overlap with FR0013, which owns function calls ---
 
@@ -131,7 +189,13 @@ let ``FR0013 does not also claim method calls`` () =
 let ``a call feeding the dynamic operator keeps its parens`` () =
     // from the corpus: `hub.Clients.OthersInGroup(roomId)?visitorJoin(user)`.
     // Bare, `roomId` binds to the `?` and the file stops parsing.
-    assertNoSuggestion "module Test\nlet f (hub: obj) (roomId: string) = hub?Clients?OthersInGroup(roomId)?visitorJoin"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (hub: obj) (roomId: string) = hub?Clients?OthersInGroup(roomId)?visitorJoin
+            """
+    )
 
 [<Fact>]
 let ``a method call that is a tuple element keeps its parens`` () =
@@ -153,24 +217,62 @@ let f (s: string) = s.Trim(' ')"
 let ``a parenthesised unit argument keeps its parens`` () =
     // `x.log (())` passes unit as a value to a generic parameter; bare,
     // `x.log ()` is a call with no arguments — a different thing
-    assertNoSuggestion
-        "module Test\ntype T() =\n    member x.log<'t> (v: 't, tag: string) = ()\n    member x.Exit() = x.log (())"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type T() =
+                member x.log<'t> (v: 't, tag: string) = ()
+                member x.Exit() = x.log (())
+            """
+    )
 
 [<Fact>]
 let ``a call in a shorthand lambda keeps its parens`` () =
     // welendus's `configureEndpoint _.WithName("x").WithGroupName(g)`: the
     // `_.` body must stay atomic, or the bare argument applies the lambda
-    assertNoSuggestion
-        "module Test\ntype E() =\n    member x.WithName(n: string) = x\n    member x.WithGroupName(g: string) = x\nlet configure (f: E -> E) (e: E) = f e\nlet r (e: E) = e |> configure _.WithName(\"a\").WithGroupName(\"g\")"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type E() =
+                member x.WithName(n: string) = x
+                member x.WithGroupName(g: string) = x
+            let configure (f: E -> E) (e: E) = f e
+            let r (e: E) = e |> configure _.WithName("a").WithGroupName("g")
+            """
+    )
 
 [<Fact>]
 let ``the bare argument gets one space on each side that would glue, and no more`` () =
     // `s.Trim(c)with` is legal; bare, `c` would run into both neighbours
     assertPatched
-        "module Test\nlet f (s: string) (c: char) =\n    match s.Trim(c)with\n    | \"\" -> 1\n    | _ -> 2"
-        "module Test\nlet f (s: string) (c: char) =\n    match s.Trim c with\n    | \"\" -> 1\n    | _ -> 2"
+        (fsharp
+            """
+            module Test
+            let f (s: string) (c: char) =
+                match s.Trim(c)with
+                | "" -> 1
+                | _ -> 2
+            """)
+        (fsharp
+            """
+            module Test
+            let f (s: string) (c: char) =
+                match s.Trim c with
+                | "" -> 1
+                | _ -> 2
+            """)
 
     // separated already: nothing added
     assertPatched
-        "module Test\nlet f (s: string) (c: char) = s.Trim (c)"
-        "module Test\nlet f (s: string) (c: char) = s.Trim c"
+        (fsharp
+            """
+            module Test
+            let f (s: string) (c: char) = s.Trim (c)
+            """)
+        (fsharp
+            """
+            module Test
+            let f (s: string) (c: char) = s.Trim c
+            """)

@@ -22,8 +22,16 @@ let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 let ``a line aligned past the argument keeps the parens`` () =
     // the `(flags = 1` block's second line is aligned under text after
     // the argument; one character shorter, it would stand offside
-    assertNoSuggestion
-        "module Test\nlet g (x: int) = x > 0\nlet f (x: int) (flags: int) =\n    g (x) && (flags = 1\n              || flags = 2)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let g (x: int) = x > 0
+            let f (x: int) (flags: int) =
+                g (x) && (flags = 1
+                          || flags = 2)
+            """
+    )
 
 [<Fact>]
 let ``list literal argument loses its parens`` () =
@@ -46,8 +54,18 @@ let ``string literal argument loses its parens`` () =
 [<Fact>]
 let ``dotted path argument loses its parens`` () =
     assertPatched
-        "module Test\ntype R = { Items: int list }\nlet f (r: R) = List.length(r.Items)"
-        "module Test\ntype R = { Items: int list }\nlet f (r: R) = List.length r.Items"
+        (fsharp
+            """
+            module Test
+            type R = { Items: int list }
+            let f (r: R) = List.length(r.Items)
+            """)
+        (fsharp
+            """
+            module Test
+            type R = { Items: int list }
+            let f (r: R) = List.length r.Items
+            """)
 
 [<Fact>]
 let ``tuple argument is a method argument list and stays`` () =
@@ -96,17 +114,37 @@ let ``curried continuation still parses after removal`` () =
 let ``static method call keeps its parens`` () =
     // real-world corpus regression: File.ReadAllText(path)-style .NET calls
     // are method calls, and the style guide parenthesizes those
-    assertNoSuggestion "module Test\nlet t (p: string) = System.IO.Path.GetFileName(p)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let t (p: string) = System.IO.Path.GetFileName(p)
+            """
+    )
 
 [<Fact>]
 let ``constructor call keeps its parens`` () =
     // StringValues("x")-style constructors read as .NET interop, not F#
     // function application
-    assertNoSuggestion "module Test\ntype W(x: int) =\n    member _.V = x\nlet w (i: int) = W(i)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type W(x: int) =
+                member _.V = x
+            let w (i: int) = W(i)
+            """
+    )
 
 [<Fact>]
 let ``qualified constructor call keeps its parens`` () =
-    assertNoSuggestion "module Test\nlet b (s: string) = System.Text.StringBuilder(s)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let b (s: string) = System.Text.StringBuilder(s)
+            """
+    )
 
 [<Fact>]
 let ``doubly parenthesized operator reference keeps one paren pair`` () =
@@ -116,7 +154,13 @@ let ``doubly parenthesized operator reference keeps one paren pair`` () =
 
 [<Fact>]
 let ``operator method call keeps its parens`` () =
-    assertNoSuggestion "module Test\nlet f (x: float32) = TorchSharp.Scalar.op_Implicit(x)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (x: float32) = TorchSharp.Scalar.op_Implicit(x)
+            """
+    )
 
 [<Fact>]
 let ``an application that is a tuple element keeps its parens`` () =
@@ -139,12 +183,44 @@ let f (score: float) = ValueSome(score)"
 [<Fact>]
 let ``a body indented past the argument's start but short of its end is no alignment`` () =
     assertPatched
-        "module Test\nlet g (x: int) = x > 0\nlet f (x: int) =\n    if g (x) then\n        1\n    else\n        2"
-        "module Test\nlet g (x: int) = x > 0\nlet f (x: int) =\n    if g x then\n        1\n    else\n        2"
+        (fsharp
+            """
+            module Test
+            let g (x: int) = x > 0
+            let f (x: int) =
+                if g (x) then
+                    1
+                else
+                    2
+            """)
+        (fsharp
+            """
+            module Test
+            let g (x: int) = x > 0
+            let f (x: int) =
+                if g x then
+                    1
+                else
+                    2
+            """)
 
 [<Fact>]
 let ``the bare argument touching the next token gets one space, and no more`` () =
     // `not(true)with` is legal; the bare `true` would read `truewith`
     assertPatched
-        "module Test\nlet f () =\n    match not(true)with\n    | true -> 1\n    | false -> 2"
-        "module Test\nlet f () =\n    match not true with\n    | true -> 1\n    | false -> 2"
+        (fsharp
+            """
+            module Test
+            let f () =
+                match not(true)with
+                | true -> 1
+                | false -> 2
+            """)
+        (fsharp
+            """
+            module Test
+            let f () =
+                match not true with
+                | true -> 1
+                | false -> 2
+            """)

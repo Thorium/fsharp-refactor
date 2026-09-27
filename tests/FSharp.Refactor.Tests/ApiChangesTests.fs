@@ -115,8 +115,21 @@ let private findParamOrderAcrossTwoFiles (defSource: string) (useSource: string)
 let ``internal tupled function is curried with call sites in another file`` () =
     let found =
         findAcrossTwoFiles
-            "module LibA\n\nlet internal add (a, b) = a + b\n"
-            "module LibB\n\nlet total = LibA.add (1, 2)\nlet more = LibA.add (total, 4)\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal add (a, b) = a + b
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let total = LibA.add (1, 2)
+                let more = LibA.add (total, 4)
+
+                """)
 
     match found with
     | [ name, edits ] ->
@@ -147,8 +160,21 @@ let ``a public function is never curried — its callers may be outside the proj
 let ``a first-class use anywhere in the project suppresses the change`` () =
     let found =
         findAcrossTwoFiles
-            "module LibA\n\nlet internal add (a, b) = a + b\n"
-            "module LibB\n\nlet f = LibA.add\nlet total = f (1, 2)\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal add (a, b) = a + b
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let f = LibA.add
+                let total = f (1, 2)
+
+                """)
 
     Assert.Empty found
 
@@ -169,8 +195,21 @@ let ``self-nested call sites suppress the change`` () =
 let ``internal function is reordered with call sites in another file`` () =
     let found =
         findParamOrderAcrossTwoFiles
-            "module LibA\n\nlet internal scale (x: int) (k: string) = string x + k\n"
-            "module LibB\n\nlet labels (xs: int list) = xs |> List.map (fun x -> LibA.scale x \"m\")\nlet one = LibA.scale 3 \"cm\"\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal scale (x: int) (k: string) = string x + k
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let labels (xs: int list) = xs |> List.map (fun x -> LibA.scale x "m")
+                let one = LibA.scale 3 "cm"
+
+                """)
 
     match found with
     | [ name, edits ] ->
@@ -195,8 +234,20 @@ let ``interchangeable parameter types block the reorder`` () =
     // two string arguments; different types would fail the build instead
     let found =
         findParamOrderAcrossTwoFiles
-            "module LibA\n\nlet internal join (x: string) (k: string) = x + k\n"
-            "module LibB\n\nlet labels (xs: string list) = xs |> List.map (fun x -> LibA.join x \"m\")\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal join (x: string) (k: string) = x + k
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let labels (xs: string list) = xs |> List.map (fun x -> LibA.join x "m")
+
+                """)
 
     Assert.Empty found
 
@@ -204,8 +255,20 @@ let ``interchangeable parameter types block the reorder`` () =
 let ``generic parameters count as interchangeable`` () =
     let found =
         findParamOrderAcrossTwoFiles
-            "module LibA\n\nlet internal pairUp (x: 'a) (k: 'b) = x, k\n"
-            "module LibB\n\nlet labels (xs: int list) = xs |> List.map (fun x -> LibA.pairUp x \"m\")\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal pairUp (x: 'a) (k: 'b) = x, k
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let labels (xs: int list) = xs |> List.map (fun x -> LibA.pairUp x "m")
+
+                """)
 
     Assert.Empty found
 
@@ -213,8 +276,20 @@ let ``generic parameters count as interchangeable`` () =
 let ``a reorder with no eta-blocking lambda anywhere is churn`` () =
     let found =
         findParamOrderAcrossTwoFiles
-            "module LibA\n\nlet internal scale (x: int) (k: string) = string x + k\n"
-            "module LibB\n\nlet one = LibA.scale 3 \"cm\"\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal scale (x: int) (k: string) = string x + k
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let one = LibA.scale 3 "cm"
+
+                """)
 
     Assert.Empty found
 
@@ -222,8 +297,21 @@ let ``a reorder with no eta-blocking lambda anywhere is churn`` () =
 let ``a first-class use in another file blocks the reorder`` () =
     let found =
         findParamOrderAcrossTwoFiles
-            "module LibA\n\nlet internal scale (x: int) (k: string) = string x + k\n"
-            "module LibB\n\nlet labels (xs: int list) = xs |> List.map (fun x -> LibA.scale x \"m\")\nlet f = LibA.scale\n"
+            (fsharp
+                """
+                module LibA
+
+                let internal scale (x: int) (k: string) = string x + k
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let labels (xs: int list) = xs |> List.map (fun x -> LibA.scale x "m")
+                let f = LibA.scale
+
+                """)
 
     Assert.Empty found
 
@@ -231,8 +319,21 @@ let ``a first-class use in another file blocks the reorder`` () =
 let ``a private function is left to the single-file rule`` () =
     let found =
         findAcrossTwoFiles
-            "module LibA\n\nlet private add (a, b) = a + b\nlet internal sum = add (1, 2)\n"
-            "module LibB\n\nlet x = 1\n"
+            (fsharp
+                """
+                module LibA
+
+                let private add (a, b) = a + b
+                let internal sum = add (1, 2)
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let x = 1
+
+                """)
 
     Assert.Empty found
 
@@ -400,8 +501,20 @@ let ``a public tupled function is curried once every referencing compilation has
 let ``FR0091 reorders a public function once every referencing compilation has been read`` () =
     let found =
         withTwoFiles
-            "module LibA\n\nlet scale (x: int) (k: string) = string x + k\n"
-            "module LibB\n\nlet labels (xs: int list) = xs |> List.map (fun x -> LibA.scale x \"m\")\n"
+            (fsharp
+                """
+                module LibA
+
+                let scale (x: int) (k: string) = string x + k
+
+                """)
+            (fsharp
+                """
+                module LibB
+
+                let labels (xs: int list) = xs |> List.map (fun x -> LibA.scale x "m")
+
+                """)
             (fun ctx check project fileLookup ->
                 ParamOrder.findApiChanges
                     ctx
@@ -422,7 +535,18 @@ let ``an internal function of an assembly with friends waits for every friend to
     // verification build; the change stands down until the host has read
     // that friend's compilation — and goes ahead once it has
     let source =
-        "module LibA\n\nopen System.Runtime.CompilerServices\n\n[<assembly: InternalsVisibleTo(\"Lib.Tests, PublicKey=0024000004800000\")>]\ndo ()\n\nlet internal add (a, b) = a + b\n"
+        fsharp
+            """
+            module LibA
+
+            open System.Runtime.CompilerServices
+
+            [<assembly: InternalsVisibleTo("Lib.Tests, PublicKey=0024000004800000")>]
+            do ()
+
+            let internal add (a, b) = a + b
+
+            """
 
     let useSource = "module LibB\n\nlet total = LibA.add (1, 2)\n"
 
@@ -598,8 +722,21 @@ let ``a sibling project's first-class use blocks the change`` () =
     // all-or-nothing rule the project's own files are under
     let found =
         withSiblingProject
-            "module Lib\n\nlet add (a: int, b: int) = a + b\n"
-            "module Tests\n\nlet f = Lib.add\nlet three () = f (1, 2)\n"
+            (fsharp
+                """
+                module Lib
+
+                let add (a: int, b: int) = a + b
+
+                """)
+            (fsharp
+                """
+                module Tests
+
+                let f = Lib.add
+                let three () = f (1, 2)
+
+                """)
             (fun ctx check project outside fileLookup ->
                 TupleParams.findApiChanges ctx check project fileLookup outside)
 

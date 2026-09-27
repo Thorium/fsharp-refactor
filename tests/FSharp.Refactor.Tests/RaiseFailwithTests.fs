@@ -24,39 +24,97 @@ let ``literal message becomes failwith`` () =
 
 [<Fact>]
 let ``open System constructor call becomes failwith`` () =
-    assertRaiseFix "module Test\nopen System\nlet f () = raise (Exception(\"boom\"))" "failwith \"boom\""
+    assertRaiseFix
+        (fsharp
+            """
+            module Test
+            open System
+            let f () = raise (Exception("boom"))
+            """)
+        "failwith \"boom\""
 
 [<Fact>]
 let ``new keyword form becomes failwith`` () =
-    assertRaiseFix "module Test\nopen System\nlet f (msg: string) = raise (new Exception(msg))" "failwith msg"
+    assertRaiseFix
+        (fsharp
+            """
+            module Test
+            open System
+            let f (msg: string) = raise (new Exception(msg))
+            """)
+        "failwith msg"
 
 [<Fact>]
 let ``computed message is parenthesized`` () =
     assertRaiseFix
-        "module Test\nopen System\nlet f (n: int) = raise (Exception(sprintf \"bad %d\" n))"
-        "failwith (sprintf \"bad %d\" n)"
+        (fsharp
+            """
+            module Test
+            open System
+            let f (n: int) = raise (Exception(sprintf "bad %d" n))
+            """)
+        """failwith (sprintf "bad %d" n)"""
 
 [<Fact>]
 let ``interpolated message stays bare`` () =
-    assertRaiseFix "module Test\nopen System\nlet f (n: int) = raise (Exception $\"bad {n}\")" "failwith $\"bad {n}\""
+    assertRaiseFix
+        (fsharp
+            """
+            module Test
+            open System
+            let f (n: int) = raise (Exception $"bad {n}")
+            """)
+        "failwith $\"bad {n}\""
 
 [<Fact>]
 let ``property on a method-call result is parenthesized`` () =
     assertRaiseFix
-        "module Test\nopen System\nlet f (ex: exn) = raise (Exception(ex.GetType().Name))"
+        (fsharp
+            """
+            module Test
+            open System
+            let f (ex: exn) = raise (Exception(ex.GetType().Name))
+            """)
         "failwith (ex.GetType().Name)"
 
 [<Fact>]
 let ``exception subclasses are left alone`` () =
-    Assert.Empty(raiseIn "module Test\nopen System\nlet f () = raise (ArgumentException \"boom\")")
+    Assert.Empty(
+        raiseIn (
+            fsharp
+                """
+                module Test
+                open System
+                let f () = raise (ArgumentException "boom")
+                """
+        )
+    )
 
 [<Fact>]
 let ``no-argument constructor is left alone`` () =
-    Assert.Empty(raiseIn "module Test\nopen System\nlet f () = raise (Exception())")
+    Assert.Empty(
+        raiseIn (
+            fsharp
+                """
+                module Test
+                open System
+                let f () = raise (Exception())
+                """
+        )
+    )
 
 [<Fact>]
 let ``inner-exception overload is left alone`` () =
-    Assert.Empty(raiseIn "module Test\nopen System\nlet f (inner: exn) = raise (Exception(\"boom\", inner))")
+    Assert.Empty(
+        raiseIn (
+            fsharp
+                """
+                module Test
+                open System
+                let f (inner: exn) = raise (Exception("boom", inner))
+                """
+        )
+    )
 
 // ---- FR0025 OptionOfObj ----
 
@@ -90,7 +148,15 @@ let ``null inequality test becomes ofObj`` () =
 
 [<Fact>]
 let ``null match becomes ofObj`` () =
-    assertOfObj "let f (s: string) =\n    match s with\n    | null -> None\n    | v -> Some v" "Option.ofObj s"
+    assertOfObj
+        (fsharp
+            """
+            let f (s: string) =
+                match s with
+                | null -> None
+                | v -> Some v
+            """)
+        "Option.ofObj s"
 
 [<Fact>]
 let ``value option variant uses ValueOption`` () =
@@ -99,7 +165,13 @@ let ``value option variant uses ValueOption`` () =
 [<Fact>]
 let ``shadowing union suppresses the suggestion`` () =
     Assert.Empty(
-        ofObjIn "type Maybe = Some of string | None\nlet f (s: string) : Maybe = if isNull s then None else Some s"
+        ofObjIn (
+            fsharp
+                """
+                type Maybe = Some of string | None
+                let f (s: string) : Maybe = if isNull s then None else Some s
+                """
+        )
     )
 
 [<Fact>]
@@ -114,4 +186,12 @@ let ``property access is left alone`` () =
 let ``a named-argument constructor keeps its raise`` () =
     // `Exception(message = "boom")` parses its argument as an op_Equality
     // application — `failwith (message = "boom")` would not compile
-    Assert.Empty(raiseIn "module Test\nlet f () = raise (System.Exception(message = \"boom\"))")
+    Assert.Empty(
+        raiseIn (
+            fsharp
+                """
+                module Test
+                let f () = raise (System.Exception(message = "boom"))
+                """
+        )
+    )

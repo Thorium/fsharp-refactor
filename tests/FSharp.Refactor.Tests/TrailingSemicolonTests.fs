@@ -32,23 +32,64 @@ let ``a semicolon before a comment is dropped`` () =
 
 [<Fact>]
 let ``a list element separator is kept`` () =
-    assertNoSuggestion "module Test\nlet xs = [\n    1;\n    2 ]"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let xs = [
+                1;
+                2 ]
+            """
+    )
 
 [<Fact>]
 let ``an array element separator is kept`` () =
-    assertNoSuggestion "module Test\nlet xs = [|\n    1;\n    2 |]"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let xs = [|
+                1;
+                2 |]
+            """
+    )
 
 [<Fact>]
 let ``a record field separator is kept`` () =
-    assertNoSuggestion "module Test\ntype R = { A: int; B: int }\nlet r = {\n    A = 1;\n    B = 2 }"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type R = { A: int; B: int }
+            let r = {
+                A = 1;
+                B = 2 }
+            """
+    )
 
 [<Fact>]
 let ``an anonymous record field separator is kept`` () =
-    assertNoSuggestion "module Test\nlet r = {|\n    A = 1;\n    B = 2 |}"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let r = {|
+                A = 1;
+                B = 2 |}
+            """
+    )
 
 [<Fact>]
 let ``an attribute separator is kept`` () =
-    assertNoSuggestion "module Test\n[<System.Obsolete;\n  System.Serializable>]\ntype T() = class end"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            [<System.Obsolete;
+              System.Serializable>]
+            type T() = class end
+            """
+    )
 
 [<Fact>]
 let ``a semicolon inside a string is not a line ending`` () =
@@ -67,7 +108,14 @@ let ``a double semicolon is left alone`` () =
 let ``verbose syntax keeps every semicolon`` () =
     // verbose sources need not parse cleanly under the default settings, and
     // that is beside the point: the rule must decline before it looks
-    let source = "#light \"off\"\nmodule Test\nlet x = 1;"
+    let source =
+        fsharp
+            """
+            #light "off"
+            module Test
+            let x = 1;
+            """
+
     let tree, _, sourceText = tryParseNamed "Test.fs" source
     Assert.Empty(TrailingSemicolon.find tree sourceText)
 
@@ -95,28 +143,71 @@ let ``a semicolon ending a line inside a multi-line string is untouched`` () =
 
 [<Fact>]
 let ``a semicolon ending a comment is untouched`` () =
-    assertNoSuggestion "module Test\n// a note about the ; character;\nlet x = 1"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            // a note about the ; character;
+            let x = 1
+            """
+    )
 
 [<Fact>]
 let ``a file with no semicolons at all is skipped cheaply`` () =
-    assertNoSuggestion "module Test\nlet f x = x + 1\nlet g y = y * 2"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f x = x + 1
+            let g y = y * 2
+            """
+    )
 
 [<Fact>]
 let ``a list pattern separator is kept`` () =
     // from the corpus: AstIndex.replay never calls WalkPat, so list PATTERNS
     // were unprotected and their separators were stripped
-    assertNoSuggestion "module Test\nlet f x =\n    match x with\n    | [ a;\n        b ] -> a + b\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f x =
+                match x with
+                | [ a;
+                    b ] -> a + b
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``a record type definition field separator is kept`` () =
-    assertNoSuggestion "module Test\ntype R = {\n    Host: int;\n    Customer: string\n}"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type R = {
+                Host: int;
+                Customer: string
+            }
+            """
+    )
 
 [<Fact>]
 let ``a list pattern nested inside a union case keeps its separator`` () =
     // the SQLProvider shape: the list is the third argument of an active
     // pattern, not the clause pattern itself
-    assertNoSuggestion
-        "module Test\ntype T = C of int * int * int list\nlet f x =\n    match x with\n    | C(a, b, [ p;\n                q ]) -> a + b + p + q\n    | _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type T = C of int * int * int list
+            let f x =
+                match x with
+                | C(a, b, [ p;
+                            q ]) -> a + b + p + q
+                | _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``a list pattern separator followed by trailing space is kept`` () =
@@ -148,9 +239,26 @@ let ``a list pattern inside an object expression keeps its separator`` () =
 let ``semicolons holding a misindented list together are kept`` () =
     // verified against fsi: with the semicolons this is [1; 2; 3; 4]; without
     // them the misaligned lines read as function application (FS0003)
-    assertNoSuggestion "module Test\nlet a, b, c, d = 1, 2, 3, 4\nlet items = [ a;\n    b; c;\n  d ]"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let a, b, c, d = 1, 2, 3, 4
+            let items = [ a;
+                b; c;
+              d ]
+            """
+    )
 
 [<Fact>]
 let ``a semicolon before a more indented line stays`` () =
     // without the `;` the deeper line continues the application: printf "a" printf "b"
-    assertNoSuggestion "module Test\nlet f () =\n    printf \"a\";\n      printf \"b\""
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f () =
+                printf "a";
+                  printf "b"
+            """
+    )

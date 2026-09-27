@@ -33,8 +33,16 @@ let ``tupled private function and its calls are curried`` () =
 [<Fact>]
 let ``annotated tuple elements keep their annotations`` () =
     assertSingleSuggestion
-        "let private describe (name: string, count: int) = sprintf \"%s: %d\" name count\nlet d = describe (\"x\", 3)"
-        "let private describe (name: string) (count: int) = sprintf \"%s: %d\" name count\nlet d = describe \"x\" 3"
+        (fsharp
+            """
+            let private describe (name: string, count: int) = sprintf "%s: %d" name count
+            let d = describe ("x", 3)
+            """)
+        (fsharp
+            """
+            let private describe (name: string) (count: int) = sprintf "%s: %d" name count
+            let d = describe "x" 3
+            """)
 
 [<Fact>]
 let ``complex call arguments are parenthesized`` () =
@@ -58,23 +66,53 @@ let ``call without space keeps valid syntax`` () =
 let ``a call nested inside another call's tuple suppresses the suggestion`` () =
     // the inner `(1, 2)` edit sits inside the outer call-tuple edit, so the
     // two range edits cannot apply together atomically
-    assertNoSuggestion "let private add (a, b) = a + b\nlet total = add (add (1, 2), 3)"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private add (a, b) = a + b
+            let total = add (add (1, 2), 3)
+            """
+    )
 
 [<Fact>]
 let ``recursive self-call is rewritten too`` () =
     assertSingleSuggestion
-        "let rec private count (n, acc) =\n    if n = 0 then acc else count (n - 1, acc + 1)\nlet c = count (10, 0)"
-        "let rec private count n acc =\n    if n = 0 then acc else count (n - 1) (acc + 1)\nlet c = count 10 0"
+        (fsharp
+            """
+            let rec private count (n, acc) =
+                if n = 0 then acc else count (n - 1, acc + 1)
+            let c = count (10, 0)
+            """)
+        (fsharp
+            """
+            let rec private count n acc =
+                if n = 0 then acc else count (n - 1) (acc + 1)
+            let c = count 10 0
+            """)
 
 [<Fact>]
 let ``three-element tuples work`` () =
     assertSingleSuggestion
-        "let private volume (x, y, z) = x * y * z\nlet v = volume (2, 3, 4)"
-        "let private volume x y z = x * y * z\nlet v = volume 2 3 4"
+        (fsharp
+            """
+            let private volume (x, y, z) = x * y * z
+            let v = volume (2, 3, 4)
+            """)
+        (fsharp
+            """
+            let private volume x y z = x * y * z
+            let v = volume 2 3 4
+            """)
 
 [<Fact>]
 let ``function passed as a value is not rewritten`` () =
-    assertNoSuggestion "let private add (a, b) = a + b\nlet sums (pairs: (int * int) list) = pairs |> List.map add"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private add (a, b) = a + b
+            let sums (pairs: (int * int) list) = pairs |> List.map add
+            """
+    )
 
 [<Fact>]
 let ``tuple piped into the function is not rewritten`` () =
@@ -82,7 +120,13 @@ let ``tuple piped into the function is not rewritten`` () =
 
 [<Fact>]
 let ``call with a tuple-valued variable is not rewritten`` () =
-    assertNoSuggestion "let private add (a, b) = a + b\nlet f (pair: int * int) = add pair"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private add (a, b) = a + b
+            let f (pair: int * int) = add pair
+            """
+    )
 
 [<Fact>]
 let ``non-private function is not rewritten`` () =
@@ -103,11 +147,25 @@ let ``definition without a space before the tuple keeps its name`` () =
 [<Fact>]
 let ``call with a projection continuation is not rewritten`` () =
     // review regression: `key 1 2.Length` loses the atomic grouping
-    assertNoSuggestion "let private key (a, b) = sprintf \"%d-%d\" a b\nlet n = key(1, 2).Length"
+    assertNoSuggestion (
+        fsharp
+            """
+            let private key (a, b) = sprintf "%d-%d" a b
+            let n = key(1, 2).Length
+            """
+    )
 
 [<Fact>]
 let ``an attributed function keeps its tuple`` () =
     // Feliz's [<ReactComponent>] derives the props object from the tuple;
     // what a plugin makes of the curried form cannot be checked here
-    assertNoSuggestion
-        "type MarkAttribute() =\n    inherit System.Attribute()\n[<Mark>]\nlet private add (a, b) = a + b\nlet total = add (1, 2)"
+    assertNoSuggestion (
+        fsharp
+            """
+            type MarkAttribute() =
+                inherit System.Attribute()
+            [<Mark>]
+            let private add (a, b) = a + b
+            let total = add (1, 2)
+            """
+    )

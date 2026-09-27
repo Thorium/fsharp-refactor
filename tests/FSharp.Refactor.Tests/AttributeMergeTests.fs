@@ -19,40 +19,113 @@ let private assertMerge (source: string) (expectedPatched: string) =
 [<Fact>]
 let ``stacked attribute lines merge into one bracket`` () =
     assertMerge
-        "module Test\n[<System.Obsolete>]\n[<CompiledName(\"Run\")>]\nlet f () = 1"
-        "module Test\n[<System.Obsolete; CompiledName(\"Run\")>]\nlet f () = 1"
+        (fsharp
+            """
+            module Test
+            [<System.Obsolete>]
+            [<CompiledName("Run")>]
+            let f () = 1
+            """)
+        (fsharp
+            """
+            module Test
+            [<System.Obsolete; CompiledName("Run")>]
+            let f () = 1
+            """)
 
 [<Fact>]
 let ``same-line attribute brackets merge too`` () =
     assertMerge
-        "module Test\n[<System.Obsolete>] [<CompiledName(\"Run\")>]\nlet f () = 1"
-        "module Test\n[<System.Obsolete; CompiledName(\"Run\")>]\nlet f () = 1"
+        (fsharp
+            """
+            module Test
+            [<System.Obsolete>] [<CompiledName("Run")>]
+            let f () = 1
+            """)
+        (fsharp
+            """
+            module Test
+            [<System.Obsolete; CompiledName("Run")>]
+            let f () = 1
+            """)
 
 [<Fact>]
 let ``type attributes merge`` () =
     assertMerge
-        "module Test\n[<Sealed>]\n[<AllowNullLiteral>]\ntype C() =\n    member _.X = 1"
-        "module Test\n[<Sealed; AllowNullLiteral>]\ntype C() =\n    member _.X = 1"
+        (fsharp
+            """
+            module Test
+            [<Sealed>]
+            [<AllowNullLiteral>]
+            type C() =
+                member _.X = 1
+            """)
+        (fsharp
+            """
+            module Test
+            [<Sealed; AllowNullLiteral>]
+            type C() =
+                member _.X = 1
+            """)
 
 [<Fact>]
 let ``a single attribute list is fine`` () =
-    Assert.Empty(mergesIn "module Test\n[<System.Obsolete; CompiledName(\"Run\")>]\nlet f () = 1")
+    Assert.Empty(
+        mergesIn (
+            fsharp
+                """
+                module Test
+                [<System.Obsolete; CompiledName("Run")>]
+                let f () = 1
+                """
+        )
+    )
 
 [<Fact>]
 let ``a comment between brackets suppresses the merge`` () =
-    Assert.Empty(mergesIn "module Test\n[<System.Obsolete>]\n// keep separate\n[<CompiledName(\"Run\")>]\nlet f () = 1")
+    Assert.Empty(
+        mergesIn (
+            fsharp
+                """
+                module Test
+                [<System.Obsolete>]
+                // keep separate
+                [<CompiledName("Run")>]
+                let f () = 1
+                """
+        )
+    )
 
 [<Fact>]
 let ``more than four attributes stay in their own brackets`` () =
     // one merged line stops being a list you scan and starts being one you
     // parse; past the cap the separate brackets read better
-    let source = "module Test\n[<A>]\n[<B>]\n[<C>]\n[<D>]\n[<E>]\nlet f () = 1"
+    let source =
+        fsharp
+            """
+            module Test
+            [<A>]
+            [<B>]
+            [<C>]
+            [<D>]
+            [<E>]
+            let f () = 1
+            """
 
     Assert.Empty(mergesIn source)
 
 [<Fact>]
 let ``four attributes still merge`` () =
-    let source = "module Test\n[<A>]\n[<B>]\n[<C>]\n[<D>]\nlet f () = 1"
+    let source =
+        fsharp
+            """
+            module Test
+            [<A>]
+            [<B>]
+            [<C>]
+            [<D>]
+            let f () = 1
+            """
 
     match mergesIn source with
     | [ s ] -> Assert.Equal("[<A; B; C; D>]", s.ReplacementText)
@@ -69,7 +142,18 @@ let ``a merge that would overrun the wrap column is left alone`` () =
 [<Fact>]
 let ``a raised cap merges what the default refuses`` () =
     // { "FR0060": { "maxAttributes": 6 } } — house style, not correctness
-    let source = "module Test\n[<A>]\n[<B>]\n[<C>]\n[<D>]\n[<E>]\nlet f () = 1"
+    let source =
+        fsharp
+            """
+            module Test
+            [<A>]
+            [<B>]
+            [<C>]
+            [<D>]
+            [<E>]
+            let f () = 1
+            """
+
     let tree, sourceText = parse source
 
     Assert.Empty(

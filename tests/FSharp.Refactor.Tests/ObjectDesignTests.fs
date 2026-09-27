@@ -26,13 +26,17 @@ let ``literal and identifier chain becomes interpolation`` () =
 [<Fact>]
 let ``dotted string property is a hole`` () =
     assertConcat
-        "type P = { Label: string }\nlet f (prefix: string) (p: P) = prefix + \": \" + p.Label"
+        (fsharp
+            """
+            type P = { Label: string }
+            let f (prefix: string) (p: P) = prefix + ": " + p.Label
+            """)
         "$\"{prefix}: {p.Label}\""
 
 [<Fact>]
 let ``braces or percent in a literal leave the chain alone`` () =
     // $"{{100%%}} {name}" reads worse than the concatenation it replaces
-    Assert.Empty(concatIn "let f (name: string) = \"{100%} \" + name")
+    Assert.Empty(concatIn """let f (name: string) = "{100%} " + name""")
 
 [<Fact>]
 let ``non-string operand chain is left alone`` () =
@@ -40,7 +44,7 @@ let ``non-string operand chain is left alone`` () =
 
 [<Fact>]
 let ``method-call operand is left alone`` () =
-    Assert.Empty(concatIn "let f (name: string) = \"Hello \" + name.Trim()")
+    Assert.Empty(concatIn """let f (name: string) = "Hello " + name.Trim()""")
 
 [<Fact>]
 let ``all-literal chain is left alone`` () =
@@ -54,18 +58,56 @@ let ``literal-free chain is left alone`` () =
 let ``a chain in a literal or an attribute argument is left alone`` () =
     // an interpolated string is not a constant: FS0267 in a [<Literal>],
     // FS0837 as an attribute argument
-    Assert.Empty(concatIn "module Test\n[<Literal>]\nlet A = \"a\"\n[<Literal>]\nlet B = \"x\" + A + \"y\"")
+    Assert.Empty(
+        concatIn (
+            fsharp
+                """
+                module Test
+                [<Literal>]
+                let A = "a"
+                [<Literal>]
+                let B = "x" + A + "y"
+                """
+        )
+    )
 
     Assert.Empty(
-        concatIn "module Test\n[<Literal>]\nlet A = \"a\"\n[<System.Obsolete(\"x\" + A + \"y\")>]\nlet f () = 1"
+        concatIn (
+            fsharp
+                """
+                module Test
+                [<Literal>]
+                let A = "a"
+                [<System.Obsolete("x" + A + "y")>]
+                let f () = 1
+                """
+        )
     )
 
 [<Fact>]
 let ``an unannotated name in a tuple or a primary constructor keeps the chain`` () =
     // like a curried unannotated parameter: only the + types it as a string,
     // and a plain hole would let it generalise
-    Assert.Empty(concatIn "module Test\nlet q (tcref: string, nm) = tcref + \"-\" + nm + \"!\"")
-    Assert.Empty(concatIn "module Test\ntype T(nm) =\n    member _.Q = \"a\" + nm + \"!\"")
+    Assert.Empty(
+        concatIn (
+            fsharp
+                """
+                module Test
+                let q (tcref: string, nm) = tcref + "-" + nm + "!"
+                """
+        )
+    )
+
+    Assert.Empty(
+        concatIn (
+            fsharp
+                """
+                module Test
+                type T(nm) =
+                    member _.Q = "a" + nm + "!"
+                """
+        )
+    )
 
 // ---- FR0032 / FR0033 ObjectDesign ----
 
@@ -82,7 +124,14 @@ let private designConfinedIn (source: string) =
 [<Fact>]
 let ``new-constructed disposable field without IDisposable is noted`` () =
     let disposables, _, _ =
-        designIn "type Holder() =\n    let stream = new System.IO.MemoryStream()\n    member _.Size = stream.Length"
+        designIn (
+            fsharp
+                """
+                type Holder() =
+                    let stream = new System.IO.MemoryStream()
+                    member _.Size = stream.Length
+                """
+        )
 
     match disposables with
     | [ s ] ->
@@ -93,23 +142,46 @@ let ``new-constructed disposable field without IDisposable is noted`` () =
 [<Fact>]
 let ``implementing IDisposable silences the field note`` () =
     let disposables, _, _ =
-        designIn
-            "type Holder() =\n    let stream = new System.IO.MemoryStream()\n    member _.Size = stream.Length\n\n    interface System.IDisposable with\n        member _.Dispose() = stream.Dispose()"
+        designIn (
+            fsharp
+                """
+                type Holder() =
+                    let stream = new System.IO.MemoryStream()
+                    member _.Size = stream.Length
+
+                    interface System.IDisposable with
+                        member _.Dispose() = stream.Dispose()
+                """
+        )
 
     Assert.Empty disposables
 
 [<Fact>]
 let ``injected disposable is not owned`` () =
     let disposables, _, _ =
-        designIn "type Holder(stream: System.IO.MemoryStream) =\n    let s = stream\n    member _.Size = s.Length"
+        designIn (
+            fsharp
+                """
+                type Holder(stream: System.IO.MemoryStream) =
+                    let s = stream
+                    member _.Size = s.Length
+                """
+        )
 
     Assert.Empty disposables
 
 [<Fact>]
 let ``member without instance state can be static`` () =
     let _, statics, _ =
-        designIn
-            "type Calc(seed: int) =\n    let offset = seed * 2\n    member _.Twice(x: int) = x * 2\n    member _.WithOffset(x: int) = x + offset"
+        designIn (
+            fsharp
+                """
+                type Calc(seed: int) =
+                    let offset = seed * 2
+                    member _.Twice(x: int) = x * 2
+                    member _.WithOffset(x: int) = x + offset
+                """
+        )
 
     match statics with
     | [ s ] -> Assert.Equal("Twice", s.MemberName)
@@ -118,14 +190,27 @@ let ``member without instance state can be static`` () =
 [<Fact>]
 let ``member using the self identifier stays instance`` () =
     let _, statics, _ =
-        designIn "type Calc() =\n    member this.Twice(x: int) = this.Base + x\n    member _.Base = 2"
+        designIn (
+            fsharp
+                """
+                type Calc() =
+                    member this.Twice(x: int) = this.Base + x
+                    member _.Base = 2
+                """
+        )
 
     Assert.Empty statics
 
 [<Fact>]
 let ``member using a constructor parameter stays instance`` () =
     let _, statics, _ =
-        designIn "type Calc(seed: int) =\n    member _.Offset(x: int) = x + seed"
+        designIn (
+            fsharp
+                """
+                type Calc(seed: int) =
+                    member _.Offset(x: int) = x + seed
+                """
+        )
 
     Assert.Empty statics
 
@@ -138,8 +223,15 @@ let ``override members are never suggested static`` () =
 [<Fact>]
 let ``member parameter shadowing a field still counts as static`` () =
     let _, statics, _ =
-        designIn
-            "type Calc() =\n    let offset = 2\n    member _.Apply(offset: int) = offset + 1\n    member _.Off = offset"
+        designIn (
+            fsharp
+                """
+                type Calc() =
+                    let offset = 2
+                    member _.Apply(offset: int) = offset + 1
+                    member _.Off = offset
+                """
+        )
 
     match statics with
     | [ s ] -> Assert.Equal("Apply", s.MemberName)
@@ -149,16 +241,30 @@ let ``member parameter shadowing a field still counts as static`` () =
 let ``computation expression builder members stay instance`` () =
     // F# calls builder members on the builder value; static would break the CE
     let _, statics, _ =
-        designIn
-            "type MaybeBuilder() =\n    member _.Bind(m: int option, f: int -> int option) = Option.bind f m\n    member _.Return(x: int) = Some x\nlet maybe = MaybeBuilder()"
+        designIn (
+            fsharp
+                """
+                type MaybeBuilder() =
+                    member _.Bind(m: int option, f: int -> int option) = Option.bind f m
+                    member _.Return(x: int) = Some x
+                let maybe = MaybeBuilder()
+                """
+        )
 
     Assert.Empty statics
 
 [<Fact>]
 let ``custom operation members stay instance`` () =
     let _, statics, _ =
-        designIn
-            "type Cfg() =\n    member _.Yield(_: unit) = 0\n    [<CustomOperation \"width\">]\n    member _.Width(state: int, w: int) = state + w"
+        designIn (
+            fsharp
+                """
+                type Cfg() =
+                    member _.Yield(_: unit) = 0
+                    [<CustomOperation "width">]
+                    member _.Width(state: int, w: int) = state + w
+                """
+        )
 
     Assert.Empty statics
 
@@ -167,8 +273,16 @@ let ``members of a subclass stay instance`` () =
     // frameworks (SignalR hubs, controllers) dispatch subclass members on
     // instances by name; static would break the contract
     let _, statics, _ =
-        designIn
-            "type Base() =\n    member _.Tag = 1\ntype Hub() =\n    inherit Base()\n    member _.Send(msg: string) = msg.Length"
+        designIn (
+            fsharp
+                """
+                type Base() =
+                    member _.Tag = 1
+                type Hub() =
+                    inherit Base()
+                    member _.Send(msg: string) = msg.Length
+                """
+        )
 
     Assert.Empty statics
 
@@ -182,7 +296,14 @@ let ``copy-and-update of constructor state counts as instance use`` () =
     // regression: `{ state with ... }` only mentions `state` in the record
     // copy source, which the AST walker does not visit as its own node
     let _, statics, _ =
-        designIn "type St = { P: int }\ntype B(state: St) =\n    member _.WithP(p: int) = B({ state with P = p })"
+        designIn (
+            fsharp
+                """
+                type St = { P: int }
+                type B(state: St) =
+                    member _.WithP(p: int) = B({ state with P = p })
+                """
+        )
 
     Assert.Empty statics
 
@@ -201,25 +322,44 @@ let ``three or more holes keep the concat chain`` () =
 
 [<Fact>]
 let ``two holes still become an interpolation`` () =
-    assertConcat "let f (a: string) (b: string) = \"x\" + a + \"-\" + b" "$\"x{a}-{b}\""
+    assertConcat """let f (a: string) (b: string) = "x" + a + "-" + b""" "$\"x{a}-{b}\""
 
 [<Fact>]
 let ``an attributed member is framework territory and stays instance`` () =
     // [<Fact>] tests, [<Benchmark>] methods (BenchmarkDotNet REQUIRES
     // instance), controller actions: reflective dispatch owns the shape
     let _, statics, _ =
-        designIn
-            "module Test\nopen Xunit\ntype Suite() =\n    [<Fact>]\n    member _.``adds up`` () = Assert.True(1 + 1 = 2)"
+        designIn (
+            fsharp
+                """
+                namespace Xunit
+                type FactAttribute() =
+                    inherit System.Attribute()
+                type Assert =
+                    static member True(condition: bool) = ignore condition
+
+                namespace Test
+                open Xunit
+                type Suite() =
+                    [<Fact>]
+                    member _.``adds up`` () = Assert.True(1 + 1 = 2)
+                """
+        )
 
     Assert.Empty statics
 
 [<Fact>]
 let ``the concat alternative of a plus chain also typechecks`` () =
-    let source = "module Test\nlet f (a: string) (b: string) = \"x\" + a + \"-\" + b"
+    let source =
+        fsharp
+            """
+            module Test
+            let f (a: string) (b: string) = "x" + a + "-" + b
+            """
 
     match concatIn source with
     | [ s ] ->
-        Assert.Equal(Some "System.String.Concat(\"x\", a, \"-\", b)", s.ConcatAlternative)
+        Assert.Equal(Some """System.String.Concat("x", a, "-", b)""", s.ConcatAlternative)
         let patched = applyEdit source s.Range s.ConcatAlternative.Value
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one suggestion, got %A" other
@@ -227,16 +367,29 @@ let ``the concat alternative of a plus chain also typechecks`` () =
 [<Fact>]
 let ``the concat alternative uses the short spelling under open System`` () =
     let source =
-        "module Test\nopen System\nlet f (a: string) (b: string) = \"x\" + a + \"-\" + b"
+        fsharp
+            """
+            module Test
+            open System
+            let f (a: string) (b: string) = "x" + a + "-" + b
+            """
 
     match concatIn source with
-    | [ s ] -> Assert.Equal(Some "String.Concat(\"x\", a, \"-\", b)", s.ConcatAlternative)
+    | [ s ] -> Assert.Equal(Some """String.Concat("x", a, "-", b)""", s.ConcatAlternative)
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
 let ``FR0032: the editor fix appends a plain IDisposable disposing every created field`` () =
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let reader = new StreamReader(stream)\n    member _.Read() = reader.ReadLine()"
+        fsharp
+            """
+            module Test
+            open System.IO
+            type Holder(path: string) =
+                let stream = new FileStream(path, FileMode.Open)
+                let reader = new StreamReader(stream)
+                member _.Read() = reader.ReadLine()
+            """
 
     let disposables, _, _ = designIn source
 
@@ -252,7 +405,15 @@ let ``FR0032: the editor fix appends a plain IDisposable disposing every created
         Assert.Contains("reader.Dispose()", patched)
         // the reader over the stream goes first: reverse declaration order,
         // since a field can only be built from the ones above it
-        Assert.Contains("reader.Dispose()\n            stream.Dispose()", patched)
+        Assert.Contains(
+            fsharp
+                """
+                reader.Dispose()
+                            stream.Dispose()
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two leaked-field findings, got %A" other
 
@@ -261,7 +422,17 @@ let ``FR0047: the missed field under a wrapper the body disposes goes after it``
     // `stream.Dispose()` first would leave the reader (a writer: flushing)
     // over a closed stream
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let reader = new StreamReader(stream)\n    interface System.IDisposable with\n        member _.Dispose() =\n            reader.Dispose()"
+        fsharp
+            """
+            module Test
+            open System.IO
+            type Holder(path: string) =
+                let stream = new FileStream(path, FileMode.Open)
+                let reader = new StreamReader(stream)
+                interface System.IDisposable with
+                    member _.Dispose() =
+                        reader.Dispose()
+            """
 
     let _, _, undisposed = designIn source
 
@@ -270,14 +441,33 @@ let ``FR0047: the missed field under a wrapper the body disposes goes after it``
         Assert.Equal("stream", s.FieldName)
         let r, _, replacement = s.Fix.Value
         let patched = applyEdit source r replacement
-        Assert.Contains("reader.Dispose()\n            stream.Dispose()", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                reader.Dispose()
+                            stream.Dispose()
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
 [<Fact>]
 let ``FR0047: a missed wrapper over a field the body disposes goes before it`` () =
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let writer = new StreamWriter(stream)\n    interface System.IDisposable with\n        member _.Dispose() =\n            stream.Dispose()"
+        fsharp
+            """
+            module Test
+            open System.IO
+            type Holder(path: string) =
+                let stream = new FileStream(path, FileMode.Open)
+                let writer = new StreamWriter(stream)
+                interface System.IDisposable with
+                    member _.Dispose() =
+                        stream.Dispose()
+            """
 
     let _, _, undisposed = designIn source
 
@@ -286,7 +476,16 @@ let ``FR0047: a missed wrapper over a field the body disposes goes before it`` (
         Assert.Equal("writer", s.FieldName)
         let r, _, replacement = s.Fix.Value
         let patched = applyEdit source r replacement
-        Assert.Contains("writer.Dispose()\n            stream.Dispose()", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                writer.Dispose()
+                            stream.Dispose()
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
@@ -296,7 +495,19 @@ let ``FR0047: a missed field between a wrapper and its own source has no fix`` (
     // the writer and the stream: the buffer belongs between them, and a
     // fix at either end of the body is wrong
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let buffered = new BufferedStream(stream)\n    let writer = new StreamWriter(buffered)\n    interface System.IDisposable with\n        member _.Dispose() =\n            writer.Dispose()\n            stream.Dispose()"
+        fsharp
+            """
+            module Test
+            open System.IO
+            type Holder(path: string) =
+                let stream = new FileStream(path, FileMode.Open)
+                let buffered = new BufferedStream(stream)
+                let writer = new StreamWriter(buffered)
+                interface System.IDisposable with
+                    member _.Dispose() =
+                        writer.Dispose()
+                        stream.Dispose()
+            """
 
     let _, _, undisposed = designIn source
 
@@ -309,7 +520,15 @@ let ``FR0047: a missed field between a wrapper and its own source has no fix`` (
 [<Fact>]
 let ``FR0032: a type inheriting a disposable base is noted without the interface fix`` () =
     let source =
-        "module Test\nopen System.IO\ntype Holder(path: string) =\n    inherit MemoryStream()\n    let reader = new StreamReader(path)\n    member _.Read() = reader.ReadLine()"
+        fsharp
+            """
+            module Test
+            open System.IO
+            type Holder(path: string) =
+                inherit MemoryStream()
+                let reader = new StreamReader(path)
+                member _.Read() = reader.ReadLine()
+            """
 
     let disposables, _, _ = designIn source
 
@@ -324,7 +543,19 @@ let ``FR0032: a disposable built with the object itself is the framework's to di
     // MonoGame: `new GraphicsDeviceManager(this)` registers with the Game,
     // which disposes it; Kasino drew a note for exactly that
     let source =
-        "module Test\ntype Manager(owner: obj) =\n    interface System.IDisposable with\n        member _.Dispose() = ()\ntype Game() as this =\n    let manager = new Manager(this)\n    member _.Manager = manager\ntype Plain() =\n    let manager = new Manager(null)\n    member _.Manager = manager"
+        fsharp
+            """
+            module Test
+            type Manager(owner: obj) =
+                interface System.IDisposable with
+                    member _.Dispose() = ()
+            type Game() as this =
+                let manager = new Manager(this)
+                member _.Manager = manager
+            type Plain() =
+                let manager = new Manager(null)
+                member _.Manager = manager
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
     let disposables, _, _ = ObjectDesign.find true tree sourceText checkResults
@@ -338,10 +569,19 @@ let ``FR0031: an unannotated parameter typed only by the chain keeps its + chain
     // the F# compiler's `qualifiedMangledNameOfTyconRef tcref nm`: a plain
     // hole lets `nm` generalise (FS0034 against its signature file), and a
     // `%s` hole would leave the String.Concat fast path — the chain stays
-    let signature = "module Test\nval qualifiedName: string -> string -> string"
+    let signature =
+        fsharp
+            """
+            module Test
+            val qualifiedName: string -> string -> string
+            """
 
     let implementation =
-        "module Test\nlet qualifiedName (tcref: string) nm = tcref + \"-\" + nm + \"!\""
+        fsharp
+            """
+            module Test
+            let qualifiedName (tcref: string) nm = tcref + "-" + nm + "!"
+            """
 
     let tree, sourceText, check, baseline, _ =
         parseAndCheckSigned signature implementation
@@ -359,8 +599,18 @@ let ``FR0047: an interface Dispose delegating to the type's own Dispose member i
     // the F# compiler's NativeDllResolveHandlerCoreClr: `member _.Dispose()`
     // disposes the field, `interface IDisposable` calls `this.Dispose()`
     let _, _, undisposed =
-        designIn
-            "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    member _.Dispose() = stream.Dispose()\n    interface System.IDisposable with\n        member this.Dispose() = this.Dispose()"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Holder(path: string) =
+                    let stream = new FileStream(path, FileMode.Open)
+                    member _.Dispose() = stream.Dispose()
+                    interface System.IDisposable with
+                        member this.Dispose() = this.Dispose()
+                """
+        )
 
     Assert.Empty undisposed
 
@@ -369,16 +619,37 @@ let ``FR0047: an interface Dispose delegating to a let-bound function is followe
     // TcImports: `let dispose () = ... (disposal :> IDisposable).Dispose()`
     // and `interface IDisposable with member _.Dispose() = dispose ()`
     let _, _, undisposed =
-        designIn
-            "module Test\nopen System\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let dispose () = (stream :> IDisposable).Dispose()\n    interface IDisposable with\n        member _.Dispose() = dispose ()"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System
+                open System.IO
+                type Holder(path: string) =
+                    let stream = new FileStream(path, FileMode.Open)
+                    let dispose () = (stream :> IDisposable).Dispose()
+                    interface IDisposable with
+                        member _.Dispose() = dispose ()
+                """
+        )
 
     Assert.Empty undisposed
 
 [<Fact>]
 let ``FR0047: a delegate that disposes nothing still leaves the field noted`` () =
     let _, _, undisposed =
-        designIn
-            "module Test\nopen System.IO\ntype Holder(path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    member _.Dispose() = ()\n    interface System.IDisposable with\n        member this.Dispose() = this.Dispose()"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Holder(path: string) =
+                    let stream = new FileStream(path, FileMode.Open)
+                    member _.Dispose() = ()
+                    interface System.IDisposable with
+                        member this.Dispose() = this.Dispose()
+                """
+        )
 
     Assert.Single undisposed |> ignore
 
@@ -389,8 +660,24 @@ let ``FR0032: an interface that inherits IDisposable makes the type disposable``
     // Its Dispose only cancels the cts, though, which FR0047 now says
     // (the real service leaks the handle exactly this way)
     let disposables, _, undisposed =
-        designIn
-            "module Test\nopen System\nopen System.Threading\ntype Service =\n    interface\n        inherit IDisposable\n        abstract Run: unit -> unit\n    end\ntype Impl() =\n    let cts = new CancellationTokenSource()\n    interface Service with\n        member _.Dispose() = cts.Cancel()\n        member _.Run() = ()"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System
+                open System.Threading
+                type Service =
+                    interface
+                        inherit IDisposable
+                        abstract Run: unit -> unit
+                    end
+                type Impl() =
+                    let cts = new CancellationTokenSource()
+                    interface Service with
+                        member _.Dispose() = cts.Cancel()
+                        member _.Run() = ()
+                """
+        )
 
     Assert.Empty disposables
 
@@ -404,8 +691,16 @@ let ``FR0032: an interface that inherits IDisposable makes the type disposable``
 let ``FR0032: a StringReader field owns nothing`` () =
     // fsharp.formatting's FsiSession: `let inStream = new StringReader("")`
     let disposables, _, _ =
-        designIn
-            "module Test\nopen System.IO\ntype Session() =\n    let inStream = new StringReader(\"\")\n    member _.Read() = inStream.ReadLine()"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Session() =
+                    let inStream = new StringReader("")
+                    member _.Read() = inStream.ReadLine()
+                """
+        )
 
     Assert.Empty disposables
 
@@ -414,15 +709,31 @@ let ``FR0032: an HttpClient field is a shared lifetime, not a resource of the ty
     // CR0060/CR0061's noOwnership list: a client per instance is a lifetime
     // question (a static instance, IHttpClientFactory), not a missing Dispose
     let disposables, _, _ =
-        designIn
-            "module Test\nopen System.Net.Http\ntype Api() =\n    let client = new HttpClient()\n    member _.Get(u: string) = client.GetStringAsync(u).Result"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System.Net.Http
+                type Api() =
+                    let client = new HttpClient()
+                    member _.Get(u: string) = client.GetStringAsync(u).Result
+                """
+        )
 
     Assert.Empty disposables
 
     // a FileStream field beside it is still the note
     let disposables, _, _ =
-        designIn
-            "module Test\nopen System.IO\ntype Api() =\n    let log = new FileStream(\"x\", FileMode.Append)\n    member _.Size = log.Length"
+        designIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Api() =
+                    let log = new FileStream("x", FileMode.Append)
+                    member _.Size = log.Length
+                """
+        )
 
     Assert.Single disposables |> ignore
 // ---- FR0033 audit guards ----
@@ -432,8 +743,17 @@ let ``FR0033: an instance let bound by a tuple pattern is instance state`` () =
     // FCS GraphChecking: `let sigToImpl, implToSig = buildBiDirectionalMaps
     // goodPairs`, read by the members — every binder of the pattern counts
     let _, statics, _ =
-        designIn
-            "module Test\ntype Pairs(pairs: (int * int) list) =\n    let sigToImpl, implToSig = List.unzip pairs\n    member _.Impl(i: int) = List.item i implToSig\n    member _.Sig(i: int) = List.item i sigToImpl\n    member _.Twice(x: int) = x * 2"
+        designIn (
+            fsharp
+                """
+                module Test
+                type Pairs(pairs: (int * int) list) =
+                    let sigToImpl, implToSig = List.unzip pairs
+                    member _.Impl(i: int) = List.item i implToSig
+                    member _.Sig(i: int) = List.item i sigToImpl
+                    member _.Twice(x: int) = x * 2
+                """
+        )
 
     match statics with
     | [ s ] -> Assert.Equal("Twice", s.MemberName)
@@ -444,8 +764,15 @@ let ``FR0033: a constructor parameter applied in a record copy source counts`` (
     // FCS Symbols: `FSharpDisplayContext(fun g -> { denv g with ... })` —
     // the copy source is an application of the ctor parameter, not a name
     let _, statics, _ =
-        designIn
-            "module Test\ntype Env = { Short: bool }\ntype Ctx(denv: int -> Env) =\n    member _.WithShort(shortNames: bool) = Ctx(fun g -> { denv g with Short = shortNames })"
+        designIn (
+            fsharp
+                """
+                module Test
+                type Env = { Short: bool }
+                type Ctx(denv: int -> Env) =
+                    member _.WithShort(shortNames: bool) = Ctx(fun g -> { denv g with Short = shortNames })
+                """
+        )
 
     Assert.Empty statics
 
@@ -454,8 +781,21 @@ let ``FR0033: an instance let function called from a match! scrutinee counts`` (
     // FCS TransparentCompiler: `match! ComputeItemKeyStore(...) with` inside
     // an async member body reads the instance let function
     let _, statics, _ =
-        designIn
-            "module Test\ntype Store(cache: System.Collections.Generic.Dictionary<string, int>) =\n    let Compute (name: string) =\n        async { return (if cache.ContainsKey name then Some cache.[name] else None) }\n    member _.Find(name: string) =\n        async {\n            match! Compute name with\n            | None -> return 0\n            | Some v -> return v\n        }"
+        designIn (
+            fsharp
+                """
+                module Test
+                type Store(cache: System.Collections.Generic.Dictionary<string, int>) =
+                    let Compute (name: string) =
+                        async { return (if cache.ContainsKey name then Some cache.[name] else None) }
+                    member _.Find(name: string) =
+                        async {
+                            match! Compute name with
+                            | None -> return 0
+                            | Some v -> return v
+                        }
+                """
+        )
 
     Assert.Empty statics
 
@@ -464,8 +804,18 @@ let ``the index carries a match! scrutinee exactly once`` () =
     // the SDK walker skips it; the supplement lifts it — and must not
     // double it, or every rule counting expressions would count twice
     let tree, _ =
-        parse
-            "module Test\nlet f (g: int -> Async<int option>) =\n    async {\n        match! g 1 with\n        | None -> return 0\n        | Some v -> return v\n    }"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (g: int -> Async<int option>) =
+                    async {
+                        match! g 1 with
+                        | None -> return 0
+                        | Some v -> return v
+                    }
+                """
+        )
 
     let index = AstIndex.ofTree tree
 
@@ -480,7 +830,14 @@ let ``the index carries a match! scrutinee exactly once`` () =
 
 [<Fact>]
 let ``FR0033: a public member is an API change and waits for --api-changes`` () =
-    let source = "module Test\ntype Calc() =\n    member _.Twice(x: int) = x * 2"
+    let source =
+        fsharp
+            """
+            module Test
+            type Calc() =
+                member _.Twice(x: int) = x * 2
+            """
+
     let _, confined, _ = designConfinedIn source
     Assert.Empty confined
 
@@ -493,10 +850,24 @@ let ``FR0033: a public member is an API change and waits for --api-changes`` () 
 [<Fact>]
 let ``FR0033: a private type or member is confined and noted without opt-in`` () =
     let _, byType, _ =
-        designConfinedIn "module Test\ntype private Calc() =\n    member _.Twice(x: int) = x * 2"
+        designConfinedIn (
+            fsharp
+                """
+                module Test
+                type private Calc() =
+                    member _.Twice(x: int) = x * 2
+                """
+        )
 
     let _, byMember, _ =
-        designConfinedIn "module Test\ntype Calc() =\n    member internal _.Twice(x: int) = x * 2"
+        designConfinedIn (
+            fsharp
+                """
+                module Test
+                type Calc() =
+                    member internal _.Twice(x: int) = x * 2
+                """
+        )
 
     match byType, byMember with
     | [ a ], [ b ] ->
@@ -510,10 +881,21 @@ let ``FR0033: a member a sibling signature declares stays instance`` () =
     // .fsi; the signature owns the shape, so only a private member could
     // change
     let signature =
-        "module Test\ntype Calc =\n    new: unit -> Calc\n    member Twice: x: int -> int"
+        fsharp
+            """
+            module Test
+            type Calc =
+                new: unit -> Calc
+                member Twice: x: int -> int
+            """
 
     let implementation =
-        "module Test\ntype Calc() =\n    member _.Twice(x: int) = x * 2"
+        fsharp
+            """
+            module Test
+            type Calc() =
+                member _.Twice(x: int) = x * 2
+            """
 
     let tree, sourceText, check, baseline, _ =
         parseAndCheckSigned signature implementation
@@ -527,8 +909,17 @@ let ``FR0033: protocol stubs and inline templates are not computations`` () =
     // fsharp.formatting's fake fsi event loop: `Run() = ()`; FCS's
     // `_DebugKeyStoreNoop`: `member inline _.WriteRange(_m) = ()`
     let _, statics, _ =
-        designIn
-            "module Test\ntype Loop() =\n    member _.Run() = ()\n    member _.Default() = Unchecked.defaultof<int>\n    member inline _.Write(x: int) = x + 1\n    member _.Invoke(f: unit -> int) = f ()"
+        designIn (
+            fsharp
+                """
+                module Test
+                type Loop() =
+                    member _.Run() = ()
+                    member _.Default() = Unchecked.defaultof<int>
+                    member inline _.Write(x: int) = x + 1
+                    member _.Invoke(f: unit -> int) = f ()
+                """
+        )
 
     match statics with
     | [ s ] -> Assert.Equal("Invoke", s.MemberName)
@@ -539,8 +930,17 @@ let ``FR0033: a type whose instances are boxed to obj is consumed by reflection`
     // fsharp.formatting's `CreateNoOpFsiObject() = box (NoOpFsiObject())`
     // hands the instance to reflection, where a static member is invisible
     let _, statics, _ =
-        designIn
-            "module Test\ntype Fake() =\n    member _.Invoke(f: unit -> int) = f ()\ntype Plain() =\n    member _.Call(f: unit -> int) = f ()\nlet handoff = box (Fake())"
+        designIn (
+            fsharp
+                """
+                module Test
+                type Fake() =
+                    member _.Invoke(f: unit -> int) = f ()
+                type Plain() =
+                    member _.Call(f: unit -> int) = f ()
+                let handoff = box (Fake())
+                """
+        )
 
     match statics with
     | [ s ] -> Assert.Equal("Call", s.MemberName)
@@ -555,8 +955,15 @@ let private disposeWithoutInterfaceIn (source: string) =
 [<Fact>]
 let ``FR0148: a public Dispose on a type without IDisposable is noted`` () =
     match
-        disposeWithoutInterfaceIn
-            "module Test\nopen System.IO\ntype Session(inner: MemoryStream) =\n    member _.Dispose() = inner.Dispose()"
+        disposeWithoutInterfaceIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Session(inner: MemoryStream) =
+                    member _.Dispose() = inner.Dispose()
+                """
+        )
     with
     | [ s ] -> Assert.Equal("Session", s.TypeName)
     | other -> failwithf "Expected one note, got %A" other
@@ -564,18 +971,43 @@ let ``FR0148: a public Dispose on a type without IDisposable is noted`` () =
 [<Fact>]
 let ``FR0148: a type implementing IDisposable, or inheriting one, is fine`` () =
     Assert.Empty(
-        disposeWithoutInterfaceIn
-            "module Test\nopen System\nopen System.IO\ntype Session(inner: MemoryStream) =\n    member _.Dispose() = inner.Dispose()\n    interface IDisposable with\n        member this.Dispose() = this.Dispose()"
+        disposeWithoutInterfaceIn (
+            fsharp
+                """
+                module Test
+                open System
+                open System.IO
+                type Session(inner: MemoryStream) =
+                    member _.Dispose() = inner.Dispose()
+                    interface IDisposable with
+                        member this.Dispose() = this.Dispose()
+                """
+        )
     )
 
     Assert.Empty(
-        disposeWithoutInterfaceIn
-            "module Test\nopen System.IO\ntype Session() =\n    inherit MemoryStream()\n    member _.Dispose() = ()"
+        disposeWithoutInterfaceIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Session() =
+                    inherit MemoryStream()
+                    member _.Dispose() = ()
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0148: a private Dispose is the type's own business`` () =
     Assert.Empty(
-        disposeWithoutInterfaceIn
-            "module Test\nopen System.IO\ntype Session(inner: MemoryStream) =\n    member private _.Dispose() = inner.Dispose()"
+        disposeWithoutInterfaceIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Session(inner: MemoryStream) =
+                    member private _.Dispose() = inner.Dispose()
+                """
+        )
     )

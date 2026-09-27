@@ -17,8 +17,15 @@ let private argNamesIn (source: string) =
 [<Fact>]
 let ``a misspelled invalidArg name is noted`` () =
     match
-        argNamesIn
-            "module Test\nlet scale (value: int) (factor: int) =\n    if factor = 0 then invalidArg \"facotr\" \"zero\"\n    value * factor"
+        argNamesIn (
+            fsharp
+                """
+                module Test
+                let scale (value: int) (factor: int) =
+                    if factor = 0 then invalidArg "facotr" "zero"
+                    value * factor
+                """
+        )
     with
     | [ s ] ->
         Assert.Equal("facotr", s.UsedName)
@@ -28,15 +35,29 @@ let ``a misspelled invalidArg name is noted`` () =
 [<Fact>]
 let ``a correct ArgumentNullException name is fine`` () =
     Assert.Empty(
-        argNamesIn
-            "module Test\nlet f (input: string) =\n    if isNull input then raise (System.ArgumentNullException \"input\")\n    input.Length"
+        argNamesIn (
+            fsharp
+                """
+                module Test
+                let f (input: string) =
+                    if isNull input then raise (System.ArgumentNullException "input")
+                    input.Length
+                """
+        )
     )
 
 [<Fact>]
 let ``ArgumentException second argument is the parameter name`` () =
     match
-        argNamesIn
-            "module Test\nlet f (input: string) =\n    if input = \"\" then raise (System.ArgumentException(\"empty\", \"inptu\"))\n    input.Length"
+        argNamesIn (
+            fsharp
+                """
+                module Test
+                let f (input: string) =
+                    if input = "" then raise (System.ArgumentException("empty", "inptu"))
+                    input.Length
+                """
+        )
     with
     | [ s ] -> Assert.Equal("inptu", s.UsedName)
     | other -> failwithf "Expected exactly one ctor arg-name note, got %A" other
@@ -46,15 +67,32 @@ let ``a CLI flag name is not a parameter reference`` () =
     // "--mode" can never BE an F# parameter name; the author is naming an
     // external concept, not referencing the signature
     Assert.Empty(
-        argNamesIn
-            "module Test\nlet run (args: string list) =\n    if args.IsEmpty then invalidArg \"--mode\" \"missing\"\n    args.Length"
+        argNamesIn (
+            fsharp
+                """
+                module Test
+                let run (args: string list) =
+                    if args.IsEmpty then invalidArg "--mode" "missing"
+                    args.Length
+                """
+        )
     )
 
 [<Fact>]
 let ``a custom operation validates its DSL operand name`` () =
     Assert.Empty(
-        argNamesIn
-            "module Test\ntype Cfg() =\n    member _.Yield(_: unit) = 0\n    [<CustomOperation \"vpc\">]\n    member _.Vpc(state: int) =\n        if state < 0 then invalidArg \"vpc\" \"bad\"\n        state"
+        argNamesIn (
+            fsharp
+                """
+                module Test
+                type Cfg() =
+                    member _.Yield(_: unit) = 0
+                    [<CustomOperation "vpc">]
+                    member _.Vpc(state: int) =
+                        if state < 0 then invalidArg "vpc" "bad"
+                        state
+                """
+        )
     )
 
 let private editorChecker = FSharp.Compiler.CodeAnalysis.FSharpChecker.Create()
@@ -80,6 +118,8 @@ let private editorMessagesOf
         | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Succeeded r -> r
         | FSharp.Compiler.CodeAnalysis.FSharpCheckFileAnswer.Aborted -> failwith "typechecking aborted"
 
+    FSharp.Refactor.Tests.Parsing.requireTypechecks "editorMessagesOf" source checkResults
+
     let context: FSharp.Analyzers.SDK.EditorContext =
         {
             FileName = "Test.fsx"
@@ -99,7 +139,13 @@ let ``a misspelled name in a one-parameter function is corrected to that paramet
     // one parameter leaves no doubt which name was meant: the editor's fix
     // writes it, and the exception then names the argument the caller passed
     let source =
-        "module Test\nlet scale (factor: int) =\n    if factor = 0 then invalidArg \"facotr\" \"zero\"\n    100 / factor"
+        fsharp
+            """
+            module Test
+            let scale (factor: int) =
+                if factor = 0 then invalidArg "facotr" "zero"
+                100 / factor
+            """
 
     match
         editorMessagesOf source Analyzers.argNamesEditorAnalyzer
@@ -110,7 +156,13 @@ let ``a misspelled name in a one-parameter function is corrected to that paramet
         let patched = applyEdit source fix.FromRange fix.ToText
 
         Assert.Equal(
-            "module Test\nlet scale (factor: int) =\n    if factor = 0 then invalidArg \"factor\" \"zero\"\n    100 / factor",
+            fsharp
+                """
+                module Test
+                let scale (factor: int) =
+                    if factor = 0 then invalidArg "factor" "zero"
+                    100 / factor
+                """,
             patched
         )
 
@@ -126,16 +178,35 @@ let private exceptionsIn (source: string) =
 [<Fact>]
 let ``raise inside finally is noted`` () =
     let finallies, _ =
-        exceptionsIn
-            "module Test\nlet f (act: unit -> int) (cleanup: unit -> unit) =\n    try\n        act ()\n    finally\n        cleanup ()\n        failwith \"cleanup failed\""
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> int) (cleanup: unit -> unit) =
+                    try
+                        act ()
+                    finally
+                        cleanup ()
+                        failwith "cleanup failed"
+                """
+        )
 
     Assert.Single finallies |> ignore
 
 [<Fact>]
 let ``a finally that only cleans up is fine`` () =
     let finallies, _ =
-        exceptionsIn
-            "module Test\nlet f (act: unit -> int) (cleanup: unit -> unit) =\n    try\n        act ()\n    finally\n        cleanup ()"
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> int) (cleanup: unit -> unit) =
+                    try
+                        act ()
+                    finally
+                        cleanup ()
+                """
+        )
 
     Assert.Empty finallies
 
@@ -144,15 +215,33 @@ let ``a raise the finally's own try-with catches never escapes the finally`` () 
     // best-effort cleanup: the flush failure is raised and caught INSIDE the
     // finally, so the exception in flight from act () is never replaced
     let finallies, _ =
-        exceptionsIn
-            "module Test\nlet f (act: unit -> int) (flush: unit -> bool) (log: string -> unit) =\n    try\n        act ()\n    finally\n        try\n            if not (flush ()) then failwith \"flush failed\"\n        with ex ->\n            log ex.Message"
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                let f (act: unit -> int) (flush: unit -> bool) (log: string -> unit) =
+                    try
+                        act ()
+                    finally
+                        try
+                            if not (flush ()) then failwith "flush failed"
+                        with ex ->
+                            log ex.Message
+                """
+        )
 
     Assert.Empty finallies
 
 [<Fact>]
 let ``raising a reserved runtime exception is noted`` () =
     let _, reserved =
-        exceptionsIn "module Test\nlet f () = raise (System.IndexOutOfRangeException \"custom\")"
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                let f () = raise (System.IndexOutOfRangeException "custom")
+                """
+        )
 
     match reserved with
     | [ s ] -> Assert.Equal("IndexOutOfRangeException", s.TypeName)
@@ -161,7 +250,13 @@ let ``raising a reserved runtime exception is noted`` () =
 [<Fact>]
 let ``ordinary exceptions raise freely`` () =
     let _, reserved =
-        exceptionsIn "module Test\nlet f () = raise (System.InvalidOperationException \"bad state\")"
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                let f () = raise (System.InvalidOperationException "bad state")
+                """
+        )
 
     Assert.Empty reserved
 
@@ -170,8 +265,20 @@ let ``FR0064: a match raising three or more distinct exceptions is a dispatch ta
     // FCS `SimulateException`: fault injection raises OutOfMemory,
     // AccessViolation, IndexOutOfRange... one per arm, by request
     let _, reserved =
-        exceptionsIn
-            "module Test\nopen System\nlet simulate (config: string option) =\n    match config with\n    | Some \"oom\" -> raise (OutOfMemoryException())\n    | Some \"av\" -> raise (AccessViolationException())\n    | Some \"ior\" -> raise (IndexOutOfRangeException())\n    | Some \"fail\" -> failwith \"simulated\"\n    | _ -> ()"
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                open System
+                let simulate (config: string option) =
+                    match config with
+                    | Some "oom" -> raise (OutOfMemoryException())
+                    | Some "av" -> raise (AccessViolationException())
+                    | Some "ior" -> raise (IndexOutOfRangeException())
+                    | Some "fail" -> failwith "simulated"
+                    | _ -> ()
+                """
+        )
 
     Assert.Empty reserved
 
@@ -180,8 +287,18 @@ let ``FR0064: two arms raising the same reserved type are no table`` () =
     // illib's Array.replace stays true: one IndexOutOfRange where an
     // ArgumentOutOfRange was meant
     let _, reserved =
-        exceptionsIn
-            "module Test\nopen System\nlet f (index: int) (arr: int[]) =\n    match index with\n    | i when i < 0 -> raise (IndexOutOfRangeException \"index\")\n    | i when i >= arr.Length -> raise (IndexOutOfRangeException \"index\")\n    | i -> arr.[i]"
+        exceptionsIn (
+            fsharp
+                """
+                module Test
+                open System
+                let f (index: int) (arr: int[]) =
+                    match index with
+                    | i when i < 0 -> raise (IndexOutOfRangeException "index")
+                    | i when i >= arr.Length -> raise (IndexOutOfRangeException "index")
+                    | i -> arr.[i]
+                """
+        )
 
     Assert.Equal(2, reserved.Length)
 
@@ -194,7 +311,13 @@ let private securityIn (source: string) =
 [<Fact>]
 let ``MD5 Create is noted as weak`` () =
     let crypto, _, _ =
-        securityIn "module Test\nlet hash () = System.Security.Cryptography.MD5.Create()"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let hash () = System.Security.Cryptography.MD5.Create()
+                """
+        )
 
     match crypto with
     | [ s ] -> Assert.Equal(SecurityRules.WeakKind.Hash "MD5", s.Kind)
@@ -203,15 +326,27 @@ let ``MD5 Create is noted as weak`` () =
 [<Fact>]
 let ``SHA256 is fine`` () =
     let crypto, _, _ =
-        securityIn "module Test\nlet hash () = System.Security.Cryptography.SHA256.Create()"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let hash () = System.Security.Cryptography.SHA256.Create()
+                """
+        )
 
     Assert.Empty crypto
 
 [<Fact>]
 let ``interpolated CommandText is noted`` () =
     let _, sql, _ =
-        securityIn
-            "module Test\nlet q (cmd: obj) (setText: string -> unit) (name: string) =\n    setText $\"select * from users where name = '{name}'\""
+        securityIn (
+            fsharp
+                """
+                module Test
+                let q (cmd: obj) (setText: string -> unit) (name: string) =
+                    setText $"select * from users where name = '{name}'"
+                """
+        )
 
     // setText is a function, not CommandText — nothing fires
     Assert.Empty sql
@@ -219,8 +354,15 @@ let ``interpolated CommandText is noted`` () =
 [<Fact>]
 let ``CommandText assignment from interpolation is noted`` () =
     let _, sql, _ =
-        securityIn
-            "module Test\ntype Cmd() =\n    member val CommandText = \"\" with get, set\nlet q (cmd: Cmd) (name: string) = cmd.CommandText <- $\"select * from t where n = '{name}'\""
+        securityIn (
+            fsharp
+                """
+                module Test
+                type Cmd() =
+                    member val CommandText = "" with get, set
+                let q (cmd: Cmd) (name: string) = cmd.CommandText <- $"select * from t where n = '{name}'"
+                """
+        )
 
     match sql with
     | [ s ] -> Assert.Equal("CommandText", s.Sink)
@@ -229,8 +371,15 @@ let ``CommandText assignment from interpolation is noted`` () =
 [<Fact>]
 let ``a literal CommandText is fine`` () =
     let _, sql, _ =
-        securityIn
-            "module Test\ntype Cmd() =\n    member val CommandText = \"\" with get, set\nlet q (cmd: Cmd) = cmd.CommandText <- \"select * from t where n = @n\""
+        securityIn (
+            fsharp
+                """
+                module Test
+                type Cmd() =
+                    member val CommandText = "" with get, set
+                let q (cmd: Cmd) = cmd.CommandText <- "select * from t where n = @n"
+                """
+        )
 
     Assert.Empty sql
 
@@ -243,7 +392,14 @@ let private miscIn (source: string) =
 [<Fact>]
 let ``public module-level mutable is noted`` () =
     let mutables, _, _ =
-        miscIn "module Test\nlet mutable counter = 0\nlet bump () = counter <- counter + 1"
+        miscIn (
+            fsharp
+                """
+                module Test
+                let mutable counter = 0
+                let bump () = counter <- counter + 1
+                """
+        )
 
     match mutables with
     | [ s ] -> Assert.Equal("counter", s.Name)
@@ -253,7 +409,14 @@ let ``public module-level mutable is noted`` () =
 let ``an UPPERCASE public mutable is noted too`` () =
     // a lone uppercase binder parses as a no-argument LongIdent, not Named
     let mutables, _, _ =
-        miscIn "module Test\nlet mutable Instance = 0\nlet bump () = Instance <- Instance + 1"
+        miscIn (
+            fsharp
+                """
+                module Test
+                let mutable Instance = 0
+                let bump () = Instance <- Instance + 1
+                """
+        )
 
     match mutables with
     | [ s ] -> Assert.Equal("Instance", s.Name)
@@ -262,21 +425,40 @@ let ``an UPPERCASE public mutable is noted too`` () =
 [<Fact>]
 let ``private module-level mutable is a contained decision`` () =
     let mutables, _, _ =
-        miscIn "module Test\nlet mutable private counter = 0\nlet bump () = counter <- counter + 1"
+        miscIn (
+            fsharp
+                """
+                module Test
+                let mutable private counter = 0
+                let bump () = counter <- counter + 1
+                """
+        )
 
     Assert.Empty mutables
 
 [<Fact>]
 let ``a mutable inside a private module is confined`` () =
     let mutables, _, _ =
-        miscIn "module Test\nmodule private State =\n    let mutable counter = 0"
+        miscIn (
+            fsharp
+                """
+                module Test
+                module private State =
+                    let mutable counter = 0
+                """
+        )
 
     Assert.Empty mutables
 
 [<Fact>]
 let ``the editor makes public mutable state private, with internal as the alternative`` () =
     let source =
-        "module Test\nlet mutable counter = 0\nlet bump () = counter <- counter + 1"
+        fsharp
+            """
+            module Test
+            let mutable counter = 0
+            let bump () = counter <- counter + 1
+            """
 
     match
         editorMessagesOf source Analyzers.miscRulesEditorAnalyzer
@@ -286,7 +468,16 @@ let ``the editor makes public mutable state private, with internal as the altern
         let fix = List.exactlyOne makePrivate.Fixes
         let patched = applyEdit source fix.FromRange fix.ToText
 
-        Assert.Equal("module Test\nlet mutable private counter = 0\nlet bump () = counter <- counter + 1", patched)
+        Assert.Equal(
+            fsharp
+                """
+                module Test
+                let mutable private counter = 0
+                let bump () = counter <- counter + 1
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         Assert.Equal("internal ", (List.exactlyOne makeInternal.Fixes).ToText)
     | other -> failwithf "Expected the FR0062 note and its internal alternative, got %A" other
@@ -302,8 +493,13 @@ let ``cultureless DateTime Parse is noted`` () =
 [<Fact>]
 let ``Parse with a culture argument is fine`` () =
     let _, parses, _ =
-        miscIn
-            "module Test\nlet f (s: string) = System.DateTime.Parse(s, System.Globalization.CultureInfo.InvariantCulture)"
+        miscIn (
+            fsharp
+                """
+                module Test
+                let f (s: string) = System.DateTime.Parse(s, System.Globalization.CultureInfo.InvariantCulture)
+                """
+        )
 
     Assert.Empty parses
 
@@ -315,7 +511,16 @@ let ``int Parse is low-risk and not flagged`` () =
 [<Fact>]
 let ``duplicate enum values are noted`` () =
     let _, _, enums =
-        miscIn "module Test\ntype Color =\n    | Red = 1\n    | Green = 2\n    | Crimson = 1"
+        miscIn (
+            fsharp
+                """
+                module Test
+                type Color =
+                    | Red = 1
+                    | Green = 2
+                    | Crimson = 1
+                """
+        )
 
     match enums with
     | [ s ] ->
@@ -325,15 +530,36 @@ let ``duplicate enum values are noted`` () =
 
 [<Fact>]
 let ``distinct enum values are fine`` () =
-    let _, _, enums = miscIn "module Test\ntype Color =\n    | Red = 1\n    | Green = 2"
+    let _, _, enums =
+        miscIn (
+            fsharp
+                """
+                module Test
+                type Color =
+                    | Red = 1
+                    | Green = 2
+                """
+        )
+
     Assert.Empty enums
 
 [<Fact>]
 let ``FR0068: a Flags enum names bits, and a bit under two names is a table`` () =
     // FCS ilnativeres.fs mirrors winnt.h's section characteristics
     let _, _, enums =
-        miscIn
-            "module Test\n[<System.Flags>]\ntype Section =\n    | TypeReg = 0u\n    | MemProtected = 16384u\n    | NoDeferSpecExc = 16384u\n    | GPRel = 32768u\n    | MemFardata = 32768u"
+        miscIn (
+            fsharp
+                """
+                module Test
+                [<System.Flags>]
+                type Section =
+                    | TypeReg = 0u
+                    | MemProtected = 16384u
+                    | NoDeferSpecExc = 16384u
+                    | GPRel = 32768u
+                    | MemFardata = 32768u
+                """
+        )
 
     Assert.Empty enums
 
@@ -341,16 +567,43 @@ let ``FR0068: a Flags enum names bits, and a bit under two names is a table`` ()
 let ``FR0068: a zero Default alias declared beside its twin is a synonym`` () =
     // FCS ServiceLexing: `Default = 0 | Text = 0` on a public enum
     let _, _, enums =
-        miscIn "module Test\ntype Kind =\n    | Default = 0\n    | Text = 0\n    | Keyword = 1"
+        miscIn (
+            fsharp
+                """
+                module Test
+                type Kind =
+                    | Default = 0
+                    | Text = 0
+                    | Keyword = 1
+                """
+        )
 
     Assert.Empty enums
 
     // the same pair apart, or a non-zero adjacent pair, is still the slip
     let _, _, apart =
-        miscIn "module Test\ntype Kind =\n    | Default = 0\n    | Keyword = 1\n    | Text = 0"
+        miscIn (
+            fsharp
+                """
+                module Test
+                type Kind =
+                    | Default = 0
+                    | Keyword = 1
+                    | Text = 0
+                """
+        )
 
     let _, _, adjacentNonZero =
-        miscIn "module Test\ntype Kind =\n    | Keyword = 1\n    | Comment = 2\n    | Blue = 2"
+        miscIn (
+            fsharp
+                """
+                module Test
+                type Kind =
+                    | Keyword = 1
+                    | Comment = 2
+                    | Blue = 2
+                """
+        )
 
     Assert.Single apart |> ignore
     Assert.Single adjacentNonZero |> ignore
@@ -358,8 +611,18 @@ let ``FR0068: a zero Default alias declared beside its twin is a synonym`` () =
 [<Fact>]
 let ``a builder Run member validates DSL keywords not parameters`` () =
     Assert.Empty(
-        argNamesIn
-            "module Test\ntype SgBuilder() =\n    member _.Yield(_: unit) = 0\n    member _.Zero() = 0\n    member _.Run(config: int) =\n        if config < 0 then invalidArg \"vpc\" \"required\"\n        config"
+        argNamesIn (
+            fsharp
+                """
+                module Test
+                type SgBuilder() =
+                    member _.Yield(_: unit) = 0
+                    member _.Zero() = 0
+                    member _.Run(config: int) =
+                        if config < 0 then invalidArg "vpc" "required"
+                        config
+                """
+        )
     )
 
 // ---- FR0069 / FR0070 StructHints ----
@@ -377,14 +640,26 @@ let private structHintsWithApiChangesIn (source: string) =
 [<Fact>]
 let ``a public record is offered under api changes`` () =
     let voptions, _, _ =
-        structHintsWithApiChangesIn "module Test\ntype Row = { Id: System.Guid option; Name: string }"
+        structHintsWithApiChangesIn (
+            fsharp
+                """
+                module Test
+                type Row = { Id: System.Guid option; Name: string }
+                """
+        )
 
     Assert.NotEmpty voptions
 
 [<Fact>]
 let ``a struct option field in a private record suggests voption`` () =
     let voptions, _, _ =
-        structHintsIn "module Test\ntype private Row = { Id: System.Guid option; Name: string }"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                type private Row = { Id: System.Guid option; Name: string }
+                """
+        )
 
     match voptions with
     | [ s ] ->
@@ -408,7 +683,14 @@ let ``a reference payload keeps its option`` () =
 [<Fact>]
 let ``a record in a private module is contained`` () =
     let voptions, _, _ =
-        structHintsIn "module Test\nmodule private Inner =\n    type Row = { Stamp: System.DateTime option }"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                module private Inner =
+                    type Row = { Stamp: System.DateTime option }
+                """
+        )
 
     Assert.Single voptions |> ignore
 
@@ -426,7 +708,13 @@ let ``a small all-struct private record suggests Struct`` () =
 [<Fact>]
 let ``five fields are past the struct sweet spot`` () =
     let _, structs, _ =
-        structHintsIn "module Test\ntype private Wide = { A: int; B: int; C: int; D: int; E: int }"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                type private Wide = { A: int; B: int; C: int; D: int; E: int }
+                """
+        )
 
     Assert.Empty structs
 
@@ -440,7 +728,14 @@ let ``a string field keeps the record on the heap`` () =
 [<Fact>]
 let ``an existing Struct attribute is already done`` () =
     let _, structs, _ =
-        structHintsIn "module Test\n[<Struct>]\ntype private Point = { X: float; Y: float }"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                [<Struct>]
+                type private Point = { X: float; Y: float }
+                """
+        )
 
     Assert.Empty structs
 
@@ -479,48 +774,127 @@ let private assertHoisted (source: string) (expectedPatched: string) =
 [<Fact>]
 let ``an invariant binding hoists out of a for loop`` () =
     assertHoisted
-        "let sink (n: int) = ()\nlet run (a: int) =\n    for x = 0 to 100 do\n        let c = a + 3\n        sink (x + c)"
-        "let sink (n: int) = ()\nlet run (a: int) =\n    let c = a + 3\n    for x = 0 to 100 do\n        sink (x + c)"
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) =
+                for x = 0 to 100 do
+                    let c = a + 3
+                    sink (x + c)
+            """)
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) =
+                let c = a + 3
+                for x = 0 to 100 do
+                    sink (x + c)
+            """)
 
 [<Fact>]
 let ``an invariant binding hoists out of a foreach loop`` () =
     assertHoisted
-        "let sink (n: int) = ()\nlet run (a: int) (xs: int list) =\n    for x in xs do\n        let c = a + 3\n        sink (x + c)"
-        "let sink (n: int) = ()\nlet run (a: int) (xs: int list) =\n    let c = a + 3\n    for x in xs do\n        sink (x + c)"
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) (xs: int list) =
+                for x in xs do
+                    let c = a + 3
+                    sink (x + c)
+            """)
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) (xs: int list) =
+                let c = a + 3
+                for x in xs do
+                    sink (x + c)
+            """)
 
 [<Fact>]
 let ``an invariant binding hoists out of a map lambda`` () =
     assertHoisted
-        "let run (a: int) (xs: int list) =\n    xs\n    |> List.map (fun x ->\n        let c = a + 3\n        x + c)"
-        "let run (a: int) (xs: int list) =\n    let c = a + 3\n    xs\n    |> List.map (fun x ->\n        x + c)"
+        (fsharp
+            """
+            let run (a: int) (xs: int list) =
+                xs
+                |> List.map (fun x ->
+                    let c = a + 3
+                    x + c)
+            """)
+        (fsharp
+            """
+            let run (a: int) (xs: int list) =
+                let c = a + 3
+                xs
+                |> List.map (fun x ->
+                    x + c)
+            """)
 
 [<Fact>]
 let ``a loop-variable-dependent binding stays`` () =
     Assert.Empty(
-        invariantsIn
-            "let sink (n: int) = ()\nlet run (a: int) =\n    for x = 0 to 100 do\n        let c = a + x\n        sink (x + c)"
+        invariantsIn (
+            fsharp
+                """
+                let sink (n: int) = ()
+                let run (a: int) =
+                    for x = 0 to 100 do
+                        let c = a + x
+                        sink (x + c)
+                """
+        )
     )
 
 [<Fact>]
 let ``a function-call binding is not provably pure and stays`` () =
     Assert.Empty(
-        invariantsIn
-            "let compute (n: int) = n * 2\nlet sink (n: int) = ()\nlet run (a: int) =\n    for x = 0 to 100 do\n        let c = compute a\n        sink (x + c)"
+        invariantsIn (
+            fsharp
+                """
+                let compute (n: int) = n * 2
+                let sink (n: int) = ()
+                let run (a: int) =
+                    for x = 0 to 100 do
+                        let c = compute a
+                        sink (x + c)
+                """
+        )
     )
 
 [<Fact>]
 let ``a binding reading a variable the loop mutates stays`` () =
     Assert.Empty(
-        invariantsIn
-            "let sink (n: int) = ()\nlet run (a: int) =\n    let mutable m = a\n    for x = 0 to 100 do\n        let c = m + 3\n        m <- m + 1\n        sink (x + c)"
+        invariantsIn (
+            fsharp
+                """
+                let sink (n: int) = ()
+                let run (a: int) =
+                    let mutable m = a
+                    for x = 0 to 100 do
+                        let c = m + 3
+                        m <- m + 1
+                        sink (x + c)
+                """
+        )
     )
 
 [<Fact>]
 let ``a name used after the loop stays put`` () =
     // hoisting would widen the binding's scope over the later use
     Assert.Empty(
-        invariantsIn
-            "let sink (n: int) = ()\nlet run (a: int) =\n    let c = 99\n    for x = 0 to 100 do\n        let c = a + 3\n        sink (x + c)\n    sink c"
+        invariantsIn (
+            fsharp
+                """
+                let sink (n: int) = ()
+                let run (a: int) =
+                    let c = 99
+                    for x = 0 to 100 do
+                        let c = a + 3
+                        sink (x + c)
+                    sink c
+                """
+        )
     )
 
 [<Fact>]
@@ -537,11 +911,32 @@ let ``FR0071: a sign flip by -1 and checked arithmetic stay in the loop`` () =
     // any other literal divisor is total, and so is a float's -1
     assertHoisted
         (loopOver "a / -2")
-        "let sink (n: int) = ()\nlet run (a: int) (xs: int list) =\n    let c = a / -2\n    for x in xs do\n        sink (x + c)"
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) (xs: int list) =
+                let c = a / -2
+                for x in xs do
+                    sink (x + c)
+            """)
 
     assertHoisted
-        "let sink (n: float) = ()\nlet run (a: float) (xs: float list) =\n    for x in xs do\n        let c = a / -1.0\n        sink (x + c)"
-        "let sink (n: float) = ()\nlet run (a: float) (xs: float list) =\n    let c = a / -1.0\n    for x in xs do\n        sink (x + c)"
+        (fsharp
+            """
+            let sink (n: float) = ()
+            let run (a: float) (xs: float list) =
+                for x in xs do
+                    let c = a / -1.0
+                    sink (x + c)
+            """)
+        (fsharp
+            """
+            let sink (n: float) = ()
+            let run (a: float) (xs: float list) =
+                let c = a / -1.0
+                for x in xs do
+                    sink (x + c)
+            """)
 
     // under `open Checked`, `+` throws on overflow: the empty loop did not
     for opening in [ "open Checked"; "open Microsoft.FSharp.Core.Operators.Checked" ] do
@@ -552,21 +947,58 @@ let ``an array literal stays: hoisting would share one buffer`` () =
     // every iteration allocates its own buffer; hoisted, they all write
     // into the same one
     Assert.Empty(
-        invariantsIn
-            "let sink (b: int[]) = ()\nlet run (a: int) (xs: int list) =\n    for x in xs do\n        let buf = [| a + 1 |]\n        buf.[0] <- x\n        sink buf"
+        invariantsIn (
+            fsharp
+                """
+                let sink (b: int[]) = ()
+                let run (a: int) (xs: int list) =
+                    for x in xs do
+                        let buf = [| a + 1 |]
+                        buf.[0] <- x
+                        sink buf
+                """
+        )
     )
 
 [<Fact>]
 let ``a list literal still hoists`` () =
     assertHoisted
-        "let sink (b: int list) = ()\nlet run (a: int) (xs: int list) =\n    for x in xs do\n        let ys = [ a + 1 ]\n        sink ys"
-        "let sink (b: int list) = ()\nlet run (a: int) (xs: int list) =\n    let ys = [ a + 1 ]\n    for x in xs do\n        sink ys"
+        (fsharp
+            """
+            let sink (b: int list) = ()
+            let run (a: int) (xs: int list) =
+                for x in xs do
+                    let ys = [ a + 1 ]
+                    sink ys
+            """)
+        (fsharp
+            """
+            let sink (b: int list) = ()
+            let run (a: int) (xs: int list) =
+                let ys = [ a + 1 ]
+                for x in xs do
+                    sink ys
+            """)
 
 [<Fact>]
 let ``while loops hoist too`` () =
     assertHoisted
-        "let sink (n: int) = ()\nlet run (a: int) (keep: unit -> bool) =\n    while keep () do\n        let c = a + 3\n        sink c"
-        "let sink (n: int) = ()\nlet run (a: int) (keep: unit -> bool) =\n    let c = a + 3\n    while keep () do\n        sink c"
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) (keep: unit -> bool) =
+                while keep () do
+                    let c = a + 3
+                    sink c
+            """)
+        (fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) (keep: unit -> bool) =
+                let c = a + 3
+                while keep () do
+                    sink c
+            """)
 
 // ---- FR0072 ExpandWildcard ----
 
@@ -585,57 +1017,161 @@ let private assertExpanded (source: string) (expectedReplacement: string) =
 [<Fact>]
 let ``a wildcard hiding one case expands to it`` () =
     assertExpanded
-        "type T =\n    | A\n    | B\n    | C\n    | D\n\nlet f (t: T) =\n    match t with\n    | A -> 1\n    | B -> 2\n    | C -> 3\n    | _ -> 4"
+        (fsharp
+            """
+            type T =
+                | A
+                | B
+                | C
+                | D
+
+            let f (t: T) =
+                match t with
+                | A -> 1
+                | B -> 2
+                | C -> 3
+                | _ -> 4
+            """)
         "D"
 
 [<Fact>]
 let ``a wildcard hiding two cases expands to an or-pattern`` () =
     assertExpanded
-        "type T =\n    | A\n    | B\n    | C\n    | D\n\nlet f (t: T) =\n    match t with\n    | A -> 1\n    | B -> 2\n    | _ -> 0"
+        (fsharp
+            """
+            type T =
+                | A
+                | B
+                | C
+                | D
+
+            let f (t: T) =
+                match t with
+                | A -> 1
+                | B -> 2
+                | _ -> 0
+            """)
         "C | D"
 
 [<Fact>]
 let ``a hidden case with fields gets a payload wildcard`` () =
     assertExpanded
-        "type T =\n    | A\n    | B of int\n\nlet f (t: T) =\n    match t with\n    | A -> 1\n    | _ -> 0"
+        (fsharp
+            """
+            type T =
+                | A
+                | B of int
+
+            let f (t: T) =
+                match t with
+                | A -> 1
+                | _ -> 0
+            """)
         "B _"
 
 [<Fact>]
 let ``three hidden cases would bloat the match and stay`` () =
     Assert.Empty(
-        wildcardsIn
-            "type T =\n    | A\n    | B\n    | C\n    | D\n\nlet f (t: T) =\n    match t with\n    | A -> 1\n    | _ -> 0"
+        wildcardsIn (
+            fsharp
+                """
+                type T =
+                    | A
+                    | B
+                    | C
+                    | D
+
+                let f (t: T) =
+                    match t with
+                    | A -> 1
+                    | _ -> 0
+                """
+        )
     )
 
 [<Fact>]
 let ``a guarded clause breaks coverage reasoning`` () =
     Assert.Empty(
-        wildcardsIn
-            "type T =\n    | A of int\n    | B\n\nlet f (t: T) =\n    match t with\n    | A n when n > 0 -> 1\n    | _ -> 0"
+        wildcardsIn (
+            fsharp
+                """
+                type T =
+                    | A of int
+                    | B
+
+                let f (t: T) =
+                    match t with
+                    | A n when n > 0 -> 1
+                    | _ -> 0
+                """
+        )
     )
 
 [<Fact>]
 let ``a literal payload covers its case only partially`` () =
     Assert.Empty(
-        wildcardsIn
-            "type T =\n    | A of int\n    | B\n\nlet f (t: T) =\n    match t with\n    | A 3 -> 1\n    | _ -> 0"
+        wildcardsIn (
+            fsharp
+                """
+                type T =
+                    | A of int
+                    | B
+
+                let f (t: T) =
+                    match t with
+                    | A 3 -> 1
+                    | _ -> 0
+                """
+        )
     )
 
 [<Fact>]
 let ``enums are open sets and stay wild`` () =
     Assert.Empty(
-        wildcardsIn
-            "type Color =\n    | Red = 1\n    | Green = 2\n\nlet f (c: Color) =\n    match c with\n    | Color.Red -> 1\n    | _ -> 0"
+        wildcardsIn (
+            fsharp
+                """
+                type Color =
+                    | Red = 1
+                    | Green = 2
+
+                let f (c: Color) =
+                    match c with
+                    | Color.Red -> 1
+                    | _ -> 0
+                """
+        )
     )
 
 [<Fact>]
 let ``an option match expands to None`` () =
-    assertExpanded "let f (x: int option) =\n    match x with\n    | Some v -> v\n    | _ -> 0" "None"
+    assertExpanded
+        (fsharp
+            """
+            let f (x: int option) =
+                match x with
+                | Some v -> v
+                | _ -> 0
+            """)
+        "None"
 
 [<Fact>]
 let ``a RequireQualifiedAccess union keeps its qualifier in the fix`` () =
     assertExpanded
-        "[<RequireQualifiedAccess>]\ntype Mode =\n    | Fast\n    | Careful\n    | Dry\n\nlet f (m: Mode) =\n    match m with\n    | Mode.Fast -> 1\n    | Mode.Careful -> 2\n    | _ -> 0"
+        (fsharp
+            """
+            [<RequireQualifiedAccess>]
+            type Mode =
+                | Fast
+                | Careful
+                | Dry
+
+            let f (m: Mode) =
+                match m with
+                | Mode.Fast -> 1
+                | Mode.Careful -> 2
+                | _ -> 0
+            """)
         "Mode.Dry"
 
 // ---- FR0093 StructTupleField ----
@@ -655,12 +1191,28 @@ let ``a struct tuple field in a private record is noted`` () =
 
 [<Fact>]
 let ``four elements are still worth flattening`` () =
-    Assert.Single(structTuplesIn "module Test\ntype private Box = { Bounds: float * float * float * float }")
+    Assert.Single(
+        structTuplesIn (
+            fsharp
+                """
+                module Test
+                type private Box = { Bounds: float * float * float * float }
+                """
+        )
+    )
     |> ignore
 
 [<Fact>]
 let ``five elements copy more than they save`` () =
-    Assert.Empty(structTuplesIn "module Test\ntype private Wide = { P: int * int * int * int * int }")
+    Assert.Empty(
+        structTuplesIn (
+            fsharp
+                """
+                module Test
+                type private Wide = { P: int * int * int * int * int }
+                """
+        )
+    )
 
 [<Fact>]
 let ``a reference element keeps the tuple on the heap`` () =
@@ -688,7 +1240,16 @@ let ``a plain struct field is not a tuple`` () =
 [<Fact>]
 let ``the small struct record gains an attribute fix that typechecks`` () =
     let source =
-        "module Test\n\nmodule Inner =\n    /// A point.\n    type private Point = { X: int; Y: int }\n\n    let private origin = { X = 0; Y = 0 }"
+        fsharp
+            """
+            module Test
+
+            module Inner =
+                /// A point.
+                type private Point = { X: int; Y: int }
+
+                let private origin = { X = 0; Y = 0 }
+            """
 
     let _, structs, _ = structHintsIn source
 
@@ -696,7 +1257,14 @@ let ``the small struct record gains an attribute fix that typechecks`` () =
     | [ s ] ->
         match s.Fix with
         | Some(r, text) ->
-            Assert.Equal("    [<Struct>]\n", text)
+            Assert.Equal(
+                fsharp
+                    """
+                        [<Struct>]
+
+                    """,
+                text
+            )
 
             let lines = source.Split '\n'
 
@@ -706,7 +1274,16 @@ let ``the small struct record gains an attribute fix that typechecks`` () =
 
             let patched = source.Substring(0, offset) + text + source.Substring offset
             // the attribute lands between the doc comment and the type
-            Assert.Contains("/// A point.\n    [<Struct>]\n    type private Point", patched)
+            Assert.Contains(
+                fsharp
+                    """
+                    /// A point.
+                        [<Struct>]
+                        type private Point
+                    """,
+                patched
+            )
+
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | None -> failwith "Expected an attribute fix"
     | other -> failwithf "Expected one struct suggestion, got %A" other
@@ -716,7 +1293,13 @@ let ``an attributed record stays advice`` () =
     // CLIMutable + Struct conflict outright; any existing attribute
     // keeps this a note
     let source =
-        "module Test\n[<CLIMutable>]\ntype private Point = { X: int; Y: int }\nlet origin = { X = 0; Y = 0 }"
+        fsharp
+            """
+            module Test
+            [<CLIMutable>]
+            type private Point = { X: int; Y: int }
+            let origin = { X = 0; Y = 0 }
+            """
 
     let _, structs, _ = structHintsIn source
 
@@ -762,7 +1345,7 @@ let ``a file-private option field migrates with every use`` () =
     | [ (_, Some edits) ] ->
         let patched = applyMigration source edits
         Assert.Contains("Seen: System.DateTime voption", patched)
-        Assert.Contains("{ Seen = ValueSome d; Name = \"a\" }", patched)
+        Assert.Contains("""{ Seen = ValueSome d; Name = "a" }""", patched)
         Assert.Contains("{ r with Seen = ValueNone }", patched)
         Assert.Contains("| ValueSome d -> string d", patched)
         Assert.Contains("| ValueNone -> \"never\"", patched)
@@ -843,7 +1426,7 @@ let ``a file-private tuple field migrates with every use`` () =
     | [ (_, Some edits) ] ->
         let patched = applyMigration source edits
         Assert.Contains("A: struct (int * int)", patched)
-        Assert.Contains("{ A = struct (x, x + 1); Tag = \"t\" }", patched)
+        Assert.Contains("""{ A = struct (x, x + 1); Tag = "t" }""", patched)
         Assert.Contains("{ p with A = struct (p.Tag.Length, 0) }", patched)
         Assert.Contains("| struct (0, _) | struct (_, 0) -> \"edge\"", patched)
         Assert.Contains("| struct (x, y) -> string (x + y)", patched)
@@ -955,12 +1538,19 @@ let ``a record pattern destructuring Some migrates`` () =
 let private loggerScaffold =
     "namespace Microsoft.Extensions.Logging\n"
     + "type ILogger = interface end\n"
+    + "[<Struct>]\n"
+    + "type EventId(id: int) =\n"
+    + "    member _.Id = id\n"
     + "[<System.Runtime.CompilerServices.Extension>]\n"
     + "type LoggerExtensions =\n"
     + "    [<System.Runtime.CompilerServices.Extension>]\n"
     + "    static member LogError(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) = ignore (logger, message, args)\n"
     + "    [<System.Runtime.CompilerServices.Extension>]\n"
     + "    static member LogError(logger: ILogger, ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ignore (logger, ex, message, args)\n"
+    + "    [<System.Runtime.CompilerServices.Extension>]\n"
+    + "    static member LogError(logger: ILogger, eventId: EventId, message: string, [<System.ParamArray>] args: obj[]) = ignore (logger, eventId, message, args)\n"
+    + "    [<System.Runtime.CompilerServices.Extension>]\n"
+    + "    static member LogError(logger: ILogger, eventId: EventId, ex: exn, message: string, [<System.ParamArray>] args: obj[]) = ignore (logger, eventId, ex, message, args)\n"
     + "namespace Test\n"
     + "open Microsoft.Extensions.Logging\n"
 
@@ -971,7 +1561,16 @@ let private catchLogsIn (source: string) =
 [<Fact>]
 let ``a handler log without the exception gains it first`` () =
     let source =
-        "module M =\n    let run (logger: ILogger) (work: unit -> int) =\n        try\n            work ()\n        with ex ->\n            logger.LogError(\"work failed\")\n            0"
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) (work: unit -> int) =
+                    try
+                        work ()
+                    with ex ->
+                        logger.LogError("work failed")
+                        0
+            """
 
     match catchLogsIn source with
     | [ s ] ->
@@ -979,35 +1578,70 @@ let ``a handler log without the exception gains it first`` () =
 
         let full = loggerScaffold + source
         let patched = applyEdit full s.Range $"{s.ExceptionName}, "
-        Assert.Contains("logger.LogError(ex, \"work failed\")", patched)
+        Assert.Contains("""logger.LogError(ex, "work failed")""", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one catch-log suggestion, got %A" other
 
 [<Fact>]
 let ``logging the message only is a legitimate PII choice`` () =
     let source =
-        "module M =\n    let run (logger: ILogger) (work: unit -> int) =\n        try\n            work ()\n        with ex ->\n            logger.LogError(\"work failed: {Error}\", ex.Message)\n            0"
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) (work: unit -> int) =
+                    try
+                        work ()
+                    with ex ->
+                        logger.LogError("work failed: {Error}", ex.Message)
+                        0
+            """
 
     Assert.Empty(catchLogsIn source)
 
 [<Fact>]
 let ``a log already passing the exception is left alone`` () =
     let source =
-        "module M =\n    let run (logger: ILogger) (work: unit -> int) =\n        try\n            work ()\n        with ex ->\n            logger.LogError(ex, \"work failed\")\n            0"
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) (work: unit -> int) =
+                    try
+                        work ()
+                    with ex ->
+                        logger.LogError(ex, "work failed")
+                        0
+            """
 
     Assert.Empty(catchLogsIn source)
 
 [<Fact>]
 let ``a log outside any handler is left alone`` () =
     let source =
-        "module M =\n    let run (logger: ILogger) =\n        logger.LogError(\"routine complaint\")\n        0"
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) =
+                    logger.LogError("routine complaint")
+                    0
+            """
 
     Assert.Empty(catchLogsIn source)
 
 [<Fact>]
 let ``a user type with a LogError member is not a logger`` () =
     let source =
-        "module M =\n    type Fake() =\n        member _.LogError(msg: string) = ignore msg\n    let run (f: Fake) (work: unit -> int) =\n        try\n            work ()\n        with ex ->\n            f.LogError(\"work failed\")\n            0"
+        fsharp
+            """
+            module M =
+                type Fake() =
+                    member _.LogError(msg: string) = ignore msg
+                let run (f: Fake) (work: unit -> int) =
+                    try
+                        work ()
+                    with ex ->
+                        f.LogError("work failed")
+                        0
+            """
 
     Assert.Empty(catchLogsIn source)
 
@@ -1023,14 +1657,34 @@ let ``a non-Utc timestamp setter takes local time`` () =
     // written — the non-Utc setters take LOCAL time, and UtcNow there would
     // stamp the file hours off
     Assert.Empty(
-        wallClocksIn "module M\nlet touch (p: string) = System.IO.File.SetLastWriteTime(p, System.DateTime.Now)"
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let touch (p: string) = System.IO.File.SetLastWriteTime(p, System.DateTime.Now)
+                """
+        )
     )
 
-    Assert.Empty(wallClocksIn "module M\nlet touch (fi: System.IO.FileInfo) = fi.LastWriteTime <- System.DateTime.Now")
+    Assert.Empty(
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let touch (fi: System.IO.FileInfo) = fi.LastWriteTime <- System.DateTime.Now
+                """
+        )
+    )
 
     // the Utc setter wants UtcNow
     match
-        wallClocksIn "module M\nlet touch (p: string) = System.IO.File.SetLastWriteTimeUtc(p, System.DateTime.Now)"
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let touch (p: string) = System.IO.File.SetLastWriteTimeUtc(p, System.DateTime.Now)
+                """
+        )
     with
     | [ s ] ->
         match s.Kind with
@@ -1043,7 +1697,15 @@ let ``Now read as an instant through a member call is still a local clock read``
     // the compiler's `DateTime.Now.Ticks.ToString()` as a version number
     // goes backwards at the DST fall-back; UtcNow serves as well, so the
     // rewrite is offered
-    match wallClocksIn "module M\nlet version () = System.DateTime.Now.Ticks.ToString()" with
+    match
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let version () = System.DateTime.Now.Ticks.ToString()
+                """
+        )
+    with
     | [ s ] ->
         (match s.Kind with
          | DateTimeRules.WallClockKind.LocalNow -> ()
@@ -1054,7 +1716,15 @@ let ``Now read as an instant through a member call is still a local clock read``
 
     // fsdocs' `DateTime.Now.ToString("yyMMddhh")` renders the local
     // calendar: the note, but not the rewrite
-    match wallClocksIn "module M\nlet stamp () = System.DateTime.Now.ToString(\"yyMMddhh\")" with
+    match
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let stamp () = System.DateTime.Now.ToString("yyMMddhh")
+                """
+        )
+    with
     | [ s ] ->
         (match s.Kind with
          | DateTimeRules.WallClockKind.LocalNow -> ()
@@ -1105,7 +1775,16 @@ let ``Now under a calendar read gets no rewrite: it would create the date-cut bu
 
 [<Fact>]
 let ``a user type named DateTime is not the BCL clock`` () =
-    Assert.Empty(wallClocksIn "module M\ntype DateTime = { Now: int }\nlet fake (d: DateTime) = d.Now")
+    Assert.Empty(
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                type DateTime = { Now: int }
+                let fake (d: DateTime) = d.Now
+                """
+        )
+    )
 
 // ---- FR0122 RegexValidity ----
 
@@ -1116,7 +1795,13 @@ let private invalidPatternsIn (source: string) =
 [<Fact>]
 let ``an unclosed group is a guaranteed runtime exception`` () =
     match
-        invalidPatternsIn "module M\nlet f (s: string) = System.Text.RegularExpressions.Regex.IsMatch(s, \"(unclosed\")"
+        invalidPatternsIn (
+            fsharp
+                """
+                module M
+                let f (s: string) = System.Text.RegularExpressions.Regex.IsMatch(s, "(unclosed")
+                """
+        )
     with
     | [ (_, pattern, _) ] -> Assert.Equal("(unclosed", pattern)
     | other -> failwithf "Expected one invalid pattern, got %A" other
@@ -1124,19 +1809,39 @@ let ``an unclosed group is a guaranteed runtime exception`` () =
 [<Fact>]
 let ``a valid pattern stays quiet`` () =
     Assert.Empty(
-        invalidPatternsIn "module M\nlet f (s: string) = System.Text.RegularExpressions.Regex.IsMatch(s, @\"\d+\")"
+        invalidPatternsIn (
+            fsharp
+                """
+                module M
+                let f (s: string) = System.Text.RegularExpressions.Regex.IsMatch(s, @"\d+")
+                """
+        )
     )
 
 [<Fact>]
 let ``an invalid ctor pattern is caught too`` () =
-    match invalidPatternsIn "module M\nlet r = System.Text.RegularExpressions.Regex(\"[a-\")" with
+    match
+        invalidPatternsIn (
+            fsharp
+                """
+                module M
+                let r = System.Text.RegularExpressions.Regex("[a-")
+                """
+        )
+    with
     | [ (_, pattern, _) ] -> Assert.Equal("[a-", pattern)
     | other -> failwithf "Expected one invalid ctor pattern, got %A" other
 
 [<Fact>]
 let ``a dynamic pattern is out of reach and stays quiet`` () =
     Assert.Empty(
-        invalidPatternsIn "module M\nlet f (s: string) (p: string) = System.Text.RegularExpressions.Regex.IsMatch(s, p)"
+        invalidPatternsIn (
+            fsharp
+                """
+                module M
+                let f (s: string) (p: string) = System.Text.RegularExpressions.Regex.IsMatch(s, p)
+                """
+        )
     )
 
 // ---- FR0123 MonitorLock ----
@@ -1148,7 +1853,20 @@ let private monitorLocksIn (source: string) =
 [<Fact>]
 let ``the canonical Enter-try-finally-Exit becomes lock`` () =
     let source =
-        "module M =\n    let gate = obj ()\n    let mutable count = 0\n    let bump () =\n        System.Threading.Monitor.Enter gate\n        try\n            // guarded increment\n            count <- count + 1\n            count\n        finally\n            System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let mutable count = 0
+                let bump () =
+                    System.Threading.Monitor.Enter gate
+                    try
+                        // guarded increment
+                        count <- count + 1
+                        count
+                    finally
+                        System.Threading.Monitor.Exit gate
+            """
 
     match monitorLocksIn source with
     | [ s ] ->
@@ -1166,7 +1884,18 @@ let ``the canonical Enter-try-finally-Exit becomes lock`` () =
 [<Fact>]
 let ``mismatched lock objects keep their hands off`` () =
     let source =
-        "module M =\n    let a = obj ()\n    let b = obj ()\n    let bump () =\n        System.Threading.Monitor.Enter a\n        try\n            1\n        finally\n            System.Threading.Monitor.Exit b"
+        fsharp
+            """
+            module M =
+                let a = obj ()
+                let b = obj ()
+                let bump () =
+                    System.Threading.Monitor.Enter a
+                    try
+                        1
+                    finally
+                        System.Threading.Monitor.Exit b
+            """
 
     match monitorLocksIn source with
     | [ s ] -> Assert.Equal(None, s.Fix)
@@ -1175,7 +1904,17 @@ let ``mismatched lock objects keep their hands off`` () =
 [<Fact>]
 let ``a bare Enter without try is the leak note`` () =
     let source =
-        "module M =\n    let gate = obj ()\n    let mutable count = 0\n    let bump () =\n        System.Threading.Monitor.Enter gate\n        count <- count + 1\n        System.Threading.Monitor.Exit gate\n        count"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let mutable count = 0
+                let bump () =
+                    System.Threading.Monitor.Enter gate
+                    count <- count + 1
+                    System.Threading.Monitor.Exit gate
+                    count
+            """
 
     match monitorLocksIn source with
     | [ s ] -> Assert.Equal(None, s.Fix)
@@ -1187,7 +1926,21 @@ let ``FR0123: a statement after the finally still leaves the Enter guarded`` () 
     // line, try/finally, then `value` — the trailing read nests the
     // try/finally one Sequential deeper, and the leak note fired
     let source =
-        "module M =\n    let gate = obj ()\n    let mutable value = 0\n    let force () =\n        System.Threading.Monitor.Enter(gate)\n\n        try\n            value <- value + 1\n        finally\n            System.Threading.Monitor.Exit(gate)\n\n        value"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let mutable value = 0
+                let force () =
+                    System.Threading.Monitor.Enter(gate)
+
+                    try
+                        value <- value + 1
+                    finally
+                        System.Threading.Monitor.Exit(gate)
+
+                    value
+            """
 
     match monitorLocksIn source with
     | [ s ] ->
@@ -1207,14 +1960,32 @@ let ``FR0123: a statement after the finally still leaves the Enter guarded`` () 
 [<Fact>]
 let ``the two-argument Enter overload carries protocol and stays`` () =
     let source =
-        "module M =\n    let gate = obj ()\n    let bump () =\n        let mutable taken = false\n        System.Threading.Monitor.Enter(gate, &taken)\n        try\n            1\n        finally\n            if taken then System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let bump () =
+                    let mutable taken = false
+                    System.Threading.Monitor.Enter(gate, &taken)
+                    try
+                        1
+                    finally
+                        if taken then System.Threading.Monitor.Exit gate
+            """
 
     Assert.Empty(monitorLocksIn source)
 
 [<Fact>]
 let ``a user Monitor type is not the BCL one`` () =
     let source =
-        "module M =\n    type Monitor = static member Enter(_: obj) = ()\n    let bump () =\n        Monitor.Enter(obj ())\n        1"
+        fsharp
+            """
+            module M =
+                type Monitor = static member Enter(_: obj) = ()
+                let bump () =
+                    Monitor.Enter(obj ())
+                    1
+            """
 
     Assert.Empty(monitorLocksIn source)
 
@@ -1227,7 +1998,12 @@ let private logTemplatesIn (source: string) =
 [<Fact>]
 let ``a template with more placeholders than arguments is a lie`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) (user: string) =\n        logger.LogError(\"user {User} did {Action}\", user)"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (user: string) =
+                    logger.LogError("user {User} did {Action}", user)
+            """
 
     match logTemplatesIn source with
     | [ s ] -> Assert.Equal(LogTemplates.TemplateProblem.CountMismatch(2, 1), s.Problem)
@@ -1236,21 +2012,40 @@ let ``a template with more placeholders than arguments is a lie`` () =
 [<Fact>]
 let ``a matching template stays quiet`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) (user: string) (act: string) =\n        logger.LogError(\"user {User} did {Action}\", user, act)"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (user: string) (act: string) =
+                    logger.LogError("user {User} did {Action}", user, act)
+            """
 
     Assert.Empty(logTemplatesIn source)
 
 [<Fact>]
 let ``a leading exception argument is skipped before counting`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) (work: unit -> int) (id: int) =\n        try\n            work ()\n        with ex ->\n            logger.LogError(ex, \"work {Id} failed\", id)\n            0"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (work: unit -> int) (id: int) =
+                    try
+                        work ()
+                    with ex ->
+                        logger.LogError(ex, "work {Id} failed", id)
+                        0
+            """
 
     Assert.Empty(logTemplatesIn source)
 
 [<Fact>]
 let ``duplicate placeholder names overwrite each other`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) (a: int) (b: int) =\n        logger.LogError(\"{Id} then {Id}\", a, b)"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (a: int) (b: int) =
+                    logger.LogError("{Id} then {Id}", a, b)
+            """
 
     match logTemplatesIn source with
     | [ s ] -> Assert.Equal(LogTemplates.TemplateProblem.DuplicateName "Id", s.Problem)
@@ -1259,7 +2054,12 @@ let ``duplicate placeholder names overwrite each other`` () =
 [<Fact>]
 let ``an interpolated template destroys structured logging`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) (user: string) =\n        logger.LogError($\"failed for {user}\")"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (user: string) =
+                    logger.LogError($"failed for {user}")
+            """
 
     match logTemplatesIn source with
     | [ s ] -> Assert.Equal(LogTemplates.TemplateProblem.Interpolated, s.Problem)
@@ -1268,7 +2068,12 @@ let ``an interpolated template destroys structured logging`` () =
 [<Fact>]
 let ``escaped braces are literal text not placeholders`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) =\n        logger.LogError(\"literal {{braces}} here\")"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) =
+                    logger.LogError("literal {{braces}} here")
+            """
 
     Assert.Empty(logTemplatesIn source)
 
@@ -1277,8 +2082,13 @@ let ``escaped braces are literal text not placeholders`` () =
 [<Fact>]
 let ``a weak TLS protocol constant is noted`` () =
     let crypto, _, _ =
-        securityIn
-            "module Test\nlet setup () = System.Net.ServicePointManager.SecurityProtocol <- System.Net.SecurityProtocolType.Tls11"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let setup () = System.Net.ServicePointManager.SecurityProtocol <- System.Net.SecurityProtocolType.Tls11
+                """
+        )
 
     match crypto with
     | [ s ] -> Assert.Equal(SecurityRules.WeakKind.Protocol "Tls11", s.Kind)
@@ -1287,8 +2097,13 @@ let ``a weak TLS protocol constant is noted`` () =
 [<Fact>]
 let ``Tls12 is fine`` () =
     let crypto, _, _ =
-        securityIn
-            "module Test\nlet setup () = System.Net.ServicePointManager.SecurityProtocol <- System.Net.SecurityProtocolType.Tls12"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let setup () = System.Net.ServicePointManager.SecurityProtocol <- System.Net.SecurityProtocolType.Tls12
+                """
+        )
 
     Assert.Empty crypto
 
@@ -1298,7 +2113,19 @@ let ``Tls12 is fine`` () =
 let ``FR0123 a body awaiting inside a task is not wrapped in a lambda`` () =
     // do! cannot live in a plain lambda — the rewrite would not compile
     let source =
-        "module M =\n    let gate = obj ()\n    let go () = task {\n        System.Threading.Monitor.Enter gate\n        try\n            do! System.Threading.Tasks.Task.Delay 1\n            return 1\n        finally\n            System.Threading.Monitor.Exit gate\n    }"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let go () = task {
+                    System.Threading.Monitor.Enter gate
+                    try
+                        do! System.Threading.Tasks.Task.Delay 1
+                        return 1
+                    finally
+                        System.Threading.Monitor.Exit gate
+                }
+            """
 
     for s in monitorLocksIn source do
         Assert.Equal(None, s.Fix)
@@ -1307,7 +2134,19 @@ let ``FR0123 a body awaiting inside a task is not wrapped in a lambda`` () =
 let ``FR0123 a body touching an enclosing local mutable is not wrapped`` () =
     // a closure cannot capture a local mutable (FS0407)
     let source =
-        "module M =\n    let gate = obj ()\n    let go () =\n        let mutable count = 0\n        System.Threading.Monitor.Enter gate\n        try\n            count <- count + 1\n            count\n        finally\n            System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let go () =
+                    let mutable count = 0
+                    System.Threading.Monitor.Enter gate
+                    try
+                        count <- count + 1
+                        count
+                    finally
+                        System.Threading.Monitor.Exit gate
+            """
 
     for s in monitorLocksIn source do
         Assert.Equal(None, s.Fix)
@@ -1316,7 +2155,22 @@ let ``FR0123 a body touching an enclosing local mutable is not wrapped`` () =
 let ``FR0123 a body calling base is not wrapped`` () =
     // `base` cannot be used in a closure (FS0405)
     let source =
-        "module M =\n    type B() =\n        abstract Run: unit -> int\n        default _.Run() = 1\n    type D() =\n        inherit B()\n        let gate = obj ()\n        override _.Run() =\n            System.Threading.Monitor.Enter gate\n            try\n                base.Run() + 1\n            finally\n                System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                type B() =
+                    abstract Run: unit -> int
+                    default _.Run() = 1
+                type D() =
+                    inherit B()
+                    let gate = obj ()
+                    override _.Run() =
+                        System.Threading.Monitor.Enter gate
+                        try
+                            base.Run() + 1
+                        finally
+                            System.Threading.Monitor.Exit gate
+            """
 
     match monitorLocksIn source with
     | [ s ] -> Assert.Equal(None, s.Fix)
@@ -1326,7 +2180,17 @@ let ``FR0123 a body calling base is not wrapped`` () =
 let ``FR0123 a body assigning a byref parameter is not wrapped`` () =
     // a closure cannot capture a byref (FS0406)
     let source =
-        "module M =\n    let gate = obj ()\n    let take (result: byref<int>) =\n        System.Threading.Monitor.Enter gate\n        try\n            result <- 42\n        finally\n            System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let take (result: byref<int>) =
+                    System.Threading.Monitor.Enter gate
+                    try
+                        result <- 42
+                    finally
+                        System.Threading.Monitor.Exit gate
+            """
 
     match monitorLocksIn source with
     | [ s ] -> Assert.Equal(None, s.Fix)
@@ -1337,7 +2201,16 @@ let ``FR0120 an EventId-first log gets no exception inserted before it`` () =
     // LoggerExtensions wants (EventId, Exception, template) — inserting
     // the exception FIRST matches no overload
     let source =
-        "module M =\n    let go (logger: ILogger) (eventId: int) (work: unit -> int) =\n        try\n            work ()\n        with ex ->\n            logger.LogError(eventId, \"work failed\")\n            0"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (eventId: EventId) (work: unit -> int) =
+                    try
+                        work ()
+                    with ex ->
+                        logger.LogError(eventId, "work failed")
+                        0
+            """
 
     Assert.Empty(catchLogsIn source)
 
@@ -1347,7 +2220,15 @@ let ``FR0121 DateTimeOffset Now carries its offset and stays quiet`` () =
 
 [<Fact>]
 let ``FR0121 the date cut is caught mid-chain too`` () =
-    match wallClocksIn "module M\nlet tomorrow () = System.DateTime.UtcNow.Date.AddDays 1.0" with
+    match
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let tomorrow () = System.DateTime.UtcNow.Date.AddDays 1.0
+                """
+        )
+    with
     | [ s ] ->
         match s.Kind with
         | DateTimeRules.WallClockKind.UtcDateCut _ -> ()
@@ -1356,7 +2237,15 @@ let ``FR0121 the date cut is caught mid-chain too`` () =
 
 [<Fact>]
 let ``FR0121 Today survives a following call too`` () =
-    match wallClocksIn "module M\nlet tomorrow () = System.DateTime.Today.AddDays 1.0" with
+    match
+        wallClocksIn (
+            fsharp
+                """
+                module M
+                let tomorrow () = System.DateTime.Today.AddDays 1.0
+                """
+        )
+    with
     | [ s ] ->
         match s.Kind with
         | DateTimeRules.WallClockKind.UtcDateCut _ -> ()
@@ -1366,14 +2255,24 @@ let ``FR0121 Today survives a following call too`` () =
 [<Fact>]
 let ``FR0124 a params array passed whole is not an arity claim`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) (args: obj[]) =\n        logger.LogError(\"a {X} and {Y}\", args)"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) (args: obj[]) =
+                    logger.LogError("a {X} and {Y}", args)
+            """
 
     Assert.Empty(logTemplatesIn source)
 
 [<Fact>]
 let ``FR0124 a hole-free interpolation compiles to a constant and stays quiet`` () =
     let source =
-        "module M =\n    let go (logger: ILogger) =\n        logger.LogError($\"plain text\")"
+        fsharp
+            """
+            module M =
+                let go (logger: ILogger) =
+                    logger.LogError($"plain text")
+            """
 
     Assert.Empty(logTemplatesIn source)
 
@@ -1402,9 +2301,9 @@ let ``a zero-width space inside a regular literal gains the escape fix`` () =
     | [ s ] ->
         match s.Fix with
         | Some(r, _, replacement) ->
-            Assert.Equal("\\u200B", replacement)
+            Assert.Equal("""\u200B""", replacement)
             let patched = applyEdit source r replacement
-            Assert.Contains("\\u200B", patched)
+            Assert.Contains("""\u200B""", patched)
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | None -> failwith "Expected the escape fix inside a regular literal"
     | other -> failwithf "Expected one invisible finding, got %A" other
@@ -1434,7 +2333,13 @@ let ``plain unicode text is not flagged`` () =
 [<Fact>]
 let ``an interpolated Process Start command is the injection sink`` () =
     let _, _, sinks =
-        securityIn "module Test\nlet run (userInput: string) = System.Diagnostics.Process.Start($\"tool {userInput}\")"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let run (userInput: string) = System.Diagnostics.Process.Start($"tool {userInput}")
+                """
+        )
 
     match sinks with
     | [ s ] -> Assert.Equal("Process.Start", s.Sink)
@@ -1443,7 +2348,13 @@ let ``an interpolated Process Start command is the injection sink`` () =
 [<Fact>]
 let ``a fixed command with dynamic arguments still flags the ctor`` () =
     let _, _, sinks =
-        securityIn "module Test\nlet run (v: string) = new System.Diagnostics.ProcessStartInfo(\"git\", \"clone \" + v)"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let run (v: string) = new System.Diagnostics.ProcessStartInfo("git", "clone " + v)
+                """
+        )
 
     match sinks with
     | [ s ] -> Assert.Equal("ProcessStartInfo", s.Sink)
@@ -1452,8 +2363,14 @@ let ``a fixed command with dynamic arguments still flags the ctor`` () =
 [<Fact>]
 let ``an Arguments property fed a sprintf is flagged`` () =
     let _, _, sinks =
-        securityIn
-            "module Test\nlet configure (psi: System.Diagnostics.ProcessStartInfo) (v: string) =\n    psi.Arguments <- sprintf \"run %s\" v"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let configure (psi: System.Diagnostics.ProcessStartInfo) (v: string) =
+                    psi.Arguments <- sprintf "run %s" v
+                """
+        )
 
     match sinks with
     | [ s ] -> Assert.Equal("Arguments", s.Sink)
@@ -1462,7 +2379,13 @@ let ``an Arguments property fed a sprintf is flagged`` () =
 [<Fact>]
 let ``a constant command line is fine`` () =
     let _, _, sinks =
-        securityIn "module Test\nlet run () = System.Diagnostics.Process.Start(\"notepad.exe\")"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let run () = System.Diagnostics.Process.Start("notepad.exe")
+                """
+        )
 
     Assert.Empty sinks
 
@@ -1503,7 +2426,16 @@ let ``a PEM private key header is key material`` () =
 
 [<Fact>]
 let ``ordinary prefixed identifiers are not keys`` () =
-    Assert.Empty(secretsIn "module M\nlet sku = \"sk-1234\"\nlet gh = \"ghx_short\"")
+    Assert.Empty(
+        secretsIn (
+            fsharp
+                """
+                module M
+                let sku = "sk-1234"
+                let gh = "ghx_short"
+                """
+        )
+    )
 
 [<Fact>]
 let ``a key carrying 123456 is the standard made-up one`` () =
@@ -1529,7 +2461,11 @@ let private obsoleteCryptoIn (source: string) =
 [<Fact>]
 let ``an obsolete Managed constructor becomes the static factory`` () =
     let source =
-        "module M\nlet hash () = new System.Security.Cryptography.SHA256Managed()"
+        fsharp
+            """
+            module M
+            let hash () = new System.Security.Cryptography.SHA256Managed()
+            """
 
     match obsoleteCryptoIn source with
     | [ s ] ->
@@ -1541,7 +2477,12 @@ let ``an obsolete Managed constructor becomes the static factory`` () =
 [<Fact>]
 let ``RNGCryptoServiceProvider maps to RandomNumberGenerator`` () =
     let source =
-        "module M\nopen System.Security.Cryptography\nlet rng () = new RNGCryptoServiceProvider()"
+        fsharp
+            """
+            module M
+            open System.Security.Cryptography
+            let rng () = new RNGCryptoServiceProvider()
+            """
 
     match obsoleteCryptoIn source with
     | [ s ] ->
@@ -1553,8 +2494,14 @@ let ``RNGCryptoServiceProvider maps to RandomNumberGenerator`` () =
 [<Fact>]
 let ``a constructor with arguments carries state and stays`` () =
     Assert.Empty(
-        obsoleteCryptoIn
-            "module M\ntype AesManaged(key: byte[]) = member _.K = key\nlet a (key: byte[]) = new AesManaged(key)"
+        obsoleteCryptoIn (
+            fsharp
+                """
+                module M
+                type AesManaged(key: byte[]) = member _.K = key
+                let a (key: byte[]) = new AesManaged(key)
+                """
+        )
     )
 
 [<Fact>]
@@ -1562,13 +2509,26 @@ let ``an obsolete name mentioned in a type position vetoes the rewrite`` () =
     // SHA256.Create() returns the BASE type — an explicit SHA256Managed
     // annotation (or `:?` test / typeof<>) would break or change meaning
     Assert.Empty(
-        obsoleteCryptoIn "module M\nopen System.Security.Cryptography\nlet h: SHA256Managed = new SHA256Managed()"
+        obsoleteCryptoIn (
+            fsharp
+                """
+                module M
+                open System.Security.Cryptography
+                let h: SHA256Managed = new SHA256Managed()
+                """
+        )
     )
 
 [<Fact>]
 let ``the veto is per name, not per file`` () =
     let source =
-        "module M\nopen System.Security.Cryptography\nlet h: SHA256Managed = new SHA256Managed()\nlet g () = new SHA512Managed()"
+        fsharp
+            """
+            module M
+            open System.Security.Cryptography
+            let h: SHA256Managed = new SHA256Managed()
+            let g () = new SHA512Managed()
+            """
 
     match obsoleteCryptoIn source with
     | [ s ] -> Assert.Equal("SHA512Managed", s.ObsoleteName)
@@ -1583,7 +2543,15 @@ let private guardEqualsIn (source: string) =
 [<Fact>]
 let ``a guard that only tests the binder becomes the literal pattern`` () =
     let source =
-        "module M\nlet f (a: string) =\n    match a with\n    | x when x = \"A\" -> 1\n    | x when x = \"B\" -> 2\n    | _ -> 3"
+        fsharp
+            """
+            module M
+            let f (a: string) =
+                match a with
+                | x when x = "A" -> 1
+                | x when x = "B" -> 2
+                | _ -> 3
+            """
 
     match guardEqualsIn source with
     | [ s1; s2 ] ->
@@ -1592,15 +2560,21 @@ let ``a guard that only tests the binder becomes the literal pattern`` () =
         let patched =
             applyEdit (applyEdit source s2.Range s2.LiteralText) s1.Range s1.LiteralText
 
-        Assert.Contains("| \"A\" -> 1", patched)
-        Assert.Contains("| \"B\" -> 2", patched)
+        Assert.Contains("""| "A" -> 1""", patched)
+        Assert.Contains("""| "B" -> 2""", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two guard suggestions, got %A" other
 
 [<Fact>]
 let ``function-style matching gets the same rewrite`` () =
     let source =
-        "module M\nlet f = function\n    | x when x = 42 -> \"yes\"\n    | _ -> \"no\""
+        fsharp
+            """
+            module M
+            let f = function
+                | x when x = 42 -> "yes"
+                | _ -> "no"
+            """
 
     match guardEqualsIn source with
     | [ s ] ->
@@ -1613,28 +2587,61 @@ let ``function-style matching gets the same rewrite`` () =
 [<Fact>]
 let ``a body still using the binder keeps the guard`` () =
     Assert.Empty(
-        guardEqualsIn
-            "module M\nlet f (a: string) =\n    match a with\n    | x when x = \"A\" -> x + \"!\"\n    | _ -> \"no\""
+        guardEqualsIn (
+            fsharp
+                """
+                module M
+                let f (a: string) =
+                    match a with
+                    | x when x = "A" -> x + "!"
+                    | _ -> "no"
+                """
+        )
     )
 
 [<Fact>]
 let ``a compound guard is more than the literal`` () =
     Assert.Empty(
-        guardEqualsIn
-            "module M\nlet f (a: string) (b: bool) =\n    match a with\n    | x when x = \"A\" && b -> 1\n    | _ -> 3"
+        guardEqualsIn (
+            fsharp
+                """
+                module M
+                let f (a: string) (b: bool) =
+                    match a with
+                    | x when x = "A" && b -> 1
+                    | _ -> 3
+                """
+        )
     )
 
 [<Fact>]
 let ``a decimal literal is not spellable in the pattern language`` () =
     Assert.Empty(
-        guardEqualsIn "module M\nlet f (a: decimal) =\n    match a with\n    | x when x = 1.5m -> 1\n    | _ -> 3"
+        guardEqualsIn (
+            fsharp
+                """
+                module M
+                let f (a: decimal) =
+                    match a with
+                    | x when x = 1.5m -> 1
+                    | _ -> 3
+                """
+        )
     )
 
 [<Fact>]
 let ``a guard against a VARIABLE cannot become a pattern`` () =
     Assert.Empty(
-        guardEqualsIn
-            "module M\nlet f (a: string) (expected: string) =\n    match a with\n    | x when x = expected -> 1\n    | _ -> 3"
+        guardEqualsIn (
+            fsharp
+                """
+                module M
+                let f (a: string) (expected: string) =
+                    match a with
+                    | x when x = expected -> 1
+                    | _ -> 3
+                """
+        )
     )
 
 // ---- FR0130 LiteralConst ----
@@ -1646,14 +2653,28 @@ let private literalsIn (source: string) =
 [<Fact>]
 let ``a private constant string gains the Literal attribute`` () =
     let source =
-        "module M\nlet private Greeting = \"hello world\"\nlet show () = Greeting"
+        fsharp
+            """
+            module M
+            let private Greeting = "hello world"
+            let show () = Greeting
+            """
 
     match literalsIn source with
     | [ s ] ->
         Assert.Equal("Greeting", s.Name)
         let r, text = s.Fix
         let patched = applyEdit source r text
-        Assert.Contains("[<Literal>]\nlet private Greeting", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                [<Literal>]
+                let private Greeting
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one literal suggestion, got %A" other
 
@@ -1670,14 +2691,31 @@ let ``a name also used as a match binder must not become a constant pattern`` ()
     // once `greeting` is a literal, `| greeting ->` MATCHES it instead of
     // binding — compiles fine, behavior silently changes
     Assert.Empty(
-        literalsIn
-            "module M\nlet private greeting = \"hello\"\nlet f (s: string) =\n    match s with\n    | greeting -> greeting"
+        literalsIn (
+            fsharp
+                """
+                module M
+                let private greeting = "hello"
+                let f (s: string) =
+                    match s with
+                    | greeting -> greeting
+                """
+        )
     )
 
 [<Fact>]
 let ``a name also bound by a local let must not become a partial match`` () =
     Assert.Empty(
-        literalsIn "module M\nlet private greeting = \"hello\"\nlet f (s: string) =\n    let greeting = s\n    greeting"
+        literalsIn (
+            fsharp
+                """
+                module M
+                let private greeting = "hello"
+                let f (s: string) =
+                    let greeting = s
+                    greeting
+                """
+        )
     )
 
 // ---- FR0110 / FR0117 over function-style matching ----
@@ -1685,7 +2723,14 @@ let ``a name also bound by a local let must not become a partial match`` () =
 [<Fact>]
 let ``missing DU cases are added to function-style matches too`` () =
     let source =
-        "module Test\ntype Color = Red | Green | Blue\nlet f : Color -> string = function\n    | Red -> \"r\"\n    | Green -> \"g\""
+        fsharp
+            """
+            module Test
+            type Color = Red | Green | Blue
+            let f : Color -> string = function
+                | Red -> "r"
+                | Green -> "g"
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
 
@@ -1696,7 +2741,14 @@ let ``missing DU cases are added to function-style matches too`` () =
 [<Fact>]
 let ``adjacent same-result arms merge in function-style matches too`` () =
     let source =
-        "module Test\nlet f : int -> bool = function\n    | 1 -> true\n    | 2 -> true\n    | _ -> false"
+        fsharp
+            """
+            module Test
+            let f : int -> bool = function
+                | 1 -> true
+                | 2 -> true
+                | _ -> false
+            """
 
     let tree, sourceText = parse source
 
@@ -1726,21 +2778,43 @@ let private assertTailCallClean (patched: string) =
 [<Fact>]
 let ``an accumulator loop over match gains TailCall`` () =
     let source =
-        "module M\nlet rec sum (acc: int) (xs: int list) =\n    match xs with\n    | [] -> acc\n    | h :: t -> sum (acc + h) t"
+        fsharp
+            """
+            module M
+            let rec sum (acc: int) (xs: int list) =
+                match xs with
+                | [] -> acc
+                | h :: t -> sum (acc + h) t
+            """
 
     match tailCallsIn source with
     | [ s ] ->
         Assert.Equal("sum", s.Name)
         let r, text = s.Fix
         let patched = applyEdit source r text
-        Assert.Contains("[<TailCall>]\nlet rec sum", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                [<TailCall>]
+                let rec sum
+                """,
+            patched
+        )
+
         assertTailCallClean patched
     | other -> failwithf "Expected one TailCall suggestion, got %A" other
 
 [<Fact>]
 let ``function-style accumulator loops count their implicit parameter`` () =
     let source =
-        "module M\nlet rec go (acc: int) = function\n    | [] -> acc\n    | (h: int) :: t -> go (acc + h) t"
+        fsharp
+            """
+            module M
+            let rec go (acc: int) = function
+                | [] -> acc
+                | (h: int) :: t -> go (acc + h) t
+            """
 
     match tailCallsIn source with
     | [ s ] ->
@@ -1752,7 +2826,14 @@ let ``function-style accumulator loops count their implicit parameter`` () =
 [<Fact>]
 let ``a piped self-call is a tail call`` () =
     let source =
-        "module M\nlet rec drain (n: int) (xs: int list) =\n    match xs with\n    | [] -> n\n    | _ :: t -> t |> drain (n + 1)"
+        fsharp
+            """
+            module M
+            let rec drain (n: int) (xs: int list) =
+                match xs with
+                | [] -> n
+                | _ :: t -> t |> drain (n + 1)
+            """
 
     match tailCallsIn source with
     | [ s ] ->
@@ -1763,46 +2844,97 @@ let ``a piped self-call is a tail call`` () =
 [<Fact>]
 let ``a cons around the self-call is not a tail call`` () =
     Assert.Empty(
-        tailCallsIn
-            "module M\nlet rec twice (xs: int list) =\n    match xs with\n    | [] -> []\n    | h :: t -> h :: h :: twice t"
+        tailCallsIn (
+            fsharp
+                """
+                module M
+                let rec twice (xs: int list) =
+                    match xs with
+                    | [] -> []
+                    | h :: t -> h :: h :: twice t
+                """
+        )
     )
 
 [<Fact>]
 let ``the function passed as a VALUE cannot be verified`` () =
     Assert.Empty(
-        tailCallsIn
-            "module M\nlet rec flatten (acc: int list) (xss: int list list) =\n    match xss with\n    | [] -> acc\n    | _ -> List.fold flatten acc xss"
+        tailCallsIn (
+            fsharp
+                """
+                module M
+                let rec total (acc: int) (xs: int list) =
+                    match xs with
+                    | [] -> acc
+                    | _ -> List.fold total acc [ xs.Tail ]
+                """
+        )
     )
 
 [<Fact>]
 let ``a self-call inside try-with is never tail`` () =
     Assert.Empty(
-        tailCallsIn
-            "module M\nlet rec retry (n: int) (f: unit -> int) =\n    try f ()\n    with _ -> if n > 0 then retry (n - 1) f else 0"
+        tailCallsIn (
+            fsharp
+                """
+                module M
+                let rec retry (n: int) (f: unit -> int) =
+                    try f ()
+                    with _ -> if n > 0 then retry (n - 1) f else 0
+                """
+        )
     )
 
 [<Fact>]
 let ``mutual and-groups stay untouched`` () =
     Assert.Empty(
-        tailCallsIn
-            "module M\nlet rec even (n: int) = if n = 0 then true else odd (n - 1)\nand odd (n: int) = if n = 0 then false else even (n - 1)"
+        tailCallsIn (
+            fsharp
+                """
+                module M
+                let rec even (n: int) = if n = 0 then true else odd (n - 1)
+                and odd (n: int) = if n = 0 then false else even (n - 1)
+                """
+        )
     )
 
 [<Fact>]
 let ``an unverifiable call shape is left alone`` () =
     // `(k (n - 1)) x` — the parenthesised head hides the spine, so the
     // conservative catch-all vetoes rather than guesses
-    Assert.Empty(tailCallsIn "module M\nlet rec k (n: int) (x: int) : int =\n    if n <= 0 then x else (k (n - 1)) x")
+    Assert.Empty(
+        tailCallsIn (
+            fsharp
+                """
+                module M
+                let rec k (n: int) (x: int) : int =
+                    if n <= 0 then x else (k (n - 1)) x
+                """
+        )
+    )
 
 // ---- cross-file migrations (internal visibility, --api-changes class) ----
 
 [<Fact>]
 let ``an internal option field migrates across files`` () =
     let sourceA =
-        "module A\ntype internal Row = { Seen: System.DateTime option }\nlet internal mk (d: System.DateTime) = { Seen = Some d }"
+        fsharp
+            """
+            module A
+            type internal Row = { Seen: System.DateTime option }
+            let internal mk (d: System.DateTime) = { Seen = Some d }
+            """
 
     let sourceB =
-        "module B\nlet internal clear (r: A.Row) = { r with Seen = None }\nlet internal describe (r: A.Row) =\n    match r.Seen with\n    | Some d -> string d\n    | None -> \"never\""
+        fsharp
+            """
+            module B
+            let internal clear (r: A.Row) = { r with Seen = None }
+            let internal describe (r: A.Row) =
+                match r.Seen with
+                | Some d -> string d
+                | None -> "never"
+            """
 
     let treeA, sourceTextA, checkA, projectResults, pathA, _, recheck =
         parseAndCheckPair sourceA sourceB
@@ -1851,10 +2983,22 @@ let ``an internal option field migrates across files`` () =
 [<Fact>]
 let ``a sibling use outside the shapes vetoes the cross-file migration`` () =
     let sourceA =
-        "module A\ntype internal Row = { Seen: System.DateTime option }\nlet internal mk (d: System.DateTime) = { Seen = Some d }"
+        fsharp
+            """
+            module A
+            type internal Row = { Seen: System.DateTime option }
+            let internal mk (d: System.DateTime) = { Seen = Some d }
+            """
 
     // `let s = r.Seen` in the OTHER file starts dataflow the scan cannot follow
-    let sourceB = "module B\nlet internal stash (r: A.Row) =\n    let s = r.Seen\n    s"
+    let sourceB =
+        fsharp
+            """
+            module B
+            let internal stash (r: A.Row) =
+                let s = r.Seen
+                s
+            """
 
     let treeA, sourceTextA, checkA, projectResults, _, _, _ =
         parseAndCheckPair sourceA sourceB
@@ -1886,16 +3030,38 @@ let private commentDocIn (source: string) =
 let ``a trailing comment spelling code is not a summary`` () =
     // Thoth.Json: `// d >> Result.map box` beside `let inline boxDecoder`
     // notes an equivalent spelling, and became public API doc
-    Assert.Empty(commentDocIn "module M\nlet boxDecoder (d: int -> Result<int, string>) = d // d >> Result.map box")
+    Assert.Empty(
+        commentDocIn (
+            fsharp
+                """
+                module M
+                let boxDecoder (d: int -> Result<int, string>) = d // d >> Result.map box
+                """
+        )
+    )
 
 [<Fact>]
 let ``a trailing comment on a public binding becomes its XML doc`` () =
-    let source = "module M\nlet interestRate r n = r * n // monthly, non-compounding"
+    let source =
+        fsharp
+            """
+            module M
+            let interestRate r n = r * n // monthly, non-compounding
+            """
 
     match commentDocIn source with
     | [ s ] ->
         let patched = applyMigration source s.Edits
-        Assert.Contains("/// monthly, non-compounding\nlet interestRate r n = r * n", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                /// monthly, non-compounding
+                let interestRate r n = r * n
+                """,
+            patched
+        )
+
         Assert.False(patched.Contains "n // monthly")
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one doc promotion, got %A" other
@@ -1903,12 +3069,27 @@ let ``a trailing comment on a public binding becomes its XML doc`` () =
 [<Fact>]
 let ``a union case's trailing comment docs the case`` () =
     let source =
-        "module M\ntype Money =\n    | Rate of float // interest and rate\n    | Amount of int"
+        fsharp
+            """
+            module M
+            type Money =
+                | Rate of float // interest and rate
+                | Amount of int
+            """
 
     match commentDocIn source with
     | [ s ] ->
         let patched = applyMigration source s.Edits
-        Assert.Contains("    /// interest and rate\n    | Rate of float", patched)
+
+        Assert.Contains(
+            fsharp
+                """
+                    /// interest and rate
+                    | Rate of float
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one case promotion, got %A" other
 
@@ -1918,11 +3099,28 @@ let ``a private binding keeps its trailing note`` () =
 
 [<Fact>]
 let ``an existing XML doc wins`` () =
-    Assert.Empty(commentDocIn "module M\n/// documented already\nlet interestRate r n = r * n // stale note")
+    Assert.Empty(
+        commentDocIn (
+            fsharp
+                """
+                module M
+                /// documented already
+                let interestRate r n = r * n // stale note
+                """
+        )
+    )
 
 [<Fact>]
 let ``a suppression comment is an instruction, not documentation`` () =
-    Assert.Empty(commentDocIn "module M\nlet rate r = r * 2 // fsharpanalyzer: ignore-line FR0001")
+    Assert.Empty(
+        commentDocIn (
+            fsharp
+                """
+                module M
+                let rate r = r * 2 // fsharpanalyzer: ignore-line FR0001
+                """
+        )
+    )
 
 // ---- FR0133 NameQuoting ----
 
@@ -1933,7 +3131,13 @@ let private nameQuotingIn (source: string) =
 [<Fact>]
 let ``a five-word private name becomes a double-backtick name everywhere`` () =
     let source =
-        "module M\nlet private thisIsMyVeryComplexMethod (x: int) = x + 1\nlet use1 () = thisIsMyVeryComplexMethod 1\nlet use2 () = thisIsMyVeryComplexMethod 2"
+        fsharp
+            """
+            module M
+            let private thisIsMyVeryComplexMethod (x: int) = x + 1
+            let use1 () = thisIsMyVeryComplexMethod 1
+            let use2 () = thisIsMyVeryComplexMethod 2
+            """
 
     match nameQuotingIn source with
     | [ s ] ->
@@ -1947,7 +3151,13 @@ let ``a five-word private name becomes a double-backtick name everywhere`` () =
 [<Fact>]
 let ``a snake-case local renames inside its function`` () =
     let source =
-        "module M\nlet f () =\n    let this_is_my_very_complex_case = 4\n    this_is_my_very_complex_case + 1"
+        fsharp
+            """
+            module M
+            let f () =
+                let this_is_my_very_complex_case = 4
+                this_is_my_very_complex_case + 1
+            """
 
     match nameQuotingIn source with
     | [ s ] ->
@@ -1971,7 +3181,16 @@ let ``a public non-test name is a contract`` () =
 [<Fact>]
 let ``a test-attributed public name renames when the project proves it local`` () =
     let sourceA =
-        "module ATests\n[<System.Obsolete>]\nlet fake () = ()\ntype FactAttribute() =\n    inherit System.Attribute()\n[<Fact>]\nlet checkThatRatesRoundCorrectly () = ()"
+        fsharp
+            """
+            module ATests
+            [<System.Obsolete>]
+            let fake () = ()
+            type FactAttribute() =
+                inherit System.Attribute()
+            [<Fact>]
+            let checkThatRatesRoundCorrectly () = ()
+            """
 
     let sourceB = "module B\nlet unrelated = 1"
 
@@ -1986,8 +3205,14 @@ let ``a test-attributed public name renames when the project proves it local`` (
 let ``without the locals opt-in only test names rewrite`` () =
     // default configuration: private five-word names stay put
     let tree, sourceText, checkResults =
-        parseAndCheck
-            "module M\nlet private thisIsMyVeryComplexHelper (x: int) = x\nlet go () = thisIsMyVeryComplexHelper 2"
+        parseAndCheck (
+            fsharp
+                """
+                module M
+                let private thisIsMyVeryComplexHelper (x: int) = x
+                let go () = thisIsMyVeryComplexHelper 2
+                """
+        )
 
     Assert.Empty(NameQuoting.find false tree sourceText checkResults None)
 
@@ -2000,7 +3225,13 @@ let private duNamesIn (source: string) =
 [<Fact>]
 let ``an XAndY case name names its own fields`` () =
     let source =
-        "module M\ntype private Pricing =\n    | InterestAndRate of float * float\n    | Empty"
+        fsharp
+            """
+            module M
+            type private Pricing =
+                | InterestAndRate of float * float
+                | Empty
+            """
 
     match duNamesIn source with
     | [ s ] ->
@@ -2013,7 +3244,13 @@ let ``an XAndY case name names its own fields`` () =
 [<Fact>]
 let ``a clear trailing comment names the fields`` () =
     let source =
-        "module M\ntype private Pricing =\n    | Pair of float * float // interest and rate\n    | Empty"
+        fsharp
+            """
+            module M
+            type private Pricing =
+                | Pair of float * float // interest and rate
+                | Empty
+            """
 
     match duNamesIn source with
     | [ s ] ->
@@ -2026,7 +3263,13 @@ let ``a clear trailing comment names the fields`` () =
 [<Fact>]
 let ``a star-separated comment works too`` () =
     let source =
-        "module M\ntype private Pricing =\n    | Pair of float * float // interest * rate\n    | Empty"
+        fsharp
+            """
+            module M
+            type private Pricing =
+                | Pair of float * float // interest * rate
+                | Empty
+            """
 
     match duNamesIn source with
     | [ s ] -> Assert.Equal<string list>([ "interest"; "rate" ], s.Names)
@@ -2036,16 +3279,46 @@ let ``a star-separated comment works too`` () =
 let ``a type-note comment is not a name list`` () =
     // `// string * int` spells TYPES — using them as field names would
     // shadow the type names and read as nonsense
-    Assert.Empty(duNamesIn "module M\ntype private T =\n    | Pair of string * int // string * int\n    | Empty")
+    Assert.Empty(
+        duNamesIn (
+            fsharp
+                """
+                module M
+                type private T =
+                    | Pair of string * int // string * int
+                    | Empty
+                """
+        )
+    )
 
 [<Fact>]
 let ``Command does not split at its lowercase and`` () =
-    Assert.Empty(duNamesIn "module M\ntype private T =\n    | Command of string * int\n    | Empty")
+    Assert.Empty(
+        duNamesIn (
+            fsharp
+                """
+                module M
+                type private T =
+                    | Command of string * int
+                    | Empty
+                """
+        )
+    )
 
 [<Fact>]
 let ``match sites still outrank the weaker sources`` () =
     let source =
-        "module M\ntype private Pricing =\n    | InterestAndRate of float * float // wrong and comment\n    | Empty\nlet f (p: Pricing) =\n    match p with\n    | InterestAndRate(basis, spread) -> basis + spread\n    | Empty -> 0.0"
+        fsharp
+            """
+            module M
+            type private Pricing =
+                | InterestAndRate of float * float // wrong and comment
+                | Empty
+            let f (p: Pricing) =
+                match p with
+                | InterestAndRate(basis, spread) -> basis + spread
+                | Empty -> 0.0
+            """
 
     match duNamesIn source with
     | [ s ] -> Assert.Equal<string list>([ "basis"; "spread" ], s.Names)
@@ -2080,7 +3353,7 @@ let ``a UtcNow-fed private DateTime field migrates to DateTimeOffset`` () =
     | [ (_, Some edits) ] ->
         let patched = applyMigration source edits
         Assert.Contains("Seen: DateTimeOffset", patched)
-        Assert.Contains("{ Seen = DateTimeOffset.UtcNow; Name = \"a\" }", patched)
+        Assert.Contains("""{ Seen = DateTimeOffset.UtcNow; Name = "a" }""", patched)
         Assert.Contains("r.Seen.Year", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one DateTimeOffset migration, got %A" other
@@ -2162,7 +3435,16 @@ let ``a computed write escapes the envelope`` () =
 [<Fact>]
 let ``an attributed binding keeps its comment where it is`` () =
     // the /// would land between the attribute and the let — FS3520 territory
-    Assert.Empty(commentDocIn "module M\n[<System.Obsolete>]\nlet rate r = r * 2 // monthly figure")
+    Assert.Empty(
+        commentDocIn (
+            fsharp
+                """
+                module M
+                [<System.Obsolete>]
+                let rate r = r * 2 // monthly figure
+                """
+        )
+    )
 
 [<Fact>]
 let ``a user-defined DateTime type never migrates`` () =
@@ -2195,7 +3477,13 @@ let ``a public field is never confined, even under api-changes`` () =
 [<Fact>]
 let ``an internal field is confined but not file-private`` () =
     let tree, sourceText =
-        parse "module M\ntype internal Row = { Seen: System.DateTime option }"
+        parse (
+            fsharp
+                """
+                module M
+                type internal Row = { Seen: System.DateTime option }
+                """
+        )
 
     let voptions, _, _ = StructHints.find true tree sourceText
 
@@ -2207,7 +3495,17 @@ let ``an internal field is confined but not file-private`` () =
 
 [<Fact>]
 let ``BeginAndEnd would name fields with keywords and stays`` () =
-    Assert.Empty(duNamesIn "module M\ntype private T =\n    | BeginAndEnd of int * int\n    | Nothing")
+    Assert.Empty(
+        duNamesIn (
+            fsharp
+                """
+                module M
+                type private T =
+                    | BeginAndEnd of int * int
+                    | Nothing
+                """
+        )
+    )
 
 [<Fact>]
 let ``an XML-hostile comment stays where escaping cannot follow`` () =
@@ -2245,8 +3543,15 @@ let ``a same-named field on another type is not a sound comparison operand`` () 
 let ``a name referenced by string never renames`` () =
     // [<TestCaseSource("...")>]-style references resolve at runtime
     let tree, sourceText, checkResults =
-        parseAndCheck
-            "module M\nlet private thisIsMyVeryLongCaseSource = [ 1 ]\nlet describe () = \"thisIsMyVeryLongCaseSource drives the tests\"\nlet go () = thisIsMyVeryLongCaseSource"
+        parseAndCheck (
+            fsharp
+                """
+                module M
+                let private thisIsMyVeryLongCaseSource = [ 1 ]
+                let describe () = "thisIsMyVeryLongCaseSource drives the tests"
+                let go () = thisIsMyVeryLongCaseSource
+                """
+        )
 
     Assert.Empty(NameQuoting.find true tree sourceText checkResults None)
 
@@ -2258,19 +3563,46 @@ let private literateIn (source: string) =
 
 [<Fact>]
 let ``a fenced block comment in a script becomes a literate cell`` () =
-    let source = "(*\n### Setup\n```fsharp\nlet x = 1\n```\n*)\nlet go = 2"
+    let source =
+        fsharp
+            """
+            (*
+            ### Setup
+            ```fsharp
+            let x = 1
+            ```
+            *)
+            let go = 2
+            """
 
     match literateIn source with
     | [ s ] ->
         let r, text = s.Fix
         let patched = applyEdit source r text
-        Assert.StartsWith("(**\n### Setup", patched)
+
+        Assert.StartsWith(
+            fsharp
+                """
+                (**
+                ### Setup
+                """,
+            patched
+        )
+
         Assert.True(parsesCleanlyNamed "Doc.fsx" patched)
     | other -> failwithf "Expected one literate suggestion, got %A" other
 
 [<Fact>]
 let ``a heading alone is evidence too`` () =
-    let source = "(*\n### Usage notes\nplain prose here\n*)\nlet go = 2"
+    let source =
+        fsharp
+            """
+            (*
+            ### Usage notes
+            plain prose here
+            *)
+            let go = 2
+            """
 
     match literateIn source with
     | [ s ] -> Assert.Equal("a ### heading", s.Evidence)
@@ -2278,7 +3610,17 @@ let ``a heading alone is evidence too`` () =
 
 [<Fact>]
 let ``an existing literate cell is already one`` () =
-    Assert.Empty(literateIn "(**\n### Setup\n*)\nlet go = 2")
+    Assert.Empty(
+        literateIn (
+            fsharp
+                """
+                (**
+                ### Setup
+                *)
+                let go = 2
+                """
+        )
+    )
 
 [<Fact>]
 let ``a command cell is tooling syntax, not markdown`` () =
@@ -2286,11 +3628,36 @@ let ``a command cell is tooling syntax, not markdown`` () =
 
 [<Fact>]
 let ``prose without markdown stays a comment`` () =
-    Assert.Empty(literateIn "(*\njust words\nacross lines\n*)\nlet go = 2")
+    Assert.Empty(
+        literateIn (
+            fsharp
+                """
+                (*
+                just words
+                across lines
+                *)
+                let go = 2
+                """
+        )
+    )
 
 [<Fact>]
 let ``a compiled file is not a literate script`` () =
-    let tree, sourceText = parse "module M\n(*\n### Setup\n```\nx\n```\n*)\nlet go = 2"
+    let tree, sourceText =
+        parse (
+            fsharp
+                """
+                module M
+                (*
+                ### Setup
+                ```
+                x
+                ```
+                *)
+                let go = 2
+                """
+        )
+
     Assert.Empty(LiterateComment.find tree sourceText)
 
 [<Fact>]
@@ -2298,8 +3665,15 @@ let ``a name referenced from an ATTRIBUTE argument never renames`` () =
     // the real TestCaseSource shape: the string lives in the attribute's
     // argument, which is not an indexed expression
     let tree, sourceText, checkResults =
-        parseAndCheck
-            "module M\nlet private thisIsMyVeryLongCaseSource = [ 1 ]\n[<System.Obsolete(\"see thisIsMyVeryLongCaseSource\")>]\nlet go () = thisIsMyVeryLongCaseSource"
+        parseAndCheck (
+            fsharp
+                """
+                module M
+                let private thisIsMyVeryLongCaseSource = [ 1 ]
+                [<System.Obsolete("see thisIsMyVeryLongCaseSource")>]
+                let go () = thisIsMyVeryLongCaseSource
+                """
+        )
 
     Assert.Empty(NameQuoting.find true tree sourceText checkResults None)
 
@@ -2324,15 +3698,30 @@ let ``a set-once config mutable is the poor man's DI, not churn`` () =
     // assigned once, not from itself: the startup-config / test-seam
     // pattern — no note
     let mutables, _, _ =
-        miscIn "module Test\nlet mutable Config = \"default\"\nlet setup (c: string) = Config <- c\nlet get () = Config"
+        miscIn (
+            fsharp
+                """
+                module Test
+                let mutable Config = "default"
+                let setup (c: string) = Config <- c
+                let get () = Config
+                """
+        )
 
     Assert.Empty mutables
 
 [<Fact>]
 let ``a repeatedly assigned public mutable keeps the note`` () =
     let mutables, _, _ =
-        miscIn
-            "module Test\nlet mutable Current = \"a\"\nlet setA () = Current <- \"a\"\nlet setB () = Current <- \"b\""
+        miscIn (
+            fsharp
+                """
+                module Test
+                let mutable Current = "a"
+                let setA () = Current <- "a"
+                let setB () = Current <- "b"
+                """
+        )
 
     match mutables with
     | [ s ] -> Assert.Equal("Current", s.Name)
@@ -2376,16 +3765,33 @@ let ``the WebSocket handshake's SHA-1 is the protocol, not a choice`` () =
     // RFC 6455: Sec-WebSocket-Accept is SHA-1 of the key and this GUID, and
     // nothing else will do (Suave's WebSocket.fs spells the GUID)
     let tree, sourceText =
-        parse
-            "module Test\nopen System.Security.Cryptography\nlet magicGUID = \"258EAFA5-E914-47DA-95CA-C5AB0DC85B11\"\nlet sha1 (x: string) =\n    let algo = SHA1.Create()\n    algo.ComputeHash(System.Text.Encoding.ASCII.GetBytes x)"
+        parse (
+            fsharp
+                """
+                module Test
+                open System.Security.Cryptography
+                let magicGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                let sha1 (x: string) =
+                    let algo = SHA1.Create()
+                    algo.ComputeHash(System.Text.Encoding.ASCII.GetBytes x)
+                """
+        )
 
     let crypto, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
     Assert.Empty crypto
 
     // without the GUID the same SHA1 is a choice
     let tree2, sourceText2 =
-        parse
-            "module Test\nopen System.Security.Cryptography\nlet sha1 (x: string) =\n    let algo = SHA1.Create()\n    algo.ComputeHash(System.Text.Encoding.ASCII.GetBytes x)"
+        parse (
+            fsharp
+                """
+                module Test
+                open System.Security.Cryptography
+                let sha1 (x: string) =
+                    let algo = SHA1.Create()
+                    algo.ComputeHash(System.Text.Encoding.ASCII.GetBytes x)
+                """
+        )
 
     let crypto2, _, _ = SecurityRules.find tree2 sourceText2 (fun _ -> false)
     Assert.NotEmpty crypto2
@@ -2395,16 +3801,37 @@ let ``SHA-1 in a match arm whose sibling constructs SHA-256 is a format option``
     // the compiler's --checksumalgorithm (ilwritepdb, ilwrite): the strong
     // algorithm is on offer in the next arm, SHA-1 is what the caller asked
     let tree, sourceText =
-        parse
-            "module Test\nopen System.Security.Cryptography\ntype Checksum =\n    | Sha1\n    | Sha256\nlet algorithm (c: Checksum) : HashAlgorithm =\n    match c with\n    | Sha1 -> SHA1.Create() :> HashAlgorithm\n    | Sha256 -> SHA256.Create() :> HashAlgorithm"
+        parse (
+            fsharp
+                """
+                module Test
+                open System.Security.Cryptography
+                type Checksum =
+                    | Sha1
+                    | Sha256
+                let algorithm (c: Checksum) : HashAlgorithm =
+                    match c with
+                    | Sha1 -> SHA1.Create() :> HashAlgorithm
+                    | Sha256 -> SHA256.Create() :> HashAlgorithm
+                """
+        )
 
     let crypto, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
     Assert.Empty crypto
 
     // a match whose arms all pick weak hashes has no strong sibling
     let tree2, sourceText2 =
-        parse
-            "module Test\nopen System.Security.Cryptography\nlet algorithm (md5: bool) : HashAlgorithm =\n    match md5 with\n    | true -> MD5.Create() :> HashAlgorithm\n    | false -> SHA1.Create() :> HashAlgorithm"
+        parse (
+            fsharp
+                """
+                module Test
+                open System.Security.Cryptography
+                let algorithm (md5: bool) : HashAlgorithm =
+                    match md5 with
+                    | true -> MD5.Create() :> HashAlgorithm
+                    | false -> SHA1.Create() :> HashAlgorithm
+                """
+        )
 
     let crypto2, _, _ = SecurityRules.find tree2 sourceText2 (fun _ -> false)
     Assert.Equal(2, crypto2.Length)
@@ -2412,8 +3839,15 @@ let ``SHA-1 in a match arm whose sibling constructs SHA-256 is a format option``
 [<Fact>]
 let ``the weak protocol constant swaps to Tls12`` () =
     let tree, sourceText =
-        parse
-            "module Test\nopen System.Net\nlet setup () =\n    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls11"
+        parse (
+            fsharp
+                """
+                module Test
+                open System.Net
+                let setup () =
+                    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls11
+                """
+        )
 
     let crypto, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
 
@@ -2422,7 +3856,13 @@ let ``the weak protocol constant swaps to Tls12`` () =
         match s.AlgoRange with
         | Some r ->
             let source =
-                "module Test\nopen System.Net\nlet setup () =\n    ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls11"
+                fsharp
+                    """
+                    module Test
+                    open System.Net
+                    let setup () =
+                        ServicePointManager.SecurityProtocol <- SecurityProtocolType.Tls11
+                    """
 
             let patched = applyEdit source r "Tls12"
             Assert.Contains("SecurityProtocolType.Tls12", patched)
@@ -2433,7 +3873,12 @@ let ``the weak protocol constant swaps to Tls12`` () =
 [<Fact>]
 let ``an existing Globalization open keeps the culture spelling short`` () =
     let source =
-        "module Test\nopen System.Globalization\nlet f (s: string) = System.DateTime.Parse(s)"
+        fsharp
+            """
+            module Test
+            open System.Globalization
+            let f (s: string) = System.DateTime.Parse(s)
+            """
 
     let _, parses, _ = miscIn source
 
@@ -2456,7 +3901,13 @@ let private emptyGuidIn (source: string) =
 
 [<Fact>]
 let ``a zero-argument Guid constructor states Empty`` () =
-    let source = "module M\nopen System\nlet id = Guid()"
+    let source =
+        fsharp
+            """
+            module M
+            open System
+            let id = Guid()
+            """
 
     match emptyGuidIn source with
     | [ s ] ->
@@ -2485,21 +3936,46 @@ let ``a Guid built FROM something is deliberate`` () =
 
 [<Fact>]
 let ``a user type named Guid is not System Guid`` () =
-    Assert.Empty(emptyGuidIn "module M\ntype Guid() = class end\nlet g = Guid()")
+    Assert.Empty(
+        emptyGuidIn (
+            fsharp
+                """
+                module M
+                type Guid() = class end
+                let g = Guid()
+                """
+        )
+    )
 
 [<Fact>]
 let ``inside a query the whole culture suggestion stands down`` () =
     // the quotation belongs to the database's type system — no cultures
     // there, and the two-argument Parse can stop a provider translating
     let source =
-        "module M\nlet f (xs: System.Linq.IQueryable<string>) =\n    query {\n        for x in xs do\n        where (System.DateTime.Parse(x) > System.DateTime.MinValue)\n        select x\n    }"
+        fsharp
+            """
+            module M
+            let f (xs: System.Linq.IQueryable<string>) =
+                query {
+                    for x in xs do
+                    where (System.DateTime.Parse(x) > System.DateTime.MinValue)
+                    select x
+                }
+            """
 
     let _, parses, _ = miscIn source
     Assert.Empty parses
 
 [<Fact>]
 let ``compact tuple spelling keeps its compact field names`` () =
-    let source = "module M\ntype private Mut =\n    | RxAndRy of int*int\n    | Nothing"
+    let source =
+        fsharp
+            """
+            module M
+            type private Mut =
+                | RxAndRy of int*int
+                | Nothing
+            """
 
     match duNamesIn source with
     | [ s ] ->
@@ -2518,13 +3994,21 @@ let private containsIn (source: string) =
 [<Fact>]
 let ``a startup list whose only uses are probes converts in place to a Set`` () =
     let source =
-        "module M\nlet private allowed = [ \"a\"; \"b\"; \"c\" ]\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            let private allowed = [ "a"; "b"; "c" ]
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x
+            """
 
     match containsIn source with
     | [ s ] ->
         Assert.NotEmpty s.Fix
         let patched = applyMigration source s.Fix
-        Assert.Contains("let private allowed = [ \"a\"; \"b\"; \"c\" ] |> Set.ofList", patched)
+        Assert.Contains("""let private allowed = [ "a"; "b"; "c" ] |> Set.ofList""", patched)
         Assert.Contains("if allowed.Contains x then", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one contains suggestion, got %A" other
@@ -2534,7 +4018,16 @@ let ``a list with other uses keeps its type and gains the HashSet companion`` ()
     // the stray List.length use pins the binding's type, so the fix
     // reaches for the shadow set instead of converting in place
     let source =
-        "module M\nlet allowed = [ \"a\"; \"b\"; \"c\" ]\nlet count = List.length allowed\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            let allowed = [ "a"; "b"; "c" ]
+            let count = List.length allowed
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x
+            """
 
     match containsIn source with
     | [ s ] ->
@@ -2550,7 +4043,18 @@ let ``a companion for probes under an #if lands under the same #if`` () =
     // the collection is unconditional, the probe is not: the companion
     // serves the probe, so it takes the probe's condition
     let source =
-        "module M\nlet allowed = [ \"a\"; \"b\"; \"c\" ]\nlet count = List.length allowed\n#if !FOO\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x\n#endif"
+        fsharp
+            """
+            module M
+            let allowed = [ "a"; "b"; "c" ]
+            let count = List.length allowed
+            #if !FOO
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x
+            #endif
+            """
 
     match containsIn source with
     | [ s ] ->
@@ -2558,7 +4062,13 @@ let ``a companion for probes under an #if lands under the same #if`` () =
         let patched = applyMigration source s.Fix
 
         Assert.Contains(
-            "#if !FOO\nlet private allowedProbeSet = System.Collections.Generic.HashSet(allowed)\n#endif\n",
+            fsharp
+                """
+                #if !FOO
+                let private allowedProbeSet = System.Collections.Generic.HashSet(allowed)
+                #endif
+
+                """,
             patched
         )
 
@@ -2568,7 +4078,22 @@ let ``a companion for probes under an #if lands under the same #if`` () =
 [<Fact>]
 let ``probes under different conditions get no companion`` () =
     let source =
-        "module M\nlet allowed = [ \"a\"; \"b\"; \"c\" ]\nlet count = List.length allowed\n#if !FOO\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x\n#endif\nlet g (ys: string list) =\n    for y in ys do\n        if List.contains y allowed then\n            printfn \"%s\" y"
+        fsharp
+            """
+            module M
+            let allowed = [ "a"; "b"; "c" ]
+            let count = List.length allowed
+            #if !FOO
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x
+            #endif
+            let g (ys: string list) =
+                for y in ys do
+                    if List.contains y allowed then
+                        printfn "%s" y
+            """
 
     match containsIn source with
     | suggestions -> Assert.All(suggestions, (fun s -> Assert.Empty s.Fix))
@@ -2576,7 +4101,15 @@ let ``probes under different conditions get no companion`` () =
 [<Fact>]
 let ``an array literal converts with ofArray`` () =
     let source =
-        "module M\nlet private allowed = [| 1; 2; 3 |]\nlet f (xs: int list) =\n    for x in xs do\n        if Array.contains x allowed then\n            printfn \"%d\" x"
+        fsharp
+            """
+            module M
+            let private allowed = [| 1; 2; 3 |]
+            let f (xs: int list) =
+                for x in xs do
+                    if Array.contains x allowed then
+                        printfn "%d" x
+            """
 
     match containsIn source with
     | [ s ] ->
@@ -2591,7 +4124,15 @@ let ``a shadowed collection name keeps the note only`` () =
     // a parameter of the same name makes resolution ambiguous to a
     // parse-only scan
     let source =
-        "module M\nlet allowed = [ \"a\" ]\nlet f (allowed: string list) (xs: string list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            let allowed = [ "a" ]
+            let f (allowed: string list) (xs: string list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x
+            """
 
     match containsIn source with
     | [ s ] -> Assert.Empty s.Fix
@@ -2600,7 +4141,15 @@ let ``a shadowed collection name keeps the note only`` () =
 [<Fact>]
 let ``a dotted-path collection keeps the note only`` () =
     let source =
-        "module M\ntype C = { Allowed: string list }\nlet f (c: C) (xs: string list) =\n    for x in xs do\n        if List.contains x c.Allowed then\n            printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            type C = { Allowed: string list }
+            let f (c: C) (xs: string list) =
+                for x in xs do
+                    if List.contains x c.Allowed then
+                        printfn "%s" x
+            """
 
     match containsIn source with
     | [ s ] -> Assert.Empty s.Fix
@@ -2609,7 +4158,17 @@ let ``a dotted-path collection keeps the note only`` () =
 [<Fact>]
 let ``two probes of one startup list convert together with one companion`` () =
     let source =
-        "module M\nlet private allowed = [ \"a\"; \"b\" ]\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x allowed then printfn \"a\"\nlet g (ys: string list) =\n    for y in ys do\n        if List.contains y allowed then printfn \"b\""
+        fsharp
+            """
+            module M
+            let private allowed = [ "a"; "b" ]
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x allowed then printfn "a"
+            let g (ys: string list) =
+                for y in ys do
+                    if List.contains y allowed then printfn "b"
+            """
 
     match containsIn source with
     | [ s1; s2 ] ->
@@ -2630,7 +4189,16 @@ let private ceStripIn (source: string) =
 [<Fact>]
 let ``a return-bang around a single-return task is a no-op machine`` () =
     let source =
-        "module M\nlet f (t: System.Threading.Tasks.Task<int>) =\n    task {\n        return! task {\n            return! t\n        }\n    }"
+        fsharp
+            """
+            module M
+            let f (t: System.Threading.Tasks.Task<int>) =
+                task {
+                    return! task {
+                        return! t
+                    }
+                }
+            """
 
     match
         ceStripIn source
@@ -2647,7 +4215,18 @@ let ``a return-bang around a single-return task is a no-op machine`` () =
 let ``nested no-op machines unwind layer by layer`` () =
     // the management-portal damage shape: each pass strips one layer
     let source =
-        "module M\nlet f (t: System.Threading.Tasks.Task<int>) =\n    task {\n        return! task {\n            return! task {\n                return! t\n            }\n        }\n    }"
+        fsharp
+            """
+            module M
+            let f (t: System.Threading.Tasks.Task<int>) =
+                task {
+                    return! task {
+                        return! task {
+                            return! t
+                        }
+                    }
+                }
+            """
 
     let strips =
         ceStripIn source
@@ -2660,7 +4239,27 @@ let ``a single return-bang arm is never wrapped`` () =
     // wrapping `| A -> return! X` moves nothing out of the machine and
     // once re-wrapped itself every pass
     let source =
-        "module Test\nlet g () = System.Threading.Tasks.Task.FromResult 1\nlet f (cond: bool) =\n    task {\n        match cond with\n        | true ->\n            return! g ()\n        | false ->\n            let! a = g ()\n            let! b = g ()\n            let! c = g ()\n            let! d = g ()\n            let! e = g ()\n            let! h = g ()\n            let! i = g ()\n            let! j = g ()\n            return a + b + c + d + e + h + i + j\n    }"
+        fsharp
+            """
+            module Test
+            let g () = System.Threading.Tasks.Task.FromResult 1
+            let f (cond: bool) =
+                task {
+                    match cond with
+                    | true ->
+                        return! g ()
+                    | false ->
+                        let! a = g ()
+                        let! b = g ()
+                        let! c = g ()
+                        let! d = g ()
+                        let! e = g ()
+                        let! h = g ()
+                        let! i = g ()
+                        let! j = g ()
+                        return a + b + c + d + e + h + i + j
+                }
+            """
 
     let taskAdviceIn (src: string) =
         let tree, sourceText = parse src
@@ -2686,7 +4285,13 @@ let ``FR0013 leaves parens alone inside a shorthand lambda`` () =
     // `_.reshape [| n |]` does not. Found on toro, where six of these were
     // applied, broke the build and were rolled back
     let source =
-        "module Test\ntype Box() =\n    member _.reshape(a: int64[]) = a\nlet f (bs: Box list) = bs |> List.map _.reshape([| 1L |])"
+        fsharp
+            """
+            module Test
+            type Box() =
+                member _.reshape(a: int64[]) = a
+            let f (bs: Box list) = bs |> List.map _.reshape([| 1L |])
+            """
 
     let tree, sourceText = parse source
     Assert.Empty(RedundantParens.find tree sourceText)
@@ -2728,7 +4333,12 @@ let ``FR0070 keeps a record a class when its fields are read inside a quotation`
     // read — that takes its address, which quotations forbid
     // (Linq.Expression.Optimizer's query tests)
     let source =
-        "module Test\ntype private Itm = { x: int }\nlet q (items: Itm list) = <@ items |> List.filter (fun i -> i.x = 3) @>"
+        fsharp
+            """
+            module Test
+            type private Itm = { x: int }
+            let q (items: Itm list) = <@ items |> List.filter (fun i -> i.x = 3) @>
+            """
 
     let _, structs, _ = structHintsIn source
 
@@ -2741,7 +4351,13 @@ let ``FR0070 keeps a record a class when its fields are read inside a quotation`
 [<Fact>]
 let ``FR0070 still offers the struct fix when the quotation reads other fields`` () =
     let source =
-        "module Test\ntype private Itm = { x: int }\ntype private Other = { y: int }\nlet q (items: Other list) = <@ items |> List.filter (fun i -> i.y = 3) @>"
+        fsharp
+            """
+            module Test
+            type private Itm = { x: int }
+            type private Other = { y: int }
+            let q (items: Other list) = <@ items |> List.filter (fun i -> i.y = 3) @>
+            """
 
     let _, structs, _ = structHintsIn source
     Assert.Contains(structs, fun s -> s.TypeName = "Itm" && s.Fix.IsSome)
@@ -2751,19 +4367,39 @@ let ``FR0070: a record over 32 bytes, or one implementing an interface, stays a 
     // CR0081's cap: four decimals are 64 bytes copied per pass; an
     // interface call boxes a struct on every call
     let _, structs, _ =
-        structHintsIn "module Test\ntype private Money = { A: decimal; B: decimal; C: decimal; D: decimal }"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                type private Money = { A: decimal; B: decimal; C: decimal; D: decimal }
+                """
+        )
 
     Assert.Empty structs
 
     let _, structs, _ =
-        structHintsIn
-            "module Test\ntype private P =\n    { X: int; Y: int }\n    interface System.IComparable with\n        member this.CompareTo(o) = 0"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                type private P =
+                    { X: int; Y: int }
+                    interface System.IComparable with
+                        member this.CompareTo(o) = 0
+                """
+        )
 
     Assert.Empty structs
 
     // two decimals fit
     let _, structs, _ =
-        structHintsIn "module Test\ntype private Pair = { A: decimal; B: decimal }"
+        structHintsIn (
+            fsharp
+                """
+                module Test
+                type private Pair = { A: decimal; B: decimal }
+                """
+        )
 
     Assert.Single structs |> ignore
 
@@ -2775,17 +4411,61 @@ let ``FR0070: a record the file boxes, locks or null-tests stays a class`` () =
         structs
 
     // boxed: the allocation comes straight back
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = string (box p)")
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = (p :> obj).GetHashCode()")
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = string (box p)
+                """
+        )
+    )
+
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = (p :> obj).GetHashCode()
+                """
+        )
+    )
     // locked: FS0001 on a struct
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet gate (p: P) (f: unit -> int) = lock p f")
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private gate (p: P) (f: unit -> int) = lock p f
+                """
+        )
+    )
     // a null sentinel
     Assert.Empty(
-        typed
-            "module Test\ntype private P = { X: int; Y: int }\nlet missing () : P = Unchecked.defaultof<P>\nlet isMissing (p: P) = obj.ReferenceEquals(p, null)"
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private missing () : P = Unchecked.defaultof<P>
+                let private isMissing (p: P) = obj.ReferenceEquals(p, null)
+                """
+        )
     )
     // an ordinary use keeps the fix
-    Assert.Single(typed "module Test\ntype private P = { X: int; Y: int }\nlet sum (p: P) = p.X + p.Y")
+    Assert.Single(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private sum (p: P) = p.X + p.Y
+                """
+        )
+    )
     |> ignore
 
 [<Fact>]
@@ -2793,13 +4473,29 @@ let ``FR0121: a same-day comparison against a Date is not a calendar cut`` () =
     // FSharp.Data's TimeOnly probe: TryParse fills in today's date, and the
     // check `dt.Date <> DateTime.Today` asks whether a real date was given
     Assert.Empty(
-        wallClocksIn
-            "module Test\nopen System\nlet hasRealDate (dt: DateTime) = dt.Date <> DateTime.Today\nlet isToday (dt: DateTime) = DateTime.Today = dt.Date"
+        wallClocksIn (
+            fsharp
+                """
+                module Test
+                open System
+                let hasRealDate (dt: DateTime) = dt.Date <> DateTime.Today
+                let isToday (dt: DateTime) = DateTime.Today = dt.Date
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0121: Today used as a value is still a calendar cut`` () =
-    match wallClocksIn "module Test\nopen System\nlet stamp () = DateTime.Today.AddDays 1.0" with
+    match
+        wallClocksIn (
+            fsharp
+                """
+                module Test
+                open System
+                let stamp () = DateTime.Today.AddDays 1.0
+                """
+        )
+    with
     | [ _ ] -> ()
     | other -> failwithf "Expected one wall-clock note, got %A" other
 
@@ -2808,8 +4504,23 @@ let ``FR0123: a guarded Enter whose body binds in a computation is not called a 
     // SQLProvider's providers: Enter, try ... finally Exit around a task
     // body — the shape cannot leak, only the lock rewrite is withheld
     match
-        monitorLocksIn
-            "module Test\nopen System.Threading\nlet gate = obj ()\nlet run (work: System.Threading.Tasks.Task<int>) =\n    task {\n        Monitor.Enter gate\n        try\n            let! v = work\n            return v + 1\n        finally\n            Monitor.Exit gate\n    }"
+        monitorLocksIn (
+            fsharp
+                """
+                module Test
+                open System.Threading
+                let gate = obj ()
+                let run (work: System.Threading.Tasks.Task<int>) =
+                    task {
+                        Monitor.Enter gate
+                        try
+                            let! v = work
+                            return v + 1
+                        finally
+                            Monitor.Exit gate
+                    }
+                """
+        )
     with
     | [ s ] ->
         Assert.True(s.Guarded)
@@ -2824,8 +4535,16 @@ let ``FR0068: enum aliases spelled with unsigned suffixes are duplicates too`` (
     // exempt): `16384u` keys the same as `16384`, so the second name for
     // the value is still the duplicate
     let _, _, enums =
-        miscIn
-            "module Test\ntype Section =\n    | MemProtected = 16384u\n    | NoDeferSpecExc = 16384u\n    | GPRel = 32768u"
+        miscIn (
+            fsharp
+                """
+                module Test
+                type Section =
+                    | MemProtected = 16384u
+                    | NoDeferSpecExc = 16384u
+                    | GPRel = 32768u
+                """
+        )
 
     match enums with
     | [ e ] -> Assert.Equal("NoDeferSpecExc", e.CaseName)
@@ -2833,22 +4552,43 @@ let ``FR0068: enum aliases spelled with unsigned suffixes are duplicates too`` (
 
 [<Fact>]
 let ``FR0122: the bare Regex constructor under the open is checked`` () =
-    match invalidPatternsIn "module Test\nopen System.Text.RegularExpressions\nlet r = Regex(\"(unclosed\")" with
+    match
+        invalidPatternsIn (
+            fsharp
+                """
+                module Test
+                open System.Text.RegularExpressions
+                let r = Regex("(unclosed")
+                """
+        )
+    with
     | [ (_, pattern, _) ] -> Assert.Equal("(unclosed", pattern)
     | other -> failwithf "Expected one invalid pattern, got %A" other
 
 [<Fact>]
 let ``FR0122: a pattern valid only under IgnorePatternWhitespace is compiled with it`` () =
     Assert.Empty(
-        invalidPatternsIn
-            "module Test\nopen System.Text.RegularExpressions\nlet r = Regex(\"a b # a comment (\", RegexOptions.IgnorePatternWhitespace)"
+        invalidPatternsIn (
+            fsharp
+                """
+                module Test
+                open System.Text.RegularExpressions
+                let r = Regex("a b # a comment (", RegexOptions.IgnorePatternWhitespace)
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0127: a connection string carrying a real password is a leak, a placeholder is not`` () =
     match
-        secretsIn
-            "module Test\nlet cs = \"Data Source=db.example.net;Initial Catalog=x;User Id=app;Password=W3lf0rd!Prod\"\nlet sample = \"Server=.;Database=x;User Id=sa;Password=password\""
+        secretsIn (
+            fsharp
+                """
+                module Test
+                let cs = "Data Source=db.example.net;Initial Catalog=x;User Id=app;Password=W3lf0rd!Prod"
+                let sample = "Server=.;Database=x;User Id=sa;Password=password"
+                """
+        )
     with
     | [ s ] -> Assert.Equal("connection-string password", s.Provider)
     | other -> failwithf "Expected exactly one connection-string leak, got %A" other
@@ -2856,8 +4596,15 @@ let ``FR0127: a connection string carrying a real password is a leak, a placehol
 [<Fact>]
 let ``FR0127: a type provider's connection-string argument and a three-segment JWT are scanned`` () =
     let found =
-        secretsIn
-            "module Test\ntype Db = SqlDataProvider<ConnectionString = \"Server=db;Database=x;Uid=app;Pwd=Sup3rS3cret9\">\nlet token = \"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\"\nlet header = \"eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9\""
+        secretsIn (
+            fsharp
+                """
+                module Test
+                type Db = SqlDataProvider<ConnectionString = "Server=db;Database=x;Uid=app;Pwd=Sup3rS3cret9">
+                let token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+                let header = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9"
+                """
+        )
         |> List.map (fun s -> s.Provider)
         |> List.sort
 
@@ -2868,8 +4615,14 @@ let ``FR0153: a credential in a Literal on a remote server still fires, as a des
     // the instance suffix is spelled with a doubled backslash so the ANALYSED
     // source carries the single one a connection string really has
     match
-        secretsIn
-            "module Test\n[<Literal>]\nlet connstr = \"Data Source=157.24.1.223\\SQL2017;User Id=sa;Password=Password12!; Initial Catalog=sqlprovider;TrustServerCertificate=true;\""
+        secretsIn (
+            fsharp
+                """
+                module Test
+                [<Literal>]
+                let connstr = "Data Source=157.24.1.223\SQL2017;User Id=sa;Password=Password12!; Initial Catalog=sqlprovider;TrustServerCertificate=true;"
+                """
+        )
     with
     | [ s ] ->
         Assert.Equal("connection-string password", s.Provider)
@@ -2901,11 +4654,11 @@ let ``FR0153: a loopback server is a developer's own machine, whatever the passw
             "localhost"
             "127.0.0.1"
             "127.0.0.1,1433"
-            "localhost\\SQLEXPRESS"
+            """localhost\SQLEXPRESS"""
             "(local)"
-            "(localdb)\\MSSQLLocalDB"
+            """(localdb)\MSSQLLocalDB"""
             "."
-            ".\\SQLEXPRESS"
+            """.\SQLEXPRESS"""
             "::1"
         ] do
         let source =
@@ -2916,8 +4669,13 @@ let ``FR0153: a loopback server is a developer's own machine, whatever the passw
 [<Fact>]
 let ``FR0153: the same credential outside a Literal is not design-time`` () =
     match
-        secretsIn
-            "module Test\nlet cs = \"Data Source=db.corp.example.com;Initial Catalog=x;User Id=sa;Password=W3lf0rd9Prod\""
+        secretsIn (
+            fsharp
+                """
+                module Test
+                let cs = "Data Source=db.corp.example.com;Initial Catalog=x;User Id=sa;Password=W3lf0rd9Prod"
+                """
+        )
     with
     | [ s ] -> Assert.False(s.DesignTimeLiteral, "a plain let is not a design-time literal")
     | other -> failwithf "Expected exactly one leak, got %A" other
@@ -2943,8 +4701,18 @@ let ``FR0124: an array literal as the params argument counts its elements`` () =
 [<Fact>]
 let ``FR0124: Serilog's static Log carries the same template rules`` () =
     match
-        logTemplatesIn
-            "namespace Serilog\ntype Log =\n    static member Information(template: string, [<System.ParamArray>] args: obj[]) = ignore (template, args)\nnamespace Test\nopen Serilog\nmodule M =\n    let f (user: string) = Log.Information($\"Refreshed token for {user}\")"
+        logTemplatesIn (
+            fsharp
+                """
+                namespace Serilog
+                type Log =
+                    static member Information(template: string, [<System.ParamArray>] args: obj[]) = ignore (template, args)
+                namespace Test
+                open Serilog
+                module M =
+                    let f (user: string) = Log.Information($"Refreshed token for {user}")
+                """
+        )
     with
     | [ s ] -> Assert.Equal(LogTemplates.TemplateProblem.Interpolated, s.Problem)
     | other -> failwithf "Expected one interpolated-template finding, got %A" other
@@ -2954,8 +4722,16 @@ let ``FR0124: Serilog's static Log carries the same template rules`` () =
 [<Fact>]
 let ``FR0066: a dynamic string bound one hop before the command is the same leak`` () =
     let _, sqls, _ =
-        securityIn
-            "module Test\nlet f (con: MySql.Data.MySqlClient.MySqlConnection) (keys: string list) =\n    let querySql = \"SELECT Skey FROM setting WHERE Skey IN (\" + String.concat \",\" keys + \")\"\n    use command = new MySqlCommand(querySql, con)\n    command"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let f (con: MySql.Data.MySqlClient.MySqlConnection) (keys: string list) =
+                    let querySql = "SELECT Skey FROM setting WHERE Skey IN (" + String.concat "," keys + ")"
+                    use command = new MySqlCommand(querySql, con)
+                    command
+                """
+        )
 
     match sqls with
     | [ s ] ->
@@ -2966,8 +4742,15 @@ let ``FR0066: a dynamic string bound one hop before the command is the same leak
 [<Fact>]
 let ``FR0066: CreateCommand and a helper named for SQL are sinks`` () =
     let _, sqls, _ =
-        securityIn
-            "module Test\nlet g (provider: ISqlProvider) (con: obj) (name: string) =\n    use com = provider.CreateCommand(con, $\"SELECT typeof([{name}]) FROM t\")\n    executeSql (\"UPDATE t SET x = '\" + name + \"'\") []"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let g (provider: ISqlProvider) (con: obj) (name: string) =
+                    use com = provider.CreateCommand(con, $"SELECT typeof([{name}]) FROM t")
+                    executeSql ("UPDATE t SET x = '" + name + "'") []
+                """
+        )
 
     Assert.Equal<string list>([ "CreateCommand"; "executeSql" ], sqls |> List.map (fun s -> s.Sink))
 
@@ -2980,38 +4763,93 @@ let ``FR0066: a hole filled from a constant is not a value`` () =
     // a local constant, a module constant and a [<Literal>], one hop each:
     // nothing a caller can bend
     Assert.Empty(
-        sinks
-            "module Test\nopen Npgsql\n[<Literal>]\nlet Schema = \"app\"\nlet mypath = \"test\"\nlet f (connection: NpgsqlConnection) =\n    let table = \"users\"\n    let a = new NpgsqlCommand($\"SET search_path = \\\"{mypath}\\\", public\", connection)\n    let b = new NpgsqlCommand($\"SET search_path = {Schema}\", connection)\n    let c = new NpgsqlCommand(\"SELECT 1 FROM \" + table + \" WHERE id = @id\", connection)\n    let d = new NpgsqlCommand(sprintf \"SELECT 1 FROM %s\" table, connection)\n    let e = new NpgsqlCommand(sprintf \"SELECT 1 FROM x\", connection)\n    a, b, c, d, e"
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                [<Literal>]
+                let Schema = "app"
+                let mypath = "test"
+                let f (connection: NpgsqlConnection) =
+                    let table = "users"
+                    let a = new NpgsqlCommand($"SET search_path = \"{mypath}\", public", connection)
+                    let b = new NpgsqlCommand($"SET search_path = {Schema}", connection)
+                    let c = new NpgsqlCommand("SELECT 1 FROM " + table + " WHERE id = @id", connection)
+                    let d = new NpgsqlCommand(sprintf "SELECT 1 FROM %s" table, connection)
+                    let e = new NpgsqlCommand(sprintf "SELECT 1 FROM x", connection)
+                    a, b, c, d, e
+                """
+        )
     )
 
     // a mutable, a parameter and a call stay values
     Assert.Equal<string list>(
         [ "NpgsqlCommand"; "NpgsqlCommand"; "NpgsqlCommand" ],
-        sinks
-            "module Test\nopen Npgsql\nlet mutable schema = \"app\"\nlet f (connection: NpgsqlConnection) (name: string) =\n    let a = new NpgsqlCommand($\"SET search_path = {schema}\", connection)\n    let b = new NpgsqlCommand($\"SET search_path = {name}\", connection)\n    let c = new NpgsqlCommand(\"SELECT 1 FROM \" + name.Trim() + \" WHERE id = @id\", connection)\n    a, b, c"
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                let mutable schema = "app"
+                let f (connection: NpgsqlConnection) (name: string) =
+                    let a = new NpgsqlCommand($"SET search_path = {schema}", connection)
+                    let b = new NpgsqlCommand($"SET search_path = {name}", connection)
+                    let c = new NpgsqlCommand("SELECT 1 FROM " + name.Trim() + " WHERE id = @id", connection)
+                    a, b, c
+                """
+        )
     )
 
     // a module-level text reads its names at module level: the sink's local
     // `schema` does not stand in for the mutable one the text was built from
     Assert.Equal<string list>(
         [ "NpgsqlCommand" ],
-        sinks
-            "module Test\nopen Npgsql\nlet mutable schema = \"app\"\nlet setPath = $\"SET search_path = {schema}\"\nlet f (connection: NpgsqlConnection) =\n    let schema = \"fixed\"\n    new NpgsqlCommand(setPath, connection)"
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                let mutable schema = "app"
+                let setPath = $"SET search_path = {schema}"
+                let f (connection: NpgsqlConnection) =
+                    let schema = "fixed"
+                    new NpgsqlCommand(setPath, connection)
+                """
+        )
     )
 
     // a parameter or a lambda argument named like a module constant is a
     // value: the name is bound twice in the file, so neither reading counts
     Assert.Equal<string list>(
         [ "NpgsqlCommand"; "NpgsqlCommand" ],
-        sinks
-            "module Test\nopen Npgsql\nlet schema = \"app\"\nlet f (connection: NpgsqlConnection) (schema: string) =\n    new NpgsqlCommand($\"SET search_path = {schema}\", connection)\nlet g (connection: NpgsqlConnection) (names: string list) =\n    names |> List.map (fun schema -> new NpgsqlCommand($\"SET search_path = {schema}\", connection))"
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                let schema = "app"
+                let f (connection: NpgsqlConnection) (schema: string) =
+                    new NpgsqlCommand($"SET search_path = {schema}", connection)
+                let g (connection: NpgsqlConnection) (names: string list) =
+                    names |> List.map (fun schema -> new NpgsqlCommand($"SET search_path = {schema}", connection))
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0146: a literal statement with no parameter marker is suspicious, a parametrized one is not`` () =
     let _, sqls, _ =
-        securityIn
-            "module Test\nlet h (cmd: System.Data.IDbCommand) =\n    cmd.CommandText <- \"SELECT * FROM users\"\n    cmd.CommandText <- \"SELECT * FROM users WHERE id = @id\"\n    cmd.CommandText <- \"CREATE TABLE t (id int)\""
+        securityIn (
+            fsharp
+                """
+                module Test
+                let h (cmd: System.Data.IDbCommand) =
+                    cmd.CommandText <- "SELECT * FROM users"
+                    cmd.CommandText <- "SELECT * FROM users WHERE id = @id"
+                    cmd.CommandText <- "CREATE TABLE t (id int)"
+                """
+        )
 
     match sqls with
     | [ s ] ->
@@ -3030,8 +4868,14 @@ let private logaryTemplatesIn (source: string) =
 [<Fact>]
 let ``FR0124: a Logary placeholder no setField fills is reported`` () =
     match
-        logaryTemplatesIn
-            "module M =\n    let f (writeLog: string -> unit) (query: string) =\n        Message.eventInfo \"Executing {sql} for {user}\" |> Message.setField \"sql\" (box query) |> writeLog"
+        logaryTemplatesIn (
+            fsharp
+                """
+                module M =
+                    let f (writeLog: string -> unit) (query: string) =
+                        Message.eventInfo "Executing {sql} for {user}" |> Message.setField "sql" (box query) |> writeLog
+                """
+        )
     with
     | [ s ] -> Assert.Equal(LogTemplates.TemplateProblem.MissingFields [ "user" ], s.Problem)
     | other -> failwithf "Expected one missing-field finding, got %A" other
@@ -3039,15 +4883,28 @@ let ``FR0124: a Logary placeholder no setField fills is reported`` () =
 [<Fact>]
 let ``FR0124: a Logary pipeline that fills every placeholder is fine, point-free too`` () =
     Assert.Empty(
-        logaryTemplatesIn
-            "module M =\n    let f (writeLog: string -> unit) (query: string) (err: string) =\n        Message.eventInfo \"Executing {sql}\" |> Message.setField \"sql\" (box query) |> writeLog\n        \"SetupTest err: {err}\" |> Message.eventInfo |> Message.setField \"err\" (box err) |> writeLog"
+        logaryTemplatesIn (
+            fsharp
+                """
+                module M =
+                    let f (writeLog: string -> unit) (query: string) (err: string) =
+                        Message.eventInfo "Executing {sql}" |> Message.setField "sql" (box query) |> writeLog
+                        "SetupTest err: {err}" |> Message.eventInfo |> Message.setField "err" (box err) |> writeLog
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0124: an interpolated Logary template is flagged`` () =
     match
-        logaryTemplatesIn
-            "module M =\n    let f (writeLog: string -> unit) (id: int) =\n        Message.eventWarn $\"Null ref for {id}\" |> writeLog"
+        logaryTemplatesIn (
+            fsharp
+                """
+                module M =
+                    let f (writeLog: string -> unit) (id: int) =
+                        Message.eventWarn $"Null ref for {id}" |> writeLog
+                """
+        )
     with
     | [ s ] -> Assert.Equal(LogTemplates.TemplateProblem.Interpolated, s.Problem)
     | other -> failwithf "Expected one interpolated finding, got %A" other
@@ -3057,7 +4914,19 @@ let ``FR0124: an interpolated Logary template is flagged`` () =
 [<Fact>]
 let ``FR0120: a Serilog Log.Error in a handler that forgets the exception gets it first`` () =
     let source =
-        "namespace Serilog\ntype Log =\n    static member Error(template: string, [<System.ParamArray>] args: obj[]) = ignore (template, args)\n    static member Error(ex: exn, template: string, [<System.ParamArray>] args: obj[]) = ignore (ex, template, args)\nnamespace Test\nopen Serilog\nmodule M =\n    let go (id: int) =\n        try ()\n        with ex -> Log.Error(\"sync failed {Id}\", id)"
+        fsharp
+            """
+            namespace Serilog
+            type Log =
+                static member Error(template: string, [<System.ParamArray>] args: obj[]) = ignore (template, args)
+                static member Error(ex: exn, template: string, [<System.ParamArray>] args: obj[]) = ignore (ex, template, args)
+            namespace Test
+            open Serilog
+            module M =
+                let go (id: int) =
+                    try ()
+                    with ex -> Log.Error("sync failed {Id}", id)
+            """
 
     match catchLogsIn source with
     | [ s ] ->
@@ -3069,22 +4938,48 @@ let ``FR0120: a Serilog Log.Error in a handler that forgets the exception gets i
 [<Fact>]
 let ``FR0120: a Logary event pipeline in a handler without addExn gets the stage`` () =
     let source =
-        "namespace Logary\nmodule Message =\n    let eventError (template: string) = template\n    let setField (name: string) (value: obj) (message: string) = ignore (name, value); message\n    let addExn (ex: exn) (message: string) = ignore ex; message\nnamespace Test\nopen Logary\nmodule M =\n    let go (writeLog: string -> unit) (id: int) =\n        try ()\n        with ex -> Message.eventError \"sync failed {Id}\" |> Message.setField \"Id\" (box id) |> writeLog"
+        fsharp
+            """
+            namespace Logary
+            module Message =
+                let eventError (template: string) = template
+                let setField (name: string) (value: obj) (message: string) = ignore (name, value); message
+                let addExn (ex: exn) (message: string) = ignore ex; message
+            namespace Test
+            open Logary
+            module M =
+                let go (writeLog: string -> unit) (id: int) =
+                    try ()
+                    with ex -> Message.eventError "sync failed {Id}" |> Message.setField "Id" (box id) |> writeLog
+            """
 
     match catchLogsIn source with
     | [ s ] ->
         Assert.Equal("Logary", s.Family)
         // the insertion point sits right after the event stage
         let patched = applyEdit (loggerScaffold + source) s.Range " |> Message.addExn ex"
-        Assert.Contains("Message.eventError \"sync failed {Id}\" |> Message.addExn ex |> Message.setField", patched)
+        Assert.Contains("""Message.eventError "sync failed {Id}" |> Message.addExn ex |> Message.setField""", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one Logary finding, got %A" other
 
 [<Fact>]
 let ``FR0120: a Logary pipeline that already adds the exception is fine`` () =
     Assert.Empty(
-        catchLogsIn
-            "namespace Logary\nmodule Message =\n    let eventError (template: string) = template\n    let addExn (ex: exn) (message: string) = ignore ex; message\nnamespace Test\nopen Logary\nmodule M =\n    let go (writeLog: string -> unit) =\n        try ()\n        with ex -> Message.eventError \"sync failed\" |> Message.addExn ex |> writeLog"
+        catchLogsIn (
+            fsharp
+                """
+                namespace Logary
+                module Message =
+                    let eventError (template: string) = template
+                    let addExn (ex: exn) (message: string) = ignore ex; message
+                namespace Test
+                open Logary
+                module M =
+                    let go (writeLog: string -> unit) =
+                        try ()
+                        with ex -> Message.eventError "sync failed" |> Message.addExn ex |> writeLog
+                """
+        )
     )
 
 [<Fact>]
@@ -3092,8 +4987,14 @@ let ``FR0146: a literal statement handed to a SQL helper with an empty parameter
     ()
     =
     let _, sqls, _ =
-        securityIn
-            "module Test\nlet maxEventId (readSqlInteger: string -> obj list -> int) = readSqlInteger \"select max(id) from events\" []\nlet byId (readSqlInteger: string -> obj list -> int) (id: int) = readSqlInteger \"select count(*) from events where id = @id\" [ box id ]"
+        securityIn (
+            fsharp
+                """
+                module Test
+                let maxEventId (readSqlInteger: string -> obj list -> int) = readSqlInteger "select max(id) from events" []
+                let byId (readSqlInteger: string -> obj list -> int) (id: int) = readSqlInteger "select count(*) from events where id = @id" [ box id ]
+                """
+        )
 
     match sqls with
     | [ s ] ->
@@ -3104,18 +5005,42 @@ let ``FR0146: a literal statement handed to a SQL helper with an empty parameter
 [<Fact>]
 let ``FR0127: a connection string mentioning test anywhere is a fixture, not a leak`` () =
     Assert.Empty(
-        secretsIn
-            "module Test\nlet cs = \"Data Source=db.example.net;Initial Catalog=welendus_test_database;User Id=app;Password=W3lf0rd!Prod\"\nlet cs2 = \"Server=.;Database=x;User Id=sa;Password=TestW3lf0rd!\""
+        secretsIn (
+            fsharp
+                """
+                module Test
+                let cs = "Data Source=db.example.net;Initial Catalog=welendus_test_database;User Id=app;Password=W3lf0rd!Prod"
+                let cs2 = "Server=.;Database=x;User Id=sa;Password=TestW3lf0rd!"
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0124: Logary fields set by other stages are not missing, and setFieldValue names its field`` () =
     let scaffold =
-        "namespace Logary\nmodule Message =\n    let eventInfo (template: string) = template\n    let setField (name: string) (value: obj) (message: string) = ignore (name, value); message\n    let setFieldValue (name: string) (value: obj) (message: string) = ignore (name, value); message\n    let setFieldsFromObject (o: obj) (message: string) = ignore o; message\nnamespace Test\nopen Logary\n"
+        fsharp
+            """
+            namespace Logary
+            module Message =
+                let eventInfo (template: string) = template
+                let setField (name: string) (value: obj) (message: string) = ignore (name, value); message
+                let setFieldValue (name: string) (value: obj) (message: string) = ignore (name, value); message
+                let setFieldsFromObject (o: obj) (message: string) = ignore o; message
+            namespace Test
+            open Logary
+
+            """
 
     let source =
         scaffold
-        + "module M =\n    let f (writeLog: string -> unit) (query: string) =\n        Message.eventInfo \"Executing {sql} for {user}\" |> Message.setField \"sql\" (box query) |> Message.setFieldsFromObject (box query) |> writeLog\n    let g (writeLog: string -> unit) (query: string) =\n        Message.eventInfo \"Executing {sql}\" |> Message.setFieldValue \"sql\" (box query) |> writeLog"
+        + fsharp
+            """
+            module M =
+                let f (writeLog: string -> unit) (query: string) =
+                    Message.eventInfo "Executing {sql} for {user}" |> Message.setField "sql" (box query) |> Message.setFieldsFromObject (box query) |> writeLog
+                let g (writeLog: string -> unit) (query: string) =
+                    Message.eventInfo "Executing {sql}" |> Message.setFieldValue "sql" (box query) |> writeLog
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
     Assert.Empty(LogTemplates.find tree sourceText checkResults)
@@ -3125,7 +5050,16 @@ let ``FR0121: a translator arm that maps a member named Now to the clock is not 
     // SQLProvider's expression-tree evaluator reproduces DateTime.Now on
     // purpose: `when me.Member.Name = "Now" -> DateTime.Now` is a table
     let source =
-        "module M\nlet eval (name: string) : obj option =\n    match name with\n    | n when n = \"Now\" -> Some(box System.DateTime.Now)\n    | \"Today\" -> Some(box System.DateTime.Today)\n    | _ -> None\nlet stamp () = System.DateTime.Now"
+        fsharp
+            """
+            module M
+            let eval (name: string) : obj option =
+                match name with
+                | n when n = "Now" -> Some(box System.DateTime.Now)
+                | "Today" -> Some(box System.DateTime.Today)
+                | _ -> None
+            let stamp () = System.DateTime.Now
+            """
 
     match wallClocksIn source with
     | [ s ] -> Assert.Equal(7, s.Range.StartLine)
@@ -3135,10 +5069,25 @@ let ``FR0121: a translator arm that maps a member named Now to the clock is not 
 let ``FR0072: a hidden case another union in scope also names is written qualified`` () =
     // suave's Http2.fs matched a Result; `Error` there is ScanResult.Error
     // from an earlier file of the project, and a bare `Error _` typed wrong
-    let lib = "namespace Lib\ntype ScanResult =\n    | NeedMore\n    | Error of string"
+    let lib =
+        fsharp
+            """
+            namespace Lib
+            type ScanResult =
+                | NeedMore
+                | Error of string
+            """
 
     let user =
-        "module Example\nopen Lib\nlet f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v\n    | _ -> 0"
+        fsharp
+            """
+            module Example
+            open Lib
+            let f (r: Result<int, string>) =
+                match r with
+                | Ok v -> v
+                | _ -> 0
+            """
 
     let tree, sourceText, checkResults = parseAndCheckSecond lib user
 
@@ -3148,7 +5097,15 @@ let ``FR0072: a hidden case another union in scope also names is written qualifi
 
 [<Fact>]
 let ``FR0072: a hidden case nobody else names stays bare`` () =
-    assertExpanded "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v\n    | _ -> 0" "Error _"
+    assertExpanded
+        (fsharp
+            """
+            let f (r: Result<int, string>) =
+                match r with
+                | Ok v -> v
+                | _ -> 0
+            """)
+        "Error _"
 
 // ---- FR0035 visibility gate on the in-place Set conversion (fsharplint) ----
 
@@ -3157,14 +5114,22 @@ let ``FR0035: a PUBLIC startup list keeps its type and gets the HashSet companio
     // fsharplint's public `testMethodAttributes` list, in a NuGet library,
     // was converted to a Set<string> — an API change without --api-changes
     let source =
-        "module M\nlet testMethodAttributes = [ \"Test\"; \"TestMethod\" ]\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x testMethodAttributes then\n            printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            let testMethodAttributes = [ "Test"; "TestMethod" ]
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x testMethodAttributes then
+                        printfn "%s" x
+            """
 
     match containsIn source with
     | [ s ] ->
         Assert.NotEmpty s.Fix
         let patched = applyMigration source s.Fix
         Assert.DoesNotContain("Set.ofList", patched)
-        Assert.Contains("let testMethodAttributes = [ \"Test\"; \"TestMethod\" ]", patched)
+        Assert.Contains("""let testMethodAttributes = [ "Test"; "TestMethod" ]""", patched)
 
         Assert.Contains(
             "let private testMethodAttributesProbeSet = System.Collections.Generic.HashSet(testMethodAttributes)",
@@ -3179,7 +5144,20 @@ let ``FR0035: a list of a NoComparison record takes the HashSet companion, never
     // `Set` demands `comparison` of its element where `List.contains` asked
     // only `equality`: the in-place conversion would not compile
     let source =
-        "module M\n[<NoComparison; CustomEquality>]\ntype Key =\n    { Name: string }\n    override this.Equals(o) = match o with :? Key as k -> k.Name = this.Name | _ -> false\n    override this.GetHashCode() = this.Name.GetHashCode()\nlet private allowed = [ { Name = \"a\" }; { Name = \"b\" } ]\nlet f (xs: Key list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x.Name"
+        fsharp
+            """
+            module M
+            [<NoComparison; CustomEquality>]
+            type Key =
+                { Name: string }
+                override this.Equals(o) = match o with :? Key as k -> k.Name = this.Name | _ -> false
+                override this.GetHashCode() = this.Name.GetHashCode()
+            let private allowed = [ { Name = "a" }; { Name = "b" } ]
+            let f (xs: Key list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x.Name
+            """
 
     match containsIn source with
     | [ s ] ->
@@ -3193,7 +5171,23 @@ let ``FR0035: a list of a NoComparison record takes the HashSet companion, never
 [<Fact>]
 let ``FR0035: a list of records holding a function takes the HashSet companion too`` () =
     let source =
-        "module M\ntype Handler =\n    { Name: string; Run: int -> int }\nlet private allowed = [ { Name = \"a\"; Run = id } ]\nlet f (xs: Handler list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%s\" x.Name"
+        fsharp
+            """
+            module M
+            [<CustomEquality; NoComparison>]
+            type Handler =
+                { Name: string; Run: int -> int }
+                override x.Equals(o) =
+                    match o with
+                    | :? Handler as h -> h.Name = x.Name
+                    | _ -> false
+                override x.GetHashCode() = hash x.Name
+            let private allowed = [ { Name = "a"; Run = id } ]
+            let f (xs: Handler list) =
+                for x in xs do
+                    if List.contains x allowed then
+                        printfn "%s" x.Name
+            """
 
     match containsIn source with
     | [] -> () // no equality either: nothing to offer
@@ -3205,7 +5199,15 @@ let ``FR0035: a list of records holding a function takes the HashSet companion t
 [<Fact>]
 let ``FR0035: a public list converts in place under --api-changes`` () =
     let source =
-        "module M\nlet testMethodAttributes = [ \"Test\"; \"TestMethod\" ]\nlet f (xs: string list) =\n    for x in xs do\n        if List.contains x testMethodAttributes then\n            printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            let testMethodAttributes = [ "Test"; "TestMethod" ]
+            let f (xs: string list) =
+                for x in xs do
+                    if List.contains x testMethodAttributes then
+                        printfn "%s" x
+            """
 
     let tree, sourceText, check = parseAndCheck source
 
@@ -3219,7 +5221,16 @@ let ``FR0035: a public list converts in place under --api-changes`` () =
 [<Fact>]
 let ``FR0035: a list in a private module converts in place`` () =
     let source =
-        "module M\nmodule private Inner =\n    let allowed = [ \"a\"; \"b\" ]\n    let f (xs: string list) =\n        for x in xs do\n            if List.contains x allowed then\n                printfn \"%s\" x"
+        fsharp
+            """
+            module M
+            module private Inner =
+                let allowed = [ "a"; "b" ]
+                let f (xs: string list) =
+                    for x in xs do
+                        if List.contains x allowed then
+                            printfn "%s" x
+            """
 
     match containsIn source with
     | [ s ] ->
@@ -3236,17 +5247,45 @@ let ``FR0035: a companion never snapshots a binding that is still mutated or com
     let cases =
         [
             // a ResizeArray grown later: the snapshot misses the additions
-            "module M\nlet allowed = ResizeArray [ \"a\"; \"b\" ]\nlet add (s: string) = allowed.Add s\n"
+            fsharp
+                """
+                module M
+                let allowed = ResizeArray [ "a"; "b" ]
+                let add (s: string) = allowed.Add s
+
+                """
             + probe "allowed"
             // an array whose element is written later
-            "module M\nlet allowed = [| \"a\"; \"b\" |]\nlet reset () = allowed.[0] <- \"z\"\n"
+            fsharp
+                """
+                module M
+                let allowed = [| "a"; "b" |]
+                let reset () = allowed.[0] <- "z"
+
+                """
             + probe "allowed"
             // a seq re-reading mutable state on every probe
-            "module M\nlet mutable state = [ \"a\" ]\nlet allowed = seq { yield! state }\nlet count = Seq.length allowed\n"
+            fsharp
+                """
+                module M
+                let mutable state = [ "a" ]
+                let allowed = seq { yield! state }
+                let count = Seq.length allowed
+
+                """
             + probe "allowed"
             // byte[] elements: List.contains compares them structurally, a
             // HashSet<byte[]> by reference
-            "module M\nlet allowed = [ [| 1uy |]; [| 2uy |] ]\nlet count = List.length allowed\nlet f (xs: byte[] list) =\n    for x in xs do\n        if List.contains x allowed then\n            printfn \"%A\" x"
+            fsharp
+                """
+                module M
+                let allowed = [ [| 1uy |]; [| 2uy |] ]
+                let count = List.length allowed
+                let f (xs: byte[] list) =
+                    for x in xs do
+                        if List.contains x allowed then
+                            printfn "%A" x
+                """
         ]
 
     for source in cases do
@@ -3261,14 +5300,38 @@ let ``FR0035: sensor thresholds holding a NaN never become a Set`` () =
     // (the Set compares, and NaN compares equal to itself) - an alarm that
     // never fired would start firing
     let probe =
-        "let f (xs: float list) =\n    for x in xs do\n        if List.contains x thresholds then\n            printfn \"%f\" x"
+        fsharp
+            """
+            let f (xs: float list) =
+                for x in xs do
+                    if List.contains x thresholds then
+                        printfn "%f" x
+            """
 
     let cases =
         [
             "module M\nlet private thresholds = [ 1.5; nan; 3.0 ]\n" + probe
-            "module M\nlet private thresholds = [ 1.5; System.Double.NaN ]\n" + probe
-            "module M\nlet private thresholds = [ 1.5; infinity - infinity ]\n" + probe
-            "module M\nlet private limit = 2.0\nlet private thresholds = [ 1.5; limit ]\n"
+            fsharp
+                """
+                module M
+                let private thresholds = [ 1.5; System.Double.NaN ]
+
+                """
+            + probe
+            fsharp
+                """
+                module M
+                let private thresholds = [ 1.5; infinity - infinity ]
+
+                """
+            + probe
+            fsharp
+                """
+                module M
+                let private limit = 2.0
+                let private thresholds = [ 1.5; limit ]
+
+                """
             + probe
         ]
 
@@ -3279,7 +5342,15 @@ let ``FR0035: sensor thresholds holding a NaN never become a Set`` () =
 
     // a tuple carrying a float is the same NaN in a different coat
     let tupled =
-        "module M\nlet private zones = [ (\"a\", 1.5); (\"b\", nan) ]\nlet f (xs: (string * float) list) =\n    for x in xs do\n        if List.contains x zones then\n            printfn \"%A\" x"
+        fsharp
+            """
+            module M
+            let private zones = [ ("a", 1.5); ("b", nan) ]
+            let f (xs: (string * float) list) =
+                for x in xs do
+                    if List.contains x zones then
+                        printfn "%A" x
+            """
 
     Assert.All(containsIn tupled, (fun s -> Assert.Empty s.Fix))
 
@@ -3306,14 +5377,39 @@ let ``FR0132: a test file's fixtures keep their trailing notes`` () =
 [<Fact>]
 let ``FR0132: a test attribute marks the file without a framework open`` () =
     Assert.Empty(
-        commentDocIn "module M\nlet emojiParty = \"x\" // party popper fixture for tests\n[<Test>]\nlet check () = ()"
+        commentDocIn (
+            fsharp
+                """
+                module M
+                let emojiParty = "x" // party popper fixture for tests
+                [<Test>]
+                let check () = ()
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0132: a punctuation marker is an annotation, not a summary`` () =
     // suave: `// ^ Index is out of range`, `// -- node no.`
-    Assert.Empty(commentDocIn "module M\nlet index (xs: int[]) i = xs.[i] // ^ Index is out of range")
-    Assert.Empty(commentDocIn "module M\nlet nodeNo (n: int) = n + 1 // -- node no. of the parent")
+    Assert.Empty(
+        commentDocIn (
+            fsharp
+                """
+                module M
+                let index (xs: int[]) i = xs.[i] // ^ Index is out of range
+                """
+        )
+    )
+
+    Assert.Empty(
+        commentDocIn (
+            fsharp
+                """
+                module M
+                let nodeNo (n: int) = n + 1 // -- node no. of the parent
+                """
+        )
+    )
 
 [<Fact>]
 let ``FR0132: a single word or a short note stays in the margin`` () =
@@ -3327,15 +5423,32 @@ let ``FR0071: a bare identifier copy does no work and stays in the loop`` () =
     // `let ny = sinPhi` was hoisted out of the inner loop, separated from
     // the `nx`/`nz` it belongs with
     Assert.Empty(
-        invariantsIn
-            "let sink (a: float) (b: float) = ()\nlet run (sinPhi: float) (cosPhi: float) =\n    for x = 0 to 100 do\n        let ny = sinPhi\n        let nx = cosPhi * float x\n        sink nx ny"
+        invariantsIn (
+            fsharp
+                """
+                let sink (a: float) (b: float) = ()
+                let run (sinPhi: float) (cosPhi: float) =
+                    for x = 0 to 100 do
+                        let ny = sinPhi
+                        let nx = cosPhi * float x
+                        sink nx ny
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0071: a constant copy stays in the loop`` () =
     Assert.Empty(
-        invariantsIn
-            "let sink (n: int) = ()\nlet run () =\n    for x = 0 to 100 do\n        let c = 3\n        sink (x + c)"
+        invariantsIn (
+            fsharp
+                """
+                let sink (n: int) = ()
+                let run () =
+                    for x = 0 to 100 do
+                        let c = 3
+                        sink (x + c)
+                """
+        )
     )
 
 
@@ -3347,7 +5460,19 @@ let ``FR0131 a byref parameter passed along by address is never attributed`` () 
     // recurses with `&v`: the compiler's own tail-call checker refuses byref
     // arguments, so [<TailCall>] there manufactures the FS3569 it guards against
     let source =
-        "module M\nlet rec tryGetValue (key: int) (xs: (int * int) list) (v: byref<int>) : bool =\n    match xs with\n    | [] -> false\n    | (k, x) :: t ->\n        if k = key then\n            v <- x\n            true\n        else\n            tryGetValue key t &v"
+        fsharp
+            """
+            module M
+            let rec tryGetValue (key: int) (xs: (int * int) list) (v: byref<int>) : bool =
+                match xs with
+                | [] -> false
+                | (k, x) :: t ->
+                    if k = key then
+                        v <- x
+                        true
+                    else
+                        tryGetValue key t &v
+            """
 
     Assert.True(typechecksCleanly source, "the fixture itself must typecheck")
     Assert.Empty(tailCallsIn source)
@@ -3355,7 +5480,12 @@ let ``FR0131 a byref parameter passed along by address is never attributed`` () 
 [<Fact>]
 let ``FR0131 an inref parameter vetoes the binding too`` () =
     let source =
-        "module M\nlet rec count (n: int) (r: inref<int>) : int =\n    if n <= 0 then r else count (n - 1) &r"
+        fsharp
+            """
+            module M
+            let rec count (n: int) (r: inref<int>) : int =
+                if n <= 0 then r else count (n - 1) &r
+            """
 
     Assert.True(typechecksCleanly source, "the fixture itself must typecheck")
     Assert.Empty(tailCallsIn source)
@@ -3363,7 +5493,12 @@ let ``FR0131 an inref parameter vetoes the binding too`` () =
 [<Fact>]
 let ``FR0131 the byref-free accumulator loop still gains TailCall`` () =
     let source =
-        "module M\nlet rec count (n: int) (acc: int) : int =\n    if n <= 0 then acc else count (n - 1) (acc + n)"
+        fsharp
+            """
+            module M
+            let rec count (n: int) (acc: int) : int =
+                if n <= 0 then acc else count (n - 1) (acc + n)
+            """
 
     match tailCallsIn source with
     | [ s ] ->
@@ -3378,13 +5513,34 @@ let ``FR0123: the lock lambda closes at the end of its last line`` () =
     // the compiler's illib.fs: a `)` on a line of its own is not the layout
     // fantomas --check accepts; it belongs after the body's last line
     let source =
-        "module M =\n    let gate = obj ()\n    let mutable count = 0\n    let bump () =\n        System.Threading.Monitor.Enter gate\n        try\n            count <- count + 1\n            count\n        finally\n            System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let mutable count = 0
+                let bump () =
+                    System.Threading.Monitor.Enter gate
+                    try
+                        count <- count + 1
+                        count
+                    finally
+                        System.Threading.Monitor.Exit gate
+            """
 
     match monitorLocksIn source with
     | [ s ] ->
         match s.Fix with
         | Some(r, _, replacement) ->
-            Assert.Equal("lock gate (fun () ->\n            count <- count + 1\n            count)", replacement)
+            Assert.Equal(
+                fsharp
+                    """
+                    lock gate (fun () ->
+                                count <- count + 1
+                                count)
+                    """,
+                replacement
+            )
+
             let patched = applyEdit source r replacement
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | None -> failwith "Expected the lock rewrite"
@@ -3395,13 +5551,35 @@ let ``FR0123: a comment ending the body keeps the paren on its own line`` () =
     // the body travels verbatim, a trailing comment line included; appended
     // to `// the tally`, the `)` would be part of the comment
     let source =
-        "module M =\n    let gate = obj ()\n    let mutable count = 0\n    let bump () =\n        System.Threading.Monitor.Enter gate\n        try\n            count <- count + 1\n            count\n            // the tally\n        finally\n            System.Threading.Monitor.Exit gate"
+        fsharp
+            """
+            module M =
+                let gate = obj ()
+                let mutable count = 0
+                let bump () =
+                    System.Threading.Monitor.Enter gate
+                    try
+                        count <- count + 1
+                        count
+                        // the tally
+                    finally
+                        System.Threading.Monitor.Exit gate
+            """
 
     match monitorLocksIn source with
     | [ s ] ->
         match s.Fix with
         | Some(r, _, replacement) ->
-            Assert.EndsWith("count\n            // the tally\n        )", replacement)
+            Assert.EndsWith(
+                fsharp
+                    """
+                    count
+                                // the tally
+                            )
+                    """,
+                replacement
+            )
+
             let patched = applyEdit source r replacement
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | None -> failwith "Expected the lock rewrite"
@@ -3414,7 +5592,17 @@ let private leaksIn (source: string) =
 [<Fact>]
 let ``FR0123: a SemaphoreSlim slot taken without a finally is the leak note`` () =
     let source =
-        "module M =\n    let sem = new System.Threading.SemaphoreSlim(1)\n    let mutable count = 0\n    let bump () =\n        sem.Wait()\n        count <- count + 1\n        sem.Release() |> ignore\n        count"
+        fsharp
+            """
+            module M =
+                let sem = new System.Threading.SemaphoreSlim(1)
+                let mutable count = 0
+                let bump () =
+                    sem.Wait()
+                    count <- count + 1
+                    sem.Release() |> ignore
+                    count
+            """
 
     match leaksIn source with
     | [ s ] ->
@@ -3425,7 +5613,25 @@ let ``FR0123: a SemaphoreSlim slot taken without a finally is the leak note`` ()
 [<Fact>]
 let ``FR0123: a WaitAsync under do! in a task without a finally is the leak note`` () =
     let source =
-        "module M =\n    let sem = new System.Threading.SemaphoreSlim(1)\n    let work (t: System.Threading.Tasks.Task<int>) =\n        task {\n            do! sem.WaitAsync()\n            let! v = t\n            sem.Release() |> ignore\n            return v\n        }\n    let work2 (t: System.Threading.Tasks.Task<int>) =\n        async {\n            do! sem.WaitAsync() |> Async.AwaitTask\n            let! v = t |> Async.AwaitTask\n            sem.Release() |> ignore\n            return v\n        }"
+        fsharp
+            """
+            module M =
+                let sem = new System.Threading.SemaphoreSlim(1)
+                let work (t: System.Threading.Tasks.Task<int>) =
+                    task {
+                        do! sem.WaitAsync()
+                        let! v = t
+                        sem.Release() |> ignore
+                        return v
+                    }
+                let work2 (t: System.Threading.Tasks.Task<int>) =
+                    async {
+                        do! sem.WaitAsync() |> Async.AwaitTask
+                        let! v = t |> Async.AwaitTask
+                        sem.Release() |> ignore
+                        return v
+                    }
+            """
 
     match leaksIn source with
     | [ a; b ] ->
@@ -3436,7 +5642,53 @@ let ``FR0123: a WaitAsync under do! in a task without a finally is the leak note
 [<Fact>]
 let ``FR0123: a try/finally releasing the receiver after or around the acquire is the guard`` () =
     let source =
-        "module M =\n    let sem = new System.Threading.SemaphoreSlim(1)\n    let rw = new System.Threading.ReaderWriterLockSlim()\n    let mutable count = 0\n    let after () =\n        sem.Wait()\n        try\n            count <- count + 1\n            count\n        finally\n            sem.Release() |> ignore\n    let around () =\n        try\n            rw.EnterWriteLock()\n            count <- count + 1\n            count\n        finally\n            rw.ExitWriteLock()\n    let disposer () =\n        sem.Wait()\n        use _ = { new System.IDisposable with member _.Dispose() = sem.Release() |> ignore }\n        count <- count + 1\n        count\n    let counted (slots: int) =\n        sem.Wait()\n        let mutable acquired = 0\n        try\n            while acquired < slots do\n                rw.EnterReadLock()\n                acquired <- acquired + 1\n            count\n        finally\n            for _ in 1 .. acquired do rw.ExitReadLock()\n            sem.Release() |> ignore\n    let bound (work: System.Threading.Tasks.Task<int>) =\n        task {\n            do! sem.WaitAsync()\n            let! v =\n                task {\n                    try return! work\n                    finally sem.Release() |> ignore\n                }\n            return v + count\n        }"
+        fsharp
+            """
+            module M =
+                let sem = new System.Threading.SemaphoreSlim(1)
+                let rw = new System.Threading.ReaderWriterLockSlim()
+                let mutable count = 0
+                let after () =
+                    sem.Wait()
+                    try
+                        count <- count + 1
+                        count
+                    finally
+                        sem.Release() |> ignore
+                let around () =
+                    try
+                        rw.EnterWriteLock()
+                        count <- count + 1
+                        count
+                    finally
+                        rw.ExitWriteLock()
+                let disposer () =
+                    sem.Wait()
+                    use _ = { new System.IDisposable with member _.Dispose() = sem.Release() |> ignore }
+                    count <- count + 1
+                    count
+                let counted (slots: int) =
+                    sem.Wait()
+                    let mutable acquired = 0
+                    try
+                        while acquired < slots do
+                            rw.EnterReadLock()
+                            acquired <- acquired + 1
+                        count
+                    finally
+                        for _ in 1 .. acquired do rw.ExitReadLock()
+                        sem.Release() |> ignore
+                let bound (work: System.Threading.Tasks.Task<int>) =
+                    task {
+                        do! sem.WaitAsync()
+                        let! v =
+                            task {
+                                try return! work
+                                finally sem.Release() |> ignore
+                            }
+                        return v + count
+                    }
+            """
 
     // a `let` before the try, and a `let!` whose body holds the try (Fuuga)
     Assert.Empty(leaksIn source)
@@ -3444,7 +5696,22 @@ let ``FR0123: a try/finally releasing the receiver after or around the acquire i
 [<Fact>]
 let ``FR0123: an acquire that ends its block is a wrapper and stays quiet`` () =
     let source =
-        "module M =\n    let rw = new System.Threading.ReaderWriterLockSlim()\n    let enter () = rw.EnterReadLock()\n    let exit () = rw.ExitReadLock()\n    let timed (ms: int) =\n        let taken = rw.TryEnterReadLock ms\n        taken\n    let signal = new System.Threading.ManualResetEvent(false)\n    let mutable count = 0\n    let awaited () =\n        signal.WaitOne() |> ignore\n        count <- count + 1\n        count"
+        fsharp
+            """
+            module M =
+                let rw = new System.Threading.ReaderWriterLockSlim()
+                let enter () = rw.EnterReadLock()
+                let exit () = rw.ExitReadLock()
+                let timed (ms: int) =
+                    let taken = rw.TryEnterReadLock ms
+                    taken
+                let signal = new System.Threading.ManualResetEvent(false)
+                let mutable count = 0
+                let awaited () =
+                    signal.WaitOne() |> ignore
+                    count <- count + 1
+                    count
+            """
 
     // an event's WaitOne has nothing to release
     Assert.Empty(leaksIn source)
@@ -3452,7 +5719,23 @@ let ``FR0123: an acquire that ends its block is a wrapper and stays quiet`` () =
 [<Fact>]
 let ``FR0123: a ReaderWriterLockSlim and a Mutex leak under their own names`` () =
     let source =
-        "module M =\n    let rw = new System.Threading.ReaderWriterLockSlim()\n    let mutex = new System.Threading.Mutex()\n    let mutable count = 0\n    let read () =\n        rw.EnterReadLock()\n        let c = count\n        rw.ExitReadLock()\n        c\n    let exclusive () =\n        mutex.WaitOne() |> ignore\n        count <- count + 1\n        mutex.ReleaseMutex()\n        count"
+        fsharp
+            """
+            module M =
+                let rw = new System.Threading.ReaderWriterLockSlim()
+                let mutex = new System.Threading.Mutex()
+                let mutable count = 0
+                let read () =
+                    rw.EnterReadLock()
+                    let c = count
+                    rw.ExitReadLock()
+                    c
+                let exclusive () =
+                    mutex.WaitOne() |> ignore
+                    count <- count + 1
+                    mutex.ReleaseMutex()
+                    count
+            """
 
     match leaksIn source with
     | [ a; b ] ->
@@ -3463,7 +5746,20 @@ let ``FR0123: a ReaderWriterLockSlim and a Mutex leak under their own names`` ()
 [<Fact>]
 let ``FR0072: two short hidden cases share the wildcard's line`` () =
     assertExpanded
-        "type T =\n    | A\n    | B\n    | C\n    | D\n\nlet f (t: T) =\n    match t with\n    | A -> 1\n    | B -> 2\n    | _ -> 4"
+        (fsharp
+            """
+            type T =
+                | A
+                | B
+                | C
+                | D
+
+            let f (t: T) =
+                match t with
+                | A -> 1
+                | B -> 2
+                | _ -> 4
+            """)
         "C | D"
 
 [<Fact>]
@@ -3471,8 +5767,26 @@ let ``FR0072: hidden cases past 100 columns take a line each under the bar`` () 
     // one joined line ran well past 100 columns on a qualified union; each
     // case now sits under the clause's `|`, the last one carrying the `->`
     assertExpanded
-        "[<RequireQualifiedAccess>]\ntype WorkspaceProjectStateNotification =\n    | Loading of string\n    | Loaded of string\n    | Failed of string\n    | Cancelled of string\n\nlet describe (state: WorkspaceProjectStateNotification) =\n    match state with\n    | WorkspaceProjectStateNotification.Failed reason -> reason\n    | WorkspaceProjectStateNotification.Cancelled reason -> reason\n    | _ -> \"the project is still on its way through the loader\""
-        "WorkspaceProjectStateNotification.Loading _\n    | WorkspaceProjectStateNotification.Loaded _"
+        (fsharp
+            """
+            [<RequireQualifiedAccess>]
+            type WorkspaceProjectStateNotification =
+                | Loading of string
+                | Loaded of string
+                | Failed of string
+                | Cancelled of string
+
+            let describe (state: WorkspaceProjectStateNotification) =
+                match state with
+                | WorkspaceProjectStateNotification.Failed reason -> reason
+                | WorkspaceProjectStateNotification.Cancelled reason -> reason
+                | _ -> "the project is still on its way through the loader"
+            """)
+        (fsharp
+            """
+            WorkspaceProjectStateNotification.Loading _
+                | WorkspaceProjectStateNotification.Loaded _
+            """)
 
 [<Fact>]
 let ``FR0071: a binding hoisted out of a loop under #if keeps the #if`` () =
@@ -3480,7 +5794,16 @@ let ``FR0071: a binding hoisted out of a loop under #if keeps the #if`` () =
     // lifted binding takes the condition with it, and the directive opens
     // its own line
     let source =
-        "let sink (n: int) = ()\nlet run (a: int) =\n    for x = 0 to 100 do\n#if !FOO\n        let c = a + 3\n        sink (x + c)\n#endif"
+        fsharp
+            """
+            let sink (n: int) = ()
+            let run (a: int) =
+                for x = 0 to 100 do
+            #if !FOO
+                    let c = a + 3
+                    sink (x + c)
+            #endif
+            """
 
     match invariantsIn source with
     | [ s ] ->
@@ -3488,9 +5811,25 @@ let ``FR0071: a binding hoisted out of a loop under #if keeps the #if`` () =
             s.Edits
             |> List.pick (fun (_, original, text) -> if original = "" then Some text else None)
 
-        Assert.StartsWith("#if !FOO\n", inserted)
+        Assert.StartsWith(
+            fsharp
+                """
+                #if !FOO
+
+                """,
+            inserted
+        )
+
         Assert.Contains("let c = a + 3", inserted)
-        Assert.EndsWith("#endif\n", inserted)
+
+        Assert.EndsWith(
+            fsharp
+                """
+                #endif
+
+                """,
+            inserted
+        )
     | other -> failwithf "Expected exactly one invariant note, got %A" other
 
 // ---- FR0151 ExceptionDetail / FR0152 CachedFailure ----
@@ -3506,7 +5845,17 @@ let private cachedFailureIn (source: string) =
 [<Fact>]
 let ``FR0151: a ReflectionTypeLoadException handler reading only Message gets the loader exceptions`` () =
     let source =
-        "module M\nopen System.Reflection\nlet run (a: Assembly) =\n    try\n        a.GetTypes() |> Array.length\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        0"
+        fsharp
+            """
+            module M
+            open System.Reflection
+            let run (a: Assembly) =
+                try
+                    a.GetTypes() |> Array.length
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%s" e.Message
+                    0
+            """
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -3526,7 +5875,17 @@ let ``FR0151: a ReflectionTypeLoadException handler reading only Message gets th
 [<Fact>]
 let ``FR0151: a handler already reading LoaderExceptions is left alone`` () =
     let source =
-        "module M\nopen System.Reflection\nlet run (a: Assembly) =\n    try\n        a.GetTypes() |> Array.length\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%d\" e.LoaderExceptions.Length\n        0"
+        fsharp
+            """
+            module M
+            open System.Reflection
+            let run (a: Assembly) =
+                try
+                    a.GetTypes() |> Array.length
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%d" e.LoaderExceptions.Length
+                    0
+            """
 
     Assert.Empty(exceptionDetailIn source)
 
@@ -3535,7 +5894,18 @@ let ``FR0151: WebException is reported without a fix`` () =
     // the body needs two `use` bindings and Response can be null, so the
     // note stands alone
     let source =
-        "module M\nopen System.Net\nlet run (r: WebRequest) =\n    try\n        r.GetResponse() |> ignore\n        0\n    with :? WebException as wex ->\n        printfn \"%s\" wex.Message\n        1"
+        fsharp
+            """
+            module M
+            open System.Net
+            let run (r: WebRequest) =
+                try
+                    r.GetResponse() |> ignore
+                    0
+                with :? WebException as wex ->
+                    printfn "%s" wex.Message
+                    1
+            """
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -3549,7 +5919,19 @@ let ``FR0151: AggregateException and FileNotFoundException handlers reading only
     // CR0070's rows, back-ported: a Task.Wait wraps the failures in
     // InnerExceptions, and a FileNotFoundException's path is in FileName
     let aggregate =
-        "module M\nopen System\nopen System.Threading.Tasks\nlet run (t: Task) =\n    try\n        t.Wait()\n        0\n    with :? AggregateException as e ->\n        printfn \"%s\" e.Message\n        1"
+        fsharp
+            """
+            module M
+            open System
+            open System.Threading.Tasks
+            let run (t: Task) =
+                try
+                    t.Wait()
+                    0
+                with :? AggregateException as e ->
+                    printfn "%s" e.Message
+                    1
+            """
 
     match exceptionDetailIn aggregate with
     | [ s ] ->
@@ -3559,7 +5941,17 @@ let ``FR0151: AggregateException and FileNotFoundException handlers reading only
     | other -> failwithf "Expected one AggregateException suggestion, got %A" other
 
     let missing =
-        "module M\nopen System.IO\nlet run (p: string) =\n    try\n        File.ReadAllText p\n    with :? FileNotFoundException as e ->\n        printfn \"%s\" e.Message\n        \"\""
+        fsharp
+            """
+            module M
+            open System.IO
+            let run (p: string) =
+                try
+                    File.ReadAllText p
+                with :? FileNotFoundException as e ->
+                    printfn "%s" e.Message
+                    ""
+            """
 
     match exceptionDetailIn missing with
     | [ s ] -> Assert.Equal("FileName", s.Carrier)
@@ -3568,27 +5960,68 @@ let ``FR0151: AggregateException and FileNotFoundException handlers reading only
 [<Fact>]
 let ``FR0151: a handler flattening the aggregate, or naming the file, is informed`` () =
     Assert.Empty(
-        exceptionDetailIn
-            "module M\nopen System\nopen System.Threading.Tasks\nlet run (t: Task) =\n    try\n        t.Wait()\n        0\n    with :? AggregateException as e ->\n        for inner in e.Flatten().InnerExceptions do\n            printfn \"%s\" inner.Message\n        1"
+        exceptionDetailIn (
+            fsharp
+                """
+                module M
+                open System
+                open System.Threading.Tasks
+                let run (t: Task) =
+                    try
+                        t.Wait()
+                        0
+                    with :? AggregateException as e ->
+                        for inner in e.Flatten().InnerExceptions do
+                            printfn "%s" inner.Message
+                        1
+                """
+        )
     )
 
     Assert.Empty(
-        exceptionDetailIn
-            "module M\nopen System.IO\nlet run (p: string) =\n    try\n        File.ReadAllText p\n    with :? FileNotFoundException as e ->\n        printfn \"%s %s\" e.FileName e.Message\n        \"\""
+        exceptionDetailIn (
+            fsharp
+                """
+                module M
+                open System.IO
+                let run (p: string) =
+                    try
+                        File.ReadAllText p
+                    with :? FileNotFoundException as e ->
+                        printfn "%s %s" e.FileName e.Message
+                        ""
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0151: an ordinary exception handler is not this rule's business`` () =
     // FR0120 owns the plain handler, and ex.Message there is a PII choice
     let source =
-        "module M\nlet run (work: unit -> int) =\n    try\n        work ()\n    with e ->\n        printfn \"%s\" e.Message\n        0"
+        fsharp
+            """
+            module M
+            let run (work: unit -> int) =
+                try
+                    work ()
+                with e ->
+                    printfn "%s" e.Message
+                    0
+            """
 
     Assert.Empty(exceptionDetailIn source)
 
 [<Fact>]
 let ``FR0152: GetOrAdd caching a Task is reported`` () =
     let source =
-        "module M\nopen System.Threading.Tasks\nopen System.Collections.Concurrent\nlet cache = ConcurrentDictionary<string, Task<int>>()\nlet get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))"
+        fsharp
+            """
+            module M
+            open System.Threading.Tasks
+            open System.Collections.Concurrent
+            let cache = ConcurrentDictionary<string, Task<int>>()
+            let get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))
+            """
 
     match cachedFailureIn source with
     | [ s ] -> Assert.Equal("Task", s.ValueKind)
@@ -3598,7 +6031,13 @@ let ``FR0152: GetOrAdd caching a Task is reported`` () =
 let ``FR0152: a plain value cache is fine`` () =
     // a factory that THROWS caches nothing, so an untyped cache never fires
     let source =
-        "module M\nopen System.Collections.Concurrent\nlet cache = ConcurrentDictionary<string, int>()\nlet get (k: string) = cache.GetOrAdd(k, (fun _ -> 1))"
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            let cache = ConcurrentDictionary<string, int>()
+            let get (k: string) = cache.GetOrAdd(k, (fun _ -> 1))
+            """
 
     Assert.Empty(cachedFailureIn source)
 
@@ -3606,14 +6045,35 @@ let ``FR0152: a plain value cache is fine`` () =
 let ``FR0151: a handler already reading Types is left alone`` () =
     // reading Types IS the informed handler - it carries on with what loaded
     let source =
-        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        e.Types |> Array.filter (isNull >> not)"
+        fsharp
+            """
+            module M
+            open System
+            open System.Reflection
+            let run (a: Assembly) : Type[] =
+                try
+                    a.GetTypes()
+                with :? ReflectionTypeLoadException as e ->
+                    e.Types |> Array.filter (isNull >> not)
+            """
 
     Assert.Empty(exceptionDetailIn source)
 
 [<Fact>]
 let ``FR0151: a rethrowing GetTypes handler is offered the types that loaded`` () =
     let source =
-        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        reraise ()"
+        fsharp
+            """
+            module M
+            open System
+            open System.Reflection
+            let run (a: Assembly) : Type[] =
+                try
+                    a.GetTypes()
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%s" e.Message
+                    reraise ()
+            """
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -3631,7 +6091,18 @@ let ``FR0151: a handler guarding on Response is already informed`` () =
     // the idiomatic shape across the corpus: ClearBank.Common.fs, CarmelNet,
     // welendus and management-portal all write the guard this way
     let source =
-        "module M\nopen System.Net\nlet run (r: WebRequest) =\n    try\n        r.GetResponse() |> ignore\n        0\n    with :? WebException as wex when not (isNull wex.Response) ->\n        printfn \"%s\" wex.Message\n        1"
+        fsharp
+            """
+            module M
+            open System.Net
+            let run (r: WebRequest) =
+                try
+                    r.GetResponse() |> ignore
+                    0
+                with :? WebException as wex when not (isNull wex.Response) ->
+                    printfn "%s" wex.Message
+                    1
+            """
 
     Assert.Empty(exceptionDetailIn source)
 
@@ -3639,7 +6110,18 @@ let ``FR0151: a handler guarding on Response is already informed`` () =
 let ``FR0151: a mid-line rethrow gets the fix without a trailing comment`` () =
     // the comment would swallow the `else` branch and the closing paren
     let source =
-        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) (fallback: bool) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        (if fallback then Array.empty else reraise ())"
+        fsharp
+            """
+            module M
+            open System
+            open System.Reflection
+            let run (a: Assembly) (fallback: bool) : Type[] =
+                try
+                    a.GetTypes()
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%s" e.Message
+                    (if fallback then Array.empty else reraise ())
+            """
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -3654,7 +6136,18 @@ let ``FR0151: a mid-line rethrow gets the fix without a trailing comment`` () =
 [<Fact>]
 let ``FR0151: an end-of-line rethrow keeps the TODO comment`` () =
     let source =
-        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        reraise ()"
+        fsharp
+            """
+            module M
+            open System
+            open System.Reflection
+            let run (a: Assembly) : Type[] =
+                try
+                    a.GetTypes()
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%s" e.Message
+                    reraise ()
+            """
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -3672,7 +6165,17 @@ let ``FR0151: a longer chain off Message must not be swallowed by the fix`` () =
     // covers the whole chain - replacing all of it with the join drops
     // `.Length` and the result no longer typechecks
     let source =
-        "module M\nopen System.Reflection\nlet run (a: Assembly) =\n    try\n        a.GetTypes() |> Array.length\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%d\" e.Message.Length\n        0"
+        fsharp
+            """
+            module M
+            open System.Reflection
+            let run (a: Assembly) =
+                try
+                    a.GetTypes() |> Array.length
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%d" e.Message.Length
+                    0
+            """
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -3689,9 +6192,30 @@ let ``FR0151: the carry-on fix never targets a nested handler's rethrow`` () =
     // outer e.Types still TYPECHECKS - e is in scope and both are Type[] -
     // so only the range tells us it is wrong
     let source =
-        "module M\nopen System\nopen System.Reflection\nlet run (a: Assembly) (b: Assembly) : Type[] =\n    try\n        a.GetTypes()\n    with :? ReflectionTypeLoadException as e ->\n        printfn \"%s\" e.Message\n        try\n            b.GetTypes()\n        with :? ReflectionTypeLoadException as inner ->\n            reraise ()"
+        fsharp
+            """
+            module M
+            open System
+            open System.Reflection
+            let run (a: Assembly) (b: Assembly) : Type[] =
+                try
+                    a.GetTypes()
+                with :? ReflectionTypeLoadException as e ->
+                    printfn "%s" e.Message
+                    try
+                        b.GetTypes()
+                    with :? ReflectionTypeLoadException as inner ->
+                        reraise ()
+            """
 
-    let nestedStart = source.IndexOf "        try\n"
+    let nestedStart =
+        source.IndexOf(
+            fsharp
+                """
+                        try
+
+                """
+        )
 
     for s in exceptionDetailIn source do
         match s.AlternativeFix with
@@ -3711,8 +6235,13 @@ let ``FR0065: a protocol the framework marks obsolete is flagged beyond the cura
     // curated list catches today and the attribute catches whatever a later
     // .NET retires. Neither signal alone is enough
     let tree, sourceText =
-        parse
-            "module Test\nlet f (p: System.Security.Authentication.SslProtocols) = p = System.Security.Authentication.SslProtocols.Tls13"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (p: System.Security.Authentication.SslProtocols) = p = System.Security.Authentication.SslProtocols.Tls13
+                """
+        )
 
     // nothing curated here, and nothing marked: silence
     let quiet, _, _ = SecurityRules.find tree sourceText (fun _ -> false)
@@ -3732,15 +6261,71 @@ let ``FR0070: a record boxed implicitly at a call, a %A hole or a string keeps i
         let _, structs, _ = StructHints.findWith (Some check) false tree sourceText
         structs
 
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = System.Console.WriteLine p")
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = printfn \"%A\" p")
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = sprintf \"p=%O\" p")
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = string p")
-    Assert.Empty(typed "module Test\ntype private P = { X: int; Y: int }\nlet same (p: P) (o: obj) = o.Equals p")
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = System.Console.WriteLine p
+                """
+        )
+    )
+
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = printfn "%A" p
+                """
+        )
+    )
+
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = sprintf "p=%O" p
+                """
+        )
+    )
+
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = string p
+                """
+        )
+    )
+
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private same (p: P) (o: obj) = o.Equals p
+                """
+        )
+    )
     // a field read in a hole, a typed parameter: no boxing
     Assert.Single(
-        typed
-            "module Test\ntype private P = { X: int; Y: int }\nlet show (p: P) = printfn \"%d %s\" p.X (string p.Y)\nlet keep (q: P) = q"
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private show (p: P) = printfn "%d %s" p.X (string p.Y)
+                let private keep (q: P) = q
+                """
+        )
     )
     |> ignore
 
@@ -3749,13 +6334,39 @@ let ``a Seq lambda's binding reading a mutable is not hoisted`` () =
     // Seq.map's lambda runs at ENUMERATION: hoisted, `k` reads `scale`
     // before the later `scale <- 5` instead of after it
     Assert.Empty(
-        invariantsIn
-            "module Test\nlet mutable scale = 1\nlet f (xs: int list) =\n    let ys =\n        xs\n        |> Seq.map (fun x ->\n            let k = scale * 2\n            x * k)\n    scale <- 5\n    Seq.toList ys"
+        invariantsIn (
+            fsharp
+                """
+                module Test
+                let mutable scale = 1
+                let f (xs: int list) =
+                    let ys =
+                        xs
+                        |> Seq.map (fun x ->
+                            let k = scale * 2
+                            x * k)
+                    scale <- 5
+                    Seq.toList ys
+                """
+        )
     )
 
     // an eager List lambda over the same read still hoists
     Assert.Single(
-        invariantsIn
-            "module Test\nlet mutable scale = 1\nlet f (xs: int list) =\n    let ys =\n        xs\n        |> List.map (fun x ->\n            let k = scale * 2\n            x * k)\n    scale <- 5\n    ys"
+        invariantsIn (
+            fsharp
+                """
+                module Test
+                let mutable scale = 1
+                let f (xs: int list) =
+                    let ys =
+                        xs
+                        |> List.map (fun x ->
+                            let k = scale * 2
+                            x * k)
+                    scale <- 5
+                    ys
+                """
+        )
     )
     |> ignore

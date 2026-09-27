@@ -32,78 +32,259 @@ let private assertFieldNames (source: string) (expectedPatched: string) =
 [<Fact>]
 let ``match-site names flow onto the private case definition`` () =
     assertFieldNames
-        "module Test\ntype private Order =\n    | Line of int * decimal\n    | Total of decimal\nlet private f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\n    | Total t -> t"
-        "module Test\ntype private Order =\n    | Line of qty: int * price: decimal\n    | Total of decimal\nlet private f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\n    | Total t -> t"
+        (fsharp
+            """
+            module Test
+            type private Order =
+                | Line of int * decimal
+                | Total of decimal
+            let private f (o: Order) =
+                match o with
+                | Line(qty, price) -> decimal qty * price
+                | Total t -> t
+            """)
+        (fsharp
+            """
+            module Test
+            type private Order =
+                | Line of qty: int * price: decimal
+                | Total of decimal
+            let private f (o: Order) =
+                match o with
+                | Line(qty, price) -> decimal qty * price
+                | Total t -> t
+            """)
 
 [<Fact>]
 let ``representation-private union is also accepted`` () =
     assertFieldNames
-        "module Test\ntype Order =\n    private\n    | Line of int * decimal\n    | Total of decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\n    | Total t -> t"
-        "module Test\ntype Order =\n    private\n    | Line of qty: int * price: decimal\n    | Total of decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\n    | Total t -> t"
+        (fsharp
+            """
+            module Test
+            type Order =
+                private
+                | Line of int * decimal
+                | Total of decimal
+            let f (o: Order) =
+                match o with
+                | Line(qty, price) -> decimal qty * price
+                | Total t -> t
+            """)
+        (fsharp
+            """
+            module Test
+            type Order =
+                private
+                | Line of qty: int * price: decimal
+                | Total of decimal
+            let f (o: Order) =
+                match o with
+                | Line(qty, price) -> decimal qty * price
+                | Total t -> t
+            """)
 
 [<Fact>]
 let ``wildcard sites do not block the harvest`` () =
     assertFieldNames
-        "module Test\ntype private Pair =\n    | Pair of int * int\n    | Empty\nlet private f p =\n    match p with\n    | Pair(first, second) -> first + second\n    | Empty -> 0\nlet private g p =\n    match p with\n    | Pair _ -> true\n    | Empty -> false"
-        "module Test\ntype private Pair =\n    | Pair of first: int * second: int\n    | Empty\nlet private f p =\n    match p with\n    | Pair(first, second) -> first + second\n    | Empty -> 0\nlet private g p =\n    match p with\n    | Pair _ -> true\n    | Empty -> false"
+        (fsharp
+            """
+            module Test
+            type private Pair =
+                | Pair of int * int
+                | Empty
+            let private f p =
+                match p with
+                | Pair(first, second) -> first + second
+                | Empty -> 0
+            let private g p =
+                match p with
+                | Pair _ -> true
+                | Empty -> false
+            """)
+        (fsharp
+            """
+            module Test
+            type private Pair =
+                | Pair of first: int * second: int
+                | Empty
+            let private f p =
+                match p with
+                | Pair(first, second) -> first + second
+                | Empty -> 0
+            let private g p =
+                match p with
+                | Pair _ -> true
+                | Empty -> false
+            """)
 
 [<Fact>]
 let ``type inside an internal module is accepted`` () =
     assertFieldNames
-        "module Test\nmodule internal Impl =\n    type OrderLine =\n        | Line of int * decimal\n        | Total of decimal\n    let f (o: OrderLine) =\n        match o with\n        | Line(qty, price) -> decimal qty * price\n        | Total t -> t"
-        "module Test\nmodule internal Impl =\n    type OrderLine =\n        | Line of qty: int * price: decimal\n        | Total of decimal\n    let f (o: OrderLine) =\n        match o with\n        | Line(qty, price) -> decimal qty * price\n        | Total t -> t"
+        (fsharp
+            """
+            module Test
+            module internal Impl =
+                type OrderLine =
+                    | Line of int * decimal
+                    | Total of decimal
+                let f (o: OrderLine) =
+                    match o with
+                    | Line(qty, price) -> decimal qty * price
+                    | Total t -> t
+            """)
+        (fsharp
+            """
+            module Test
+            module internal Impl =
+                type OrderLine =
+                    | Line of qty: int * price: decimal
+                    | Total of decimal
+                let f (o: OrderLine) =
+                    match o with
+                    | Line(qty, price) -> decimal qty * price
+                    | Total t -> t
+            """)
 
 [<Fact>]
 let ``internal top-level module is accepted`` () =
     assertFieldNames
-        "module internal Test\ntype OrderLine =\n    | Line of int * decimal\n    | Total of decimal\nlet f (o: OrderLine) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\n    | Total t -> t"
-        "module internal Test\ntype OrderLine =\n    | Line of qty: int * price: decimal\n    | Total of decimal\nlet f (o: OrderLine) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\n    | Total t -> t"
+        (fsharp
+            """
+            module internal Test
+            type OrderLine =
+                | Line of int * decimal
+                | Total of decimal
+            let f (o: OrderLine) =
+                match o with
+                | Line(qty, price) -> decimal qty * price
+                | Total t -> t
+            """)
+        (fsharp
+            """
+            module internal Test
+            type OrderLine =
+                | Line of qty: int * price: decimal
+                | Total of decimal
+            let f (o: OrderLine) =
+                match o with
+                | Line(qty, price) -> decimal qty * price
+                | Total t -> t
+            """)
 
 [<Fact>]
 let ``public type is left alone`` () =
     Assert.Empty(
-        fieldNamesIn
-            "module Test\ntype Order =\n    | Line of int * decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price"
+        fieldNamesIn (
+            fsharp
+                """
+                module Test
+                type Order =
+                    | Line of int * decimal
+                let f (o: Order) =
+                    match o with
+                    | Line(qty, price) -> decimal qty * price
+                """
+        )
     )
 
 [<Fact>]
 let ``public type is offered under api changes`` () =
     Assert.NotEmpty(
-        fieldNamesWithApiChangesIn
-            "module Test\ntype Order =\n    | Line of int * decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price"
+        fieldNamesWithApiChangesIn (
+            fsharp
+                """
+                module Test
+                type Order =
+                    | Line of int * decimal
+                let f (o: Order) =
+                    match o with
+                    | Line(qty, price) -> decimal qty * price
+                """
+        )
     )
 
 [<Fact>]
 let ``disagreeing sites cancel the suggestion`` () =
     Assert.Empty(
-        fieldNamesIn
-            "module Test\ntype private Order =\n    | Line of int * decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price\nlet g (o: Order) =\n    match o with\n    | Line(n, total) -> decimal n * total"
+        fieldNamesIn (
+            fsharp
+                """
+                module Test
+                type private Order =
+                    | Line of int * decimal
+                let f (o: Order) =
+                    match o with
+                    | Line(qty, price) -> decimal qty * price
+                let g (o: Order) =
+                    match o with
+                    | Line(n, total) -> decimal n * total
+                """
+        )
     )
 
 [<Fact>]
 let ``partially named site cancels the suggestion`` () =
     Assert.Empty(
-        fieldNamesIn
-            "module Test\ntype private Order =\n    | Line of int * decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, _) -> qty"
+        fieldNamesIn (
+            fsharp
+                """
+                module Test
+                type private Order =
+                    | Line of int * decimal
+                let f (o: Order) =
+                    match o with
+                    | Line(qty, _) -> qty
+                """
+        )
     )
 
 [<Fact>]
 let ``already named fields are left alone`` () =
     Assert.Empty(
-        fieldNamesIn
-            "module Test\ntype private Order =\n    | Line of qty: int * price: decimal\nlet f (o: Order) =\n    match o with\n    | Line(qty, price) -> decimal qty * price"
+        fieldNamesIn (
+            fsharp
+                """
+                module Test
+                type private Order =
+                    | Line of qty: int * price: decimal
+                let f (o: Order) =
+                    match o with
+                    | Line(qty, price) -> decimal qty * price
+                """
+        )
     )
 
 [<Fact>]
 let ``ambiguous case name across two unions is skipped`` () =
     Assert.Empty(
-        fieldNamesIn
-            "module Test\ntype private A =\n    | Item of int * int\ntype private B =\n    | Item of string * string\nlet f (a: A) =\n    match a with\n    | Item(left, right) -> left + right"
+        fieldNamesIn (
+            fsharp
+                """
+                module Test
+                type private A =
+                    | Item of int * int
+                type private B =
+                    | Item of string * string
+                let f (a: A) =
+                    match a with
+                    | Item(left, right) -> left + right
+                """
+        )
     )
 
 [<Fact>]
 let ``case without any destructuring site is left alone`` () =
-    Assert.Empty(fieldNamesIn "module Test\ntype private Order =\n    | Line of int * decimal\n    | Total of decimal")
+    Assert.Empty(
+        fieldNamesIn (
+            fsharp
+                """
+                module Test
+                type private Order =
+                    | Line of int * decimal
+                    | Total of decimal
+                """
+        )
+    )
 
 [<Fact>]
 let ``FR0022 stands down where a signature declares the case`` () =
@@ -117,14 +298,34 @@ let ``FR0022 stands down where a signature declares the case`` () =
 
     try
         let source =
-            "module internal M\n\ntype Shape =\n    | Box of int * int\n\nlet area s =\n    match s with\n    | Box(width, height) -> width * height\n"
+            fsharp
+                """
+                module internal M
+
+                type Shape =
+                    | Box of int * int
+
+                let area s =
+                    match s with
+                    | Box(width, height) -> width * height
+
+                """
 
         let impl = Path.Combine(dir, "M.fs")
         File.WriteAllText(impl, source)
 
         File.WriteAllText(
             Path.Combine(dir, "M.fsi"),
-            "module internal M\n\ntype Shape =\n    | Box of int * int\n\nval area: Shape -> int\n"
+            fsharp
+                """
+                module internal M
+
+                type Shape =
+                    | Box of int * int
+
+                val area: Shape -> int
+
+                """
         )
 
         let tree, sourceText = parseNamed impl source

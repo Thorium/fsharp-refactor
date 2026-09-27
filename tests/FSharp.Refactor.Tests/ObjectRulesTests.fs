@@ -13,8 +13,15 @@ let private findIn (source: string) =
 [<Fact>]
 let ``Equals override without GetHashCode is flagged`` () =
     let equalsSuggestions, _, _ =
-        findIn
-            "module Test\ntype C(v: int) =\n    member _.V = v\n    override this.Equals(o) = match o with | :? C as c -> c.V = v | _ -> false"
+        findIn (
+            fsharp
+                """
+                module Test
+                type C(v: int) =
+                    member _.V = v
+                    override this.Equals(o) = match o with | :? C as c -> c.V = v | _ -> false
+                """
+        )
 
     match equalsSuggestions with
     | [ s ] -> Assert.Equal("C", s.TypeName)
@@ -23,15 +30,30 @@ let ``Equals override without GetHashCode is flagged`` () =
 [<Fact>]
 let ``Equals with GetHashCode is fine`` () =
     let equalsSuggestions, _, _ =
-        findIn
-            "module Test\ntype C(v: int) =\n    member _.V = v\n    override this.Equals(o) = match o with | :? C as c -> c.V = v | _ -> false\n    override this.GetHashCode() = v"
+        findIn (
+            fsharp
+                """
+                module Test
+                type C(v: int) =
+                    member _.V = v
+                    override this.Equals(o) = match o with | :? C as c -> c.V = v | _ -> false
+                    override this.GetHashCode() = v
+                """
+        )
 
     Assert.Empty equalsSuggestions
 
 [<Fact>]
 let ``non-override Equals member is not flagged`` () =
     let equalsSuggestions, _, _ =
-        findIn "module Test\ntype C(v: int) =\n    member _.Equals(other: C) = other = Unchecked.defaultof<C>"
+        findIn (
+            fsharp
+                """
+                module Test
+                type C(v: int) =
+                    member _.Equals(other: C) = other = Unchecked.defaultof<C>
+                """
+        )
 
     Assert.Empty equalsSuggestions
 
@@ -40,8 +62,17 @@ let ``non-override Equals member is not flagged`` () =
 [<Fact>]
 let ``abstract member called during construction is flagged`` () =
     let _, ctorSuggestions, _ =
-        findIn
-            "module Test\n[<AbstractClass>]\ntype Base() as this =\n    let initial = this.Compute()\n    member _.Initial = initial\n    abstract Compute: unit -> int"
+        findIn (
+            fsharp
+                """
+                module Test
+                [<AbstractClass>]
+                type Base() as this =
+                    let initial = this.Compute()
+                    member _.Initial = initial
+                    abstract Compute: unit -> int
+                """
+        )
 
     match ctorSuggestions with
     | [ s ] -> Assert.Equal("Compute", s.MemberName)
@@ -50,8 +81,16 @@ let ``abstract member called during construction is flagged`` () =
 [<Fact>]
 let ``abstract property read during construction is flagged`` () =
     let _, ctorSuggestions, _ =
-        findIn
-            "module Test\n[<AbstractClass>]\ntype Base() as this =\n    do printfn \"%d\" this.Size\n    abstract Size: int"
+        findIn (
+            fsharp
+                """
+                module Test
+                [<AbstractClass>]
+                type Base() as this =
+                    do printfn "%d" this.Size
+                    abstract Size: int
+                """
+        )
 
     match ctorSuggestions with
     | [ s ] -> Assert.Equal("Size", s.MemberName)
@@ -60,16 +99,32 @@ let ``abstract property read during construction is flagged`` () =
 [<Fact>]
 let ``abstract member called from an ordinary member is fine`` () =
     let _, ctorSuggestions, _ =
-        findIn
-            "module Test\n[<AbstractClass>]\ntype Base() =\n    abstract Compute: unit -> int\n    member this.Run() = this.Compute()"
+        findIn (
+            fsharp
+                """
+                module Test
+                [<AbstractClass>]
+                type Base() =
+                    abstract Compute: unit -> int
+                    member this.Run() = this.Compute()
+                """
+        )
 
     Assert.Empty ctorSuggestions
 
 [<Fact>]
 let ``non-abstract self call during construction is fine`` () =
     let _, ctorSuggestions, _ =
-        findIn
-            "module Test\ntype C() as this =\n    let v = this.Fixed()\n    member _.Fixed() = 42\n    member _.V = v"
+        findIn (
+            fsharp
+                """
+                module Test
+                type C() as this =
+                    let v = this.Fixed()
+                    member _.Fixed() = 42
+                    member _.V = v
+                """
+        )
 
     Assert.Empty ctorSuggestions
 
@@ -93,7 +148,14 @@ let ``simple ToString fill is dropped`` () =
 
 [<Fact>]
 let ``dotted receiver keeps its full path`` () =
-    assertInterp "module Test\ntype R = { Count: int }\nlet f (r: R) = $\"total {r.Count.ToString()}\"" "r.Count"
+    assertInterp
+        (fsharp
+            """
+            module Test
+            type R = { Count: int }
+            let f (r: R) = $"total {r.Count.ToString()}"
+            """)
+        "r.Count"
 
 [<Fact>]
 let ``parenthesized receiver expression works`` () =
@@ -102,7 +164,13 @@ let ``parenthesized receiver expression works`` () =
 [<Fact>]
 let ``ToString with an argument is culture-sensitive and stays`` () =
     Assert.Empty(
-        interpIn "module Test\nlet f (x: System.DateTime) (c: System.Globalization.CultureInfo) = $\"{x.ToString(c)}\""
+        interpIn (
+            fsharp
+                """
+                module Test
+                let f (x: System.DateTime) (c: System.Globalization.CultureInfo) = $"{x.ToString(c)}"
+                """
+        )
     )
 
 [<Fact>]
@@ -115,16 +183,56 @@ let ``FR0021: a FormattableString or a format after the fill keeps the ToString`
     // with the current one; `:N2` formats an int, but not a string
     let cases =
         [
-            "module Test\nopen System\nlet f (x: float) = FormattableString.Invariant $\"{x.ToString()}\""
-            "module Test\nopen System\nlet f (x: float) : FormattableString = $\"{x.ToString()}\""
-            "module Test\nopen System\nlet f (x: float) =\n    let s: FormattableString = $\"{x.ToString()}\"\n    s"
-            "module Test\nopen System\ntype R = { Msg: FormattableString }\nlet f (x: float) = { Msg = $\"{x.ToString()}\" }"
-            "module Test\nlet f (x: int) = $\"{x.ToString():N2}\""
+            fsharp
+                """
+                module Test
+                open System
+                let f (x: float) = FormattableString.Invariant $"{x.ToString()}"
+                """
+            fsharp
+                """
+                module Test
+                open System
+                let f (x: float) : FormattableString = $"{x.ToString()}"
+                """
+            fsharp
+                """
+                module Test
+                open System
+                let f (x: float) =
+                    let s: FormattableString = $"{x.ToString()}"
+                    s
+                """
+            fsharp
+                """
+                module Test
+                open System
+                type R = { Msg: FormattableString }
+                let f (x: float) = { Msg = $"{x.ToString()}" }
+                """
+            fsharp
+                """
+                module Test
+                let f (x: int) = $"{x.ToString():N2}"
+                """
         ]
 
     for source in cases do
         Assert.Empty(interpIn source)
 
     // a string-typed hole in a lambda or a plain call still goes
-    assertInterp "module Test\nlet f (xs: int list) = xs |> List.map (fun x -> $\"{x.ToString()}!\")" "x"
-    assertInterp "module Test\nlet f (x: int) = printfn \"%s\" $\"{x.ToString()}!\"" "x"
+    assertInterp
+        (fsharp
+            """
+            module Test
+            let f (xs: int list) = xs |> List.map (fun x -> $"{x.ToString()}!")
+            """)
+        "x"
+
+    assertInterp
+        (fsharp
+            """
+            module Test
+            let f (x: int) = printfn "%s" $"{x.ToString()}!"
+            """)
+        "x"

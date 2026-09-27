@@ -53,9 +53,22 @@ let ``if-then-false-else-true negates the condition`` () =
 [<Fact>]
 let ``FR0010: a condition in operand position keeps its parentheses`` () =
     // `flag && a || b` would read as `(flag && a) || b`
-    let src = "module Test\nlet f flag a b = flag && if a || b then true else false"
+    let src =
+        fsharp
+            """
+            module Test
+            let f flag a b = flag && if a || b then true else false
+            """
+
     assertSuggestion (findParsed src) src "(a || b)"
-    let atomic = "module Test\nlet f flag a = flag && if a then true else false"
+
+    let atomic =
+        fsharp
+            """
+            module Test
+            let f flag a = flag && if a then true else false
+            """
+
     assertSuggestion (findParsed atomic) atomic "a"
 
 [<Fact>]
@@ -66,7 +79,11 @@ let ``atomic negated condition needs no parens`` () =
 [<Fact>]
 let ``property on a method-call result is parenthesized under not`` () =
     let src =
-        "module Test\nlet f (ex: exn) = if ex.GetType().IsPublic then false else true"
+        fsharp
+            """
+            module Test
+            let f (ex: exn) = if ex.GetType().IsPublic then false else true
+            """
 
     assertCheckedSuggestion (findParsed src) src "not (ex.GetType().IsPublic)"
 
@@ -143,13 +160,30 @@ let ``None comparison without check results is not rewritten`` () =
 let ``elif branch is never simplified`` () =
     // review regression: replacing the elif node with its condition would
     // glue the condition onto the preceding branch
-    Assert.Empty(findParsed "module Test\nlet f a b (x: bool) = if a then x elif b then true else false")
+    Assert.Empty(
+        findParsed (
+            fsharp
+                """
+                module Test
+                let f a b (x: bool) = if a then x elif b then true else false
+                """
+        )
+    )
 
 [<Fact>]
 let ``a shadowed collection module does not get isEmpty`` () =
     // a user module named Seq with its own length means something else —
     // with typed results at hand the symbol proves which one this is
-    Assert.Empty(findChecked "module Seq =\n    let length (s: string) = 99\nlet f (s: string) = Seq.length s = 0")
+    Assert.Empty(
+        findChecked (
+            fsharp
+                """
+                module Seq =
+                    let length (s: string) = 99
+                let f (s: string) = Seq.length s = 0
+                """
+        )
+    )
 
 [<Fact>]
 let ``the genuine List.length still simplifies under the typed gate`` () =
@@ -163,8 +197,17 @@ let ``a None comparison whose branch reads the payload is a match in disguise`` 
     Assert.Empty(findChecked "let f (x: int option) = if x = None then 0 else Option.get x")
 
     Assert.Empty(
-        findChecked
-            "let f (x: int option) =\n    if x <> None then\n        let y = x.Value\n        y + 1\n    else\n        0"
+        findChecked (
+            fsharp
+                """
+                let f (x: int option) =
+                    if x <> None then
+                        let y = x.Value
+                        y + 1
+                    else
+                        0
+                """
+        )
     )
 
 [<Fact>]
@@ -192,7 +235,13 @@ let ``piped Option isNone becomes the property`` () =
 
 [<Fact>]
 let ``a dotted receiver takes the property when its root is settled`` () =
-    let src = "type R = { Age: int option }\nlet f (r: R) = Option.isSome r.Age"
+    let src =
+        fsharp
+            """
+            type R = { Age: int option }
+            let f (r: R) = Option.isSome r.Age
+            """
+
     assertCheckedSuggestion (findChecked src) src "r.Age.IsSome"
 
 [<Fact>]
@@ -202,14 +251,26 @@ let ``Option isSome on a lambda parameter stays`` () =
 [<Fact>]
 let ``a let-bound local is settled by its right-hand side`` () =
     let src =
-        "let f (n: int) =\n    let x = if n > 0 then Some n else None\n    Option.isNone x"
+        fsharp
+            """
+            let f (n: int) =
+                let x = if n > 0 then Some n else None
+                Option.isNone x
+            """
 
     assertCheckedSuggestion (findChecked src) src "x.IsNone"
 
 [<Fact>]
 let ``a user module named Option is not FSharp.Core's`` () =
     Assert.Empty(
-        findChecked "module Option =\n    let isSome (x: int option) = true\nlet f (x: int option) = Option.isSome x"
+        findChecked (
+            fsharp
+                """
+                module Option =
+                    let isSome (x: int option) = true
+                let f (x: int option) = Option.isSome x
+                """
+        )
     )
 
 [<Fact>]

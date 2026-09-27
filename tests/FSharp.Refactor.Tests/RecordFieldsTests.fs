@@ -6,8 +6,9 @@ open FSharp.Refactor.Tests.Parsing
 
 // ---- FR0145 RecordFields ----
 
+// FR0145 fixes FS0764 itself, so its inputs carry that error on purpose
 let private findIn (source: string) =
-    let tree, sourceText, checkResults = parseAndCheck source
+    let tree, sourceText, checkResults = parseAndCheckAllowingErrors source
     RecordFields.find tree sourceText checkResults
 
 [<Literal>]
@@ -16,7 +17,7 @@ let private config =
 
 [<Fact>]
 let ``obvious empties are added inline and the result typechecks`` () =
-    let source = config + "let c = { Name = \"x\"; Retries = 3 }"
+    let source = config + """let c = { Name = "x"; Retries = 3 }"""
 
     match findIn source with
     | [ s ] ->
@@ -29,11 +30,28 @@ let ``obvious empties are added inline and the result typechecks`` () =
 
 [<Fact>]
 let ``a multi-line record gets one field per line at the label column`` () =
-    let source = config + "let c =\n    { Name = \"x\"\n      Retries = 3 }"
+    let source =
+        config
+        + fsharp
+            """
+            let c =
+                { Name = "x"
+                  Retries = 3 }
+            """
 
     match findIn source with
     | [ s ] ->
-        Assert.Equal("\n      Tags = []\n      Timeout = None\n      Owners = Set.empty", s.InsertText)
+        Assert.Equal(
+            fsharp
+                """
+
+                      Tags = []
+                      Timeout = None
+                      Owners = Set.empty
+                """,
+            s.InsertText
+        )
+
         let patched = applyEdit source s.Range s.InsertText
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one suggestion, got %A" other
@@ -42,12 +60,12 @@ let ``a multi-line record gets one field per line at the label column`` () =
 let ``a field with no obvious default gets a placeholder, and a zero alternative`` () =
     let source =
         config
-        + "let c = { Name = \"x\"; Tags = []; Timeout = None; Owners = Set.empty }"
+        + """let c = { Name = "x"; Tags = []; Timeout = None; Owners = Set.empty }"""
 
     match findIn source with
     | [ s ] ->
         Assert.False s.AllObvious
-        Assert.Equal("; Retries = raise (System.NotImplementedException \"Retries\")", s.InsertText)
+        Assert.Equal("""; Retries = raise (System.NotImplementedException "Retries")""", s.InsertText)
         Assert.Equal("; Retries = 0", s.ZeroInsertText)
         let patched = applyEdit source s.Range s.InsertText
         Assert.True(typechecksCleanly patched, $"Placeholder form does not typecheck:\n%s{patched}")
@@ -58,7 +76,13 @@ let ``a field with no obvious default gets a placeholder, and a zero alternative
 [<Fact>]
 let ``a reference-typed field zeroes to Unchecked.defaultof`` () =
     let source =
-        "module Test\ntype Inner = { V: int }\ntype Outer = { Label: string; Inner: Inner }\nlet o = { Label = \"x\" }"
+        fsharp
+            """
+            module Test
+            type Inner = { V: int }
+            type Outer = { Label: string; Inner: Inner }
+            let o = { Label = "x" }
+            """
 
     match findIn source with
     | [ s ] -> Assert.Equal("; Inner = Unchecked.defaultof<_>", s.ZeroInsertText)
@@ -69,14 +93,23 @@ let ``a copy-and-update and a complete record are left alone`` () =
     Assert.Empty(
         findIn (
             config
-            + "let a = { Name = \"x\"; Retries = 3; Tags = []; Timeout = None; Owners = Set.empty }\nlet b = { a with Retries = 4 }"
+            + fsharp
+                """
+                let a = { Name = "x"; Retries = 3; Tags = []; Timeout = None; Owners = Set.empty }
+                let b = { a with Retries = 4 }
+                """
         )
     )
 
 [<Fact>]
 let ``a Guid field zeroes to Guid.Empty`` () =
     let source =
-        "module Test\ntype Row = { Label: string; Id: System.Guid }\nlet r = { Label = \"x\" }"
+        fsharp
+            """
+            module Test
+            type Row = { Label: string; Id: System.Guid }
+            let r = { Label = "x" }
+            """
 
     match findIn source with
     | [ s ] ->

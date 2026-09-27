@@ -37,15 +37,61 @@ let private assertRewrite (source: string) (expected: string) =
 [<Fact>]
 let ``a guarded loop into a ResizeArray drained by List.ofSeq is a list expression`` () =
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n\n    for x in xs do\n        if x > 1 then\n            acc.Add(x * 2)\n\n    List.ofSeq acc"
-        "let f (xs: int list) =\n\n    let acc: int list =\n        [\n            for x in xs do\n                if x > 1 then\n                    x * 2\n        ]\n\n    acc"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int>()
+
+                for x in xs do
+                    if x > 1 then
+                        acc.Add(x * 2)
+
+                List.ofSeq acc
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+
+                let acc: int list =
+                    [
+                        for x in xs do
+                            if x > 1 then
+                                x * 2
+                    ]
+
+                acc
+            """)
     |> ignore
 
 [<Fact>]
 let ``several loops and a match move together`` () =
     assertRewrite
-        "let f (xs: int list) (ys: string list) =\n    let acc = ResizeArray<string>()\n    for x in xs do\n        match x with\n        | 1 -> acc.Add \"one\"\n        | _ -> ()\n    for y in ys do\n        acc.Add y\n    String.concat \", \" (List.ofSeq acc)"
-        "let f (xs: int list) (ys: string list) =\n    let acc: string list =\n        [\n            for x in xs do\n                match x with\n                | 1 -> \"one\"\n                | _ -> ()\n            for y in ys do\n                y\n        ]\n    String.concat \", \" acc"
+        (fsharp
+            """
+            let f (xs: int list) (ys: string list) =
+                let acc = ResizeArray<string>()
+                for x in xs do
+                    match x with
+                    | 1 -> acc.Add "one"
+                    | _ -> ()
+                for y in ys do
+                    acc.Add y
+                String.concat ", " (List.ofSeq acc)
+            """)
+        (fsharp
+            """
+            let f (xs: int list) (ys: string list) =
+                let acc: string list =
+                    [
+                        for x in xs do
+                            match x with
+                            | 1 -> "one"
+                            | _ -> ()
+                        for y in ys do
+                            y
+                    ]
+                String.concat ", " acc
+            """)
     |> ignore
 
 [<Fact>]
@@ -53,8 +99,17 @@ let ``an indexed or ToArray drain wants an array, which the ResizeArray builds f
     // measured: the array expression runs 1.6x the fill's time, so the
     // rule stands down rather than trade time for a shape
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add(x + 1)\n    let arr = acc.ToArray()\n    acc.[0] + arr.Length + acc.Count"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add(x + 1)
+                    let arr = acc.ToArray()
+                    acc.[0] + arr.Length + acc.Count
+                """
+        )
     )
 
 [<Fact>]
@@ -62,120 +117,329 @@ let ``a record added on the lines below moves up to the call's column`` () =
     // left where it stood, deeper than a `let` above it, the record would
     // read as that let's continuation
     assertRewrite
-        "type R = { A: int; B: string }\nlet f (xs: int list) =\n    let acc = ResizeArray<R>()\n    for x in xs do\n        if x > 0 then\n            let y = x\n            acc.Add\n                {\n                    A = y\n                    B = string x\n                }\n    Seq.toList acc"
-        "type R = { A: int; B: string }\nlet f (xs: int list) =\n    let acc: R list =\n        [\n            for x in xs do\n                if x > 0 then\n                    let y = x\n                    {\n                        A = y\n                        B = string x\n                    }\n        ]\n    acc"
+        (fsharp
+            """
+            type R = { A: int; B: string }
+            let f (xs: int list) =
+                let acc = ResizeArray<R>()
+                for x in xs do
+                    if x > 0 then
+                        let y = x
+                        acc.Add
+                            {
+                                A = y
+                                B = string x
+                            }
+                Seq.toList acc
+            """)
+        (fsharp
+            """
+            type R = { A: int; B: string }
+            let f (xs: int list) =
+                let acc: R list =
+                    [
+                        for x in xs do
+                            if x > 0 then
+                                let y = x
+                                {
+                                    A = y
+                                    B = string x
+                                }
+                    ]
+                acc
+            """)
     |> ignore
 
 [<Fact>]
 let ``statements before the loops that leave the accumulator alone let it move down`` () =
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    let limit = 3\n    printfn \"start\"\n    for x in xs do\n        if x < limit then acc.Add x\n    acc |> List.ofSeq |> List.rev"
-        "let f (xs: int list) =\n    let limit = 3\n    printfn \"start\"\n    let acc: int list =\n        [\n            for x in xs do\n                if x < limit then x\n        ]\n    acc |> List.rev"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int>()
+                let limit = 3
+                printfn "start"
+                for x in xs do
+                    if x < limit then acc.Add x
+                acc |> List.ofSeq |> List.rev
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let limit = 3
+                printfn "start"
+                let acc: int list =
+                    [
+                        for x in xs do
+                            if x < limit then x
+                    ]
+                acc |> List.rev
+            """)
     |> ignore
 
 [<Fact>]
 let ``a read between the let and the loops stands the rule down`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    printfn \"%d\" acc.Count\n    for x in xs do\n        acc.Add x\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    printfn "%d" acc.Count
+                    for x in xs do
+                        acc.Add x
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a read inside the loop is not a fill`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        if acc.Count < 3 then acc.Add x\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        if acc.Count < 3 then acc.Add x
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``an Add inside a lambda is a walker's, not a loop's`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        [ 1; 2 ] |> List.iter (fun y -> acc.Add(x + y))\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        [ 1; 2 ] |> List.iter (fun y -> acc.Add(x + y))
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a mutation after the loops stands the rule down`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    acc.Add 0\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    acc.Add 0
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``the ResizeArray returned as itself stands the rule down`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a method call on the accumulator stands the rule down`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    acc.Contains 3"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    acc.Contains 3
+                """
+        )
     )
 
 [<Fact>]
 let ``a loop that also fills another collection stays`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    let other = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n        other.Add(-x)\n    List.ofSeq acc @ List.ofSeq other"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    let other = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                        other.Add(-x)
+                    List.ofSeq acc @ List.ofSeq other
+                """
+        )
     )
 
 [<Fact>]
 let ``a copy-constructed ResizeArray starts full and stays`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) (seed: int list) =\n    let acc = ResizeArray<int>(seed)\n    for x in xs do\n        acc.Add x\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) (seed: int list) =
+                    let acc = ResizeArray<int>(seed)
+                    for x in xs do
+                        acc.Add x
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``an interface element type upcast by Add stays`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<System.IComparable>()\n    for x in xs do\n        acc.Add x\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<System.IComparable>()
+                    for x in xs do
+                        acc.Add x
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a let-bang in the loop cannot live in a list expression`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    async {\n        let acc = ResizeArray<int>()\n        for x in xs do\n            let! y = async { return x }\n            acc.Add y\n        return List.ofSeq acc\n    }"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    async {
+                        let acc = ResizeArray<int>()
+                        for x in xs do
+                            let! y = async { return x }
+                            acc.Add y
+                        return List.ofSeq acc
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``a loop between the feeding loops that reads the accumulator breaks the run`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    for a in acc do\n        printfn \"%d\" a\n    for x in xs do\n        acc.Add(-x)\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    for a in acc do
+                        printfn "%d" a
+                    for x in xs do
+                        acc.Add(-x)
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a drain loop after the fills is fine`` () =
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    for a in acc do\n        printfn \"%d\" a\n    List.ofSeq acc"
-        "let f (xs: int list) =\n    let acc: int list =\n        [\n            for x in xs do\n                x\n        ]\n    for a in acc do\n        printfn \"%d\" a\n    acc"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int>()
+                for x in xs do
+                    acc.Add x
+                for a in acc do
+                    printfn "%d" a
+                List.ofSeq acc
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc: int list =
+                    [
+                        for x in xs do
+                            x
+                    ]
+                for a in acc do
+                    printfn "%d" a
+                acc
+            """)
     |> ignore
 
 [<Fact>]
 let ``an argument to a function taking anything but a seq stands the rule down`` () =
     Assert.Empty(
-        findIn
-            "let g (r: ResizeArray<int>) = r.Count\nlet f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    g acc"
+        findIn (
+            fsharp
+                """
+                let g (r: ResizeArray<int>) = r.Count
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    g acc
+                """
+        )
     )
 
 [<Fact>]
 let ``an inferred ResizeArray gets no annotation`` () =
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray()\n    for x in xs do\n        acc.Add(string x)\n    String.concat \"\" (Seq.toList acc)"
-        "let f (xs: int list) =\n    let acc =\n        [\n            for x in xs do\n                string x\n        ]\n    String.concat \"\" acc"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray()
+                for x in xs do
+                    acc.Add(string x)
+                String.concat "" (Seq.toList acc)
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc =
+                    [
+                        for x in xs do
+                            string x
+                    ]
+                String.concat "" acc
+            """)
     |> ignore
 
 [<Fact>]
 let ``a tuple element type is parenthesised in the annotation`` () =
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray<int * string>()\n    for x in xs do\n        acc.Add((x, string x))\n    List.ofSeq acc"
-        "let f (xs: int list) =\n    let acc: (int * string) list =\n        [\n            for x in xs do\n                (x, string x)\n        ]\n    acc"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int * string>()
+                for x in xs do
+                    acc.Add((x, string x))
+                List.ofSeq acc
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc: (int * string) list =
+                    [
+                        for x in xs do
+                            (x, string x)
+                    ]
+                acc
+            """)
     |> ignore
 
 [<Fact>]
@@ -183,22 +447,57 @@ let ``the declared type carries the Add's conversion into the yields`` () =
     // `acc.Add 1` converted the int literal to int64 through the method
     // call; the annotation lets the list expression do the same
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray<int64>()\n    for x in xs do\n        if x > 0 then acc.Add 1\n    List.ofSeq acc"
-        "let f (xs: int list) =\n    let acc: int64 list =\n        [\n            for x in xs do\n                if x > 0 then 1\n        ]\n    acc"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int64>()
+                for x in xs do
+                    if x > 0 then acc.Add 1
+                List.ofSeq acc
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc: int64 list =
+                    [
+                        for x in xs do
+                            if x > 0 then 1
+                    ]
+                acc
+            """)
     |> ignore
 
 [<Fact>]
 let ``a Count drain is an O(1) read the list has not got`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    for y in xs do\n        printfn \"%d %d\" y acc.Count\n    Seq.sum acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    for y in xs do
+                        printfn "%d %d" y acc.Count
+                    Seq.sum acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a use binding in the loop stands the rule down`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: string list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        use r = new System.IO.StringReader(x)\n        acc.Add(r.Read())\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: string list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        use r = new System.IO.StringReader(x)
+                        acc.Add(r.Read())
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
@@ -206,8 +505,28 @@ let ``a project's own List module spelling ofSeq is a seq-taking function, not t
     // it keeps its call — a list is as good a seq as the ResizeArray was —
     // where FSharp.Core's ofSeq would have collapsed to `acc`
     assertRewrite
-        "module List =\n    let ofSeq (xs: seq<int>) = Seq.sum xs\nlet f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    List.ofSeq acc + (Seq.toList acc).Length"
-        "module List =\n    let ofSeq (xs: seq<int>) = Seq.sum xs\nlet f (xs: int list) =\n    let acc: int list =\n        [\n            for x in xs do\n                x\n        ]\n    List.ofSeq acc + acc.Length"
+        (fsharp
+            """
+            module List =
+                let ofSeq (xs: seq<int>) = Seq.sum xs
+            let f (xs: int list) =
+                let acc = ResizeArray<int>()
+                for x in xs do
+                    acc.Add x
+                List.ofSeq acc + (Seq.toList acc).Length
+            """)
+        (fsharp
+            """
+            module List =
+                let ofSeq (xs: seq<int>) = Seq.sum xs
+            let f (xs: int list) =
+                let acc: int list =
+                    [
+                        for x in xs do
+                            x
+                    ]
+                List.ofSeq acc + acc.Length
+            """)
     |> ignore
 
 [<Fact>]
@@ -215,25 +534,60 @@ let ``a seq-only drain keeps the ResizeArray, whose bare fill is the fastest`` (
     // measured: nothing converted the ResizeArray, so both expressions
     // lose to the fill it already has
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add x\n    Seq.sum acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add x
+                    Seq.sum acc
+                """
+        )
     )
 
 [<Fact>]
 let ``the arrays knob buys the array expression for an indexed drain`` () =
     let tree, sourceText, checkResults =
-        parseAndCheck
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add(x + 1)\n    let arr = acc.ToArray()\n    acc.[0] + arr.Length + acc.Count"
+        parseAndCheck (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        acc.Add(x + 1)
+                    let arr = acc.ToArray()
+                    acc.[0] + arr.Length + acc.Count
+                """
+        )
 
     match AccumulatorLoop.findWith true false tree sourceText checkResults with
     | [ s ] ->
         let patched =
             applyEdits
-                "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add(x + 1)\n    let arr = acc.ToArray()\n    acc.[0] + arr.Length + acc.Count"
+                (fsharp
+                    """
+                    let f (xs: int list) =
+                        let acc = ResizeArray<int>()
+                        for x in xs do
+                            acc.Add(x + 1)
+                        let arr = acc.ToArray()
+                        acc.[0] + arr.Length + acc.Count
+                    """)
                 s.Edits
 
         Assert.Equal(
-            "let f (xs: int list) =\n    let acc: int[] =\n        [|\n            for x in xs do\n                x + 1\n        |]\n    let arr = acc\n    acc.[0] + arr.Length + acc.Length",
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc: int[] =
+                        [|
+                            for x in xs do
+                                x + 1
+                        |]
+                    let arr = acc
+                    acc.[0] + arr.Length + acc.Length
+                """,
             patched
         )
 
@@ -243,7 +597,15 @@ let ``the arrays knob buys the array expression for an indexed drain`` () =
 [<Fact>]
 let ``the explicitYield knob spells every yield for an older compiler`` () =
     let source =
-        "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        if x > 1 then\n            acc.Add(x * 2)\n    List.ofSeq acc"
+        fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int>()
+                for x in xs do
+                    if x > 1 then
+                        acc.Add(x * 2)
+                List.ofSeq acc
+            """
 
     let tree, sourceText, checkResults = parseAndCheck source
 
@@ -252,7 +614,17 @@ let ``the explicitYield knob spells every yield for an older compiler`` () =
         let patched = applyEdits source s.Edits
 
         Assert.Equal(
-            "let f (xs: int list) =\n    let acc: int list =\n        [\n            for x in xs do\n                if x > 1 then\n                    yield x * 2\n        ]\n    acc",
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc: int list =
+                        [
+                            for x in xs do
+                                if x > 1 then
+                                    yield x * 2
+                        ]
+                    acc
+                """,
             patched
         )
 
@@ -264,15 +636,63 @@ let ``a while loop stepping a mutable index feeds a list expression`` () =
     // the mutable is read in the condition and assigned in the body: a
     // list expression compiles inline, so both are allowed there
     assertRewrite
-        "let merge (arr: string[]) (first: string) (second: string) =\n    let merged = ResizeArray<string>()\n    let mutable i = 0\n    while i < arr.Length do\n        if i < arr.Length - 1 && arr.[i] = first && arr.[i + 1] = second then\n            merged.Add(first + second)\n            i <- i + 2\n        else\n            merged.Add arr.[i]\n            i <- i + 1\n    List.ofSeq merged"
-        "let merge (arr: string[]) (first: string) (second: string) =\n    let mutable i = 0\n    let merged: string list =\n        [\n            while i < arr.Length do\n                if i < arr.Length - 1 && arr.[i] = first && arr.[i + 1] = second then\n                    first + second\n                    i <- i + 2\n                else\n                    arr.[i]\n                    i <- i + 1\n        ]\n    merged"
+        (fsharp
+            """
+            let merge (arr: string[]) (first: string) (second: string) =
+                let merged = ResizeArray<string>()
+                let mutable i = 0
+                while i < arr.Length do
+                    if i < arr.Length - 1 && arr.[i] = first && arr.[i + 1] = second then
+                        merged.Add(first + second)
+                        i <- i + 2
+                    else
+                        merged.Add arr.[i]
+                        i <- i + 1
+                List.ofSeq merged
+            """)
+        (fsharp
+            """
+            let merge (arr: string[]) (first: string) (second: string) =
+                let mutable i = 0
+                let merged: string list =
+                    [
+                        while i < arr.Length do
+                            if i < arr.Length - 1 && arr.[i] = first && arr.[i + 1] = second then
+                                first + second
+                                i <- i + 2
+                            else
+                                arr.[i]
+                                i <- i + 1
+                    ]
+                merged
+            """)
     |> ignore
 
 [<Fact>]
 let ``a loop that also assigns an outer mutable is still a list expression`` () =
     assertRewrite
-        "let f (xs: int list) =\n    let ys = ResizeArray<int>()\n    let mutable total = 0\n    for x in xs do\n        ys.Add(x * 2)\n        total <- total + x\n    List.ofSeq ys, total"
-        "let f (xs: int list) =\n    let mutable total = 0\n    let ys: int list =\n        [\n            for x in xs do\n                x * 2\n                total <- total + x\n        ]\n    ys, total"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let ys = ResizeArray<int>()
+                let mutable total = 0
+                for x in xs do
+                    ys.Add(x * 2)
+                    total <- total + x
+                List.ofSeq ys, total
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let mutable total = 0
+                let ys: int list =
+                    [
+                        for x in xs do
+                            x * 2
+                            total <- total + x
+                    ]
+                ys, total
+            """)
     |> ignore
 
 [<Fact>]
@@ -280,8 +700,24 @@ let ``a drain wrapped in an application's own parentheses keeps a pair`` () =
     // `Some(List.ofSeq acc)`: dropping the parentheses would glue the name
     // to the function - `Someacc` (the tool's own StructOption.fs)
     assertRewrite
-        "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        acc.Add(x * 2)\n    Some(List.ofSeq acc)"
-        "let f (xs: int list) =\n    let acc: int list =\n        [\n            for x in xs do\n                x * 2\n        ]\n    Some(acc)"
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc = ResizeArray<int>()
+                for x in xs do
+                    acc.Add(x * 2)
+                Some(List.ofSeq acc)
+            """)
+        (fsharp
+            """
+            let f (xs: int list) =
+                let acc: int list =
+                    [
+                        for x in xs do
+                            x * 2
+                    ]
+                Some(acc)
+            """)
     |> ignore
 
 [<Fact>]
@@ -289,15 +725,36 @@ let ``a discarded non-unit statement in the loop would become a yield`` () =
     // `d.TryAdd(x, x)` returns a bool the loop discards; in the list
     // expression it is an implicit yield, and the list doubles in length
     Assert.Empty(
-        findIn
-            "module T\nopen System.Collections.Generic\nlet f (xs: int list) (d: Dictionary<int,int>) =\n    let acc = ResizeArray<bool>()\n    for x in xs do\n        d.TryAdd(x, x)\n        acc.Add(x > 0)\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                module T
+                open System.Collections.Generic
+                let f (xs: int list) (d: Dictionary<int,int>) =
+                    let acc = ResizeArray<bool>()
+                    for x in xs do
+                        d.TryAdd(x, x)
+                        acc.Add(x > 0)
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
 let ``a discarded non-unit value in a branch of the loop would become a yield`` () =
     Assert.Empty(
-        findIn
-            "let f (xs: int list) =\n    let acc = ResizeArray<int>()\n    for x in xs do\n        if x > 0 then\n            x.ToString()\n            acc.Add x\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                let f (xs: int list) =
+                    let acc = ResizeArray<int>()
+                    for x in xs do
+                        if x > 0 then
+                            x.ToString()
+                            acc.Add x
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
@@ -305,16 +762,55 @@ let ``unit statements beside the Add still move`` () =
     // a printf, a method returning void, an indexed set and an assignment
     // are unit: none of them yields
     assertRewrite
-        "module T\nopen System.Collections.Generic\nlet f (xs: int list) (d: Dictionary<int,int>) =\n    let acc = ResizeArray<bool>()\n    let mutable n = 0\n    for x in xs do\n        printfn \"%d\" x\n        System.Console.WriteLine x\n        d.[x] <- x\n        n <- n + 1\n        acc.Add(x > 0)\n    List.ofSeq acc"
-        "module T\nopen System.Collections.Generic\nlet f (xs: int list) (d: Dictionary<int,int>) =\n    let mutable n = 0\n    let acc: bool list =\n        [\n            for x in xs do\n                printfn \"%d\" x\n                System.Console.WriteLine x\n                d.[x] <- x\n                n <- n + 1\n                x > 0\n        ]\n    acc"
+        (fsharp
+            """
+            module T
+            open System.Collections.Generic
+            let f (xs: int list) (d: Dictionary<int,int>) =
+                let acc = ResizeArray<bool>()
+                let mutable n = 0
+                for x in xs do
+                    printfn "%d" x
+                    System.Console.WriteLine x
+                    d.[x] <- x
+                    n <- n + 1
+                    acc.Add(x > 0)
+                List.ofSeq acc
+            """)
+        (fsharp
+            """
+            module T
+            open System.Collections.Generic
+            let f (xs: int list) (d: Dictionary<int,int>) =
+                let mutable n = 0
+                let acc: bool list =
+                    [
+                        for x in xs do
+                            printfn "%d" x
+                            System.Console.WriteLine x
+                            d.[x] <- x
+                            n <- n + 1
+                            x > 0
+                    ]
+                acc
+            """)
     |> ignore
 
 [<Fact>]
 let ``a loop over a Span cannot move into the list expression`` () =
     // the list expression may not capture the ReadOnlySpan: FS0406
     Assert.Empty(
-        findIn
-            "module T\nlet chars (s: System.ReadOnlySpan<char>) =\n    let acc = ResizeArray<char>()\n    for c in s do\n        acc.Add c\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                module T
+                let chars (s: System.ReadOnlySpan<char>) =
+                    let acc = ResizeArray<char>()
+                    for c in s do
+                        acc.Add c
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
@@ -322,8 +818,17 @@ let ``a loop indexing a Span cannot move into the list expression either`` () =
     // the indexer is an inref property FCS cannot place a declaration for:
     // that must not empty the file's byref-like uses and let the Span through
     Assert.Empty(
-        findIn
-            "module T\nlet upper (s: System.ReadOnlySpan<char>) =\n    let acc = ResizeArray<char>()\n    for i in 0 .. s.Length - 1 do\n        acc.Add(System.Char.ToUpperInvariant s.[i])\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                module T
+                let upper (s: System.ReadOnlySpan<char>) =
+                    let acc = ResizeArray<char>()
+                    for i in 0 .. s.Length - 1 do
+                        acc.Add(System.Char.ToUpperInvariant s.[i])
+                    List.ofSeq acc
+                """
+        )
     )
 
 [<Fact>]
@@ -331,8 +836,18 @@ let ``a delegate element type converted the lambda where a yield does not`` () =
     // `acc.Add(fun () -> ...)` made an Action of the lambda through the
     // method call; a yield of the lambda into an `Action list` is FS0002
     Assert.Empty(
-        findIn
-            "module T\nopen System\nlet f (xs: int list) =\n    let acc = ResizeArray<Action>()\n    for x in xs do\n        acc.Add(fun () -> printfn \"%d\" x)\n    List.ofSeq acc"
+        findIn (
+            fsharp
+                """
+                module T
+                open System
+                let f (xs: int list) =
+                    let acc = ResizeArray<Action>()
+                    for x in xs do
+                        acc.Add(fun () -> printfn "%d" x)
+                    List.ofSeq acc
+                """
+        )
     )
 
 // ---- a `let mutable` list fed by appends ----
@@ -341,84 +856,245 @@ let ``a delegate element type converted the lambda where a yield does not`` () =
 let ``a mutable list appended one element per iteration is a list expression`` () =
     let s =
         assertRewrite
-            "let f (i: int) = i * 2\nlet build (ys: int list) =\n    let mutable xs = []\n\n    for i in ys do\n        let r = f i\n        xs <- List.append xs [ r ]\n\n    xs"
-            "let f (i: int) = i * 2\nlet build (ys: int list) =\n\n    let xs =\n        [\n            for i in ys do\n                let r = f i\n                r\n        ]\n\n    xs"
+            (fsharp
+                """
+                let f (i: int) = i * 2
+                let build (ys: int list) =
+                    let mutable xs = []
+
+                    for i in ys do
+                        let r = f i
+                        xs <- List.append xs [ r ]
+
+                    xs
+                """)
+            (fsharp
+                """
+                let f (i: int) = i * 2
+                let build (ys: int list) =
+
+                    let xs =
+                        [
+                            for i in ys do
+                                let r = f i
+                                r
+                        ]
+
+                    xs
+                """)
 
     Assert.True s.Mutable
 
 [<Fact>]
 let ``the (at) spelling, a guard and an annotation keep their shape`` () =
     assertRewrite
-        "let build (ys: int list) =\n    let mutable xs: int64 list = []\n    for i in ys do\n        if i > 0 then\n            xs <- xs @ [ int64 i ]\n    List.sum xs"
-        "let build (ys: int list) =\n    let xs: int64 list =\n        [\n            for i in ys do\n                if i > 0 then\n                    int64 i\n        ]\n    List.sum xs"
+        (fsharp
+            """
+            let build (ys: int list) =
+                let mutable xs: int64 list = []
+                for i in ys do
+                    if i > 0 then
+                        xs <- xs @ [ int64 i ]
+                List.sum xs
+            """)
+        (fsharp
+            """
+            let build (ys: int list) =
+                let xs: int64 list =
+                    [
+                        for i in ys do
+                            if i > 0 then
+                                int64 i
+                    ]
+                List.sum xs
+            """)
     |> ignore
 
 [<Fact>]
 let ``a consed list read through List.rev yields in loop order`` () =
     assertRewrite
-        "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- i * 2 :: xs\n    List.rev xs"
-        "let build (ys: int list) =\n    let xs =\n        [\n            for i in ys do\n                i * 2\n        ]\n    xs"
+        (fsharp
+            """
+            let build (ys: int list) =
+                let mutable xs = []
+                for i in ys do
+                    xs <- i * 2 :: xs
+                List.rev xs
+            """)
+        (fsharp
+            """
+            let build (ys: int list) =
+                let xs =
+                    [
+                        for i in ys do
+                            i * 2
+                    ]
+                xs
+            """)
     |> ignore
 
     // read without the reverse, the consed list is backwards: FR0051's
     // note, not a rewrite
     Assert.Empty(
-        findIn
-            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- i * 2 :: xs\n    xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- i * 2 :: xs
+                    xs
+                """
+        )
     )
 
     // fed at both ends there is no loop order to yield in
     Assert.Empty(
-        findIn
-            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- i :: xs\n        xs <- xs @ [ i ]\n    List.rev xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- i :: xs
+                        xs <- xs @ [ i ]
+                    List.rev xs
+                """
+        )
     )
 
 [<Fact>]
 let ``two loops and any later read of the list`` () =
     assertRewrite
-        "let build (ys: int list) (zs: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- List.append xs [ i + 1 ]\n    for z in zs do\n        xs <- xs @ [ z * 2 ]\n    printfn \"%d\" xs.Length\n    xs |> List.map string"
-        "let build (ys: int list) (zs: int list) =\n    let xs =\n        [\n            for i in ys do\n                i + 1\n            for z in zs do\n                z * 2\n        ]\n    printfn \"%d\" xs.Length\n    xs |> List.map string"
+        (fsharp
+            """
+            let build (ys: int list) (zs: int list) =
+                let mutable xs = []
+                for i in ys do
+                    xs <- List.append xs [ i + 1 ]
+                for z in zs do
+                    xs <- xs @ [ z * 2 ]
+                printfn "%d" xs.Length
+                xs |> List.map string
+            """)
+        (fsharp
+            """
+            let build (ys: int list) (zs: int list) =
+                let xs =
+                    [
+                        for i in ys do
+                            i + 1
+                        for z in zs do
+                            z * 2
+                    ]
+                printfn "%d" xs.Length
+                xs |> List.map string
+            """)
     |> ignore
 
 [<Fact>]
 let ``a list read in its loop, reassigned after, or built two at a time stays`` () =
     // read while building: the expression has no partial list to read
     Assert.Empty(
-        findIn
-            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        if xs.Length < 3 then\n            xs <- xs @ [ i ]\n    xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        if xs.Length < 3 then
+                            xs <- xs @ [ i ]
+                    xs
+                """
+        )
     )
 
     // assigned after the loops: the result is immutable
     Assert.Empty(
-        findIn
-            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i ]\n    if xs.Length > 5 then\n        xs <- []\n    xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- xs @ [ i ]
+                    if xs.Length > 5 then
+                        xs <- []
+                    xs
+                """
+        )
     )
 
     // two elements per step, or a whole list
     Assert.Empty(
-        findIn
-            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i; i + 1 ]\n    xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- xs @ [ i; i + 1 ]
+                    xs
+                """
+        )
     )
 
     Assert.Empty(
-        findIn
-            "let build (ys: int list list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ i\n    xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- xs @ i
+                    xs
+                """
+        )
     )
 
     // the element reads the accumulator
     Assert.Empty(
-        findIn
-            "let build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i + xs.Length ]\n    xs"
+        findIn (
+            fsharp
+                """
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- xs @ [ i + xs.Length ]
+                    xs
+                """
+        )
     )
 
 [<Fact>]
 let ``a project's own (at) or List module is not FSharp.Core's append`` () =
     Assert.Empty(
-        findIn
-            "module T\nlet (@) (a: int list) (b: int list) = a\nlet build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- xs @ [ i ]\n    xs"
+        findIn (
+            fsharp
+                """
+                module T
+                let (@) (a: int list) (b: int list) = a
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- xs @ [ i ]
+                    xs
+                """
+        )
     )
 
     Assert.Empty(
-        findIn
-            "module T\nmodule List =\n    let append (a: int list) (b: int list) = a\nlet build (ys: int list) =\n    let mutable xs = []\n    for i in ys do\n        xs <- List.append xs [ i ]\n    xs"
+        findIn (
+            fsharp
+                """
+                module T
+                module List =
+                    let append (a: int list) (b: int list) = a
+                let build (ys: int list) =
+                    let mutable xs = []
+                    for i in ys do
+                        xs <- List.append xs [ i ]
+                    xs
+                """
+        )
     )

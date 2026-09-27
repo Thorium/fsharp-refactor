@@ -53,22 +53,28 @@ let ``FR0012: without a typed check a core-named hint stands down inside a compu
     // matched `id x ===> x` by shape
     Assert.Empty(
         hintsUntyped (
-            lines
-                [
-                    "module Test"
-                    "type LifecycleBuilder() ="
-                    "    member _.Yield(_: unit) = \"\""
-                    "    [<CustomOperation(\"id\")>]"
-                    "    member _.Id(_: string, name: string) = name"
-                    "let lifecycleRule = LifecycleBuilder()"
-                    "let rule = lifecycleRule { id \"rule\" }"
-                ]
+            fsharp
+                """
+                module Test
+                type LifecycleBuilder() =
+                    member _.Yield(_: unit) = ""
+                    [<CustomOperation("id")>]
+                    member _.Id(_: string, name: string) = name
+                let lifecycleRule = LifecycleBuilder()
+                let rule = lifecycleRule { id "rule" }
+                """
         )
     )
 
     // the same spelling of FSharp.Core's own `id` inside an async: the
     // untyped path cannot tell the two apart and stands down there ...
-    let source = "module Test\nlet g (x: int) = async { return id x }"
+    let source =
+        fsharp
+            """
+            module Test
+            let g (x: int) = async { return id x }
+            """
+
     Assert.Empty(hintsUntyped source)
 
     // ... and the typed path proves it and fires
@@ -88,25 +94,25 @@ let ``FR0075: a CancellationTokenSource whose token a user function receives is 
     // background search that outlives the scope; `use token` disposed the
     // source under it
     let source =
-        lines
-            [
-                "module Test"
-                "open System.Threading"
-                "module Loans ="
-                "    let requestNewLoan (amount: int) (ct: CancellationToken) (flag: bool) : Async<int> ="
-                "        async {"
-                "            Async.Start(async { do! Async.Sleep 10 }, ct)"
-                "            return amount"
-                "        }"
-                "let run () ="
-                "    async {"
-                "        let token = new CancellationTokenSource()"
-                "        token.CancelAfter 3300000"
-                "        match! Loans.requestNewLoan 100 token.Token false with"
-                "        | 0 -> return \"none\""
-                "        | n -> return string n"
-                "    }"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading
+            module Loans =
+                let requestNewLoan (amount: int) (ct: CancellationToken) (flag: bool) : Async<int> =
+                    async {
+                        Async.Start(async { do! Async.Sleep 10 }, ct)
+                        return amount
+                    }
+            let run () =
+                async {
+                    let token = new CancellationTokenSource()
+                    token.CancelAfter 3300000
+                    match! Loans.requestNewLoan 100 token.Token false with
+                    | 0 -> return "none"
+                    | n -> return string n
+                }
+            """
 
     assertTypechecks source
 
@@ -120,21 +126,21 @@ let ``FR0075: a CancellationTokenSource whose token a user function receives is 
 [<Fact>]
 let ``FR0075: a token handed to Async.Start or to an unawaited BCL task is advisory only`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System.Threading"
-                "open System.Threading.Tasks"
-                "let work = async { do! Async.Sleep 10 }"
-                "let run () ="
-                "    let cts = new CancellationTokenSource()"
-                "    Async.Start(work, cts.Token)"
-                "    1"
-                "let run2 () ="
-                "    let cts = new CancellationTokenSource()"
-                "    Task.Delay(10, cts.Token) |> ignore"
-                "    1"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading
+            open System.Threading.Tasks
+            let work = async { do! Async.Sleep 10 }
+            let run () =
+                let cts = new CancellationTokenSource()
+                Async.Start(work, cts.Token)
+                1
+            let run2 () =
+                let cts = new CancellationTokenSource()
+                Task.Delay(10, cts.Token) |> ignore
+                1
+            """
 
     assertTypechecks source
 
@@ -151,25 +157,25 @@ let ``FR0075: a token an awaited BCL call observes keeps the fix`` () =
     // run and start nothing of their own once awaited: the scope sees
     // them finish, and `use` is right
     let source =
-        lines
-            [
-                "module Test"
-                "open System.Threading"
-                "open System.Threading.Tasks"
-                "let run () ="
-                "    task {"
-                "        let cts = new CancellationTokenSource()"
-                "        cts.CancelAfter 1000"
-                "        do! Task.Delay(10, cts.Token)"
-                "        let! n = Task.Run((fun () -> 1), cts.Token)"
-                "        return n"
-                "    }"
-                "let sync () ="
-                "    let cts = new CancellationTokenSource()"
-                "    Task.Delay(10, cts.Token).Wait()"
-                "    Task.Delay(10, cts.Token) |> Async.AwaitTask |> Async.RunSynchronously"
-                "    1"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading
+            open System.Threading.Tasks
+            let run () =
+                task {
+                    let cts = new CancellationTokenSource()
+                    cts.CancelAfter 1000
+                    do! Task.Delay(10, cts.Token)
+                    let! n = Task.Run((fun () -> 1), cts.Token)
+                    return n
+                }
+            let sync () =
+                let cts = new CancellationTokenSource()
+                Task.Delay(10, cts.Token).Wait()
+                Task.Delay(10, cts.Token) |> Async.AwaitTask |> Async.RunSynchronously
+                1
+            """
 
     assertTypechecks source
 
@@ -186,20 +192,20 @@ let ``FR0075: a token handed to a constructor or stored in a collection is advis
     // the worker's timer runs on the token after the scope has returned;
     // `use cts` disposed the source under it
     let constructed =
-        lines
-            [
-                "module Test"
-                "open System.Threading"
-                "open System.Threading.Tasks"
-                "type Worker(ct: CancellationToken) ="
-                "    member _.Start() = Task.Delay(5000, ct) |> ignore"
-                "let run () ="
-                "    let cts = new CancellationTokenSource()"
-                "    cts.CancelAfter 5000"
-                "    let w = new Worker(cts.Token)"
-                "    w.Start()"
-                "    1"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading
+            open System.Threading.Tasks
+            type Worker(ct: CancellationToken) =
+                member _.Start() = Task.Delay(5000, ct) |> ignore
+            let run () =
+                let cts = new CancellationTokenSource()
+                cts.CancelAfter 5000
+                let w = new Worker(cts.Token)
+                w.Start()
+                1
+            """
 
     assertTypechecks constructed
 
@@ -212,16 +218,16 @@ let ``FR0075: a token handed to a constructor or stored in a collection is advis
 
     // a synchronous BCL call that is no blocking wait may store the token
     let stored =
-        lines
-            [
-                "module Test"
-                "open System.Threading"
-                "let tokens = ResizeArray<CancellationToken>()"
-                "let run () ="
-                "    let cts = new CancellationTokenSource()"
-                "    tokens.Add(cts.Token)"
-                "    1"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading
+            let tokens = ResizeArray<CancellationToken>()
+            let run () =
+                let cts = new CancellationTokenSource()
+                tokens.Add(cts.Token)
+                1
+            """
 
     assertTypechecks stored
 
@@ -267,7 +273,7 @@ let private computeAndService =
         "open System.Threading.Tasks"
         "type ISvc ="
         "    abstract Run: int -> Task<int>"
-        "let compute (x: int) = if x = 0 then failwith \"x\" else x"
+        """let compute (x: int) = if x = 0 then failwith "x" else x"""
     ]
 
 [<Fact>]
@@ -567,18 +573,18 @@ let ``FR0049: a parenthesised tail hiding a blocking site stands the body down``
     // `return (` in front of the parentheses and `let!` inside them —
     // `return (let! r = t in r + 1)` — does not parse
     let source =
-        lines
-            [
-                "module Test"
-                "open System.Threading.Tasks"
-                "let private fetch (x: int) ="
-                "    let t = Task.Run(fun () -> x)"
-                "    (let r = t.GetAwaiter().GetResult() in r + 1)"
-                "let consume () = task {"
-                "    let s = fetch 1"
-                "    return s"
-                "}"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let private fetch (x: int) =
+                let t = Task.Run(fun () -> x)
+                (let r = t.GetAwaiter().GetResult() in r + 1)
+            let consume () = task {
+                let s = fetch 1
+                return s
+            }
+            """
 
     assertTypechecks source
     Assert.Empty(taskifyIn source)
@@ -586,19 +592,19 @@ let ``FR0049: a parenthesised tail hiding a blocking site stands the body down``
 [<Fact>]
 let ``FR0049: a parenthesised tail with no blocking site is still returned whole`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System.Threading.Tasks"
-                "let private fetch (x: int) ="
-                "    let t = Task.Run(fun () -> x)"
-                "    let r = t.GetAwaiter().GetResult()"
-                "    (let q = r in q + 1)"
-                "let consume () = task {"
-                "    let s = fetch 1"
-                "    return s"
-                "}"
-            ]
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let private fetch (x: int) =
+                let t = Task.Run(fun () -> x)
+                let r = t.GetAwaiter().GetResult()
+                (let q = r in q + 1)
+            let consume () = task {
+                let s = fetch 1
+                return s
+            }
+            """
 
     match taskifyIn source with
     | [ s ] ->
@@ -616,25 +622,35 @@ let ``FR0012: map fusion counts a user property, Lazy.Value and an interpolation
     // formatted by the value's own ToString: each is observable when the
     // fused composition interleaves the two sweeps
     Assert.Empty(
-        hintsTyped
-            "module Test\nlet f (xs: Lazy<int> list) = List.map string (List.map (fun (l: Lazy<int>) -> l.Value) xs)"
-    )
-
-    Assert.Empty(
         hintsTyped (
-            lines
-                [
-                    "module Test"
-                    "type C() ="
-                    "    member _.P = (printfn \"p\"; 1)"
-                    "let f (cs: C list) = List.map string (List.map (fun (c: C) -> c.P) cs)"
-                ]
+            fsharp
+                """
+                module Test
+                let f (xs: Lazy<int> list) = List.map string (List.map (fun (l: Lazy<int>) -> l.Value) xs)
+                """
         )
     )
 
     Assert.Empty(
-        hintsTyped
-            "module Test\nlet f (xs: int list) = List.map (fun (s: string) -> s.Length) (List.map (fun (x: int) -> $\"{x}\") xs)"
+        hintsTyped (
+            fsharp
+                """
+                module Test
+                type C() =
+                    member _.P = (printfn "p"; 1)
+                let f (cs: C list) = List.map string (List.map (fun (c: C) -> c.P) cs)
+                """
+        )
+    )
+
+    Assert.Empty(
+        hintsTyped (
+            fsharp
+                """
+                module Test
+                let f (xs: int list) = List.map (fun (s: string) -> s.Length) (List.map (fun (x: int) -> $"{x}") xs)
+                """
+        )
     )
 
 [<Fact>]
@@ -642,29 +658,29 @@ let ``FR0012: map fusion counts an extension member on a BCL type as a call`` ()
     // System.String is the apparent owner of `Loud` and `Shout`; the bodies
     // are the user's
     let extensionProperty =
-        lines
-            [
-                "module Test"
-                "type System.String with"
-                "    member s.Loud ="
-                "        printfn \"!\""
-                "        s.Length"
-                "let f (xs: int list) = List.map (fun (s: string) -> s.Loud) (List.map string xs)"
-            ]
+        fsharp
+            """
+            module Test
+            type System.String with
+                member s.Loud =
+                    printfn "!"
+                    s.Length
+            let f (xs: int list) = List.map (fun (s: string) -> s.Loud) (List.map string xs)
+            """
 
     assertTypechecks extensionProperty
     Assert.Empty(hintsTyped extensionProperty)
 
     let extensionMethod =
-        lines
-            [
-                "module Test"
-                "type System.String with"
-                "    member s.Shout() ="
-                "        printfn \"!\""
-                "        s.Length"
-                "let f (xs: int list) = List.map (fun (s: string) -> s.Shout()) (List.map string xs)"
-            ]
+        fsharp
+            """
+            module Test
+            type System.String with
+                member s.Shout() =
+                    printfn "!"
+                    s.Length
+            let f (xs: int list) = List.map (fun (s: string) -> s.Shout()) (List.map string xs)
+            """
 
     assertTypechecks extensionMethod
     Assert.Empty(hintsTyped extensionMethod)
@@ -673,7 +689,13 @@ let ``FR0012: map fusion counts an extension member on a BCL type as a call`` ()
 let ``FR0012: map fusion still fuses a BCL property read`` () =
     // `s.Length` is System.String's: a read, not a call
     match
-        hintsTyped "module Test\nlet f (xs: int list) = List.map (fun (s: string) -> s.Length) (List.map string xs)"
+        hintsTyped (
+            fsharp
+                """
+                module Test
+                let f (xs: int list) = List.map (fun (s: string) -> s.Length) (List.map string xs)
+                """
+        )
     with
     | [ s ] -> Assert.Equal("List.map (string >> (fun (s: string) -> s.Length)) xs", s.ReplacementText)
     | other -> failwithf "Expected one fusion hint, got %A" other

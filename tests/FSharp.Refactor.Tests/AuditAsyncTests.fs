@@ -79,13 +79,30 @@ let ``A3 FR0142: an Assert.Throws over AggregateException around a Wait is not c
 let ``A3 FR0142: the Result and WaitAll shapes under an AggregateException assert stay too`` () =
     let resultShape =
         xunitScaffold
-        + "let failing () : Task<int> = Task.FromException<int>(InvalidOperationException())\n[<Fact>]\nlet ``faults`` () =\n    let t = failing ()\n    let ex = Assert.Throws<AggregateException>(fun () -> t.Result |> ignore)\n    ignore ex.InnerException"
+        + fsharp
+            """
+            let failing () : Task<int> = Task.FromException<int>(InvalidOperationException())
+            [<Fact>]
+            let ``faults`` () =
+                let t = failing ()
+                let ex = Assert.Throws<AggregateException>(fun () -> t.Result |> ignore)
+                ignore ex.InnerException
+            """
 
     assertNoTestRewrite resultShape
 
     let waitAllShape =
         xunitScaffold
-        + "let failing () : Task = Task.FromException(InvalidOperationException())\n[<Fact>]\nlet ``faults`` () =\n    let a = failing ()\n    let b = failing ()\n    let ex = Assert.Throws<AggregateException>(fun () -> Task.WaitAll(a, b))\n    ignore ex.InnerExceptions.Count"
+        + fsharp
+            """
+            let failing () : Task = Task.FromException(InvalidOperationException())
+            [<Fact>]
+            let ``faults`` () =
+                let a = failing ()
+                let b = failing ()
+                let ex = Assert.Throws<AggregateException>(fun () -> Task.WaitAll(a, b))
+                ignore ex.InnerExceptions.Count
+            """
 
     assertNoTestRewrite waitAllShape
 
@@ -93,7 +110,15 @@ let ``A3 FR0142: the Result and WaitAll shapes under an AggregateException asser
 let ``A3 FR0142: a Wait asserted with the inner exception type still moves`` () =
     let source =
         xunitScaffold
-        + "let failing () : Task = Task.FromException(InvalidOperationException())\n[<Fact>]\nlet ``faults`` () =\n    let t = failing ()\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n    ignore ex.Message"
+        + fsharp
+            """
+            let failing () : Task = Task.FromException(InvalidOperationException())
+            [<Fact>]
+            let ``faults`` () =
+                let t = failing ()
+                let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())
+                ignore ex.Message
+            """
 
     match testsIn source with
     | [ s ] ->
@@ -107,7 +132,13 @@ let ``A3 FR0142: a Wait asserted with the inner exception type still moves`` () 
 let ``A3 FR0049: an Assert.Throws over AggregateException inside a task keeps its Wait`` () =
     let source =
         xunitScaffold
-        + "let f (t: Task<int>) = task {\n    let ex = Assert.Throws<AggregateException>(fun () -> t.Wait())\n    return ex.Message\n}"
+        + fsharp
+            """
+            let f (t: Task<int>) = task {
+                let ex = Assert.Throws<AggregateException>(fun () -> t.Wait())
+                return ex.Message
+            }
+            """
 
     let s = singleSite source
     Assert.True s.InLambda
@@ -115,7 +146,13 @@ let ``A3 FR0049: an Assert.Throws over AggregateException inside a task keeps it
 
     let qualified =
         xunitScaffold
-        + "let f (t: Task<int>) = task {\n    let ex = Assert.Throws<System.AggregateException>(fun () -> t.Result |> ignore)\n    return ex.Message\n}"
+        + fsharp
+            """
+            let f (t: Task<int>) = task {
+                let ex = Assert.Throws<System.AggregateException>(fun () -> t.Result |> ignore)
+                return ex.Message
+            }
+            """
 
     Assert.Empty (singleSite qualified).Fixes
 
@@ -125,7 +162,13 @@ let ``A3 FR0049: GetResult under an AggregateException assert already unwraps, s
     // awaited delegate will: whatever the assert meant, nothing changes
     let source =
         xunitScaffold
-        + "let f (t: Task<int>) = task {\n    let ex = Assert.Throws<AggregateException>(fun () -> t.GetAwaiter().GetResult() |> ignore)\n    return ex.Message\n}"
+        + fsharp
+            """
+            let f (t: Task<int>) = task {
+                let ex = Assert.Throws<AggregateException>(fun () -> t.GetAwaiter().GetResult() |> ignore)
+                return ex.Message
+            }
+            """
 
     let s = singleSite source
 
@@ -140,26 +183,71 @@ let ``A3 FR0049: a WaitAll in the try body of an AggregateException handler keep
     // WaitAll throws one AggregateException holding every failure; `do!
     // Task.WhenAll` throws the first alone and the handler goes dead
     let source =
-        "open System\nopen System.Threading.Tasks\nlet f (a: Task) (b: Task) = task {\n    try\n        Task.WaitAll(a, b)\n        return 0\n    with :? AggregateException as ae ->\n        return ae.InnerExceptions.Count\n}"
+        fsharp
+            """
+            open System
+            open System.Threading.Tasks
+            let f (a: Task) (b: Task) = task {
+                try
+                    Task.WaitAll(a, b)
+                    return 0
+                with :? AggregateException as ae ->
+                    return ae.InnerExceptions.Count
+            }
+            """
 
     Assert.Empty (singleSite source).Fixes
 
 [<Fact>]
 let ``A3 FR0049: a Wait and a Result under an AggregateException handler keep their shape`` () =
     let wait =
-        "open System\nopen System.Threading.Tasks\nlet f (t: Task) = task {\n    try\n        t.Wait()\n        return 0\n    with\n    | :? AggregateException as ae -> return ae.InnerExceptions.Count\n    | _ -> return -1\n}"
+        fsharp
+            """
+            open System
+            open System.Threading.Tasks
+            let f (t: Task) = task {
+                try
+                    t.Wait()
+                    return 0
+                with
+                | :? AggregateException as ae -> return ae.InnerExceptions.Count
+                | _ -> return -1
+            }
+            """
 
     Assert.Empty (singleSite wait).Fixes
 
     let result =
-        "open System\nopen System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    try\n        let x = t.Result\n        return x\n    with :? AggregateException as ae ->\n        return ae.InnerExceptions.Count\n}"
+        fsharp
+            """
+            open System
+            open System.Threading.Tasks
+            let f (t: Task<int>) = task {
+                try
+                    let x = t.Result
+                    return x
+                with :? AggregateException as ae ->
+                    return ae.InnerExceptions.Count
+            }
+            """
 
     Assert.Empty (singleSite result).Fixes
 
 [<Fact>]
 let ``A3 FR0049: a Wait under a handler for the inner exception type still becomes do-bang`` () =
     let source =
-        "open System\nopen System.Threading.Tasks\nlet f (t: Task) = task {\n    try\n        t.Wait()\n        return 0\n    with :? InvalidOperationException ->\n        return 1\n}"
+        fsharp
+            """
+            open System
+            open System.Threading.Tasks
+            let f (t: Task) = task {
+                try
+                    t.Wait()
+                    return 0
+                with :? InvalidOperationException ->
+                    return 1
+            }
+            """
 
     let s = singleSite source
 
@@ -171,7 +259,18 @@ let ``A3 FR0049: a Wait under a handler for the inner exception type still becom
 let ``A3 FR0049: GetResult under an AggregateException handler still binds`` () =
     // the awaiter already unwraps — the handler was dead before the fix
     let source =
-        "open System\nopen System.Threading.Tasks\nlet f (t: Task<int>) = task {\n    try\n        let x = t.GetAwaiter().GetResult()\n        return x\n    with :? AggregateException ->\n        return -1\n}"
+        fsharp
+            """
+            open System
+            open System.Threading.Tasks
+            let f (t: Task<int>) = task {
+                try
+                    let x = t.GetAwaiter().GetResult()
+                    return x
+                with :? AggregateException ->
+                    return -1
+            }
+            """
 
     let s = singleSite source
 
@@ -184,7 +283,15 @@ let ``A3 FR0049: GetResult under an AggregateException handler still binds`` () 
 [<Fact>]
 let ``B5 FR0049: a Result let nested in another binding's RHS is not a let-bang site`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let pair =\n        let x = t.Result\n        x, x + 1\n    return pair\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = task {
+                let pair =
+                    let x = t.Result
+                    x, x + 1
+                return pair
+            }
+            """
 
     let s = singleSite source
     Assert.Equal(SyncOverAsync.BlockKind.TaskResult, s.Kind)
@@ -193,7 +300,15 @@ let ``B5 FR0049: a Result let nested in another binding's RHS is not a let-bang 
 [<Fact>]
 let ``B5 FR0049: a Wait inside a local function is not a do-bang site`` () =
     let source =
-        "let g (t: System.Threading.Tasks.Task) = task {\n    let helper () =\n        t.Wait()\n        1\n    return helper ()\n}"
+        fsharp
+            """
+            let g (t: System.Threading.Tasks.Task) = task {
+                let helper () =
+                    t.Wait()
+                    1
+                return helper ()
+            }
+            """
 
     let s = singleSite source
     Assert.Equal(SyncOverAsync.BlockKind.TaskWait, s.Kind)
@@ -205,12 +320,54 @@ let ``B5 FR0049: the other blocking shapes off the spine stay advice too`` () =
     // each nested in a local function or another binding's RHS
     let shapes =
         [
-            "open System.Threading.Tasks\nlet f (a: Task) (b: Task) = task {\n    let helper () =\n        Task.WaitAll(a, b)\n        1\n    return helper ()\n}"
-            "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let v =\n        let x = t.GetAwaiter().GetResult()\n        x + 1\n    return v\n}"
-            "let comp = async { return 1 }\nlet f () = task {\n    let v =\n        let r = comp |> Async.RunSynchronously\n        r + 1\n    return v\n}"
-            "let f () = task {\n    let helper () =\n        System.Threading.Thread.Sleep 10\n        1\n    return helper ()\n}"
+            fsharp
+                """
+                open System.Threading.Tasks
+                let f (a: Task) (b: Task) = task {
+                    let helper () =
+                        Task.WaitAll(a, b)
+                        1
+                    return helper ()
+                }
+                """
+            fsharp
+                """
+                let f (t: System.Threading.Tasks.Task<int>) = task {
+                    let v =
+                        let x = t.GetAwaiter().GetResult()
+                        x + 1
+                    return v
+                }
+                """
+            fsharp
+                """
+                let comp = async { return 1 }
+                let f () = task {
+                    let v =
+                        let r = comp |> Async.RunSynchronously
+                        r + 1
+                    return v
+                }
+                """
+            fsharp
+                """
+                let f () = task {
+                    let helper () =
+                        System.Threading.Thread.Sleep 10
+                        1
+                    return helper ()
+                }
+                """
             xunitScaffold
-            + "let f (t: Task<int>) = task {\n    let helper () =\n        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n        ex.Message\n    return helper ()\n}"
+            + fsharp
+                """
+                let f (t: Task<int>) = task {
+                    let helper () =
+                        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())
+                        ex.Message
+                    return helper ()
+                }
+                """
         ]
 
     for source in shapes do
@@ -220,7 +377,18 @@ let ``B5 FR0049: the other blocking shapes off the spine stay advice too`` () =
 [<Fact>]
 let ``B5 FR0049: a Wait inside an object expression member is not a do-bang site`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task) = task {\n    let d =\n        { new System.IDisposable with\n            member _.Dispose() =\n                t.Wait()\n                () }\n    d.Dispose()\n    return 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task) = task {
+                let d =
+                    { new System.IDisposable with
+                        member _.Dispose() =
+                            t.Wait()
+                            () }
+                d.Dispose()
+                return 1
+            }
+            """
 
     let s = singleSite source
     Assert.Empty s.Fixes
@@ -228,7 +396,13 @@ let ``B5 FR0049: a Wait inside an object expression member is not a do-bang site
 [<Fact>]
 let ``B5 FR0049: a Result let on the spine still becomes let-bang`` () =
     let source =
-        "let f (t: System.Threading.Tasks.Task<int>) = task {\n    let x = t.Result\n    return x + 1\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) = task {
+                let x = t.Result
+                return x + 1
+            }
+            """
 
     let s = singleSite source
 
@@ -241,7 +415,16 @@ let ``B5 FR0049: a match arm and a non-final if branch are spine positions`` () 
     // control flow on the spine keeps its statement positions: a bind is as
     // legal in an arm or a branch as at the top of the block
     let arm =
-        "let f (t: System.Threading.Tasks.Task<int>) (c: bool) = task {\n    match c with\n    | true ->\n        let x = t.Result\n        return x\n    | false -> return 0\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task<int>) (c: bool) = task {
+                match c with
+                | true ->
+                    let x = t.Result
+                    return x
+                | false -> return 0
+            }
+            """
 
     let s = singleSite arm
 
@@ -250,7 +433,16 @@ let ``B5 FR0049: a match arm and a non-final if branch are spine positions`` () 
     | other -> failwithf "Expected the let! fix in the arm, got %A" other
 
     let branch =
-        "let f (t: System.Threading.Tasks.Task) (c: bool) = task {\n    let mutable n = 0\n    if c then\n        t.Wait()\n        n <- 1\n    return n\n}"
+        fsharp
+            """
+            let f (t: System.Threading.Tasks.Task) (c: bool) = task {
+                let mutable n = 0
+                if c then
+                    t.Wait()
+                    n <- 1
+                return n
+            }
+            """
 
     let s = singleSite branch
 
@@ -264,7 +456,13 @@ let ``B5 FR0049: a match arm and a non-final if branch are spine positions`` () 
 let ``B6 FR0049: an Assert.Throws over a generic ValueTask receiver spells AsTask`` () =
     let source =
         xunitScaffold
-        + "let f (vt: ValueTask<int>) = task {\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> vt.Result |> ignore)\n    return ex.Message\n}"
+        + fsharp
+            """
+            let f (vt: ValueTask<int>) = task {
+                let ex = Assert.Throws<InvalidOperationException>(fun () -> vt.Result |> ignore)
+                return ex.Message
+            }
+            """
 
     let s = singleSite source
 
@@ -282,7 +480,13 @@ let ``B6 FR0049: an Assert.Throws over a generic ValueTask receiver spells AsTas
 let ``B6 FR0049: a non-generic ValueTask receiver needs AsTask and no upcast`` () =
     let source =
         xunitScaffold
-        + "let f (vt: ValueTask) = task {\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> vt.GetAwaiter().GetResult())\n    return ex.Message\n}"
+        + fsharp
+            """
+            let f (vt: ValueTask) = task {
+                let ex = Assert.Throws<InvalidOperationException>(fun () -> vt.GetAwaiter().GetResult())
+                return ex.Message
+            }
+            """
 
     let s = singleSite source
 
@@ -296,7 +500,15 @@ let ``B6 FR0049: a non-generic ValueTask receiver needs AsTask and no upcast`` (
 let ``B6 FR0142: the ValueTask receiver spells AsTask in a test too`` () =
     let source =
         xunitScaffold
-        + "let fetch () = ValueTask<int>(2)\n[<Fact>]\nlet ``throws`` () =\n    let vt = fetch ()\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> vt.Result |> ignore)\n    ignore ex.Message"
+        + fsharp
+            """
+            let fetch () = ValueTask<int>(2)
+            [<Fact>]
+            let ``throws`` () =
+                let vt = fetch ()
+                let ex = Assert.Throws<InvalidOperationException>(fun () -> vt.Result |> ignore)
+                ignore ex.Message
+            """
 
     match testsIn source with
     | [ s ] ->
@@ -313,7 +525,13 @@ let ``B6 FR0142: the ValueTask receiver spells AsTask in a test too`` () =
 let ``B6 FR0049: a real Task receiver keeps the plain upcast`` () =
     let source =
         xunitScaffold
-        + "let f (t: Task<int>) = task {\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Result |> ignore)\n    return ex.Message\n}"
+        + fsharp
+            """
+            let f (t: Task<int>) = task {
+                let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Result |> ignore)
+                return ex.Message
+            }
+            """
 
     let s = singleSite source
 
@@ -332,7 +550,14 @@ let ``B6 FR0049: a real Task receiver keeps the plain upcast`` () =
 [<Fact>]
 let ``B7 FR0049: a Task.Run that is a ConfigureAwait receiver gets parentheses`` () =
     let source =
-        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously).ConfigureAwait(false)\n    return x\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously).ConfigureAwait(false)
+                return x
+            }
+            """
 
     let s = singleSite source
 
@@ -345,7 +570,14 @@ let ``B7 FR0049: a Task.Run that is a ConfigureAwait receiver gets parentheses``
 [<Fact>]
 let ``B7 FR0049: the ignored Task.Run under a DotGet wraps the upcast as well`` () =
     let source =
-        "let comp = async { return 1 }\nlet f () = task {\n    do! System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously |> ignore).ConfigureAwait(false)\n    return 1\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                do! System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously |> ignore).ConfigureAwait(false)
+                return 1
+            }
+            """
 
     let s = singleSite source
 
@@ -359,7 +591,15 @@ let ``B7 FR0049: a Task.Run inside a caller's own parentheses stays bare`` () =
     // (an unparenthesised `describe Task.Run(...)` is FS0597 and never
     // reaches the rule; the parenthesised argument is the shape that does)
     let source =
-        "let comp = async { return 1 }\nlet describe (t: System.Threading.Tasks.Task<int>) = t.Id\nlet f () = task {\n    let id = describe (System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously))\n    return id\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let describe (t: System.Threading.Tasks.Task<int>) = t.Id
+            let f () = task {
+                let id = describe (System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously))
+                return id
+            }
+            """
 
     let s = singleSite source
 
@@ -370,7 +610,14 @@ let ``B7 FR0049: a Task.Run inside a caller's own parentheses stays bare`` () =
 [<Fact>]
 let ``B7 FR0049: a bare let-bang and a pipe source stay unwrapped`` () =
     let plain =
-        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)\n    return x\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously)
+                return x
+            }
+            """
 
     let s = singleSite plain
 
@@ -379,7 +626,14 @@ let ``B7 FR0049: a bare let-bang and a pipe source stay unwrapped`` () =
     | other -> failwithf "Expected the bare StartAsTask fix, got %A" other
 
     let piped =
-        "let comp = async { return 1 }\nlet f () = task {\n    let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously) |> id\n    return x\n}"
+        fsharp
+            """
+            let comp = async { return 1 }
+            let f () = task {
+                let! x = System.Threading.Tasks.Task.Run(fun () -> comp |> Async.RunSynchronously) |> id
+                return x
+            }
+            """
 
     let s = singleSite piped
 
@@ -392,7 +646,14 @@ let ``B7 FR0049: a bare let-bang and a pipe source stay unwrapped`` () =
 [<Fact>]
 let ``C5 FR0079: WaitAll over one task becomes a Wait on it, not the bare task`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet run (t: Task) =\n    Task.WaitAll [| t |]\n    1"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let run (t: Task) =
+                Task.WaitAll [| t |]
+                1
+            """
 
     match singlesIn source with
     | [ s ] ->
@@ -408,7 +669,15 @@ let ``C5 FR0079: WaitAll over one task becomes a Wait on it, not the bare task``
 [<Fact>]
 let ``C5 FR0079: a non-identifier element is parenthesised before the Wait`` () =
     let source =
-        "module Test\nopen System.Threading.Tasks\nlet make () : Task = Task.CompletedTask\nlet run () =\n    Task.WaitAll [| make () |]\n    1"
+        fsharp
+            """
+            module Test
+            open System.Threading.Tasks
+            let make () : Task = Task.CompletedTask
+            let run () =
+                Task.WaitAll [| make () |]
+                1
+            """
 
     match singlesIn source with
     | [ s ] ->
@@ -422,14 +691,31 @@ let ``C5 FR0079: a non-identifier element is parenthesised before the Wait`` () 
 
 [<Fact>]
 let ``C5 FR0079: WhenAll and Async.Parallel keep the unwrap to the element`` () =
-    match singlesIn "module Test\nopen System.Threading.Tasks\nlet run (t: Task<int>) = Task.WhenAll [| t |]" with
+    match
+        singlesIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let run (t: Task<int>) = Task.WhenAll [| t |]
+                """
+        )
+    with
     | [ s ] ->
         match s.Fix with
         | Some(_, _, replacement) -> Assert.Equal("t", replacement)
         | None -> failwith "Expected the unwrap offer"
     | other -> failwithf "Expected one single-awaitable finding, got %A" other
 
-    match singlesIn "module Test\nlet run (comp: Async<int>) = Async.Parallel [ comp ]" with
+    match
+        singlesIn (
+            fsharp
+                """
+                module Test
+                let run (comp: Async<int>) = Async.Parallel [ comp ]
+                """
+        )
+    with
     | [ s ] ->
         match s.Fix with
         | Some(_, _, replacement) -> Assert.Equal("comp", replacement)

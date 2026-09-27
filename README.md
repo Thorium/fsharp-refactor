@@ -859,7 +859,30 @@ dotnet tool run fsharp-analyzers --project src/FSharp.Refactor.Tool/FSharp.Refac
 ```
 
 Test inputs are string literals, so formatting tools never touch the
-deliberately-shaped source fragments the tests exercise.
+deliberately-shaped source fragments the tests exercise. A multi-line input
+is an indented block through the `fsharp` helper (tests/FSharp.Refactor.Tests/TestSource.fs):
+the closing quotes' indentation is cut from every line, so the rule sees the
+snippet at column 0, and Fantomas can move the block without changing it.
+
+```fsharp
+let source =
+    fsharp
+        """
+        module Test
+        let f x = match x with | true -> 1 | false -> 2
+        """
+```
+
+`parse` fails a test whose input does not parse, and `parseAndCheck` one
+whose input does not typecheck: a typed rule finds nothing in a file with a
+type error, so a "no finding" test on a broken input would pass for the
+wrong reason. A test where the broken input is the point (FR0077 and FR0145
+fix compile errors) calls `parseAndCheckAllowingErrors`.
+
+A one- or two-line input can stay an escaped `"...\n..."` literal. Keep a
+literal escaped where it must be a constant (an attribute argument, a
+`[<Literal>]`, a printf format), and where it holds a tab, a `\r` or
+trailing whitespace the test depends on, since an editor would strip them.
 
 Beside the example-based suite, `tests/FSharp.Refactor.PropertyTests` is an
 FsCheck suite over generated programs: a module of declarations each shaped

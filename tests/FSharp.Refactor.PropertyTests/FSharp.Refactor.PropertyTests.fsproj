@@ -8,6 +8,7 @@
   <ItemGroup>
     <!-- the parse helpers of the example-based suite, shared by link so
          the two suites cannot drift on how a test input is parsed -->
+    <Compile Include="..\FSharp.Refactor.Tests\TestSource.fs" Link="TestSource.fs" />
     <Compile Include="..\FSharp.Refactor.Tests\Parsing.fs" Link="Parsing.fs" />
     <Compile Include="BoolExpr.fs" />
     <Compile Include="Interpreter.fs" />

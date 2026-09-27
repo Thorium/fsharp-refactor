@@ -26,47 +26,120 @@ let private assertAutoProp (source: string) (expectedPatched: string) =
 [<Fact>]
 let ``backing field with trivial accessors becomes member val`` () =
     assertAutoProp
-        "module Test\ntype Person() =\n    let mutable name = \"\"\n    member this.Name\n        with get () = name\n        and set v = name <- v"
-        "module Test\ntype Person() =\n    member val Name = \"\" with get, set"
+        (fsharp
+            """
+            module Test
+            type Person() =
+                let mutable name = ""
+                member this.Name
+                    with get () = name
+                    and set v = name <- v
+            """)
+        (fsharp
+            """
+            module Test
+            type Person() =
+                member val Name = "" with get, set
+            """)
 
 [<Fact>]
 let ``other members survive around the collapse`` () =
     assertAutoProp
-        "module Test\ntype Person() =\n    let mutable age = 0\n    member _.Greet() = \"hi\"\n    member this.Age\n        with get () = age\n        and set v = age <- v"
-        "module Test\ntype Person() =\n    member _.Greet() = \"hi\"\n    member val Age = 0 with get, set"
+        (fsharp
+            """
+            module Test
+            type Person() =
+                let mutable age = 0
+                member _.Greet() = "hi"
+                member this.Age
+                    with get () = age
+                    and set v = age <- v
+            """)
+        (fsharp
+            """
+            module Test
+            type Person() =
+                member _.Greet() = "hi"
+                member val Age = 0 with get, set
+            """)
 
 [<Fact>]
 let ``backing field used by another member is left alone`` () =
     Assert.Empty(
-        autoPropIn
-            "module Test\ntype Person() =\n    let mutable name = \"\"\n    member _.Shout() = name.ToUpper()\n    member this.Name\n        with get () = name\n        and set v = name <- v"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let mutable name = ""
+                    member _.Shout() = name.ToUpper()
+                    member this.Name
+                        with get () = name
+                        and set v = name <- v
+                """
+        )
     )
 
 [<Fact>]
 let ``setter with extra logic is left alone`` () =
     Assert.Empty(
-        autoPropIn
-            "module Test\ntype Person() =\n    let mutable name = \"\"\n    member this.Name\n        with get () = name\n        and set v = name <- v.ToString()"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let mutable name = ""
+                    member this.Name
+                        with get () = name
+                        and set v = name <- v.ToString()
+                """
+        )
     )
 
 [<Fact>]
 let ``getter computing a value is left alone`` () =
     Assert.Empty(
-        autoPropIn
-            "module Test\ntype Person() =\n    let mutable name = \"\"\n    member this.Name\n        with get () = name.Trim()\n        and set v = name <- v"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let mutable name = ""
+                    member this.Name
+                        with get () = name.Trim()
+                        and set v = name <- v
+                """
+        )
     )
 
 [<Fact>]
 let ``effectful initializer is left alone`` () =
     Assert.Empty(
-        autoPropIn
-            "module Test\ntype Person() =\n    let mutable stamp = System.DateTime.Now.Ticks\n    member this.Stamp\n        with get () = stamp\n        and set v = stamp <- v"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let mutable stamp = System.DateTime.Now.Ticks
+                    member this.Stamp
+                        with get () = stamp
+                        and set v = stamp <- v
+                """
+        )
     )
 
 [<Fact>]
 let ``immutable backing field is left alone`` () =
     Assert.Empty(
-        autoPropIn "module Test\ntype Person() =\n    let name = \"\"\n    member this.Name with get () = name"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let name = ""
+                    member this.Name with get () = name
+                """
+        )
     )
 
 // ---- FR0007 type-level extension ----
@@ -78,7 +151,14 @@ let private mutablesIn (source: string) =
 [<Fact>]
 let ``type-level mutable never assigned is flagged`` () =
     let suggestions =
-        mutablesIn "type Holder() =\n    let mutable cache = \"\"\n    member _.Show() = cache"
+        mutablesIn (
+            fsharp
+                """
+                type Holder() =
+                    let mutable cache = ""
+                    member _.Show() = cache
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal("cache", s.Name)
@@ -87,14 +167,28 @@ let ``type-level mutable never assigned is flagged`` () =
 [<Fact>]
 let ``type-level mutable assigned in a member is left alone`` () =
     Assert.Empty(
-        mutablesIn
-            "type Holder() =\n    let mutable cache = \"\"\n    member _.Store(v: string) = cache <- v\n    member _.Show() = cache"
+        mutablesIn (
+            fsharp
+                """
+                type Holder() =
+                    let mutable cache = ""
+                    member _.Store(v: string) = cache <- v
+                    member _.Show() = cache
+                """
+        )
     )
 
 [<Fact>]
 let ``static type-level mutable never assigned is flagged`` () =
     let suggestions =
-        mutablesIn "type Holder() =\n    static let mutable shared = \"\"\n    member _.Show() = shared"
+        mutablesIn (
+            fsharp
+                """
+                type Holder() =
+                    static let mutable shared = ""
+                    member _.Show() = shared
+                """
+        )
 
     match suggestions with
     | [ s ] -> Assert.Equal("shared", s.Name)
@@ -105,8 +199,18 @@ let ``an attributed accessor keeps its shape`` () =
     // the member-val rewrite replaces the member's whole range, which
     // includes the attribute list — [<Obsolete>] would silently vanish
     Assert.Empty(
-        autoPropIn
-            "module Test\ntype Person() =\n    let mutable name = \"\"\n    [<System.Obsolete \"use X\">]\n    member this.Name\n        with get () = name\n        and set v = name <- v"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let mutable name = ""
+                    [<System.Obsolete "use X">]
+                    member this.Name
+                        with get () = name
+                        and set v = name <- v
+                """
+        )
     )
 
 [<Fact>]
@@ -114,11 +218,34 @@ let ``an override or default get-set pair is not an auto-property`` () =
     // `member val` declares a NEW slot: over an abstract one it hides the
     // override (FS0864) or fails to implement it
     Assert.Empty(
-        autoPropIn
-            "module Test\n[<AbstractClass>]\ntype Base() =\n    abstract Name: string with get, set\ntype Person() =\n    inherit Base()\n    let mutable name = \"\"\n    override this.Name\n        with get () = name\n        and set v = name <- v"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                [<AbstractClass>]
+                type Base() =
+                    abstract Name: string with get, set
+                type Person() =
+                    inherit Base()
+                    let mutable name = ""
+                    override this.Name
+                        with get () = name
+                        and set v = name <- v
+                """
+        )
     )
 
     Assert.Empty(
-        autoPropIn
-            "module Test\ntype Base() =\n    let mutable name = \"\"\n    abstract Name: string with get, set\n    default this.Name\n        with get () = name\n        and set v = name <- v"
+        autoPropIn (
+            fsharp
+                """
+                module Test
+                type Base() =
+                    let mutable name = ""
+                    abstract Name: string with get, set
+                    default this.Name
+                        with get () = name
+                        and set v = name <- v
+                """
+        )
     )

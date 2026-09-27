@@ -54,9 +54,9 @@ let ``a classic solution lists its F#, C# and VB projects, solution folders left
             "All.sln",
             sln
                 [
-                    "Lib", "src\\Lib\\Lib.fsproj"
-                    "Consumer", "src\\Consumer\\Consumer.csproj"
-                    "Legacy", "src\\Legacy\\Legacy.vbproj"
+                    "Lib", """src\Lib\Lib.fsproj"""
+                    "Consumer", """src\Consumer\Consumer.csproj"""
+                    "Legacy", """src\Legacy\Legacy.vbproj"""
                     "Folder", "Folder"
                 ]
             "src/Lib/Lib.fsproj", fsproj []
@@ -74,7 +74,15 @@ let ``an slnx solution lists its projects by Path`` () =
     withTree
         [
             "All.slnx",
-            "<Solution>\n  <Project Path=\"src/Lib/Lib.fsproj\" />\n  <Project Path=\"tests/Tests/Tests.fsproj\" />\n  <Project Path=\"missing/Gone.fsproj\" />\n</Solution>\n"
+            fsharp
+                """
+                <Solution>
+                  <Project Path="src/Lib/Lib.fsproj" />
+                  <Project Path="tests/Tests/Tests.fsproj" />
+                  <Project Path="missing/Gone.fsproj" />
+                </Solution>
+
+                """
             "src/Lib/Lib.fsproj", fsproj []
             "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
         ]
@@ -94,7 +102,7 @@ let ``project references resolve against the project directory`` () =
             "tests/Tests/Tests.fsproj",
             fsproj
                 [
-                    "..\\..\\src\\Lib\\Lib.fsproj"
+                    """..\..\src\Lib\Lib.fsproj"""
                     "$(MSBuildThisFileDirectory)../../src/Other/Other.fsproj;$(SomeProperty)/Unknown.fsproj"
                 ]
         ]
@@ -112,7 +120,15 @@ let ``the assembly name is the AssemblyName property or the project file's name`
         [
             "src/Lib/Lib.fsproj", fsproj []
             "src/Named/Named.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <AssemblyName>Company.Named</AssemblyName>\n  </PropertyGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup>
+                    <AssemblyName>Company.Named</AssemblyName>
+                  </PropertyGroup>
+                </Project>
+
+                """
         ]
         (fun root ->
             Assert.Equal("Lib", Workspace.assemblyNameOf (Path.Combine(root, "src", "Lib", "Lib.fsproj")))
@@ -134,7 +150,15 @@ let ``referencers include the projects two hops away and every language`` () =
             "src/Core/Core.fsproj", fsproj [ "../Lib/Lib.fsproj" ]
             "src/App/App.fsproj", fsproj [ "../Core/Core.fsproj" ]
             "src/Consumer/Consumer.csproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <ProjectReference Include="../Lib/Lib.fsproj" />
+                  </ItemGroup>
+                </Project>
+
+                """
             "src/Unrelated/Unrelated.fsproj", fsproj []
             "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
         ]
@@ -176,15 +200,58 @@ let ``a build-order-only reference makes no referencer, nor do the projects behi
             "src/Twin/Twin.fsproj", fsproj []
             // packing the twin's dll is no reference to it
             "src/Analyzers/Analyzers.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Content Include=\"..\\Twin\\bin\\Release\\net8.0\\Twin.dll\" Pack=\"true\" />\n    <ProjectReference\n      Include=\"..\\Twin\\Twin.fsproj\"\n      ReferenceOutputAssembly=\"false\"\n      PrivateAssets=\"all\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <Content Include="..\Twin\bin\Release\net8.0\Twin.dll" Pack="true" />
+                    <ProjectReference
+                      Include="..\Twin\Twin.fsproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+                  </ItemGroup>
+                </Project>
+
+                """
             // build order through the ProjectReference, the dll through a
             // HintPath: this one compiles against the twin
             "src/Direct/Direct.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Twin/Twin.fsproj\" ReferenceOutputAssembly=\"false\" />\n    <Reference Include=\"Twin\">\n      <HintPath>..\\Twin\\bin\\Release\\net8.0\\Twin.dll</HintPath>\n    </Reference>\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <ProjectReference Include="../Twin/Twin.fsproj" ReferenceOutputAssembly="false" />
+                    <Reference Include="Twin">
+                      <HintPath>..\Twin\bin\Release\net8.0\Twin.dll</HintPath>
+                    </Reference>
+                  </ItemGroup>
+                </Project>
+
+                """
             "src/Other/Other.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Twin/Twin.fsproj\">\n      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>\n    </ProjectReference>\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <ProjectReference Include="../Twin/Twin.fsproj">
+                      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+                    </ProjectReference>
+                  </ItemGroup>
+                </Project>
+
+                """
             "src/Real/Real.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <ProjectReference Include=\"../Twin/Twin.fsproj\">\n      <PrivateAssets>all</PrivateAssets>\n    </ProjectReference>\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <ProjectReference Include="../Twin/Twin.fsproj">
+                      <PrivateAssets>all</PrivateAssets>
+                    </ProjectReference>
+                  </ItemGroup>
+                </Project>
+
+                """
             "tests/Tests/Tests.fsproj", fsproj [ "../../src/Analyzers/Analyzers.fsproj" ]
         ]
         (fun root ->
@@ -221,7 +288,7 @@ let ``a build-order-only reference makes no referencer, nor do the projects behi
 let ``the workspace is the solution the run was pointed at`` () =
     withTree
         [
-            "All.sln", sln [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
+            "All.sln", sln [ "Lib", """src\Lib\Lib.fsproj"""; "Tests", """tests\Tests\Tests.fsproj""" ]
             "src/Lib/Lib.fsproj", fsproj []
             "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
         ]
@@ -239,8 +306,8 @@ let ``a bare project finds the nearest ancestor solution that lists it`` () =
     // and a solution that does NOT list the project is not its workspace
     withTree
         [
-            "All.sln", sln [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
-            "Other.sln", sln [ "Tests", "tests\\Tests\\Tests.fsproj" ]
+            "All.sln", sln [ "Lib", """src\Lib\Lib.fsproj"""; "Tests", """tests\Tests\Tests.fsproj""" ]
+            "Other.sln", sln [ "Tests", """tests\Tests\Tests.fsproj""" ]
             "src/Lib/Lib.fsproj", fsproj []
             "tests/Tests/Tests.fsproj", fsproj [ "../../src/Lib/Lib.fsproj" ]
         ]
@@ -273,7 +340,7 @@ let ``a bare project with no solution above it has no workspace`` () =
     // solution above the repository is someone else's
     withTree
         [
-            "Above.sln", sln [ "Lib", "repo\\src\\Lib\\Lib.fsproj" ]
+            "Above.sln", sln [ "Lib", """repo\src\Lib\Lib.fsproj""" ]
             "repo/.git/HEAD", "ref: refs/heads/main\n"
             "repo/src/Lib/Lib.fsproj", fsproj []
         ]
@@ -335,11 +402,31 @@ let ``a project compiling another's source directly is reported with the shared 
     withTree
         [
             "src/Common/Common.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Shared.fs\" />\n    <Compile Include=\"Own.fs\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <Compile Include="Shared.fs" />
+                    <Compile Include="Own.fs" />
+                  </ItemGroup>
+                </Project>
+
+                """
             "src/Common/Shared.fs", "module Shared"
             "src/Common/Own.fs", "module Own"
             "src/Provider/Provider.fsproj",
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"..\Common\Shared.fs\" />\n    <Compile Include=\"Provider.fs\" />\n    <Compile Include=\"$(Generated)\Gen.fs\" />\n    <Compile Include=\"**/*.fs\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <Compile Include="..\Common\Shared.fs" />
+                    <Compile Include="Provider.fs" />
+                    <Compile Include="$(Generated)\Gen.fs" />
+                    <Compile Include="**/*.fs" />
+                  </ItemGroup>
+                </Project>
+
+                """
             "src/Provider/Provider.fs", "module Provider"
             "tests/Tests/Tests.fsproj", fsproj [ "../../src/Common/Common.fsproj" ]
         ]

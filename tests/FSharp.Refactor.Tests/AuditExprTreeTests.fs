@@ -12,36 +12,39 @@ open FSharp.Refactor.Tests.Parsing
 // `[<ProjectionParameter>] Expression<Func<'T, bool>>` ----
 
 let private builderStub =
-    """module Test
-open System
-open System.Linq
-open System.Linq.Expressions
+    fsharp
+        """
+        module Test
+        open System
+        open System.Linq
+        open System.Linq.Expressions
 
-type QuerySource<'T>() =
-    member _.Items: 'T list = []
+        type QuerySource<'T>() =
+            member _.Items: 'T list = []
 
-type SelectBuilder() =
-    member _.For(state: QuerySource<'T>, f: 'T -> QuerySource<'T>) = state
-    member _.Yield(_: 'T) = QuerySource<'T>()
-    member _.Zero() = QuerySource<'T>()
+        type SelectBuilder() =
+            member _.For(state: QuerySource<'T>, f: 'T -> QuerySource<'T>) = state
+            member _.Yield(_: 'T) = QuerySource<'T>()
+            member _.Zero() = QuerySource<'T>()
 
-    [<CustomOperation("where", MaintainsVariableSpace = true)>]
-    member _.Where(state: QuerySource<'T>, [<ProjectionParameter>] whereExpression: Expression<Func<'T, bool>>) =
-        ignore whereExpression
-        state
+            [<CustomOperation("where", MaintainsVariableSpace = true)>]
+            member _.Where(state: QuerySource<'T>, [<ProjectionParameter>] whereExpression: Expression<Func<'T, bool>>) =
+                ignore whereExpression
+                state
 
-    [<CustomOperation("having", MaintainsVariableSpace = true)>]
-    member _.Having(state: QuerySource<'T>, [<ProjectionParameter>] havingExpression: Expression<Func<'T, bool>>) =
-        ignore havingExpression
-        state
+            [<CustomOperation("having", MaintainsVariableSpace = true)>]
+            member _.Having(state: QuerySource<'T>, [<ProjectionParameter>] havingExpression: Expression<Func<'T, bool>>) =
+                ignore havingExpression
+                state
 
-let select = SelectBuilder()
-let table<'T> = QuerySource<'T>()
-let maxBy (x: 'T) = x
+        let select = SelectBuilder()
+        let table<'T> = QuerySource<'T>()
+        let maxBy (x: 'T) = x
 
-type Address = { City: string; AddressLine2: string option }
-type NullableEntity = { Line2: string; QuestionAnswered: Nullable<bool> }
-"""
+        type Address = { City: string; AddressLine2: string option }
+        type NullableEntity = { Line2: string; QuestionAnswered: Nullable<bool> }
+
+        """
 
 let private simplifications (source: string) =
     let tree, sourceText, check = parseAndCheck source
@@ -87,7 +90,14 @@ let ``FR0010 leaves a None comparison inside a having projection alone`` () =
 let ``FR0010 leaves a None comparison in a where laid out over lines alone`` () =
     let src =
         builderStub
-        + "let q =\n    select {\n        for a in table<Address> do\n        where (a.AddressLine2 <> None)\n    }"
+        + fsharp
+            """
+            let q =
+                select {
+                    for a in table<Address> do
+                    where (a.AddressLine2 <> None)
+                }
+            """
 
     Assert.Empty(simplifications src)
 
@@ -254,10 +264,22 @@ let ``FR0012 withholds isNull when an opened module of the project defines it`` 
     // typed path: the shadowing definition lives in an earlier file and is
     // brought in by `open`; the rewrite would even compile — to a
     // different function
-    let helpers = "module Helpers\nlet isNull (s: string) = s = \"\"\n"
+    let helpers =
+        fsharp
+            """
+            module Helpers
+            let isNull (s: string) = s = ""
+
+            """
 
     let src =
-        "module Test\nopen Helpers\nlet f (s: string) = if s = null then 0 else s.Length\n"
+        fsharp
+            """
+            module Test
+            open Helpers
+            let f (s: string) = if s = null then 0 else s.Length
+
+            """
 
     let tree, sourceText, check = parseAndCheckSecond helpers src
     Assert.Empty(HintEngine.find [] tree sourceText (Some check))
@@ -266,7 +288,12 @@ let ``FR0012 withholds isNull when an opened module of the project defines it`` 
 let ``FR0012 withholds a List function when a List module of the file redefines it`` () =
     let src =
         "module Test\n"
-        + "module List =\n    let collect (f: 'a -> 'b list) (xs: 'a list) : 'b list = []\n"
+        + fsharp
+            """
+            module List =
+                let collect (f: 'a -> 'b list) (xs: 'a list) : 'b list = []
+
+            """
         + "let f (g: int -> int list) (xs: int list) = List.concat (List.map g xs)"
 
     Assert.Empty(hints src)

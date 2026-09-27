@@ -116,7 +116,11 @@ let ``a version folder moves to the newest sibling version`` () =
 let ``an existing path and a package reference are left alone`` () =
     withPackage
         [ "packages/Sql.1.2.3/lib/net48" ]
-        "#r @\"../packages/Sql.1.2.3/lib/net48/Sql.dll\"\n#r \"nuget: Sql, 1.2.3\""
+        (fsharp
+            """
+            #r @"../packages/Sql.1.2.3/lib/net48/Sql.dll"
+            #r "nuget: Sql, 1.2.3"
+            """)
         None
         Assert.Empty
 

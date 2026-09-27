@@ -12,8 +12,18 @@ let ``FR0026: a field assigned in another member is not an auto-property`` () : 
     // the assignment is a LongIdentSet, not an Ident expression — the fix
     // used to delete the field and leave Reset() referencing nothing
     let tree, sourceText =
-        parse
-            "module Test\ntype Person() =\n    let mutable name = \"\"\n    member _.Reset() = name <- \"\"\n    member this.Name\n        with get () = name\n        and set v = name <- v"
+        parse (
+            fsharp
+                """
+                module Test
+                type Person() =
+                    let mutable name = ""
+                    member _.Reset() = name <- ""
+                    member this.Name
+                        with get () = name
+                        and set v = name <- v
+                """
+        )
 
     Assert.Empty(AutoProperty.find tree sourceText)
 
@@ -30,15 +40,29 @@ let ``FR0034: a shadowing lambda parameter suppresses the rewrite`` () : unit =
 [<Fact>]
 let ``FR0031: a shadowed plus operator is never rewritten`` () : unit =
     let tree, sourceText, check =
-        parseAndCheck "let (+) (a: string) (b: string) = a\nlet f (x: string) = \"pre \" + x + \"!\""
+        parseAndCheck (
+            fsharp
+                """
+                let (+) (a: string) (b: string) = a
+                let f (x: string) = "pre " + x + "!"
+                """
+        )
 
     Assert.Empty(StringConcat.find tree sourceText check)
 
 [<Fact>]
 let ``FR0035: a per-iteration collection is not loop-invariant`` () : unit =
     let tree, sourceText =
-        parse
-            "module Test\nlet f (xs: int list) =\n    for x in xs do\n        let ys = [ x; x + 1 ]\n        if List.contains x ys then printfn \"%d\" x"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (xs: int list) =
+                    for x in xs do
+                        let ys = [ x; x + 1 ]
+                        if List.contains x ys then printfn "%d" x
+                """
+        )
 
     let contains, _ = LoopPerf.find false None tree sourceText
     Assert.Empty contains
@@ -63,7 +87,13 @@ let ``FR0021: ToString in an untyped hole is still simplified`` () : unit =
 [<Fact>]
 let ``FR0025: a shadowed isNull is never rewritten`` () : unit =
     let tree, sourceText, check =
-        parseAndCheck "let isNull (s: string) = s.Length = 0\nlet f (s: string) = if isNull s then None else Some s"
+        parseAndCheck (
+            fsharp
+                """
+                let isNull (s: string) = s.Length = 0
+                let f (s: string) = if isNull s then None else Some s
+                """
+        )
 
     Assert.Empty(OptionOfObj.find tree sourceText check)
 
@@ -76,16 +106,28 @@ let ``FR0012: a method call substituted as an argument keeps its parentheses`` (
     // parse-only: outside a computation expression the untyped path fires
     // as it always did
     let tree, sourceText =
-        parse "module Test\nopen System\nlet isCI = Environment.GetEnvironmentVariable(\"CI\") <> null"
+        parse (
+            fsharp
+                """
+                module Test
+                open System
+                let isCI = Environment.GetEnvironmentVariable("CI") <> null
+                """
+        )
 
     match HintEngine.find [] tree sourceText None with
     | [ s ] ->
         // and F# brackets the whole application: (f x), never (f(x))
-        Assert.Equal("not (isNull (Environment.GetEnvironmentVariable \"CI\"))", s.ReplacementText)
+        Assert.Equal("""not (isNull (Environment.GetEnvironmentVariable "CI"))""", s.ReplacementText)
 
         let patched =
             applyEdit
-                "module Test\nopen System\nlet isCI = Environment.GetEnvironmentVariable(\"CI\") <> null"
+                (fsharp
+                    """
+                    module Test
+                    open System
+                    let isCI = Environment.GetEnvironmentVariable("CI") <> null
+                    """)
                 s.Range
                 s.ReplacementText
 
@@ -96,7 +138,13 @@ let ``FR0012: a method call substituted as an argument keeps its parentheses`` (
 let ``FR0008: a method call in a call tuple keeps its parentheses`` () : unit =
     // same shape through TupleParams: `add f(1) 2` would be FS0597
     let source =
-        "module Test\nlet g (n: int) = n\nlet private add (a: int, b: int) = a + b\nlet total = add (g(1), 2)"
+        fsharp
+            """
+            module Test
+            let g (n: int) = n
+            let private add (a: int, b: int) = a + b
+            let total = add (g(1), 2)
+            """
 
     let tree, sourceText, check = parseAndCheck source
 
@@ -115,7 +163,12 @@ let ``FR0012: a multi-argument call keeps its argument list`` () : unit =
     // Path.Combine(a, b) — those parens ARE the argument list, so they
     // cannot be moved the way a single argument's can
     let source =
-        "module Test\nopen System\nlet f (a: string) (b: string) = IO.Path.Combine(a, b) <> null"
+        fsharp
+            """
+            module Test
+            open System
+            let f (a: string) (b: string) = IO.Path.Combine(a, b) <> null
+            """
 
     let tree, sourceText = parse source
 
@@ -131,8 +184,16 @@ let ``FR0081: escape-sequence building is not a path join`` () : unit =
     // corpus find (FsAutoComplete InteractiveDirectives.fs): backslash
     // literals used to fire with no path evidence at all
     let tree, sourceText =
-        parse
-            "module Test\nlet f (c: char) =\n    let mutable result = \"\"\n    result <- result + \"\\\\\" + string c\n    result"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (c: char) =
+                    let mutable result = ""
+                    result <- result + "\\" + string c
+                    result
+                """
+        )
 
     Assert.Empty(PathSeparator.find tree sourceText)
 
@@ -140,14 +201,27 @@ let ``FR0081: escape-sequence building is not a path join`` () : unit =
 let ``FR0081: a trailing separator is not a join`` () : unit =
     // Path.Combine cannot append a trailing marker, so this is not advice
     let tree, sourceText =
-        parse "module Test\nopen System.IO\nlet f (dir: string) = Path.GetFileName(dir) + \"/\""
+        parse (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (dir: string) = Path.GetFileName(dir) + "/"
+                """
+        )
 
     Assert.Empty(PathSeparator.find tree sourceText)
 
 [<Fact>]
 let ``FR0081: a real path join still fires`` () : unit =
     let tree, sourceText =
-        parse "module Test\nlet f (rootDir: string) (fileName: string) = rootDir + \"/\" + fileName"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (rootDir: string) (fileName: string) = rootDir + "/" + fileName
+                """
+        )
 
     Assert.Single(PathSeparator.find tree sourceText) |> ignore
 
@@ -157,14 +231,26 @@ let ``FR0081: a web route is not a filesystem path`` () : unit =
     // would turn it into backslashes. `fileId` matching "file" is too weak
     // to call a leading-slash literal a filesystem path
     let tree, sourceText =
-        parse "module Test\nlet f (fileId: string) = \"/img/userimages/\" + fileId"
+        parse (
+            fsharp
+                """
+                module Test
+                let f (fileId: string) = "/img/userimages/" + fileId
+                """
+        )
 
     Assert.Empty(PathSeparator.find tree sourceText)
 
 [<Fact>]
 let ``FR0081: a rooted literal is still strong enough`` () : unit =
     let tree, sourceText =
-        parse "module Test\nlet f (name: string) = \"./data/\" + name + \".json\""
+        parse (
+            fsharp
+                """
+                module Test
+                let f (name: string) = "./data/" + name + ".json"
+                """
+        )
 
     Assert.Single(PathSeparator.find tree sourceText) |> ignore
 
@@ -173,7 +259,14 @@ let ``FR0016: Struct goes below the doc comment, not above it`` () : unit =
     // corpus find: a declaration's range starts at its XML doc, so
     // inserting at the range start put the attribute above the /// lines
     let source =
-        "module Test\n/// A shape.\ntype private Shape =\n    | Circle of radius: float\n    | Square of side: float"
+        fsharp
+            """
+            module Test
+            /// A shape.
+            type private Shape =
+                | Circle of radius: float
+                | Square of side: float
+            """
 
     let tree, sourceText = parse source
 
@@ -182,7 +275,15 @@ let ``FR0016: Struct goes below the doc comment, not above it`` () : unit =
         let patched = applyEdit source s.InsertRange s.InsertText
 
         Assert.Equal(
-            "module Test\n/// A shape.\n[<Struct>]\ntype private Shape =\n    | Circle of radius: float\n    | Square of side: float",
+            fsharp
+                """
+                module Test
+                /// A shape.
+                [<Struct>]
+                type private Shape =
+                    | Circle of radius: float
+                    | Square of side: float
+                """,
             patched
         )
 
@@ -192,7 +293,15 @@ let ``FR0016: Struct goes below the doc comment, not above it`` () : unit =
 [<Fact>]
 let ``FR0011: return Struct goes below the doc comment too`` () : unit =
     let source =
-        "/// Matches even numbers.\nlet private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+        fsharp
+            """
+            /// Matches even numbers.
+            let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
 
     let tree, sourceText, check = parseAndCheck source
 
@@ -203,7 +312,16 @@ let ``FR0011: return Struct goes below the doc comment too`` () : unit =
             |> List.sortByDescending (fun e -> e.Range.StartLine, e.Range.StartColumn)
             |> List.fold (fun acc e -> applyEdit acc e.Range e.Replacement) source
 
-        Assert.StartsWith("/// Matches even numbers.\n[<return: Struct>]\nlet private (|Even|_|)", patched)
+        Assert.StartsWith(
+            fsharp
+                """
+                /// Matches even numbers.
+                [<return: Struct>]
+                let private (|Even|_|)
+                """,
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected exactly one struct active pattern, got %A" other
 
@@ -211,8 +329,16 @@ let ``FR0011: return Struct goes below the doc comment too`` () : unit =
 let ``a struct DU needs same-named fields to agree on type`` () : unit =
     // FS3585: `A of value: float | B of value: int` refuses [<Struct>]
     let tree, sourceText =
-        parse
-            "module Test\nmodule private Impl =\n    type Mixed =\n        | A of value: float\n        | B of value: int"
+        parse (
+            fsharp
+                """
+                module Test
+                module private Impl =
+                    type Mixed =
+                        | A of value: float
+                        | B of value: int
+                """
+        )
 
     Assert.Empty(StructDu.find false tree sourceText)
 
@@ -221,8 +347,16 @@ let ``same-named fields of one type take the attribute only from F# 9`` () : uni
     // before F# 9 a struct union's fields must be unique across its cases
     // (FS3204); F# 9 allows a shared name whose types agree
     let tree, sourceText =
-        parse
-            "module Test\nmodule private Impl =\n    type Same =\n        | A of value: int\n        | B of value: int"
+        parse (
+            fsharp
+                """
+                module Test
+                module private Impl =
+                    type Same =
+                        | A of value: int
+                        | B of value: int
+                """
+        )
 
     Assert.Empty(StructDu.find false tree sourceText)
 
@@ -236,7 +370,16 @@ let ``FR0008: an active pattern's tuple input is not curried`` () : unit =
     // a tuple; curried it would expect an expression argument
     // (FsAutoComplete's ConvertPositionalDUToNamed)
     let source =
-        "module Test\nlet private (|Both|One|) (xs: int list, names: string list) =\n    if xs.Length = names.Length then Both(List.zip xs names) else One xs\nlet f (xs: int list) (names: string list) =\n    match (xs, names) with\n    | Both pairs -> pairs.Length\n    | One rest -> rest.Length"
+        fsharp
+            """
+            module Test
+            let private (|Both|One|) (xs: int list, names: string list) =
+                if xs.Length = names.Length then Both(List.zip xs names) else One xs
+            let f (xs: int list) (names: string list) =
+                match (xs, names) with
+                | Both pairs -> pairs.Length
+                | One rest -> rest.Length
+            """
 
     let tree, sourceText, check = parseAndCheck source
     Assert.Empty(TupleParams.find tree sourceText check)
@@ -247,7 +390,15 @@ let ``FR0011: an active pattern the file also calls as a function keeps its opti
     // module-level one and matches its result against Some — a struct
     // return would reach that call
     let source =
-        "let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None\nlet evens (xs: int list) = List.choose (|Even|_|) xs\nlet f x =\n    match x with\n    | Even v -> v\n    | _ -> 0"
+        fsharp
+            """
+            let private (|Even|_|) (n: int) = if n % 2 = 0 then Some n else None
+            let evens (xs: int list) = List.choose (|Even|_|) xs
+            let f x =
+                match x with
+                | Even v -> v
+                | _ -> 0
+            """
 
     let tree, sourceText, check = parseAndCheck source
     Assert.Empty(StructActivePattern.find false tree sourceText check)

@@ -34,46 +34,48 @@ let private scriptPath = Path.Combine(directory, "Test.fsx")
 /// trusts) and Microsoft.Extensions.Logging's logger with the extension
 /// methods FR0120 and FR0124 read.
 let stubs =
-    """namespace Xunit
+    fsharp
+        """
+        namespace Xunit
 
-type FactAttribute() =
-    inherit System.Attribute()
+        type FactAttribute() =
+            inherit System.Attribute()
 
-type TheoryAttribute() =
-    inherit System.Attribute()
+        type TheoryAttribute() =
+            inherit System.Attribute()
 
-namespace Microsoft.Extensions.Logging
+        namespace Microsoft.Extensions.Logging
 
-type ILogger =
-    interface
-    end
+        type ILogger =
+            interface
+            end
 
-[<System.Runtime.CompilerServices.Extension>]
-type LoggerExtensions =
-    [<System.Runtime.CompilerServices.Extension>]
-    static member LogError(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
-        ignore (logger, message, args)
+        [<System.Runtime.CompilerServices.Extension>]
+        type LoggerExtensions =
+            [<System.Runtime.CompilerServices.Extension>]
+            static member LogError(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
+                ignore (logger, message, args)
 
-    [<System.Runtime.CompilerServices.Extension>]
-    static member LogError(logger: ILogger, ex: exn, message: string, [<System.ParamArray>] args: obj[]) =
-        ignore (logger, ex, message, args)
+            [<System.Runtime.CompilerServices.Extension>]
+            static member LogError(logger: ILogger, ex: exn, message: string, [<System.ParamArray>] args: obj[]) =
+                ignore (logger, ex, message, args)
 
-    [<System.Runtime.CompilerServices.Extension>]
-    static member LogWarning(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
-        ignore (logger, message, args)
+            [<System.Runtime.CompilerServices.Extension>]
+            static member LogWarning(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
+                ignore (logger, message, args)
 
-    [<System.Runtime.CompilerServices.Extension>]
-    static member LogWarning(logger: ILogger, ex: exn, message: string, [<System.ParamArray>] args: obj[]) =
-        ignore (logger, ex, message, args)
+            [<System.Runtime.CompilerServices.Extension>]
+            static member LogWarning(logger: ILogger, ex: exn, message: string, [<System.ParamArray>] args: obj[]) =
+                ignore (logger, ex, message, args)
 
-    [<System.Runtime.CompilerServices.Extension>]
-    static member LogInformation(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
-        ignore (logger, message, args)
+            [<System.Runtime.CompilerServices.Extension>]
+            static member LogInformation(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
+                ignore (logger, message, args)
 
-    [<System.Runtime.CompilerServices.Extension>]
-    static member LogDebug(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
-        ignore (logger, message, args)
-"""
+            [<System.Runtime.CompilerServices.Extension>]
+            static member LogDebug(logger: ILogger, message: string, [<System.ParamArray>] args: obj[]) =
+                ignore (logger, message, args)
+        """
 
 let private options =
     lazy

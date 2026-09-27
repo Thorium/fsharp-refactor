@@ -25,16 +25,16 @@ let private cancellationIn (source: string) =
     CancellationOverload.find tree sourceText checkResults
 
 let private txScaffold =
-    lines
-        [
-            "module Test"
-            "open System.Threading"
-            "open System.Threading.Tasks"
-            "type Tx() ="
-            "    member _.CommitAsync(ct: CancellationToken) : Task = Task.CompletedTask"
-            "    member _.RollbackAsync() : Task = Task.CompletedTask"
-            "    member _.RollbackAsync(ct: CancellationToken) : Task = Task.CompletedTask"
-        ]
+    fsharp
+        """
+        module Test
+        open System.Threading
+        open System.Threading.Tasks
+        type Tx() =
+            member _.CommitAsync(ct: CancellationToken) : Task = Task.CompletedTask
+            member _.RollbackAsync() : Task = Task.CompletedTask
+            member _.RollbackAsync(ct: CancellationToken) : Task = Task.CompletedTask
+        """
 
 [<Fact>]
 let ``FR0118: a cleanup call in a with handler or a finally never receives the token`` () =
@@ -120,18 +120,18 @@ let ``FR0075: a task from the binder handed to a collection refuses the fix`` ()
     // the requests are still in flight in `tasks` when the scope returns
     // `Task.WhenAll tasks`; `use client` would dispose the client under them
     let source =
-        lines
-            [
-                "module Test"
-                "open System.IO"
-                "open System.Threading.Tasks"
-                "let readAll (path: string) (n: int) ="
-                "    let reader = new StreamReader(path)"
-                "    let tasks = ResizeArray<Task<string>>()"
-                "    for _ in 1 .. n do"
-                "        tasks.Add(reader.ReadLineAsync())"
-                "    Task.WhenAll tasks"
-            ]
+        fsharp
+            """
+            module Test
+            open System.IO
+            open System.Threading.Tasks
+            let readAll (path: string) (n: int) =
+                let reader = new StreamReader(path)
+                let tasks = ResizeArray<Task<string>>()
+                for _ in 1 .. n do
+                    tasks.Add(reader.ReadLineAsync())
+                Task.WhenAll tasks
+            """
 
     assertTypechecks source
 
@@ -145,15 +145,15 @@ let ``FR0075: a task from the binder handed to a collection refuses the fix`` ()
 [<Fact>]
 let ``FR0075: a task from the binder finished in the scope still gets the fix`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System.IO"
-                "let readAll (path: string) (n: int) ="
-                "    let reader = new StreamReader(path)"
-                "    for _ in 1 .. n do"
-                "        printfn \"%s\" (reader.ReadLineAsync().Result)"
-            ]
+        fsharp
+            """
+            module Test
+            open System.IO
+            let readAll (path: string) (n: int) =
+                let reader = new StreamReader(path)
+                for _ in 1 .. n do
+                    printfn "%s" (reader.ReadLineAsync().Result)
+            """
 
     match useBindingsIn source |> List.filter (fun s -> s.Name = "reader") with
     | [ s ] ->
@@ -180,19 +180,27 @@ let ``FR0012: map over map with effectful mappers is not fused`` () =
         Assert.Empty(hintsIn source)
 
     // and the pure spelling is not a built-in hint either
-    Assert.Empty(hintsIn "module Test\nlet f g h (xs: int list) = List.map g (List.map h xs)")
+    Assert.Empty(
+        hintsIn (
+            fsharp
+                """
+                module Test
+                let f g h (xs: int list) = List.map g (List.map h xs)
+                """
+        )
+    )
 
 let private lifecycle =
-    lines
-        [
-            "module Test"
-            "type LifecycleBuilder() ="
-            "    member _.Yield(_: unit) = \"\""
-            "    [<CustomOperation(\"id\")>]"
-            "    member _.Id(_: string, name: string) = name"
-            "let lifecycleRule = LifecycleBuilder()"
-            "let rule = lifecycleRule { id \"rule\" }"
-        ]
+    fsharp
+        """
+        module Test
+        type LifecycleBuilder() =
+            member _.Yield(_: unit) = ""
+            [<CustomOperation("id")>]
+            member _.Id(_: string, name: string) = name
+        let lifecycleRule = LifecycleBuilder()
+        let rule = lifecycleRule { id "rule" }
+        """
 
 [<Fact>]
 let ``FR0012: a built-in hint stands down on a file whose typed check has an error`` () =
@@ -200,7 +208,7 @@ let ``FR0012: a built-in hint stands down on a file whose typed check has an err
     // FSharp.Core's" gate, and the builder's custom operation `id` matched
     // `id x ===> x` by shape: `lifecycleRule { id "rule" }` lost its keyword
     let source = lifecycle + "\nlet broken : int = \"oops\""
-    let tree, sourceText, check = parseAndCheck source
+    let tree, sourceText, check = parseAndCheckAllowingErrors source
     Assert.True(OptionModule.hasErrors check, "the fixture is meant to carry a type error")
     Assert.Empty(HintEngine.find [] tree sourceText (Some check))
 
@@ -226,13 +234,18 @@ let private regexIn (source: string) =
 let ``FR0015: an anchored-start literal becomes the ordinal StartsWith`` () =
     // the regex compared ordinally; `StartsWith(string)` is current-culture
     let source =
-        "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"^abc\")"
+        fsharp
+            """
+            module Test
+            open System.Text.RegularExpressions
+            let f (s: string) = Regex.IsMatch(s, "^abc")
+            """
 
     match regexIn source with
     | [ s ] ->
         match s.Edits with
         | [ (range, _, replacement) ] ->
-            Assert.Equal("s.StartsWith(\"abc\", System.StringComparison.Ordinal)", replacement)
+            Assert.Equal("""s.StartsWith("abc", System.StringComparison.Ordinal)""", replacement)
             let patched = applyEdit source range replacement
             Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
         | other -> failwithf "Expected exactly one edit, got %A" other
@@ -244,7 +257,14 @@ let ``FR0015: an anchored-end literal keeps the regex`` () =
     // kept — and hoisted out of the function body, which is a different
     // finding)
     Assert.Empty(
-        regexIn "module Test\nopen System.Text.RegularExpressions\nlet f (s: string) = Regex.IsMatch(s, \"abc$\")"
+        regexIn (
+            fsharp
+                """
+                module Test
+                open System.Text.RegularExpressions
+                let f (s: string) = Regex.IsMatch(s, "abc$")
+                """
+        )
         |> List.filter (fun s -> s.Kind = RegexUsage.RegexSuggestionKind.StringOperation)
     )
 
@@ -263,14 +283,34 @@ let ``FR0039: the culture-sensitive lowering keeps the idiomatic ordinal fix`` (
     // spelling as the editor's alternative
     for source, expected in
         [
-            "module Test\nopen System\nlet f (x: string) = x.ToLower() = \"abc\"",
-            "String.Equals(x, \"abc\", StringComparison.OrdinalIgnoreCase)"
-            "module Test\nopen System\nlet f (x: string) = x.ToUpper() <> \"ABC\"",
-            "not (String.Equals(x, \"ABC\", StringComparison.OrdinalIgnoreCase))"
-            "module Test\nopen System\nlet f (path: string) = path.ToLower().StartsWith \"file:\"",
-            "path.StartsWith(\"file:\", StringComparison.OrdinalIgnoreCase)"
-            "module Test\nopen System\nlet f (path: string) = path.ToUpper().EndsWith(\".CSV\")",
-            "path.EndsWith(\".CSV\", StringComparison.OrdinalIgnoreCase)"
+            fsharp
+                """
+                module Test
+                open System
+                let f (x: string) = x.ToLower() = "abc"
+                """,
+            """String.Equals(x, "abc", StringComparison.OrdinalIgnoreCase)"""
+            fsharp
+                """
+                module Test
+                open System
+                let f (x: string) = x.ToUpper() <> "ABC"
+                """,
+            """not (String.Equals(x, "ABC", StringComparison.OrdinalIgnoreCase))"""
+            fsharp
+                """
+                module Test
+                open System
+                let f (path: string) = path.ToLower().StartsWith "file:"
+                """,
+            """path.StartsWith("file:", StringComparison.OrdinalIgnoreCase)"""
+            fsharp
+                """
+                module Test
+                open System
+                let f (path: string) = path.ToUpper().EndsWith(".CSV")
+                """,
+            """path.EndsWith(".CSV", StringComparison.OrdinalIgnoreCase)"""
         ] do
         match caseIn source with
         | [ s ] ->
@@ -283,11 +323,16 @@ let ``FR0039: the culture-sensitive lowering keeps the idiomatic ordinal fix`` (
 [<Fact>]
 let ``FR0039: an explicit StringComparison on the lowered call is respected`` () =
     let source =
-        "module Test\nopen System\nlet f (name: string) = name.ToLower().StartsWith(\"abc\", StringComparison.CurrentCulture)"
+        fsharp
+            """
+            module Test
+            open System
+            let f (name: string) = name.ToLower().StartsWith("abc", StringComparison.CurrentCulture)
+            """
 
     match caseIn source with
     | [ s ] ->
-        Assert.Equal(Some "name.StartsWith(\"abc\", StringComparison.CurrentCultureIgnoreCase)", s.Replacement)
+        Assert.Equal(Some """name.StartsWith("abc", StringComparison.CurrentCultureIgnoreCase)""", s.Replacement)
         Assert.Equal(None, s.CultureReplacement)
     | other -> failwithf "Expected one suggestion, got %A" other
 
@@ -303,16 +348,16 @@ let ``FR0055: the IO-only narrowing is not offered when a user function is on th
     // catch-all was narrowed to IOException by the `Path` on the line, and
     // loadMetadata's JsonException escaped the command meant to skip junk
     let source =
-        lines
-            [
-                "module Test"
-                "open System.IO"
-                "module Checkpoint ="
-                "    let loadMetadata (p: string) = System.Text.Json.JsonDocument.Parse(File.ReadAllText p)"
-                "let f (d: string) (p: string) ="
-                "    try Some (Path.GetFileName d, Checkpoint.loadMetadata p)"
-                "    with _ -> None"
-            ]
+        fsharp
+            """
+            module Test
+            open System.IO
+            module Checkpoint =
+                let loadMetadata (p: string) = System.Text.Json.JsonDocument.Parse(File.ReadAllText p)
+            let f (d: string) (p: string) =
+                try Some (Path.GetFileName d, Checkpoint.loadMetadata p)
+                with _ -> None
+            """
 
     match swallowedIn source with
     | [ s ] -> Assert.DoesNotContain(s.Offers, fun o -> o.Label.StartsWith "Alternative: catch the IO")
@@ -321,14 +366,14 @@ let ``FR0055: the IO-only narrowing is not offered when a user function is on th
 [<Fact>]
 let ``FR0055: the IO-only narrowing stays for a body of System.IO calls alone`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "open System.IO"
-                "let f (p: string) ="
-                "    try Some (File.ReadAllText p)"
-                "    with _ -> None"
-            ]
+        fsharp
+            """
+            module Test
+            open System.IO
+            let f (p: string) =
+                try Some (File.ReadAllText p)
+                with _ -> None
+            """
 
     match swallowedIn source with
     | [ s ] -> Assert.Contains(s.Offers, fun o -> o.Label.StartsWith "Alternative: catch the IO")
@@ -337,11 +382,16 @@ let ``FR0055: the IO-only narrowing stays for a body of System.IO calls alone`` 
 [<Fact>]
 let ``FR0039: the invariant lowering keeps its fix`` () =
     let source =
-        "module Test\nopen System\nlet f (x: string) = x.ToLowerInvariant() = \"abc\""
+        fsharp
+            """
+            module Test
+            open System
+            let f (x: string) = x.ToLowerInvariant() = "abc"
+            """
 
     match caseIn source with
     | [ s ] ->
-        Assert.Equal(Some "String.Equals(x, \"abc\", StringComparison.OrdinalIgnoreCase)", s.Replacement)
+        Assert.Equal(Some """String.Equals(x, "abc", StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one suggestion, got %A" other
@@ -355,18 +405,18 @@ let private testsIn (source: string) =
 /// NUnit-shaped attributes declared in the fixture (the module is named
 /// `NUnit.Framework` so the rule trusts them to await a Task).
 let private nunitScaffold =
-    lines
-        [
-            "module NUnit.Framework"
-            "open System"
-            "open System.Threading.Tasks"
-            "type TestCaseAttribute() ="
-            "    inherit Attribute()"
-            "    member val ExpectedResult: int = 0 with get, set"
-            "type TestAttribute() ="
-            "    inherit Attribute()"
-            "let fetch () = Task.FromResult 2"
-        ]
+    fsharp
+        """
+        module NUnit.Framework
+        open System
+        open System.Threading.Tasks
+        type TestCaseAttribute() =
+            inherit Attribute()
+            member val ExpectedResult: int = 0 with get, set
+        type TestAttribute() =
+            inherit Attribute()
+        let fetch () = Task.FromResult 2
+        """
 
 [<Fact>]
 let ``FR0142: a test whose final expression is the value it returns is not wrapped`` () =
@@ -417,29 +467,29 @@ let ``FR0002: an arm calling the enclosing let rec keeps its tail call`` () =
     // inside the `Option.map` lambda the call is no longer in tail
     // position, and the loop grows the stack per element
     let topLevel =
-        lines
-            [
-                "module Test"
-                "let rec loop (xs: int list) acc ="
-                "    match List.tryHead xs with"
-                "    | Some v -> loop (List.tail xs) (acc + v)"
-                "    | None -> acc"
-            ]
+        fsharp
+            """
+            module Test
+            let rec loop (xs: int list) acc =
+                match List.tryHead xs with
+                | Some v -> loop (List.tail xs) (acc + v)
+                | None -> acc
+            """
 
     assertTypechecks topLevel
     Assert.Empty(optionsIn topLevel)
 
     let local =
-        lines
-            [
-                "module Test"
-                "let sum (xs: int list) ="
-                "    let rec loop (xs: int list) acc ="
-                "        match List.tryHead xs with"
-                "        | Some v -> loop (List.tail xs) (acc + v)"
-                "        | None -> acc"
-                "    loop xs 0"
-            ]
+        fsharp
+            """
+            module Test
+            let sum (xs: int list) =
+                let rec loop (xs: int list) acc =
+                    match List.tryHead xs with
+                    | Some v -> loop (List.tail xs) (acc + v)
+                    | None -> acc
+                loop xs 0
+            """
 
     assertTypechecks local
     Assert.Empty(optionsIn local)
@@ -447,14 +497,14 @@ let ``FR0002: an arm calling the enclosing let rec keeps its tail call`` () =
 [<Fact>]
 let ``FR0002: the same arms without a recursive call still fold`` () =
     let source =
-        lines
-            [
-                "module Test"
-                "let step (xs: int list) acc ="
-                "    match List.tryHead xs with"
-                "    | Some v -> acc + v"
-                "    | None -> acc"
-            ]
+        fsharp
+            """
+            module Test
+            let step (xs: int list) acc =
+                match List.tryHead xs with
+                | Some v -> acc + v
+                | None -> acc
+            """
 
     match optionsIn source with
     | [ s ] ->

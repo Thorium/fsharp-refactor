@@ -155,8 +155,19 @@ let ``FR0130: a name another file binds as a pattern keeps its plain let`` () =
 let ``FR0130: a body split by a directive is no constant`` () =
     // Paket's runningOnMono: `false` here, a `try` under ENABLE_MONO_SUPPORT
     let tree, sourceText =
-        parse
-            "module M\nlet private runningOnMono =\n#if ENABLE_MONO_SUPPORT\n    try System.Type.GetType(\"Mono.Runtime\") <> null with _ -> false\n#else\n    false\n#endif\nlet private other = 1"
+        parse (
+            fsharp
+                """
+                module M
+                let private runningOnMono =
+                #if ENABLE_MONO_SUPPORT
+                    try System.Type.GetType("Mono.Runtime") <> null with _ -> false
+                #else
+                    false
+                #endif
+                let private other = 1
+                """
+        )
 
     let names =
         LiteralConst.findWith (fun _ -> false) true tree sourceText
@@ -277,7 +288,30 @@ let ``FR0111: a same-line else-if ladder flattens every link in one pass`` () =
     // Giraffe's ModelValidationTests: five links, one per pass before,
     // and "did not converge" after the fifth
     let source =
-        "module Test\ntype Adult =\n    { FirstName: string\n      LastName: string\n      Age: int }\n\n    member this.HasErrors() =\n        if this.FirstName.Length < 3 then\n            Some \"First name is too short.\"\n        else if this.FirstName.Length > 50 then\n            Some \"First name is too long.\"\n        else if this.LastName.Length < 3 then\n            Some \"Last name is too short.\"\n        else if this.LastName.Length > 50 then\n            Some \"Last name is too long.\"\n        else if this.Age < 18 then\n            Some \"Person must be an adult (age >= 18).\"\n        else if this.Age > 150 then\n            Some \"Person must be a human being.\"\n        else\n            None"
+        fsharp
+            """
+            module Test
+            type Adult =
+                { FirstName: string
+                  LastName: string
+                  Age: int }
+
+                member this.HasErrors() =
+                    if this.FirstName.Length < 3 then
+                        Some "First name is too short."
+                    else if this.FirstName.Length > 50 then
+                        Some "First name is too long."
+                    else if this.LastName.Length < 3 then
+                        Some "Last name is too short."
+                    else if this.LastName.Length > 50 then
+                        Some "Last name is too long."
+                    else if this.Age < 18 then
+                        Some "Person must be an adult (age >= 18)."
+                    else if this.Age > 150 then
+                        Some "Person must be a human being."
+                    else
+                        None
+            """
 
     let found = elseIfsIn source
     Assert.Equal(5, found.Length)
@@ -295,14 +329,40 @@ let ``FR0111: a same-line else-if ladder flattens every link in one pass`` () =
 [<Fact>]
 let ``FR0111: an own-line ladder flattens as one fix with every block moved left`` () =
     let source =
-        "module Test\nlet f (x: int) =\n    if x = 1 then\n        \"one\"\n    else\n        if x = 2 then\n            \"two\"\n        else\n            if x = 3 then\n                \"three\"\n            else\n                \"many\""
+        fsharp
+            """
+            module Test
+            let f (x: int) =
+                if x = 1 then
+                    "one"
+                else
+                    if x = 2 then
+                        "two"
+                    else
+                        if x = 3 then
+                            "three"
+                        else
+                            "many"
+            """
 
     match elseIfsIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
 
         Assert.Equal(
-            "module Test\nlet f (x: int) =\n    if x = 1 then\n        \"one\"\n    elif x = 2 then\n        \"two\"\n    elif x = 3 then\n        \"three\"\n    else\n        \"many\"",
+            fsharp
+                """
+                module Test
+                let f (x: int) =
+                    if x = 1 then
+                        "one"
+                    elif x = 2 then
+                        "two"
+                    elif x = 3 then
+                        "three"
+                    else
+                        "many"
+                """,
             patched
         )
 
@@ -312,14 +372,31 @@ let ``FR0111: an own-line ladder flattens as one fix with every block moved left
 [<Fact>]
 let ``FR0111: a moved block carries its same-line link with it`` () =
     let source =
-        "module Test\nlet f (x: int) =\n    if x = 1 then 0\n    else\n        if x = 2 then 1\n        else if x = 3 then 2\n        else 3"
+        fsharp
+            """
+            module Test
+            let f (x: int) =
+                if x = 1 then 0
+                else
+                    if x = 2 then 1
+                    else if x = 3 then 2
+                    else 3
+            """
 
     match elseIfsIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
 
         Assert.Equal(
-            "module Test\nlet f (x: int) =\n    if x = 1 then 0\n    elif x = 2 then 1\n    elif x = 3 then 2\n    else 3",
+            fsharp
+                """
+                module Test
+                let f (x: int) =
+                    if x = 1 then 0
+                    elif x = 2 then 1
+                    elif x = 3 then 2
+                    else 3
+                """,
             patched
         )
 
@@ -332,7 +409,17 @@ let ``FR0111: a link that stays ends the chain and the ladder below starts its o
     // swallowed); the links above and below it still flatten, each at
     // the column of the chain it belongs to
     let source =
-        "module Test\nlet f (x: int) =\n    if x = 1 then 0\n    else if x = 2 then 1\n    else // fall through\n        if x = 3 then 2\n        else if x = 4 then 3\n        else 4"
+        fsharp
+            """
+            module Test
+            let f (x: int) =
+                if x = 1 then 0
+                else if x = 2 then 1
+                else // fall through
+                    if x = 3 then 2
+                    else if x = 4 then 3
+                    else 4
+            """
 
     let found = elseIfsIn source
     Assert.Equal<int list>([ 4; 7 ], found |> List.map (fun s -> s.Range.StartLine) |> List.sort)
@@ -341,7 +428,17 @@ let ``FR0111: a link that stays ends the chain and the ladder below starts its o
         applyAll source (found |> List.map (fun s -> s.Range, s.ReplacementText))
 
     Assert.Equal(
-        "module Test\nlet f (x: int) =\n    if x = 1 then 0\n    elif x = 2 then 1\n    else // fall through\n        if x = 3 then 2\n        elif x = 4 then 3\n        else 4",
+        fsharp
+            """
+            module Test
+            let f (x: int) =
+                if x = 1 then 0
+                elif x = 2 then 1
+                else // fall through
+                    if x = 3 then 2
+                    elif x = 4 then 3
+                    else 4
+            """,
         patched
     )
 
@@ -358,21 +455,40 @@ let ``FR0023: two parameters of the same type are never swapped`` () =
     // svg_path's OverlapsTests: one lambda, and forty `point x y` literals
     // flipped into code that reads as vertical lines
     Assert.Empty(
-        paramOrderIn
-            "type Point = { X: float; Y: float }\nlet private point x y = { X = x; Y = y }\nlet private polyline (xs: float list) = xs |> List.map (fun x -> point x 0.0)\nlet baseLine = point 10.0 0.0"
+        paramOrderIn (
+            fsharp
+                """
+                type Point = { X: float; Y: float }
+                let private point x y = { X = x; Y = y }
+                let private polyline (xs: float list) = xs |> List.map (fun x -> point x 0.0)
+                let baseLine = point 10.0 0.0
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0023: more direct calls flipped than lambdas collapsed is churn`` () =
     Assert.Empty(
-        paramOrderIn
-            "let private scale (x: float) (k: int) = x * float k\nlet a = scale 1.0 2\nlet b = scale 3.0 4\nlet doubled (xs: float list) = xs |> List.map (fun x -> scale x 2)"
+        paramOrderIn (
+            fsharp
+                """
+                let private scale (x: float) (k: int) = x * float k
+                let a = scale 1.0 2
+                let b = scale 3.0 4
+                let doubled (xs: float list) = xs |> List.map (fun x -> scale x 2)
+                """
+        )
     )
 
 [<Fact>]
 let ``FR0023: distinct types and no more direct calls than lambdas still swap`` () =
     let source =
-        "let private scale (x: float) (k: int) = x * float k\nlet a = scale 3.0 2\nlet doubled (xs: float list) = xs |> List.map (fun x -> scale x 2)"
+        fsharp
+            """
+            let private scale (x: float) (k: int) = x * float k
+            let a = scale 3.0 2
+            let doubled (xs: float list) = xs |> List.map (fun x -> scale x 2)
+            """
 
     match paramOrderIn source with
     | [ s ] ->
@@ -382,7 +498,12 @@ let ``FR0023: distinct types and no more direct calls than lambdas still swap`` 
             |> List.fold (fun acc (r, _, t) -> applyEdit acc r t) source
 
         Assert.Equal(
-            "let private scale (k: int) (x: float) = x * float k\nlet a = scale 2 3.0\nlet doubled (xs: float list) = xs |> List.map (scale 2)",
+            fsharp
+                """
+                let private scale (k: int) (x: float) = x * float k
+                let a = scale 2 3.0
+                let doubled (xs: float list) = xs |> List.map (scale 2)
+                """,
             patched
         )
 
@@ -411,29 +532,111 @@ let private assertIndexedLoop (source: string) (expectedPatched: string) =
 let ``FR0101: an opening alias of the element names the loop variable`` () =
     // Giraffe's FormatExpressions: `for item in path do let mChar = item`
     assertIndexedLoop
-        "module Test\nlet f (path: string) =\n    let mutable matchNext = false\n    for i in 0 .. path.Length - 1 do\n        let mChar = path.[i]\n\n        if matchNext then\n            printfn \"%c\" mChar\n            matchNext <- false\n        elif mChar = '%' then\n            matchNext <- true"
-        "module Test\nlet f (path: string) =\n    let mutable matchNext = false\n    for mChar in path do\n        if matchNext then\n            printfn \"%c\" mChar\n            matchNext <- false\n        elif mChar = '%' then\n            matchNext <- true"
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                let mutable matchNext = false
+                for i in 0 .. path.Length - 1 do
+                    let mChar = path.[i]
+
+                    if matchNext then
+                        printfn "%c" mChar
+                        matchNext <- false
+                    elif mChar = '%' then
+                        matchNext <- true
+            """)
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                let mutable matchNext = false
+                for mChar in path do
+                    if matchNext then
+                        printfn "%c" mChar
+                        matchNext <- false
+                    elif mChar = '%' then
+                        matchNext <- true
+            """)
 
 [<Fact>]
 let ``FR0101: an alias beside another use of the index stays an alias`` () =
     assertIndexedLoop
-        "module Test\nlet f (path: string) =\n    for i in 0 .. path.Length - 1 do\n        let mChar = path.[i]\n        printfn \"%c%c\" mChar path.[i]"
-        "module Test\nlet f (path: string) =\n    for item in path do\n        let mChar = item\n        printfn \"%c%c\" mChar item"
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                for i in 0 .. path.Length - 1 do
+                    let mChar = path.[i]
+                    printfn "%c%c" mChar path.[i]
+            """)
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                for item in path do
+                    let mChar = item
+                    printfn "%c%c" mChar item
+            """)
 
 [<Fact>]
 let ``FR0101: an alias named like something bound around the loop stays an alias`` () =
     assertIndexedLoop
-        "module Test\nlet f (mChar: char) (path: string) =\n    for i in 0 .. path.Length - 1 do\n        let mChar = path.[i]\n        printfn \"%c\" mChar"
-        "module Test\nlet f (mChar: char) (path: string) =\n    for item in path do\n        let mChar = item\n        printfn \"%c\" mChar"
+        (fsharp
+            """
+            module Test
+            let f (mChar: char) (path: string) =
+                for i in 0 .. path.Length - 1 do
+                    let mChar = path.[i]
+                    printfn "%c" mChar
+            """)
+        (fsharp
+            """
+            module Test
+            let f (mChar: char) (path: string) =
+                for item in path do
+                    let mChar = item
+                    printfn "%c" mChar
+            """)
 
 [<Fact>]
 let ``FR0101: a comment between the alias and the body keeps the alias`` () =
     assertIndexedLoop
-        "module Test\nlet f (path: string) =\n    for i in 0 .. path.Length - 1 do\n        let mChar = path.[i]\n        // the char under the cursor\n        printfn \"%c\" mChar"
-        "module Test\nlet f (path: string) =\n    for item in path do\n        let mChar = item\n        // the char under the cursor\n        printfn \"%c\" mChar"
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                for i in 0 .. path.Length - 1 do
+                    let mChar = path.[i]
+                    // the char under the cursor
+                    printfn "%c" mChar
+            """)
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                for item in path do
+                    let mChar = item
+                    // the char under the cursor
+                    printfn "%c" mChar
+            """)
 
 [<Fact>]
 let ``FR0101: a typed alias keeps its annotation as an alias`` () =
     assertIndexedLoop
-        "module Test\nlet f (path: string) =\n    for i in 0 .. path.Length - 1 do\n        let mChar: char = path.[i]\n        printfn \"%c\" mChar"
-        "module Test\nlet f (path: string) =\n    for item in path do\n        let mChar: char = item\n        printfn \"%c\" mChar"
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                for i in 0 .. path.Length - 1 do
+                    let mChar: char = path.[i]
+                    printfn "%c" mChar
+            """)
+        (fsharp
+            """
+            module Test
+            let f (path: string) =
+                for item in path do
+                    let mChar: char = item
+                    printfn "%c" mChar
+            """)

@@ -32,10 +32,25 @@ let ``FR0147: a user namespace Core is not opened, since open Core also reaches 
     // `open Core` opens BOTH, re-opens Operators over the user's `tan`, and
     // FS0893 rejects the partial path
     let a =
-        "module Core.Validation\n\nlet nonEmpty (s: string) = s <> \"\"\nlet short (s: string) = s.Length < 10\n"
+        fsharp
+            """
+            module Core.Validation
+
+            let nonEmpty (s: string) = s <> ""
+            let short (s: string) = s.Length < 10
+
+            """
 
     let b =
-        "module App\n\nlet a = Core.Validation.nonEmpty \"x\"\nlet b = Core.Validation.short \"x\"\nlet c = Core.Validation.nonEmpty \"y\"\n"
+        fsharp
+            """
+            module App
+
+            let a = Core.Validation.nonEmpty "x"
+            let b = Core.Validation.short "x"
+            let c = Core.Validation.nonEmpty "y"
+
+            """
 
     let s = qualifiedIn a b |> List.find (fun s -> s.Namespace = "Core")
     Assert.Empty s.Edits
@@ -43,10 +58,29 @@ let ``FR0147: a user namespace Core is not opened, since open Core also reaches 
 
 [<Fact>]
 let ``FR0147: a user namespace IO is not opened under open System`` () =
-    let a = "namespace IO\n\nmodule Files =\n    let one = 1\n    let two = 2\n"
+    let a =
+        fsharp
+            """
+            namespace IO
+
+            module Files =
+                let one = 1
+                let two = 2
+
+            """
 
     let b =
-        "module App\n\nopen System\n\nlet a = IO.Files.one\nlet b = IO.Files.two\nlet c = IO.Files.one + IO.Files.two\n"
+        fsharp
+            """
+            module App
+
+            open System
+
+            let a = IO.Files.one
+            let b = IO.Files.two
+            let c = IO.Files.one + IO.Files.two
+
+            """
 
     let s = qualifiedIn a b |> List.find (fun s -> s.Namespace = "IO")
     Assert.Empty s.Edits
@@ -54,10 +88,27 @@ let ``FR0147: a user namespace IO is not opened under open System`` () =
 
 [<Fact>]
 let ``FR0147: a user namespace no open can reach elsewhere still gets its open`` () =
-    let a = "module Billing.Invoices\n\nlet total (x: int) = x * 2\n"
+    let a =
+        fsharp
+            """
+            module Billing.Invoices
+
+            let total (x: int) = x * 2
+
+            """
 
     let b =
-        "module App\n\nopen System\n\nlet a = Billing.Invoices.total 1\nlet b = Billing.Invoices.total 2\nlet c = Billing.Invoices.total 3\n"
+        fsharp
+            """
+            module App
+
+            open System
+
+            let a = Billing.Invoices.total 1
+            let b = Billing.Invoices.total 2
+            let c = Billing.Invoices.total 3
+
+            """
 
     let s = qualifiedIn a b |> List.find (fun s -> s.Namespace = "Billing")
     Assert.True(s.Reason.IsNone, $"%A{s.Reason}")
@@ -97,6 +148,8 @@ let private contextIn (dir: string) (references: string list) (source: string) :
         match answer with
         | FSharpCheckFileAnswer.Succeeded r -> r
         | FSharpCheckFileAnswer.Aborted -> failwith $"typechecking aborted for {fileName}"
+
+    FSharp.Refactor.Tests.Parsing.requireTypechecks "contextIn" source checkResults
 
     let references =
         references
@@ -146,7 +199,22 @@ let ``FR0162: a slot reset to None once the task settles is no Lazy`` () =
 [<Fact>]
 let ``FR0162: a store inside a lambda under the None arm is not guarded by it`` () =
     let source =
-        "module M\n\nopen System.Threading.Tasks\n\nlet mutable private cache: int option = None\n\nlet get (start: unit -> Task<int>) =\n    match cache with\n    | Some v -> v\n    | None ->\n        start().ContinueWith(fun (t: Task<int>) -> cache <- Some t.Result) |> ignore\n        0\n"
+        fsharp
+            """
+            module M
+
+            open System.Threading.Tasks
+
+            let mutable private cache: int option = None
+
+            let get (start: unit -> Task<int>) =
+                match cache with
+                | Some v -> v
+                | None ->
+                    start().ContinueWith(fun (t: Task<int>) -> cache <- Some t.Result) |> ignore
+                    0
+
+            """
 
     let tree, text = parse source
     Assert.Empty(LazyInit.find tree text)
@@ -173,7 +241,16 @@ let ``FR0162: Fable.Core alone keeps the note - the Rust and Python targets have
 [<Fact>]
 let ``FR0121: in a browser DateTime.Today is the user's own date`` () =
     let source =
-        "module M\n\nopen System\n\nlet today () = DateTime.Today\nlet cut () = DateTime.UtcNow.Date\n"
+        fsharp
+            """
+            module M
+
+            open System
+
+            let today () = DateTime.Today
+            let cut () = DateTime.UtcNow.Date
+
+            """
 
     let messages =
         ofCode "FR0121" (run Analyzers.dateTimeCliAnalyzer (contextWith fableBrowser source))
@@ -184,13 +261,30 @@ let ``FR0121: in a browser DateTime.Today is the user's own date`` () =
 
 [<Fact>]
 let ``FR0121: a Fable project that is no browser keeps the Today note`` () =
-    let source = "module M\n\nopen System\n\nlet today () = DateTime.Today\n"
+    let source =
+        fsharp
+            """
+            module M
+
+            open System
+
+            let today () = DateTime.Today
+
+            """
+
     Assert.NotEmpty(ofCode "FR0121" (run Analyzers.dateTimeCliAnalyzer (contextWith fableCore source)))
 
 [<Fact>]
 let ``FR0055: JavaScript's async swallows no cancellation, and the note does not claim it`` () =
     let source =
-        "module M\n\nlet tryRun (f: unit -> unit) =\n    try f () with _ -> ()\n"
+        fsharp
+            """
+            module M
+
+            let tryRun (f: unit -> unit) =
+                try f () with _ -> ()
+
+            """
 
     let fable =
         ofCode "FR0055" (run Analyzers.swallowedExceptionCliAnalyzer (contextWith fableBrowser source))
@@ -210,7 +304,15 @@ let ``FR0038: the culture note stays quiet under Fable, whose strings compare or
 [<Fact>]
 let ``FR0130: a Fable project's public value keeps its export`` () =
     let source =
-        "module Consts\n\nlet maxItems = 25\nlet private minItems = 1\nlet total () = maxItems + minItems\n"
+        fsharp
+            """
+            module Consts
+
+            let maxItems = 25
+            let private minItems = 1
+            let total () = maxItems + minItems
+
+            """
 
     let messages =
         ofCode "FR0130" (run Analyzers.literalConstCliAnalyzer (contextWith fableCore source))
@@ -222,7 +324,15 @@ let ``FR0130: a Fable project's public value keeps its export`` () =
 [<Fact>]
 let ``FR0035: a two-element literal is probed faster than any set`` () =
     let source =
-        "module M\n\nlet private kinds = [ \"a\"; \"b\" ]\n\nlet keep (xs: string list) = xs |> List.filter (fun x -> List.contains x kinds)\n"
+        fsharp
+            """
+            module M
+
+            let private kinds = [ "a"; "b" ]
+
+            let keep (xs: string list) = xs |> List.filter (fun x -> List.contains x kinds)
+
+            """
 
     Assert.Empty(ofCode "FR0035" (run Analyzers.loopPerfCliAnalyzer (contextWith [] source)))
 
@@ -251,8 +361,19 @@ let ``FR0035: seven elements stay a list, ten take the HashSet companion, sixtee
 [<Fact>]
 let ``LoopPerf.literalSize counts written-out elements only`` () =
     let tree, _ =
-        parse
-            "module M\n\nlet a = [ 1; 2; 3 ]\nlet b: int list = [ 1; 2 ]\nlet c = [ 1..100 ]\nlet d = [ for i in 1..3 -> i ]\nlet e = [| \"x\" |]\n"
+        parse (
+            fsharp
+                """
+                module M
+
+                let a = [ 1; 2; 3 ]
+                let b: int list = [ 1; 2 ]
+                let c = [ 1..100 ]
+                let d = [ for i in 1..3 -> i ]
+                let e = [| "x" |]
+
+                """
+        )
 
     Assert.Equal(Some 3, LoopPerf.literalSize tree "a")
     Assert.Equal(Some 2, LoopPerf.literalSize tree "b")
@@ -265,7 +386,16 @@ let ``LoopPerf.literalSize counts written-out elements only`` () =
 [<Fact>]
 let ``a rule outside the run's allowed codes is off, so its analyzer never runs`` () =
     let source =
-        "module M\n\nlet a = System.Threading.Tasks.Task.FromResult 1\nlet b = System.Threading.Tasks.Task.FromResult 2\nlet c = System.Threading.Tasks.Task.FromResult 3\nlet d = System.Threading.Tasks.Task.FromResult 4\n"
+        fsharp
+            """
+            module M
+
+            let a = System.Threading.Tasks.Task.FromResult 1
+            let b = System.Threading.Tasks.Task.FromResult 2
+            let c = System.Threading.Tasks.Task.FromResult 3
+            let d = System.Threading.Tasks.Task.FromResult 4
+
+            """
 
     Scope.restrictTo (Some(set [ "FR0006"; "FR0072" ]))
 
@@ -326,7 +456,18 @@ let ``the restriction reaches the deep-stack workers per call and does not outli
 [<Fact>]
 let ``FR0015: the hoisted regex is named after the binding it serves`` () =
     let source =
-        "module Forms\n\nopen System.Text.RegularExpressions\n\nlet isPostcode (s: string) =\n    Regex.IsMatch(s, @\"^[A-Z]{1,2}\\d[A-Z\\d]? ?\\d[A-Z]{2}$\")\n\nlet collapseSpaces (s: string) = Regex.Replace(s, @\"\\s+\", \" \")\n"
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let isPostcode (s: string) =
+                Regex.IsMatch(s, @"^[A-Z]{1,2}\d[A-Z\d]? ?\d[A-Z]{2}$")
+
+            let collapseSpaces (s: string) = Regex.Replace(s, @"\s+", " ")
+
+            """
 
     let tree, text = parse source
 
@@ -348,7 +489,16 @@ let private regexEdits (source: string) =
 [<Fact>]
 let ``FR0015: a taken name falls back to the function's whole name before the pattern's letters`` () =
     let source =
-        "module Forms\n\nopen System.Text.RegularExpressions\n\nlet postcodeRegex = 1\nlet isPostcode (s: string) = Regex.IsMatch(s, @\"^[A-Z]{2}\\d$\")\n"
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let postcodeRegex = 1
+            let isPostcode (s: string) = Regex.IsMatch(s, @"^[A-Z]{2}\d$")
+
+            """
 
     let edits = regexEdits source
     Assert.Contains(edits, fun t -> t.StartsWith "let private isPostcodeRegex = Regex")
@@ -356,7 +506,16 @@ let ``FR0015: a taken name falls back to the function's whole name before the pa
 [<Fact>]
 let ``FR0015: one pattern at two sites becomes one binding, the second site reusing it`` () =
     let source =
-        "module Forms\n\nopen System.Text.RegularExpressions\n\nlet check (s: string) = Regex.IsMatch(s, @\"^\\d{5}$\")\nlet isZip (s: string) = Regex.IsMatch(s, @\"^\\d{5}$\")\n"
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let check (s: string) = Regex.IsMatch(s, @"^\d{5}$")
+            let isZip (s: string) = Regex.IsMatch(s, @"^\d{5}$")
+
+            """
 
     // one pass: only the topmost site inserts a binding
     let first = regexEdits source
@@ -365,7 +524,17 @@ let ``FR0015: one pattern at two sites becomes one binding, the second site reus
 
     // the next pass: the second site takes the binding above over
     let afterFirst =
-        "module Forms\n\nopen System.Text.RegularExpressions\n\nlet private checkRegex = Regex @\"^\\d{5}$\"\nlet check (s: string) = checkRegex.IsMatch(s)\nlet isZip (s: string) = Regex.IsMatch(s, @\"^\\d{5}$\")\n"
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let private checkRegex = Regex @"^\d{5}$"
+            let check (s: string) = checkRegex.IsMatch(s)
+            let isZip (s: string) = Regex.IsMatch(s, @"^\d{5}$")
+
+            """
 
     Assert.Equal<string list>([ "checkRegex.IsMatch(s)" ], regexEdits afterFirst)
 
@@ -375,7 +544,15 @@ let ``FR0015: two regexes of one function both hoist in one pass, the second num
     // used to be dropped as a collision and return a pass later under the
     // pattern's letters
     let source =
-        "module Forms\n\nopen System.Text.RegularExpressions\n\nlet check (s: string) = Regex.IsMatch(s, @\"^\\d+$\") || Regex.IsMatch(s, @\"^[a-z]+$\")\n"
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let check (s: string) = Regex.IsMatch(s, @"^\d+$") || Regex.IsMatch(s, @"^[a-z]+$")
+
+            """
 
     let inserted =
         regexEdits source |> List.filter (fun t -> t.StartsWith "let private")
@@ -399,7 +576,20 @@ let ``FR0015: a binding the site's declaration shadows is not reused`` () =
 [<Fact>]
 let ``FR0015: a binding of the same pattern in a SIBLING module is not reused`` () =
     let source =
-        "module Forms\n\nopen System.Text.RegularExpressions\n\nmodule A =\n    let private zipRegex = Regex @\"^\\d{5}$\"\n    let check (s: string) = zipRegex.IsMatch(s)\n\nmodule B =\n    let isZip (s: string) = Regex.IsMatch(s, @\"^\\d{5}$\")\n"
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            module A =
+                let private zipRegex = Regex @"^\d{5}$"
+                let check (s: string) = zipRegex.IsMatch(s)
+
+            module B =
+                let isZip (s: string) = Regex.IsMatch(s, @"^\d{5}$")
+
+            """
 
     let edits = regexEdits source
     Assert.DoesNotContain(edits, fun t -> t = "zipRegex.IsMatch(s)")
@@ -408,7 +598,14 @@ let ``FR0015: a binding of the same pattern in a SIBLING module is not reused`` 
 [<Fact>]
 let ``FR0168: a try on the else line becomes a match on lines of its own, with a fresh binder`` () =
     let source =
-        "open System\n\nlet parseDate (v: string) : DateTime option =\n    if v = \"\" then None else try Some(DateTime.Parse v) with _ -> None\n"
+        fsharp
+            """
+            open System
+
+            let parseDate (v: string) : DateTime option =
+                if v = "" then None else try Some(DateTime.Parse v) with _ -> None
+
+            """
 
     let tree, text, check = parseAndCheck source
 
@@ -420,7 +617,17 @@ let ``FR0168: a try on the else line becomes a match on lines of its own, with a
     let patched = applyEdit source r replacement
 
     Assert.Equal(
-        "open System\n\nlet parseDate (v: string) : DateTime option =\n    if v = \"\" then None else\n        match DateTime.TryParse v with\n        | true, parsed -> Some parsed\n        | false, _ -> None\n",
+        fsharp
+            """
+            open System
+
+            let parseDate (v: string) : DateTime option =
+                if v = "" then None else
+                    match DateTime.TryParse v with
+                    | true, parsed -> Some parsed
+                    | false, _ -> None
+
+            """,
         patched
     )
 
@@ -472,8 +679,25 @@ let ``FR0168: every layout the line break meets still typechecks, with nothing o
 [<Fact>]
 let ``FR0168: only a parameter inferred late gets its argument annotated`` () =
     let patched =
-        tryParsePatched
-            "module M\n\nopen System\n\nlet f s =\n    try Int32.Parse s with _ -> 0\n\nlet g (s: string) =\n    try Int32.Parse s with _ -> 0\n\nlet h () =\n    let s = Console.ReadLine()\n    try Int32.Parse s with _ -> 0\n"
+        tryParsePatched (
+            fsharp
+                """
+                module M
+
+                open System
+
+                let f s =
+                    try Int32.Parse s with _ -> 0
+
+                let g (s: string) =
+                    try Int32.Parse s with _ -> 0
+
+                let h () =
+                    let s = Console.ReadLine()
+                    try Int32.Parse s with _ -> 0
+
+                """
+        )
 
     // f's `s` is not a string yet where TryParse is resolved: `Parse` took
     // it, the several TryParse overloads cannot
@@ -488,7 +712,20 @@ let ``EditorConfig: a section glob it cannot translate matches nothing instead o
 
     File.WriteAllText(
         Path.Combine(root, ".editorconfig"),
-        "root = true\n\n[z-a]\nfsharp_space_before_lowercase_invocation = true\n\n[[z-a].fs]\nindent_size = 2\n\n[*.fs]\nfsharp_space_before_lowercase_invocation = false\n"
+        fsharp
+            """
+            root = true
+
+            [z-a]
+            fsharp_space_before_lowercase_invocation = true
+
+            [[z-a].fs]
+            indent_size = 2
+
+            [*.fs]
+            fsharp_space_before_lowercase_invocation = false
+
+            """
     )
 
     Assert.True(EditorConfig.keepsLowercaseCallParens (Path.Combine(root, "Code.fs")))
@@ -501,7 +738,17 @@ let ``EditorConfig: the nearest file wins, a root stops the walk, and brace glob
 
     File.WriteAllText(
         Path.Combine(root, ".editorconfig"),
-        "root = true\n\n[*]\nindent_style = space\n\n[*.{fs,fsx}]\nfsharp_space_before_lowercase_invocation = false\n"
+        fsharp
+            """
+            root = true
+
+            [*]
+            indent_style = space
+
+            [*.{fs,fsx}]
+            fsharp_space_before_lowercase_invocation = false
+
+            """
     )
 
     let file = Path.Combine(sub, "Code.fs")
@@ -521,12 +768,26 @@ let ``FR0013: Fantomas told to write f(x) keeps the parentheses, unless FR0013 i
 
         File.WriteAllText(
             Path.Combine(dir, ".editorconfig"),
-            "root = true\n\n[*.{fs,fsx}]\nfsharp_space_before_lowercase_invocation = false\n"
+            fsharp
+                """
+                root = true
+
+                [*.{fs,fsx}]
+                fsharp_space_before_lowercase_invocation = false
+
+                """
         )
 
         dir
 
-    let source = "let f x = x + 1\nlet b = f(1)\n"
+    let source =
+        fsharp
+            """
+            let f x = x + 1
+            let b = f(1)
+
+            """
+
     Assert.Empty(ofCode "FR0013" (run Analyzers.redundantParensCliAnalyzer (contextIn (fantomasDir ()) [] source)))
 
     // a directory of its own: config discovery is cached per directory
@@ -546,15 +807,60 @@ let ``the tool applies every FR0006 guard of a match in one pass and re-sweeps o
 
     write
         "Guards.fsproj"
-        "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Before.fs\" />\n    <Compile Include=\"Guards.fs\" />\n    <Compile Include=\"After.fs\" />\n  </ItemGroup>\n</Project>\n"
+        (fsharp
+            """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+              <ItemGroup>
+                <Compile Include="Before.fs" />
+                <Compile Include="Guards.fs" />
+                <Compile Include="After.fs" />
+              </ItemGroup>
+            </Project>
 
-    write "Before.fs" "module Before\n\nlet answer = 42\n"
+            """)
+
+    write
+        "Before.fs"
+        (fsharp
+            """
+            module Before
+
+            let answer = 42
+
+            """)
 
     write
         "Guards.fs"
-        "module Guards\n\nopen System\n\nlet isArrayType (t: Type) = t.IsArray\nlet isEnumType (t: Type) = t.IsEnum\nlet isRecordLike (t: Type) = t.Name.StartsWith \"Anon\"\n\nlet rec describe (t: Type) : string =\n    match t with\n    | t when t = typeof<int> -> \"int4\"\n    | t when isArrayType t -> describe (t.GetElementType()) + \"[]\"\n    | t when isRecordLike t -> \"jsonb\"\n    | t when isEnumType t -> \"enum\"\n    | _ -> \"text\"\n"
+        (fsharp
+            """
+            module Guards
 
-    write "After.fs" "module After\n\nlet described = Guards.describe typeof<int[]>\n"
+            open System
+
+            let isArrayType (t: Type) = t.IsArray
+            let isEnumType (t: Type) = t.IsEnum
+            let isRecordLike (t: Type) = t.Name.StartsWith "Anon"
+
+            let rec describe (t: Type) : string =
+                match t with
+                | t when t = typeof<int> -> "int4"
+                | t when isArrayType t -> describe (t.GetElementType()) + "[]"
+                | t when isRecordLike t -> "jsonb"
+                | t when isEnumType t -> "enum"
+                | _ -> "text"
+
+            """)
+
+    write
+        "After.fs"
+        (fsharp
+            """
+            module After
+
+            let described = Guards.describe typeof<int[]>
+
+            """)
 
     use captured = new StringWriter()
     let oldOut = Console.Out

@@ -44,7 +44,13 @@ let ``bool comparison with false negates`` () =
 let ``comparing an obj value with a bool literal is not a redundant comparison`` () =
     // from the corpus (SQLProvider OfflineTools): `o = true` type-checks for
     // o : obj — the literal subsumes to obj — so bare `o` would be FS0001
-    assertNoSuggestion "module Test\nlet f (o: obj) = if (isNull o) || o = true then 1 else 2"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (o: obj) = if (isNull o) || o = true then 1 else 2
+            """
+    )
 
 [<Fact>]
 let ``a bool literal comparison without typed proof stays put`` () =
@@ -55,7 +61,7 @@ let ``a bool literal comparison without typed proof stays put`` () =
 [<Fact>]
 let ``a bool-returning method call loses its literal comparison`` () =
     // non-atomic substitutions are parenthesized by the engine
-    assertSingleSuggestion "module Test\nlet f (s: string) = s.Contains \"x\" = true" "(s.Contains \"x\")"
+    assertSingleSuggestion "module Test\nlet f (s: string) = s.Contains \"x\" = true" """(s.Contains "x")"""
 
 [<Fact>]
 let ``null comparison becomes isNull`` () =
@@ -70,15 +76,28 @@ let ``map-map fusion composes two provably pure mappers`` () =
     // FSharp.Core functions, union cases and lambdas over them: calling
     // either has no effect, so interleaving the calls changes nothing
     assertSingleSuggestion
-        "module Test\nlet f (xs: (int * string) list) = List.map string (List.map fst xs)"
+        (fsharp
+            """
+            module Test
+            let f (xs: (int * string) list) = List.map string (List.map fst xs)
+            """)
         "List.map (fst >> string) xs"
 
     assertSingleSuggestion
-        "module Test\nlet f (xs: int[]) = Array.map (fun x -> x + 1) (Array.map abs xs)"
+        (fsharp
+            """
+            module Test
+            let f (xs: int[]) = Array.map (fun x -> x + 1) (Array.map abs xs)
+            """)
         "Array.map (abs >> (fun x -> x + 1)) xs"
 
     assertSingleSuggestion
-        "module Test\ntype K = A of int\nlet f (xs: int seq) = Seq.map A (Seq.map (fun (x: int) -> x * 2) xs)"
+        (fsharp
+            """
+            module Test
+            type K = A of int
+            let f (xs: int seq) = Seq.map A (Seq.map (fun (x: int) -> x * 2) xs)
+            """)
         "Seq.map ((fun (x: int) -> x * 2) >> A) xs"
 
 [<Fact>]
@@ -87,59 +106,133 @@ let ``map-map fusion stands down unless both mappers are provably effect-free`` 
     // fused `List.map (h >> g) xs` interleaves them, so a mapper that may
     // have an effect - an opaque user function, a lambda that prints,
     // assigns or sequences statements, a .NET method - keeps the two sweeps
-    assertNoSuggestion "module Test\nlet f g h xs = List.map g (List.map h xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f g h xs = List.map g (List.map h xs)
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet f (g: int -> int) (xs: int list) = Array.map string (Array.map g (Array.ofList xs))"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (g: int -> int) (xs: int list) = Array.map string (Array.map g (Array.ofList xs))
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet f (xs: int list) = xs |> List.map (fun x -> printfn \"a\"; x) |> List.map (fun x -> printfn \"b\"; x)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: int list) = xs |> List.map (fun x -> printfn "a"; x) |> List.map (fun x -> printfn "b"; x)
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet mutable n = 0\nlet f (xs: int list) = List.map string (List.map (fun x -> n <- n + 1; x) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let mutable n = 0
+            let f (xs: int list) = List.map string (List.map (fun x -> n <- n + 1; x) xs)
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet f (xs: string list) = Seq.map string (Seq.map (fun (s: string) -> System.Console.WriteLine s; s.Length) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: string list) = Seq.map string (Seq.map (fun (s: string) -> System.Console.WriteLine s; s.Length) xs)
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet f (xs: string list) = List.map string (List.map (fun (s: string) -> System.IO.File.ReadAllText s) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: string list) = List.map string (List.map (fun (s: string) -> System.IO.File.ReadAllText s) xs)
+            """
+    )
 
 [<Fact>]
-let ``map-map fusion stands down when a composed lambda looks a bare parameter up`` () =
-    // `fst >> (fun s -> s.Length)` is checked before the list it maps, so
-    // `s` has no type at the lookup (FS0072) where `List.map (fun s ->
-    // s.Length)` alone inferred it; an annotated parameter composes fine
-    assertNoSuggestion
-        "module Test\nlet f (pairs: (string * int) list) = List.map (fun s -> s.Length) (List.map fst pairs)"
+let ``map-map fusion of a bare-parameter lookup keeps the pipe that types it`` () =
+    // `List.map (fst >> (fun s -> s.Length)) pairs` checks the composition
+    // before the list, so `s` has no type at the lookup (FS0072). Only a
+    // pipe types a bare `s` in the first place - the nested form of the
+    // input is FS0072 itself - and the fusion keeps that pipe
+    let source =
+        fsharp
+            """
+            module Test
+            let f (pairs: (string * int) list) = pairs |> List.map fst |> List.map (fun s -> s.Length)
+            """
+
+    match findIn source with
+    | [ s ] ->
+        Assert.Equal("pairs |> List.map (fst >> (fun s -> s.Length))", s.ReplacementText)
+        let patched = applyEdit source s.Range s.ReplacementText
+        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
 
     assertSingleSuggestion
-        "module Test\nlet f (pairs: (string * int) list) = List.map (fun (s: string) -> s.Length) (List.map fst pairs)"
+        (fsharp
+            """
+            module Test
+            let f (pairs: (string * int) list) = List.map (fun (s: string) -> s.Length) (List.map fst pairs)
+            """)
         "List.map (fst >> (fun (s: string) -> s.Length)) pairs"
 
 [<Fact>]
 let ``map-map fusion stands down on a throwing or active-pattern mapper`` () =
     // a mapper that raises by design: fused, the second sweep's throw can
     // fire before the first sweep has finished
-    assertNoSuggestion
-        "module Test\nlet f (strs: string list) = List.map (fun (x: int) -> if x < 0 then failwith \"neg\" else x) (List.map int strs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (strs: string list) = List.map (fun (x: int) -> if x < 0 then failwith "neg" else x) (List.map int strs)
+            """
+    )
 
     // an active pattern runs its own body, which no expression of the
     // lambda names
-    assertNoSuggestion
-        "module Test\nlet (|Logged|) (x: int) = printfn \"%d\" x; x\nlet f (xs: int list) = List.map (fun x -> match x with Logged v -> v + 1) (List.map (fun x -> match x with Logged v -> v * 2) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let (|Logged|) (x: int) = printfn "%d" x; x
+            let f (xs: int list) = List.map (fun x -> match x with Logged v -> v + 1) (List.map (fun x -> match x with Logged v -> v * 2) xs)
+            """
+    )
 
     // a reference-cell write and an in-place array sort are effects
-    assertNoSuggestion
-        "module Test\nlet last = ref 0\nlet f (xs: int list) = List.map string (List.map (fun x -> last := x; x) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let last = ref 0
+            let f (xs: int list) = List.map string (List.map (fun x -> last := x; x) xs)
+            """
+    )
 
-    assertNoSuggestion
-        "module Test\nlet f (xs: int[] list) = List.map Array.length (List.map (fun (a: int[]) -> Array.sortInPlace a; a) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: int[] list) = List.map Array.length (List.map (fun (a: int[]) -> Array.sortInPlace a; a) xs)
+            """
+    )
 
 [<Fact>]
 let ``map-map fusion needs the typed tree`` () =
     // without a clean typed check no mapper is provably pure
     let source =
-        "module Test\nlet f (xs: (int * string) list) = List.map string (List.map fst xs)"
+        fsharp
+            """
+            module Test
+            let f (xs: (int * string) list) = List.map string (List.map fst xs)
+            """
 
     let tree, sourceText, _ = parseAndCheck source
     Assert.Empty(HintEngine.find [] tree sourceText None)
@@ -147,19 +240,31 @@ let ``map-map fusion needs the typed tree`` () =
 [<Fact>]
 let ``concat of map becomes collect`` () =
     assertSingleSuggestion
-        "module Test\nlet f (g: int -> int list) xs = List.concat (List.map g xs)"
+        (fsharp
+            """
+            module Test
+            let f (g: int -> int list) xs = List.concat (List.map g xs)
+            """)
         "List.collect g xs"
 
 [<Fact>]
 let ``isEmpty of filter becomes not exists`` () =
     assertSingleSuggestion
-        "module Test\nlet f (p: int -> bool) xs = Seq.isEmpty (Seq.filter p xs)"
+        (fsharp
+            """
+            module Test
+            let f (p: int -> bool) xs = Seq.isEmpty (Seq.filter p xs)
+            """)
         "not (Seq.exists p xs)"
 
 [<Fact>]
 let ``not isEmpty of filter becomes exists`` () =
     assertSingleSuggestion
-        "module Test\nlet f (p: int -> bool) xs = not (Seq.isEmpty (Seq.filter p xs))"
+        (fsharp
+            """
+            module Test
+            let f (p: int -> bool) xs = not (Seq.isEmpty (Seq.filter p xs))
+            """)
         "Seq.exists p xs"
 
 [<Fact>]
@@ -200,9 +305,10 @@ let ``FR0060: a dotted read in an eager filter's predicate is total unless it is
         let t = m.ToLower()
 
         assertNoSuggestion
-            $"module Test\nlet f (xs: int option {t}) = {m}.isEmpty ({m}.filter (fun o -> o.Value > 0) xs)"
+            $"module Test\nlet f (xs: int option {t}) = {m}.isEmpty ({m}.filter (fun (o: int option) -> o.Value > 0) xs)"
 
-        assertNoSuggestion $"module Test\nlet f (xs: int list {t}) = {m}.isEmpty ({m}.filter (fun l -> l.Head > 0) xs)"
+        assertNoSuggestion
+            $"module Test\nlet f (xs: int list {t}) = {m}.isEmpty ({m}.filter (fun (l: int list) -> l.Head > 0) xs)"
 
         assertSingleSuggestion
             $"module Test\nlet f (xs: string {t}) = {m}.isEmpty ({m}.filter (fun (s: string) -> s.Length > 0) xs)"
@@ -214,15 +320,27 @@ let ``FR0060: a dotted read in an eager filter's predicate is total unless it is
 
     // a BCL constant, a struct's getter and a static field are plain reads
     assertSingleSuggestion
-        "module Test\nlet f (xs: int list) = List.isEmpty (List.filter (fun x -> x < System.Int32.MaxValue) xs)"
+        (fsharp
+            """
+            module Test
+            let f (xs: int list) = List.isEmpty (List.filter (fun x -> x < System.Int32.MaxValue) xs)
+            """)
         "not (List.exists (fun x -> x < System.Int32.MaxValue) xs)"
 
     assertSingleSuggestion
-        "module Test\nlet f (xs: System.DateTime list) = List.isEmpty (List.filter (fun (d: System.DateTime) -> d.Year > 2000) xs)"
+        (fsharp
+            """
+            module Test
+            let f (xs: System.DateTime list) = List.isEmpty (List.filter (fun (d: System.DateTime) -> d.Year > 2000) xs)
+            """)
         "not (List.exists (fun (d: System.DateTime) -> d.Year > 2000) xs)"
 
     assertSingleSuggestion
-        "module Test\nlet f (xs: string list) = List.isEmpty (List.filter (fun s -> s <> System.String.Empty) xs)"
+        (fsharp
+            """
+            module Test
+            let f (xs: string list) = List.isEmpty (List.filter (fun s -> s <> System.String.Empty) xs)
+            """)
         "not (List.exists (fun s -> s <> System.String.Empty) xs)"
 
     // getters that read on every value of their type
@@ -241,15 +359,29 @@ let ``FR0060: a dotted read in an eager filter's predicate is total unless it is
     // any other getter is a read by default; a Memory's Span, which calls
     // into a user MemoryManager, is the detected exception
     assertSingleSuggestion
-        "module Test\nlet f (xs: System.GCMemoryInfo list) = List.isEmpty (List.filter (fun (g: System.GCMemoryInfo) -> g.HeapSizeBytes > 0L) xs)"
+        (fsharp
+            """
+            module Test
+            let f (xs: System.GCMemoryInfo list) = List.isEmpty (List.filter (fun (g: System.GCMemoryInfo) -> g.HeapSizeBytes > 0L) xs)
+            """)
         "not (List.exists (fun (g: System.GCMemoryInfo) -> g.HeapSizeBytes > 0L) xs)"
 
-    assertNoSuggestion
-        "module Test\nlet f (xs: System.Memory<int> list) = List.isEmpty (List.filter (fun (m: System.Memory<int>) -> m.Span.IsEmpty) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: System.Memory<int> list) = List.isEmpty (List.filter (fun (m: System.Memory<int>) -> m.Span.IsEmpty) xs)
+            """
+    )
 
     // but not a Nullable's Value, a struct getter that throws
-    assertNoSuggestion
-        "module Test\nlet f (xs: System.Nullable<int> list) = List.isEmpty (List.filter (fun (n: System.Nullable<int>) -> n.Value > 0) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: System.Nullable<int> list) = List.isEmpty (List.filter (fun (n: System.Nullable<int>) -> n.Value > 0) xs)
+            """
+    )
 
     // the premise: the filter throws where exists stops first
     let xs = [ Some 1; None ]
@@ -268,7 +400,13 @@ let ``fold plus zero stays a fold: sum adds checked`` () =
 
 [<Fact>]
 let ``sum of map becomes sumBy`` () =
-    assertSingleSuggestion "module Test\nlet f (g: int -> int) xs = List.sum (List.map g xs)" "List.sumBy g xs"
+    assertSingleSuggestion
+        (fsharp
+            """
+            module Test
+            let f (g: int -> int) xs = List.sum (List.map g xs)
+            """)
+        "List.sumBy g xs"
 
 [<Fact>]
 let ``map id disappears`` () =
@@ -281,7 +419,13 @@ let ``head of sort becomes min`` () =
 [<Fact>]
 let ``a float comparison flip is NaN-unsound and stays put`` () =
     // not (nan > limit) is true; nan <= limit is false — the branch flips
-    assertNoSuggestion "module Test\nlet f (x: float) (limit: float) = not (x > limit)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (x: float) (limit: float) = not (x > limit)
+            """
+    )
 
 [<Fact>]
 let ``a float compare collapse is NaN-unsound and stays put`` () =
@@ -291,7 +435,13 @@ let ``a float compare collapse is NaN-unsound and stays put`` () =
 [<Fact>]
 let ``head of sort on floats stays put`` () =
     // sort places NaN first; min folds through it order-dependently
-    assertNoSuggestion "module Test\nlet f (xs: float list) = List.head (List.sort xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: float list) = List.head (List.sort xs)
+            """
+    )
 
 [<Fact>]
 let ``an equality negation on floats is NaN-sound and still fires`` () =
@@ -310,8 +460,18 @@ let ``double rev disappears`` () =
 let ``a custom operation spelled like a core function is not that function`` () =
     // FsCDK's `lifecycleRule { id "rule" }`: `id` is the builder's custom
     // operation, and `id x ===> x` erased it (12 sites rolled back)
-    assertNoSuggestion
-        "module Test\ntype RuleBuilder() =\n    member _.Yield(_: unit) = \"\"\n    [<CustomOperation(\"id\")>]\n    member _.Id(_: string, value: string) = value\nlet rule = RuleBuilder()\nlet r = rule { id \"test-rule\" }"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type RuleBuilder() =
+                member _.Yield(_: unit) = ""
+                [<CustomOperation("id")>]
+                member _.Id(_: string, value: string) = value
+            let rule = RuleBuilder()
+            let r = rule { id "test-rule" }
+            """
+    )
 
 [<Fact>]
 let ``the core function of the same name still simplifies`` () =
@@ -324,7 +484,13 @@ let ``id composition simplifies`` () =
 [<Fact>]
 let ``repeated metavariable must bind identical text`` () =
     // rev(rev) with different arguments must not match the double-rev rule
-    assertNoSuggestion "module Test\nlet f (xs: int list) ys = List.rev (List.append (List.rev ys) xs)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f (xs: int list) ys = List.rev (List.append (List.rev ys) xs)
+            """
+    )
 
 [<Fact>]
 let ``replacement in operand position is parenthesized`` () =
@@ -352,7 +518,13 @@ let ``a repository's own rule may name the repository's own function`` () =
     let suggestions =
         findWith
             [ "Helpers.twice (Helpers.twice x) ===> x * 4" ]
-            "module Test\nmodule Helpers =\n    let twice (x: int) = x * 2\nlet f (x: int) = Helpers.twice (Helpers.twice x)"
+            (fsharp
+                """
+                module Test
+                module Helpers =
+                    let twice (x: int) = x * 2
+                let f (x: int) = Helpers.twice (Helpers.twice x)
+                """)
 
     match suggestions with
     | [ s ] -> Assert.Equal("x * 4", s.ReplacementText)
@@ -379,18 +551,38 @@ let ``rule dropping a pure atom fires`` () =
 
 [<Fact>]
 let ``multi-line expressions are not matched`` () =
-    assertNoSuggestion "module Test\nlet f a b =\n    not (\n        a = b\n    )"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f a b =
+                not (
+                    a = b
+                )
+            """
+    )
 
 [<Fact>]
 let ``named arguments are never rewritten`` () =
     // found by running the engine on our own code: `Foo(Flag = true)` parses
     // as an equality expression but is a named argument
-    assertNoSuggestion "module Test\nlet f () = System.Text.Json.JsonDocumentOptions(AllowTrailingCommas = true)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f () = System.Text.Json.JsonDocumentOptions(AllowTrailingCommas = true)
+            """
+    )
 
 [<Fact>]
 let ``named argument in a multi-argument call is never rewritten`` () =
-    assertNoSuggestion
-        "module Test\nlet f () = System.Text.Json.JsonDocumentOptions(CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true)"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let f () = System.Text.Json.JsonDocumentOptions(CommentHandling = System.Text.Json.JsonCommentHandling.Skip, AllowTrailingCommas = true)
+            """
+    )
 
 [<Fact>]
 let ``named argument on a new construction is never rewritten`` () =
@@ -436,7 +628,14 @@ let ``a null named argument is never rewritten, a null test beside an operator i
 [<Fact>]
 let ``record field assignment is not a comparison`` () =
     // `{ r with Flag = true }` must not become `{ r with Flag }`
-    assertNoSuggestion "module Test\ntype R = { Flag: bool; N: int }\nlet f (r: R) = { r with Flag = true }"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type R = { Flag: bool; N: int }
+            let f (r: R) = { r with Flag = true }
+            """
+    )
 
 [<Fact>]
 let ``quoted code is never rewritten`` () =
@@ -447,27 +646,45 @@ let ``quoted code is never rewritten`` () =
 let ``metavariables inside array literals substitute correctly`` () =
     // regression: Sequential chains inside [| ... |] were not traversed
     assertSingleSuggestion
-        "module Test\nlet f (p: int[]) (q: int[]) (r: int[]) = Array.append p (Array.append q r)"
+        (fsharp
+            """
+            module Test
+            let f (p: int[]) (q: int[]) (r: int[]) = Array.append p (Array.append q r)
+            """)
         "Array.concat [| p; q; r |]"
 
 [<Fact>]
 let ``match nested inside surrounding calls still rewrites precisely`` () =
     // fusion target sits inside a larger expression with intermediate steps
     assertSingleSuggestion
-        "module Test\nlet f (xs: int list) = Set.ofList (List.map string (List.map abs xs))"
+        (fsharp
+            """
+            module Test
+            let f (xs: int list) = Set.ofList (List.map string (List.map abs xs))
+            """)
         "List.map (abs >> string) xs"
 
 [<Fact>]
 let ``pipelined form of an application rule is normalized and matched`` () =
     // `lhs |> rhs` unifies with application-shaped rules as `rhs lhs`
     assertSingleSuggestion
-        "module Test\nlet f (xs: int list) = xs |> List.map abs |> List.map string"
+        (fsharp
+            """
+            module Test
+            let f (xs: int list) = xs |> List.map abs |> List.map string
+            """)
         "xs |> List.map (abs >> string)"
 
 [<Fact>]
 let ``pipe normalization also simplifies inner pipeline stages`` () =
     // the inner `xs |> List.map id` matches `List.map id x ===> x`
-    assertSingleSuggestion "module Test\nlet f (xs: string list) = xs |> List.map id |> List.length" "xs"
+    assertSingleSuggestion
+        (fsharp
+            """
+            module Test
+            let f (xs: string list) = xs |> List.map id |> List.length
+            """)
+        "xs"
 
 [<Fact>]
 let ``De Morgan combines negated conjuncts`` () =
@@ -476,7 +693,13 @@ let ``De Morgan combines negated conjuncts`` () =
 [<Fact>]
 let ``De Morgan folds a third conjunct without re-bracketing the pair`` () =
     // the second step used to bracket the first's result: `not ((a || b) || c)`
-    assertSingleSuggestion "module Test\nlet f (a: bool) (b: bool) c = not (a || b) && not c" "not (a || b || c)"
+    assertSingleSuggestion
+        (fsharp
+            """
+            module Test
+            let f (a: bool) (b: bool) c = not (a || b) && not c
+            """)
+        "not (a || b || c)"
 
 [<Fact>]
 let ``De Morgan combines negated disjuncts`` () =
@@ -487,8 +710,15 @@ let ``an attribute argument is not an expression to simplify`` () =
     // from Fuuga: [<DllImport(..., SetLastError = true)>] — the property
     // resolves to a bool FIELD, so the typed gate alone waves it through;
     // attribute arguments are constant territory and no hint may fire there
-    assertNoSuggestion
-        "module Test\n[<System.AttributeUsage(System.AttributeTargets.All, AllowMultiple = true)>]\ntype MyAttr() =\n    inherit System.Attribute()"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            [<System.AttributeUsage(System.AttributeTargets.All, AllowMultiple = true)>]
+            type MyAttr() =
+                inherit System.Attribute()
+            """
+    )
 
 [<Fact>]
 let ``an OVERLOADED method group is never moved by a hint`` () =
@@ -496,8 +726,15 @@ let ``an OVERLOADED method group is never moved by a hint`` () =
     // collapses to maxBy, but the collapsed form checks the projection
     // before the element type is known and no overload can be picked
     Assert.Empty(
-        findIn
-            "module Test\nopen System.IO\nlet f (logFiles: string[]) =\n    logFiles |> Array.sortByDescending File.GetLastWriteTime |> Array.head"
+        findIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let f (logFiles: string[]) =
+                    logFiles |> Array.sortByDescending File.GetLastWriteTime |> Array.head
+                """
+        )
     )
 
 [<Fact>]
@@ -507,7 +744,14 @@ let ``a single-overload projection still collapses`` () =
     // overloads both exist, and the collapsed form really does not
     // compile; the guard standing down there is the point.)
     match
-        findIn "module Test\nlet f (paths: string[]) =\n    paths |> Array.sortByDescending String.length |> Array.head"
+        findIn (
+            fsharp
+                """
+                module Test
+                let f (paths: string[]) =
+                    paths |> Array.sortByDescending String.length |> Array.head
+                """
+        )
     with
     | [ s ] -> Assert.Equal("paths |> Array.maxBy String.length", s.ReplacementText)
     | other -> failwithf "Expected the maxBy collapse, got %A" other
@@ -520,7 +764,12 @@ let ``a pipelined collect rewrite keeps the pipeline so the lambda sees its type
     // back on exactly this; `xs |> Seq.collect (fun x -> x.Items)` types
     // `xs` first
     assertSingleSuggestion
-        "module Test\ntype Box = { Items: int list }\nlet f (xs: Box list) = xs |> Seq.map (fun x -> x.Items) |> Seq.concat"
+        (fsharp
+            """
+            module Test
+            type Box = { Items: int list }
+            let f (xs: Box list) = xs |> Seq.map (fun x -> x.Items) |> Seq.concat
+            """)
         "xs |> Seq.collect (fun x -> x.Items)"
 
 [<Fact>]
@@ -529,26 +778,45 @@ let ``De Morgan leaves function applications bare beside the operator`` () =
     // — an application is atomic enough beside `||`, the brackets only
     // made the rewrite harder to read than the code it replaced
     assertSingleSuggestion
-        "module Test\nlet f (instMembers: int list) (statMembers: int list) =\n    not (List.isEmpty instMembers) && not (List.isEmpty statMembers)"
+        (fsharp
+            """
+            module Test
+            let f (instMembers: int list) (statMembers: int list) =
+                not (List.isEmpty instMembers) && not (List.isEmpty statMembers)
+            """)
         "not (List.isEmpty instMembers || List.isEmpty statMembers)"
 
 [<Fact>]
 let ``De Morgan leaves method calls bare beside the operator`` () =
     assertSingleSuggestion
-        "module Test\nlet f (json: System.Collections.Generic.Dictionary<string, int>) =\n    not (json.ContainsKey \"Case\") && not (json.ContainsKey \"Fields\")"
-        "not (json.ContainsKey \"Case\" || json.ContainsKey \"Fields\")"
+        (fsharp
+            """
+            module Test
+            let f (json: System.Collections.Generic.Dictionary<string, int>) =
+                not (json.ContainsKey "Case") && not (json.ContainsKey "Fields")
+            """)
+        """not (json.ContainsKey "Case" || json.ContainsKey "Fields")"""
 
 [<Fact>]
 let ``De Morgan leaves a tupled call and a name bare beside the operator`` () =
     assertSingleSuggestion
-        "module Test\nlet f (isOpItem: string * int list -> bool) (isFSharpList: string -> bool) nm items =\n    not (isOpItem (nm, items)) || not (isFSharpList nm)"
+        (fsharp
+            """
+            module Test
+            let f (isOpItem: string * int list -> bool) (isFSharpList: string -> bool) nm items =
+                not (isOpItem (nm, items)) || not (isFSharpList nm)
+            """)
         "not (isOpItem (nm, items) && isFSharpList nm)"
 
 [<Fact>]
 let ``De Morgan leaves a pipeline operand bare`` () =
     // `|>` binds tighter than `||`
     assertSingleSuggestion
-        "module Test\nlet f (xs: int list) (b: bool) = not (xs |> List.isEmpty) && not b"
+        (fsharp
+            """
+            module Test
+            let f (xs: int list) (b: bool) = not (xs |> List.isEmpty) && not b
+            """)
         "not (xs |> List.isEmpty || b)"
 
 [<Fact>]
@@ -569,7 +837,11 @@ let ``De Morgan leaves a tighter-binding operand bare`` () =
 [<Fact>]
 let ``De Morgan keeps parentheses around an if operand`` () =
     assertSingleSuggestion
-        "module Test\nlet f (a: bool) b c = not (if a then b else c) && not c"
+        (fsharp
+            """
+            module Test
+            let f (a: bool) b c = not (if a then b else c) && not c
+            """)
         "not ((if a then b else c) || c)"
 
 let private assertTypedRewrite (source: string) (expected: string) =
@@ -583,43 +855,85 @@ let private assertTypedRewrite (source: string) (expected: string) =
 [<Fact>]
 let ``De Morgan keeps pipelines bare: |> binds tighter than ||`` () =
     assertTypedRewrite
-        "module Test\nlet f (xs: int list) (ys: int list) = not (xs |> List.isEmpty) && not (ys |> List.isEmpty)"
+        (fsharp
+            """
+            module Test
+            let f (xs: int list) (ys: int list) = not (xs |> List.isEmpty) && not (ys |> List.isEmpty)
+            """)
         "not (xs |> List.isEmpty || ys |> List.isEmpty)"
 
 [<Fact>]
 let ``De Morgan keeps type tests bare`` () =
     assertTypedRewrite
-        "module Test\nlet f (x: obj) (y: obj) = not (x :? string) && not (y :? string)"
+        (fsharp
+            """
+            module Test
+            let f (x: obj) (y: obj) = not (x :? string) && not (y :? string)
+            """)
         "not (x :? string || y :? string)"
 
 [<Fact>]
 let ``De Morgan keeps comparisons and applications bare`` () =
     assertTypedRewrite
-        "module Test\nlet f (g: int -> int) (h: int -> bool) (x: int) = not (g x = 1) && not (h x)"
+        (fsharp
+            """
+            module Test
+            let f (g: int -> int) (h: int -> bool) (x: int) = not (g x = 1) && not (h x)
+            """)
         "not (g x = 1 || h x)"
 
 [<Fact>]
 let ``De Morgan leaves a left or under an or bare`` () =
     // `(a || b) || c` is what `a || b || c` parses to; the result still compiles
-    assertTypedRewrite "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (a || b) && not c" "not (a || b || c)"
+    assertTypedRewrite
+        (fsharp
+            """
+            module Test
+            let f (a: bool) (b: bool) (c: bool) = not (a || b) && not c
+            """)
+        "not (a || b || c)"
 
 [<Fact>]
 let ``De Morgan brackets an or under an and`` () =
-    assertTypedRewrite "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (a || b) || not c" "not ((a || b) && c)"
+    assertTypedRewrite
+        (fsharp
+            """
+            module Test
+            let f (a: bool) (b: bool) (c: bool) = not (a || b) || not c
+            """)
+        "not ((a || b) && c)"
 
 [<Fact>]
 let ``De Morgan brackets a lambda application and an if`` () =
     assertTypedRewrite
-        "module Test\nlet f (a: bool) (b: bool) (c: bool) = not (if a then b else c) && not ((fun z -> z) b)"
+        (fsharp
+            """
+            module Test
+            let f (a: bool) (b: bool) (c: bool) = not (if a then b else c) && not ((fun z -> z) b)
+            """)
         "not ((if a then b else c) || (fun z -> z) b)"
 
 [<Fact>]
 let ``a replacement touching the next token gets one space, and no more`` () =
     // `)with` is legal; `a = b` in its place would read `bwith`
     assertSingleSuggestion
-        "module Test\nlet f (a: int) (b: int) =\n    match not (a <> b)with\n    | true -> 1\n    | false -> 2"
+        (fsharp
+            """
+            module Test
+            let f (a: int) (b: int) =
+                match not (a <> b)with
+                | true -> 1
+                | false -> 2
+            """)
         "a = b "
     // already separated: nothing added
     assertSingleSuggestion
-        "module Test\nlet f (a: int) (b: int) =\n    match not (a <> b) with\n    | true -> 1\n    | false -> 2"
+        (fsharp
+            """
+            module Test
+            let f (a: int) (b: int) =
+                match not (a <> b) with
+                | true -> 1
+                | false -> 2
+            """)
         "a = b"

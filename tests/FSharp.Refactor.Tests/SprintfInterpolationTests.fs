@@ -25,13 +25,21 @@ let ``single argument sprintf becomes typed interpolation`` () =
 [<Fact>]
 let ``multiple arguments splice in order`` () =
     assertSprintfFix
-        "module Test\nlet f (name: string) (count: int) = sprintf \"%s has %d items\" name count"
+        (fsharp
+            """
+            module Test
+            let f (name: string) (count: int) = sprintf "%s has %d items" name count
+            """)
         "$\"%s{name} has %d{count} items\""
 
 [<Fact>]
 let ``width and precision specifiers survive`` () =
     assertSprintfFix
-        "module Test\nlet f (price: float) = sprintf \"cost: %0.2f eur\" price"
+        (fsharp
+            """
+            module Test
+            let f (price: float) = sprintf "cost: %0.2f eur" price
+            """)
         "$\"cost: %0.2f{price} eur\""
 
 [<Fact>]
@@ -48,11 +56,27 @@ let ``partial application is left alone`` () =
 
 [<Fact>]
 let ``function specifiers are left alone`` () =
-    Assert.Empty(sprintfIn "module Test\nlet f (w: unit -> string) = sprintf \"%t\" (fun _ -> \"x\")")
+    Assert.Empty(
+        sprintfIn (
+            fsharp
+                """
+                module Test
+                let f (w: unit -> string) = sprintf "%t" (fun _ -> "x")
+                """
+        )
+    )
 
 [<Fact>]
 let ``complex arguments are left alone`` () =
-    Assert.Empty(sprintfIn "module Test\nlet f (xs: int list) = sprintf \"%d\" (List.sum xs)")
+    Assert.Empty(
+        sprintfIn (
+            fsharp
+                """
+                module Test
+                let f (xs: int list) = sprintf "%d" (List.sum xs)
+                """
+        )
+    )
 
 // ---- FR0043 TypedHoles ----
 

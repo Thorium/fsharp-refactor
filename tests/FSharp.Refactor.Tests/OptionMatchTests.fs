@@ -65,8 +65,8 @@ let ``Value prefix of a longer path is substituted`` () =
 [<Fact>]
 let ``else-less unit conditional gains a unit clause`` () =
     assertOptionMatch
-        "let f (x: int option) = if x.IsSome then printfn \"%d\" x.Value"
-        "match x with | Some v -> printfn \"%d\" v | None -> ()"
+        """let f (x: int option) = if x.IsSome then printfn "%d" x.Value"""
+        """match x with | Some v -> printfn "%d" v | None -> ()"""
 
 [<Fact>]
 let ``binder falls back when v is taken`` () =
@@ -85,16 +85,29 @@ let ``no Value use is left alone`` () =
 [<Fact>]
 let ``custom type with IsSome and Value members is left alone`` () =
     Assert.Empty(
-        optionMatchIn
-            "type Box(v: int) =\n    member _.IsSome = true\n    member _.Value = v\nlet f (x: Box) = if x.IsSome then x.Value else 0"
+        optionMatchIn (
+            fsharp
+                """
+                type Box(v: int) =
+                    member _.IsSome = true
+                    member _.Value = v
+                let f (x: Box) = if x.IsSome then x.Value else 0
+                """
+        )
     )
 
 [<Fact>]
 let ``a predicate reading a Span keeps the IsSome form`` () =
     // the fabricated lambda cannot capture a byref-like local
     Assert.Empty(
-        optionMatchIn
-            "let f (x: int option) (bytes: byte[]) =\n    let span = System.Span<byte>(bytes)\n    x.IsSome && x.Value > span.Length"
+        optionMatchIn (
+            fsharp
+                """
+                let f (x: int option) (bytes: byte[]) =
+                    let span = System.Span<byte>(bytes)
+                    x.IsSome && x.Value > span.Length
+                """
+        )
     )
 
 [<Fact>]
@@ -127,7 +140,14 @@ let ``a voption combo uses the ValueOption module`` () =
 [<Fact>]
 let ``a multiline if with single-line branches now rewrites`` () =
     assertOptionMatch
-        "let f (x: int option) =\n    if x.IsSome then\n        x.Value + 1\n    else\n        0"
+        (fsharp
+            """
+            let f (x: int option) =
+                if x.IsSome then
+                    x.Value + 1
+                else
+                    0
+            """)
         "match x with | Some v -> v + 1 | None -> 0"
 
 [<Fact>]
@@ -147,8 +167,15 @@ let ``a predicate reading a mutable local stays a boolean chain`` () =
     // the predicates would move into an Option.exists lambda, where
     // capturing a mutable local was FS0407 before F# 10
     Assert.Empty(
-        optionMatchIn
-            "let f (x: int option) =\n    let mutable total = 0\n    if x.IsSome && x.Value > total then total <- 1\n    total"
+        optionMatchIn (
+            fsharp
+                """
+                let f (x: int option) =
+                    let mutable total = 0
+                    if x.IsSome && x.Value > total then total <- 1
+                    total
+                """
+        )
     )
 
 [<Fact>]
@@ -156,13 +183,31 @@ let ``IsNone chains inside a query expression stay untouched`` () =
     // inside query { } the property shape IS what the LINQ translator
     // recognizes; Option.forall with a lambda is a tree it has never seen
     Assert.Empty(
-        optionMatchIn
-            "open System.Linq\nlet f (xs: int list) (y: int option) =\n    query {\n        for x in xs.AsQueryable() do\n            where (y.IsNone || (y.Value > x))\n            select x\n    }"
+        optionMatchIn (
+            fsharp
+                """
+                open System.Linq
+                let f (xs: int list) (y: int option) =
+                    query {
+                        for x in xs.AsQueryable() do
+                            where (y.IsNone || (y.Value > x))
+                            select x
+                    }
+                """
+        )
     )
 
 [<Fact>]
 let ``IsSome conditionals inside a quotation stay untouched`` () =
-    Assert.Empty(optionMatchIn "let f (y: int option) =\n    <@ if y.IsSome then y.Value + 1 else 0 @>")
+    Assert.Empty(
+        optionMatchIn (
+            fsharp
+                """
+                let f (y: int option) =
+                    <@ if y.IsSome then y.Value + 1 else 0 @>
+                """
+        )
+    )
 
 [<Fact>]
 let ``a None comparison is the same test as IsSome`` () =
@@ -177,27 +222,73 @@ let ``an equals-None comparison swaps the arms`` () =
 [<Fact>]
 let ``multi-line branches become a match laid out over lines`` () =
     assertOptionMatch
-        "let f (x: int option) =\n    if x <> None then\n        let y = x.Value + 1\n        y * 2\n    else\n        0"
-        "match x with\n    | Some v ->\n        let y = v + 1\n        y * 2\n    | None ->\n        0"
+        (fsharp
+            """
+            let f (x: int option) =
+                if x <> None then
+                    let y = x.Value + 1
+                    y * 2
+                else
+                    0
+            """)
+        (fsharp
+            """
+            match x with
+                | Some v ->
+                    let y = v + 1
+                    y * 2
+                | None ->
+                    0
+            """)
 
 [<Fact>]
 let ``an else-less multi-line unit branch gains a unit None arm`` () =
     assertOptionMatch
-        "let f (x: int option) =\n    if x.IsSome then\n        printfn \"%d\" x.Value\n        printfn \"done\""
-        "match x with\n    | Some v ->\n        printfn \"%d\" v\n        printfn \"done\"\n    | None ->\n        ()"
+        (fsharp
+            """
+            let f (x: int option) =
+                if x.IsSome then
+                    printfn "%d" x.Value
+                    printfn "done"
+            """)
+        (fsharp
+            """
+            match x with
+                | Some v ->
+                    printfn "%d" v
+                    printfn "done"
+                | None ->
+                    ()
+            """)
 
 [<Fact>]
 let ``one-line branches of a multi-line if fold to a one-line match`` () =
     assertOptionMatch
-        "let f (x: int option) =\n    if x.IsSome then x.Value + 1\n    else\n        0"
+        (fsharp
+            """
+            let f (x: int option) =
+                if x.IsSome then x.Value + 1
+                else
+                    0
+            """)
         "match x with | Some v -> v + 1 | None -> 0"
 
 [<Fact>]
 let ``multi-line branches under an if that does not open its line stay`` () =
     // the match's clauses would sit under a `let`, not under the `if`
     Assert.Empty(
-        optionMatchIn
-            "let f (x: int option) =\n    let r = if x.IsSome then\n                let y = x.Value\n                y + 1\n            else\n                0\n    r"
+        optionMatchIn (
+            fsharp
+                """
+                let f (x: int option) =
+                    let r = if x.IsSome then
+                                let y = x.Value
+                                y + 1
+                            else
+                                0
+                    r
+                """
+        )
     )
 
 [<Fact>]
@@ -211,8 +302,15 @@ let ``a multi-line string inside a branch is never re-indented`` () =
 let ``a struct member's primary-constructor value keeps the exists form out`` () =
     // `x` is a field of the struct's `this`, which no closure may capture: FS0406
     Assert.Empty(
-        optionMatchIn
-            "module Test\n[<Struct>]\ntype S(x: int) =\n    member _.M(o: int option) = o.IsSome && o.Value > x"
+        optionMatchIn (
+            fsharp
+                """
+                module Test
+                [<Struct>]
+                type S(x: int) =
+                    member _.M(o: int option) = o.IsSome && o.Value > x
+                """
+        )
     )
 
 [<Fact>]
@@ -220,6 +318,14 @@ let ``a mutable receiver reassigned in the Some arm is left alone`` () =
     // the match binds the payload once; after `best <- ...` the original
     // reads the NEW value through best.Value and the binder the old one
     Assert.Empty(
-        optionMatchIn
-            "let f () =\n    let mutable best = Some 1\n    if best.IsSome then\n        best <- Some (best.Value + 10)\n        printfn \"%d\" best.Value"
+        optionMatchIn (
+            fsharp
+                """
+                let f () =
+                    let mutable best = Some 1
+                    if best.IsSome then
+                        best <- Some (best.Value + 10)
+                        printfn "%d" best.Value
+                """
+        )
     )

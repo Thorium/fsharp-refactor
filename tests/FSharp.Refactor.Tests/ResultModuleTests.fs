@@ -29,16 +29,20 @@ let ``Ok-wrapped body with rewrapped error becomes Result map`` () =
 [<Fact>]
 let ``result-returning body becomes Result bind`` () =
     assertSingleSuggestion
-        "let g v : Result<int, string> = Ok v\nlet f (r: Result<int, string>) = match r with | Ok v -> g v | Error e -> Error e"
+        (fsharp
+            """
+            let g v : Result<int, string> = Ok v
+            let f (r: Result<int, string>) = match r with | Ok v -> g v | Error e -> Error e
+            """)
         "Result.bind"
         "r |> Result.bind (fun v -> g v)"
 
 [<Fact>]
 let ``error transformation becomes Result mapError`` () =
     assertSingleSuggestion
-        "let f (r: Result<int, string>) = match r with | Ok v -> Ok v | Error e -> Error (e + \"!\")"
+        """let f (r: Result<int, string>) = match r with | Ok v -> Ok v | Error e -> Error (e + "!")"""
         "Result.mapError"
-        "r |> Result.mapError (fun e -> e + \"!\")"
+        """r |> Result.mapError (fun e -> e + "!")"""
 
 [<Fact>]
 let ``rewrapped both sides is the identity`` () =
@@ -95,8 +99,13 @@ let ``reversed clause order is recognized`` () =
 
 [<Fact>]
 let ``shadowed Ok and Error cases are not rewritten`` () =
-    assertNoSuggestion
-        "type MyResult = Ok of int | Error of string\nlet f (x: MyResult) = match x with | Ok v -> Ok (v + 1) | Error e -> Error e"
+    assertNoSuggestion (
+        fsharp
+            """
+            type MyResult = Ok of int | Error of string
+            let f (x: MyResult) = match x with | Ok v -> Ok (v + 1) | Error e -> Error e
+            """
+    )
 
 [<Fact>]
 let ``when guard is not rewritten`` () =
@@ -113,8 +122,20 @@ let ``error rewrapping a different value is not map`` () =
 let ``a unit ok arm with a logging error arm keeps its match`` () =
     // fantomas Daemon: a readable three-line match became a 190-character
     // line carrying two closures, one of them `Result.map (fun _ -> ())`
-    assertNoSuggestion
-        "type FantomasLogLevel =\n    | Error\n    | Info\nlet log (level: FantomasLogLevel) (message: string) = ()\nlet f (result: Result<int, string>) =\n    match result with\n    | Ok _ -> ()\n    | Error error -> log FantomasLogLevel.Error $\"Failed: {error}\""
+    assertNoSuggestion (
+        fsharp
+            """
+            [<RequireQualifiedAccess>]
+            type FantomasLogLevel =
+                | Error
+                | Info
+            let log (level: FantomasLogLevel) (message: string) = ()
+            let f (result: Result<int, string>) =
+                match result with
+                | Ok _ -> ()
+                | Error error -> log FantomasLogLevel.Error $"Failed: {error}"
+            """
+    )
 
 [<Fact>]
 let ``a map lambda that would return unit is withheld`` () =
@@ -122,38 +143,87 @@ let ``a map lambda that would return unit is withheld`` () =
     // Console.WriteLine v)` would map to Result<unit, _> only to throw it
     // away (printfn would not do as the probe: its symbol returns a
     // generic 'T that only the applied format makes unit)
-    assertNoSuggestion
-        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> System.Console.WriteLine v\n    | Error e -> System.Console.Error.WriteLine e"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f (r: Result<int, string>) =
+                match r with
+                | Ok v -> System.Console.WriteLine v
+                | Error e -> System.Console.Error.WriteLine e
+            """
+    )
 
 [<Fact>]
 let ``a rewrite past 100 columns is withheld`` () =
-    assertNoSuggestion
-        "let computeTheAdjustedValueForTheGivenResult (v: int) = v * 2\nlet f (someRatherLongResultName: Result<int, string>) =\n    match someRatherLongResultName with\n    | Ok v -> computeTheAdjustedValueForTheGivenResult v + computeTheAdjustedValueForTheGivenResult v\n    | Error _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            let computeTheAdjustedValueForTheGivenResult (v: int) = v * 2
+            let f (someRatherLongResultName: Result<int, string>) =
+                match someRatherLongResultName with
+                | Ok v -> computeTheAdjustedValueForTheGivenResult v + computeTheAdjustedValueForTheGivenResult v
+                | Error _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``a tuple arm keeps its match`` () =
-    assertNoSuggestion
-        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v, true\n    | Error _ -> 0, false"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f (r: Result<int, string>) =
+                match r with
+                | Ok v -> v, true
+                | Error _ -> 0, false
+            """
+    )
 
 [<Fact>]
 let ``a pipeline arm keeps its match`` () =
-    assertNoSuggestion
-        "let f (r: Result<int list, string>) =\n    match r with\n    | Ok v -> v |> List.map abs |> List.sum\n    | Error _ -> 0"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f (r: Result<int list, string>) =
+                match r with
+                | Ok v -> v |> List.map abs |> List.sum
+                | Error _ -> 0
+            """
+    )
 
 [<Fact>]
 let ``a lambda arm keeps its match`` () =
-    assertNoSuggestion
-        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> fun x -> x + v\n    | Error _ -> fun x -> x"
+    assertNoSuggestion (
+        fsharp
+            """
+            let f (r: Result<int, string>) =
+                match r with
+                | Ok v -> fun x -> x + v
+                | Error _ -> fun x -> x
+            """
+    )
 
 [<Fact>]
 let ``a multi-line match still rewrites when the line stays short`` () =
     assertSingleSuggestion
-        "let f (r: Result<int, string>) =\n    match r with\n    | Ok v -> v * 2\n    | Error _ -> 0"
+        (fsharp
+            """
+            let f (r: Result<int, string>) =
+                match r with
+                | Ok v -> v * 2
+                | Error _ -> 0
+            """)
         "Result.map + Result.defaultValue"
         "r |> Result.map (fun v -> v * 2) |> Result.defaultValue 0"
 
 [<Fact>]
 let ``a struct member's primary-constructor value stays out of the lambda`` () =
     // `x` is a field of the struct's `this`, which no closure may capture: FS0406
-    assertNoSuggestion
-        "module Test\n[<Struct>]\ntype S(x: int) =\n    member _.M(r: Result<int, string>) = match r with Ok v -> Ok (v + x) | Error e -> Error e"
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            [<Struct>]
+            type S(x: int) =
+                member _.M(r: Result<int, string>) = match r with Ok v -> Ok (v + x) | Error e -> Error e
+            """
+    )

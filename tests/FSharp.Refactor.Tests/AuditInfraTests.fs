@@ -141,7 +141,16 @@ let ``FR0035: a private list converts in place whatever a later file says`` () =
     // a later file cannot reach a private binding; the mention below is a
     // different `names`
     let messages =
-        loopPerfOnFirst "private " "module Program\n\nlet names = [ \"z\" ]\nlet count () = List.length names\n"
+        loopPerfOnFirst
+            "private "
+            (fsharp
+                """
+                module Program
+
+                let names = [ "z" ]
+                let count () = List.length names
+
+                """)
 
     let texts = fixTexts (messages |> List.filter (fun m -> m.Code = "FR0035"))
     Assert.Contains(texts, fun t -> t.Contains "Set.ofList")
@@ -177,7 +186,15 @@ let ``FR0011: a public active pattern a LATER file invokes as a function keeps i
     let messages =
         structActivePatternOnFirst
             ""
-            "module Program\n\nopen Parsing\n\nlet count (args: string list) = args |> List.choose (|Int|_|) |> List.length\n"
+            (fsharp
+                """
+                module Program
+
+                open Parsing
+
+                let count (args: string list) = args |> List.choose (|Int|_|) |> List.length
+
+                """)
 
     Assert.Empty(messages |> List.filter (fun m -> m.Code = "FR0011"))
 
@@ -187,7 +204,18 @@ let ``FR0011: a public active pattern a later file only MATCHES on still gets it
     let messages =
         structActivePatternOnFirst
             ""
-            "module Program\n\nopen Parsing\n\nlet value (s: string) =\n    match s with\n    | Int v -> v\n    | _ -> 0\n"
+            (fsharp
+                """
+                module Program
+
+                open Parsing
+
+                let value (s: string) =
+                    match s with
+                    | Int v -> v
+                    | _ -> 0
+
+                """)
 
     let fr0011 = messages |> List.filter (fun m -> m.Code = "FR0011")
     Assert.Contains(fixTexts fr0011, fun t -> t.Contains "[<return: Struct>]")
@@ -197,7 +225,14 @@ let ``FR0011: a private active pattern gets its struct return whatever a later f
     let messages =
         structActivePatternOnFirst
             "private "
-            "module Program\n\nlet (|Int|_|) (s: string) = Some 1\nlet count (args: string list) = args |> List.choose (|Int|_|) |> List.length\n"
+            (fsharp
+                """
+                module Program
+
+                let (|Int|_|) (s: string) = Some 1
+                let count (args: string list) = args |> List.choose (|Int|_|) |> List.length
+
+                """)
 
     let fr0011 = messages |> List.filter (fun m -> m.Code = "FR0011")
     Assert.Contains(fixTexts fr0011, fun t -> t.Contains "[<return: Struct>]")
@@ -207,7 +242,7 @@ let ``the later files of a compilation are the ones after the analysed file`` ()
     // a backslash separates only on Windows; elsewhere it is a character of the name
     let b =
         if OperatingSystem.IsWindows() then
-            "C:\\p\\B.fs"
+            """C:\p\B.fs"""
         else
             "C:/p/B.fs"
 
@@ -420,7 +455,18 @@ let private repository () =
     let contest = Path.Combine(root, "src", "Contest")
     Directory.CreateDirectory contest |> ignore
     let rules = Path.Combine(contest, "Rules.fs")
-    File.WriteAllText(rules, "module Rules\n\nlet score (r: int) = if r < 0 then failwith \"negative\" else r\n")
+
+    File.WriteAllText(
+        rules,
+        fsharp
+            """
+            module Rules
+
+            let score (r: int) = if r < 0 then failwith "negative" else r
+
+            """
+    )
+
     root, rules
 
 [<Fact>]
@@ -430,7 +476,13 @@ let ``FR0092: a production file under Contest is not the test pinning its own te
     // `Contest` carried the substring, not the word
     File.WriteAllText(
         Path.Combine(root, "src", "Contest", "Other.fs"),
-        "module Other\n\nlet check (r: int) = if r < 0 then failwith \"negative\" else r\n"
+        fsharp
+            """
+            module Other
+
+            let check (r: int) = if r < 0 then failwith "negative" else r
+
+            """
     )
 
     Assert.Empty(Configuration.testFilesMentioning rules "\"negative\"")
@@ -444,7 +496,15 @@ let ``FR0092: a real test asserting on the text still pins it`` () =
 
     File.WriteAllText(
         testFile,
-        "module RulesTests\n\nlet check () =\n    let ex = Assert.Throws(fun () -> Rules.score -1 |> ignore)\n    Assert.Equal(\"negative\", ex.Message)\n"
+        fsharp
+            """
+            module RulesTests
+
+            let check () =
+                let ex = Assert.Throws(fun () -> Rules.score -1 |> ignore)
+                Assert.Equal("negative", ex.Message)
+
+            """
     )
 
     match Configuration.testFilesMentioning rules "\"negative\"" with
@@ -473,7 +533,7 @@ let private enrichmentWith (assertion: string) =
 let ``FR0092: the assertion loosens in the production message's own fix`` () =
     // the two halves are one atomic set: the enrichment never lands without
     // the prefix check, and the prefix check never lands without it
-    let testFile, messages = enrichmentWith "Assert.Equal(\"negative\", ex.Message)"
+    let testFile, messages = enrichmentWith """Assert.Equal("negative", ex.Message)"""
 
     match messages with
     | [ m ] ->
@@ -485,7 +545,7 @@ let ``FR0092: the assertion loosens in the production message's own fix`` () =
         Assert.Equal<(string * string) list>(
             [
                 "Rules.fs", "$\"negative, calling score with r: {r}\""
-                "RulesTests.fs", "Assert.StartsWith(\"negative\","
+                "RulesTests.fs", """Assert.StartsWith("negative","""
             ],
             byFile
         )
@@ -508,7 +568,7 @@ let ``FR0092: a test spelling the text about something else vetoes the enrichmen
     // `Assert.Equal("negative", s)` is not about an exception's message:
     // loosening it would weaken the test for nothing, and enriching
     // without loosening would turn it red - so neither happens
-    let _, messages = enrichmentWith "Assert.Equal(\"negative\", s)"
+    let _, messages = enrichmentWith """Assert.Equal("negative", s)"""
 
     match messages with
     | [ m ] ->
@@ -526,7 +586,14 @@ let private testFileWith (tag: string) (body: string) =
 
     File.WriteAllText(
         file,
-        "module Tests\nopen System\ntype TestAttribute() =\n    inherit Attribute()\n"
+        fsharp
+            """
+            module Tests
+            open System
+            type TestAttribute() =
+                inherit Attribute()
+
+            """
         + body
     )
 
@@ -538,7 +605,15 @@ let ``FR0037: an HttpClient built per case in a test file is not the lifetime qu
     let file, options =
         testFileWith
             "test-httpclient"
-            "[<Test>]\nlet check () =\n    for u in [ \"a\"; \"b\" ] do\n        let client = new System.Net.Http.HttpClient()\n        printfn \"%s\" (client.GetStringAsync(u).Result)\n"
+            (fsharp
+                """
+                [<Test>]
+                let check () =
+                    for u in [ "a"; "b" ] do
+                        let client = new System.Net.Http.HttpClient()
+                        printfn "%s" (client.GetStringAsync(u).Result)
+
+                """)
 
     let messages = run Analyzers.loopPerfCliAnalyzer (cliContext options file)
     Assert.Empty(messages |> List.filter (fun m -> m.Code = "FR0037"))
@@ -549,7 +624,15 @@ let ``FR0037: an HttpClient built per case in a test file is not the lifetime qu
 
     File.WriteAllText(
         plain,
-        "module Program\nlet check () =\n    for u in [ \"a\"; \"b\" ] do\n        let client = new System.Net.Http.HttpClient()\n        printfn \"%s\" (client.GetStringAsync(u).Result)\n"
+        fsharp
+            """
+            module Program
+            let check () =
+                for u in [ "a"; "b" ] do
+                    let client = new System.Net.Http.HttpClient()
+                    printfn "%s" (client.GetStringAsync(u).Result)
+
+            """
     )
 
     let messages =
@@ -562,7 +645,14 @@ let ``FR0165: a test pinning a local clock against a UTC one is left alone`` () 
     let file, options =
         testFileWith
             "test-kindmix"
-            "[<Test>]\nlet check () =\n    let started = DateTime.UtcNow\n    DateTime.Now > started\n"
+            (fsharp
+                """
+                [<Test>]
+                let check () =
+                    let started = DateTime.UtcNow
+                    DateTime.Now > started
+
+                """)
 
     let messages = run Analyzers.dateTimeKindMixCliAnalyzer (cliContext options file)
     Assert.Empty messages
@@ -574,7 +664,16 @@ let ``FR0168 owns a try around Parse with a catch-all, and FR0055 stands down th
 
     File.WriteAllText(
         file,
-        "module Program\nopen System\nlet parse (s: string) =\n    try Int32.Parse s with _ -> 0\nlet swallow (read: unit -> string) =\n    try read () with _ -> \"\"\n"
+        fsharp
+            """
+            module Program
+            open System
+            let parse (s: string) =
+                try Int32.Parse s with _ -> 0
+            let swallow (read: unit -> string) =
+                try read () with _ -> ""
+
+            """
     )
 
     let options = exeOptions (Path.Combine(dir, "App.fsproj")) [ file ]

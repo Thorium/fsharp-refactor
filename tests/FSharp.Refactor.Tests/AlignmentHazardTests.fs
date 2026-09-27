@@ -26,8 +26,8 @@ let ``fparsec's paren block aligned under the shortened line is a hazard`` () =
     // the line under it, aligned to `flags`, re-parses as an application
     let lines =
         [
-            "    s.SkipCaseFolded(\"inf\") && (flags <- flags ||| 1"
-            "                                stream.SkipCaseFolded(\"inity\") |> ignore"
+            """    s.SkipCaseFolded("inf") && (flags <- flags ||| 1"""
+            """                                stream.SkipCaseFolded("inity") |> ignore"""
         ]
 
     Assert.True(hazardIn lines 1 27 -2)

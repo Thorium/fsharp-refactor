@@ -29,35 +29,90 @@ let private assertRewrite (source: string) (expectedBody: string) =
 let ``RunSynchronously in a test becomes a task-returning test`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``reads`` () =\n    let res = load () |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\"")
-        "task {\n        let! res = load () |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``reads`` () =
+                 let res = load () |> Async.RunSynchronously
+                 if res.X <> 1 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    let! res = load () |> Async.StartImmediateAsTask
+                    if res.X <> 1 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``Result on a task becomes a bind`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``fetches`` () =\n    let res = (fetch ()).Result\n    if res.X <> 2 then failwith \"wrong\"")
-        "task {\n        let! res = (fetch ())\n        if res.X <> 2 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``fetches`` () =
+                 let res = (fetch ()).Result
+                 if res.X <> 2 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    let! res = (fetch ())
+                    if res.X <> 2 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a final Wait becomes do-bang`` () =
     assertRewrite
-        (scaffold + "[<Fact>]\nlet ``runs`` () =\n    let t = run ()\n    t.Wait()")
-        "task {\n        let t = run ()\n        do! t\n    } :> System.Threading.Tasks.Task"
+        (scaffold
+         + fsharp
+             """
+             [<Fact>]
+             let ``runs`` () =
+                 let t = run ()
+                 t.Wait()
+             """)
+        (fsharp
+            """
+            task {
+                    let t = run ()
+                    do! t
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a discarded blocking call becomes let-bang underscore`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``discards`` () =\n    load () |> Async.RunSynchronously |> ignore\n    ()")
-        "task {\n        let! _ = load () |> Async.StartImmediateAsTask\n        ()\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``discards`` () =
+                 load () |> Async.RunSynchronously |> ignore
+                 ()
+             """)
+        (fsharp
+            """
+            task {
+                    let! _ = load () |> Async.StartImmediateAsTask
+                    ()
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a test without a blocking site is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``plain`` () =\n    let r = { X = 1 }\n    if r.X <> 1 then failwith \"wrong\""
+            + fsharp
+                """
+                [<Fact>]
+                let ``plain`` () =
+                    let r = { X = 1 }
+                    if r.X <> 1 then failwith "wrong"
+                """
         )
     )
 
@@ -66,7 +121,12 @@ let ``a function without a test attribute is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "let helper () =\n    let res = load () |> Async.RunSynchronously\n    res.X"
+            + fsharp
+                """
+                let helper () =
+                    let res = load () |> Async.RunSynchronously
+                    res.X
+                """
         )
     )
 
@@ -76,7 +136,13 @@ let ``a blocking site nested in a lambda does not move`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``nested`` () =\n    let f () = load () |> Async.RunSynchronously\n    if (f ()).X <> 1 then failwith \"wrong\""
+            + fsharp
+                """
+                [<Fact>]
+                let ``nested`` () =
+                    let f () = load () |> Async.RunSynchronously
+                    if (f ()).X <> 1 then failwith "wrong"
+                """
         )
     )
 
@@ -86,7 +152,14 @@ let ``a test holding a Span is left synchronous`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``spanned`` () =\n    let buf = Span<byte>(Array.zeroCreate 4)\n    let res = load () |> Async.RunSynchronously\n    if res.X <> buf.Length then failwith \"wrong\""
+            + fsharp
+                """
+                [<Fact>]
+                let ``spanned`` () =
+                    let buf = Span<byte>(Array.zeroCreate 4)
+                    let res = load () |> Async.RunSynchronously
+                    if res.X <> buf.Length then failwith "wrong"
+                """
         )
     )
 
@@ -95,7 +168,15 @@ let ``a test that already returns a task is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``already`` () =\n    task {\n        let! r = load () |> Async.StartImmediateAsTask\n        if r.X <> 1 then failwith \"wrong\"\n    } :> Task"
+            + fsharp
+                """
+                [<Fact>]
+                let ``already`` () =
+                    task {
+                        let! r = load () |> Async.StartImmediateAsTask
+                        if r.X <> 1 then failwith "wrong"
+                    } :> Task
+                """
         )
     )
 
@@ -104,7 +185,13 @@ let ``a RunSynchronously with a timeout is a different contract`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``timed`` () =\n    let res = Async.RunSynchronously(load (), 1000)\n    if res.X <> 1 then failwith \"wrong\""
+            + fsharp
+                """
+                [<Fact>]
+                let ``timed`` () =
+                    let res = Async.RunSynchronously(load (), 1000)
+                    if res.X <> 1 then failwith "wrong"
+                """
         )
     )
 
@@ -114,57 +201,165 @@ let ``Result on a task-typed local becomes a bind`` () =
     // DotGet — both shapes must be seen
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``local`` () =\n    let t = fetch ()\n    let res = t.Result\n    if res.X <> 2 then failwith \"wrong\"")
-        "task {\n        let t = fetch ()\n        let! res = t\n        if res.X <> 2 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``local`` () =
+                 let t = fetch ()
+                 let res = t.Result
+                 if res.X <> 2 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    let t = fetch ()
+                    let! res = t
+                    if res.X <> 2 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a whole-body async block piped to RunSynchronously is the test itself`` () =
     // no task block: the awaitable becomes the test, upcast to Task
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``whole`` () =\n    async {\n        let! r = load ()\n        if r.X <> 1 then failwith \"wrong\"\n    } |> Async.RunSynchronously")
-        "async {\n        let! r = load ()\n        if r.X <> 1 then failwith \"wrong\"\n    } |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``whole`` () =
+                 async {
+                     let! r = load ()
+                     if r.X <> 1 then failwith "wrong"
+                 } |> Async.RunSynchronously
+             """)
+        (fsharp
+            """
+            async {
+                    let! r = load ()
+                    if r.X <> 1 then failwith "wrong"
+                } |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a final blocking statement of a unit test becomes do-bang`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``final`` () =\n    let res = load () |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\"\n    work () |> Async.RunSynchronously")
-        "task {\n        let! res = load () |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\"\n        do! work () |> Async.StartImmediateAsTask\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``final`` () =
+                 let res = load () |> Async.RunSynchronously
+                 if res.X <> 1 then failwith "wrong"
+                 work () |> Async.RunSynchronously
+             """)
+        (fsharp
+            """
+            task {
+                    let! res = load () |> Async.StartImmediateAsTask
+                    if res.X <> 1 then failwith "wrong"
+                    do! work () |> Async.StartImmediateAsTask
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``Wait on a generic task is upcast before do-bang`` () =
     // `do!` needs a unit result; `Task<T>` only has one as a plain `Task`
     assertRewrite
-        (scaffold + "[<Fact>]\nlet ``waits`` () =\n    let t = fetch ()\n    t.Wait()")
-        "task {\n        let t = fetch ()\n        do! (t :> System.Threading.Tasks.Task)\n    } :> System.Threading.Tasks.Task"
+        (scaffold
+         + fsharp
+             """
+             [<Fact>]
+             let ``waits`` () =
+                 let t = fetch ()
+                 t.Wait()
+             """)
+        (fsharp
+            """
+            task {
+                    let t = fetch ()
+                    do! (t :> System.Threading.Tasks.Task)
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a final discarded site gets the unit the ignore supplied`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``discardsLast`` () =\n    let t = fetch ()\n    load () |> Async.RunSynchronously |> ignore")
-        "task {\n        let t = fetch ()\n        let! _ = load () |> Async.StartImmediateAsTask\n        ()\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``discardsLast`` () =
+                 let t = fetch ()
+                 load () |> Async.RunSynchronously |> ignore
+             """)
+        (fsharp
+            """
+            task {
+                    let t = fetch ()
+                    let! _ = load () |> Async.StartImmediateAsTask
+                    ()
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``an NUnit-style member test is rewritten too`` () =
     assertRewrite
         (scaffold
-         + "type Fixture() =\n    [<Test>]\n    member _.``reads`` () =\n        let res = load () |> Async.RunSynchronously\n        if res.X <> 1 then failwith \"wrong\"")
-        "task {\n            let! res = load () |> Async.StartImmediateAsTask\n            if res.X <> 1 then failwith \"wrong\"\n        } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             type Fixture() =
+                 [<Test>]
+                 member _.``reads`` () =
+                     let res = load () |> Async.RunSynchronously
+                     if res.X <> 1 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                        let! res = load () |> Async.StartImmediateAsTask
+                        if res.X <> 1 then failwith "wrong"
+                    } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a value-returning final site has no bind shape`` () =
     // the test returns R, not unit — nothing to `do!`
-    Assert.Empty(findIn (scaffold + "[<Fact>]\nlet ``value`` () =\n    let t = fetch ()\n    t.Result"))
+    Assert.Empty(
+        findIn (
+            scaffold
+            + fsharp
+                """
+                [<Fact>]
+                let ``value`` () =
+                    let t = fetch ()
+                    t.Result
+                """
+        )
+    )
 
 
 [<Fact>]
 let ``a whole-body async block on its own line is the test itself`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``whole2`` () =\n    async {\n        let! r = load ()\n        if r.X <> 1 then failwith \"wrong\"\n    }\n    |> Async.RunSynchronously")
-        "async {\n        let! r = load ()\n        if r.X <> 1 then failwith \"wrong\"\n    }\n    |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``whole2`` () =
+                 async {
+                     let! r = load ()
+                     if r.X <> 1 then failwith "wrong"
+                 }
+                 |> Async.RunSynchronously
+             """)
+        (fsharp
+            """
+            async {
+                    let! r = load ()
+                    if r.X <> 1 then failwith "wrong"
+                }
+                |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a task awaited then run synchronously drops both pipes`` () =
@@ -172,22 +367,64 @@ let ``a task awaited then run synchronously drops both pipes`` () =
     // awaitable all along
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``viaAwait`` () =\n    task {\n        let! r = fetch ()\n        if r.X <> 2 then failwith \"wrong\"\n    } |> Async.AwaitTask |> Async.RunSynchronously")
-        "task {\n        let! r = fetch ()\n        if r.X <> 2 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``viaAwait`` () =
+                 task {
+                     let! r = fetch ()
+                     if r.X <> 2 then failwith "wrong"
+                 } |> Async.AwaitTask |> Async.RunSynchronously
+             """)
+        (fsharp
+            """
+            task {
+                    let! r = fetch ()
+                    if r.X <> 2 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a match on a blocking scrutinee becomes match-bang`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``matches`` () =\n    match load () |> Async.RunSynchronously with\n    | { X = 1 } -> ()\n    | _ -> failwith \"wrong\"")
-        "task {\n        match! load () |> Async.StartImmediateAsTask with\n        | { X = 1 } -> ()\n        | _ -> failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``matches`` () =
+                 match load () |> Async.RunSynchronously with
+                 | { X = 1 } -> ()
+                 | _ -> failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    match! load () |> Async.StartImmediateAsTask with
+                    | { X = 1 } -> ()
+                    | _ -> failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``GetResult on a plain task is a do-bang site`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``awaiter`` () =\n    (run ()).GetAwaiter().GetResult()\n    let t = fetch ()\n    if t.Result.X <> 2 then failwith \"wrong\"")
-        "task {\n        do! (run ())\n        let t = fetch ()\n        if t.Result.X <> 2 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``awaiter`` () =
+                 (run ()).GetAwaiter().GetResult()
+                 let t = fetch ()
+                 if t.Result.X <> 2 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    do! (run ())
+                    let t = fetch ()
+                    if t.Result.X <> 2 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a discarded site whose pipe opens a new line keeps the pipe in line`` () =
@@ -195,15 +432,45 @@ let ``a discarded site whose pipe opens a new line keeps the pipe in line`` () =
     // or the operator lands offside (Fuuga's EvalTests)
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``captures`` () =\n    let mutable seen = \"\"\n    load ()\n    |> Async.RunSynchronously |> ignore\n    seen <- \"x\"")
-        "task {\n        let mutable seen = \"\"\n        let! _ = load ()\n                 |> Async.StartImmediateAsTask\n        seen <- \"x\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``captures`` () =
+                 let mutable seen = ""
+                 load ()
+                 |> Async.RunSynchronously |> ignore
+                 seen <- "x"
+             """)
+        (fsharp
+            """
+            task {
+                    let mutable seen = ""
+                    let! _ = load ()
+                             |> Async.StartImmediateAsTask
+                    seen <- "x"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a final unit site whose pipe opens a new line keeps the pipe in line`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``finalPiped`` () =\n    let t = fetch ()\n    work ()\n    |> Async.RunSynchronously")
-        "task {\n        let t = fetch ()\n        do! work ()\n            |> Async.StartImmediateAsTask\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``finalPiped`` () =
+                 let t = fetch ()
+                 work ()
+                 |> Async.RunSynchronously
+             """)
+        (fsharp
+            """
+            task {
+                    let t = fetch ()
+                    do! work ()
+                        |> Async.StartImmediateAsTask
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a discarded result the typed tree proves unit becomes do-bang`` () =
@@ -211,15 +478,41 @@ let ``a discarded result the typed tree proves unit becomes do-bang`` () =
     // value-bearing site keeps `let! _ =` rather than gaining Async.Ignore
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``unitDiscard`` () =\n    work () |> Async.RunSynchronously |> ignore\n    load () |> Async.RunSynchronously |> ignore\n    ()")
-        "task {\n        do! work () |> Async.StartImmediateAsTask\n        let! _ = load () |> Async.StartImmediateAsTask\n        ()\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``unitDiscard`` () =
+                 work () |> Async.RunSynchronously |> ignore
+                 load () |> Async.RunSynchronously |> ignore
+                 ()
+             """)
+        (fsharp
+            """
+            task {
+                    do! work () |> Async.StartImmediateAsTask
+                    let! _ = load () |> Async.StartImmediateAsTask
+                    ()
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a final discarded unit result ends the block on do-bang`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``unitLast`` () =\n    let t = fetch ()\n    work () |> Async.RunSynchronously |> ignore")
-        "task {\n        let t = fetch ()\n        do! work () |> Async.StartImmediateAsTask\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``unitLast`` () =
+                 let t = fetch ()
+                 work () |> Async.RunSynchronously |> ignore
+             """)
+        (fsharp
+            """
+            task {
+                    let t = fetch ()
+                    do! work () |> Async.StartImmediateAsTask
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a body holding a string literal that spans lines is left alone`` () =
@@ -239,7 +532,13 @@ let ``a same-named attribute outside a known framework is not a test`` () =
     Assert.Empty(
         findIn (
             scaffold.Replace("module Xunit", "module Homegrown")
-            + "[<Fact>]\nlet ``reads`` () =\n    let res = load () |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\""
+            + fsharp
+                """
+                [<Fact>]
+                let ``reads`` () =
+                    let res = load () |> Async.RunSynchronously
+                    if res.X <> 1 then failwith "wrong"
+                """
         )
     )
 
@@ -249,7 +548,16 @@ let ``a body holding a lock across the work is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "let gate = obj ()\n[<Fact>]\nlet ``locked`` () =\n    System.Threading.Monitor.Enter gate\n    let res = load () |> Async.RunSynchronously\n    System.Threading.Monitor.Exit gate\n    if res.X <> 1 then failwith \"wrong\""
+            + fsharp
+                """
+                let gate = obj ()
+                [<Fact>]
+                let ``locked`` () =
+                    System.Threading.Monitor.Enter gate
+                    let res = load () |> Async.RunSynchronously
+                    System.Threading.Monitor.Exit gate
+                    if res.X <> 1 then failwith "wrong"
+                """
         )
     )
 
@@ -259,7 +567,14 @@ let ``a Wait bound to a name has no let-bang form`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``waitBound`` () =\n    let t = fetch ()\n    let x = t.Wait()\n    x"
+            + fsharp
+                """
+                [<Fact>]
+                let ``waitBound`` () =
+                    let t = fetch ()
+                    let x = t.Wait()
+                    x
+                """
         )
     )
 
@@ -268,8 +583,22 @@ let ``a continuation aligned with the bound expression follows the bang`` () =
     // `let` → `let!` moves the expression one column right
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``aligned`` () =\n    let res = load ()\n              |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\"")
-        "task {\n        let! res = load ()\n                   |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``aligned`` () =
+                 let res = load ()
+                           |> Async.RunSynchronously
+                 if res.X <> 1 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    let! res = load ()
+                               |> Async.StartImmediateAsTask
+                    if res.X <> 1 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``an expression starting on the line below its let keeps its indentation`` () =
@@ -278,8 +607,30 @@ let ``an expression starting on the line below its let keeps its indentation`` (
     // body came out one column deeper than its block's first line
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``below`` () =\n    let res =\n        async {\n            let! r = load ()\n            return r\n        }\n        |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\"")
-        "task {\n        let! res =\n            async {\n                let! r = load ()\n                return r\n            }\n            |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\"\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``below`` () =
+                 let res =
+                     async {
+                         let! r = load ()
+                         return r
+                     }
+                     |> Async.RunSynchronously
+                 if res.X <> 1 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                    let! res =
+                        async {
+                            let! r = load ()
+                            return r
+                        }
+                        |> Async.StartImmediateAsTask
+                    if res.X <> 1 then failwith "wrong"
+                } :> System.Threading.Tasks.Task
+            """)
 
 // ---- placement shapes: namespaces, nested modules, fixture classes ----
 
@@ -293,29 +644,89 @@ let private namespaced =
 let ``a test two modules deep inside a namespace is rewritten`` () =
     assertRewrite
         (namespaced
-         + "module Outer =\n    module Inner =\n        open Support\n        [<Fact>]\n        let ``reads`` () =\n            let res = load () |> Async.RunSynchronously\n            if res.X <> 1 then failwith \"wrong\"")
-        "task {\n                let! res = load () |> Async.StartImmediateAsTask\n                if res.X <> 1 then failwith \"wrong\"\n            } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             module Outer =
+                 module Inner =
+                     open Support
+                     [<Fact>]
+                     let ``reads`` () =
+                         let res = load () |> Async.RunSynchronously
+                         if res.X <> 1 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                            let! res = load () |> Async.StartImmediateAsTask
+                            if res.X <> 1 then failwith "wrong"
+                        } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a fixture class member with a constructor argument is rewritten`` () =
     assertRewrite
         (namespaced
-         + "open Support\ntype ``Compress internals fixture``(tag: string) =\n    [<Fact>]\n    member test.``Compress file test`` () =\n        let res = load () |> Async.RunSynchronously\n        if res.X <> 1 then failwith tag")
-        "task {\n            let! res = load () |> Async.StartImmediateAsTask\n            if res.X <> 1 then failwith tag\n        } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             open Support
+             type ``Compress internals fixture``(tag: string) =
+                 [<Fact>]
+                 member test.``Compress file test`` () =
+                     let res = load () |> Async.RunSynchronously
+                     if res.X <> 1 then failwith tag
+             """)
+        (fsharp
+            """
+            task {
+                        let! res = load () |> Async.StartImmediateAsTask
+                        if res.X <> 1 then failwith tag
+                    } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a fixture class inside a nested module is rewritten`` () =
     assertRewrite
         (namespaced
-         + "module Suite =\n    open Support\n    type Fixture() =\n        [<Fact>]\n        member _.``reads`` () =\n            let res = load () |> Async.RunSynchronously\n            if res.X <> 1 then failwith \"wrong\"")
-        "task {\n                let! res = load () |> Async.StartImmediateAsTask\n                if res.X <> 1 then failwith \"wrong\"\n            } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             module Suite =
+                 open Support
+                 type Fixture() =
+                     [<Fact>]
+                     member _.``reads`` () =
+                         let res = load () |> Async.RunSynchronously
+                         if res.X <> 1 then failwith "wrong"
+             """)
+        (fsharp
+            """
+            task {
+                            let! res = load () |> Async.StartImmediateAsTask
+                            if res.X <> 1 then failwith "wrong"
+                        } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a static member test and a whole-body member are rewritten`` () =
     assertRewrite
         (namespaced
-         + "open Support\ntype Fixture() =\n    [<Fact>]\n    static member ``whole`` () =\n        async {\n            let! r = load ()\n            if r.X <> 1 then failwith \"wrong\"\n        } |> Async.RunSynchronously")
-        "async {\n            let! r = load ()\n            if r.X <> 1 then failwith \"wrong\"\n        } |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             open Support
+             type Fixture() =
+                 [<Fact>]
+                 static member ``whole`` () =
+                     async {
+                         let! r = load ()
+                         if r.X <> 1 then failwith "wrong"
+                     } |> Async.RunSynchronously
+             """)
+        (fsharp
+            """
+            async {
+                        let! r = load ()
+                        if r.X <> 1 then failwith "wrong"
+                    } |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task
+            """)
 
 // ---- attribute variants across the three frameworks ----
 
@@ -336,7 +747,13 @@ let private expectedMember =
 let ``a qualified Fact with a Skip argument is a test`` () =
     assertRewrite
         (frameworks
-         + "module T =\n    open Support\n    [<Xunit.Fact(Skip = \"slow\")>]\n    let ``reads`` () ="
+         + fsharp
+             """
+             module T =
+                 open Support
+                 [<Xunit.Fact(Skip = "slow")>]
+                 let ``reads`` () =
+             """
          + body)
         expectedMember
 
@@ -344,7 +761,15 @@ let ``a qualified Fact with a Skip argument is a test`` () =
 let ``a Theory with InlineData and a parameter is a test`` () =
     assertRewrite
         (frameworks
-         + "module T =\n    open Support\n    open Xunit\n    [<Theory>]\n    [<InlineData(1)>]\n    let ``reads`` (n: int) ="
+         + fsharp
+             """
+             module T =
+                 open Support
+                 open Xunit
+                 [<Theory>]
+                 [<InlineData(1)>]
+                 let ``reads`` (n: int) =
+             """
          + body)
         expectedMember
 
@@ -352,7 +777,14 @@ let ``a Theory with InlineData and a parameter is a test`` () =
 let ``an NUnit Test and TestCase member in a fixture is a test`` () =
     assertRewrite
         (frameworks
-         + "open Support\nopen NUnit.Framework\ntype Fixture() =\n    [<Test; TestCase(2)>]\n    member _.``reads`` () ="
+         + fsharp
+             """
+             open Support
+             open NUnit.Framework
+             type Fixture() =
+                 [<Test; TestCase(2)>]
+                 member _.``reads`` () =
+             """
          + body)
         expectedMember
 
@@ -360,7 +792,15 @@ let ``an NUnit Test and TestCase member in a fixture is a test`` () =
 let ``an MSTest TestMethod in a TestClass is a test`` () =
     assertRewrite
         (frameworks
-         + "open Support\nopen Microsoft.VisualStudio.TestTools.UnitTesting\n[<TestClass>]\ntype Fixture() =\n    [<TestMethod>]\n    member _.``reads`` () ="
+         + fsharp
+             """
+             open Support
+             open Microsoft.VisualStudio.TestTools.UnitTesting
+             [<TestClass>]
+             type Fixture() =
+                 [<TestMethod>]
+                 member _.``reads`` () =
+             """
          + body)
         expectedMember
 
@@ -370,8 +810,22 @@ let ``an MSTest TestMethod in a TestClass is a test`` () =
 let ``WaitAll on plain tasks becomes do-bang WhenAll`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``joins`` () =\n    let a = run ()\n    let b = run ()\n    Task.WaitAll(a, b)")
-        "task {\n        let a = run ()\n        let b = run ()\n        do! Task.WhenAll(a, b)\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``joins`` () =
+                 let a = run ()
+                 let b = run ()
+                 Task.WaitAll(a, b)
+             """)
+        (fsharp
+            """
+            task {
+                    let a = run ()
+                    let b = run ()
+                    do! Task.WhenAll(a, b)
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``WaitAll on generic tasks binds and discards`` () =
@@ -379,22 +833,52 @@ let ``WaitAll on generic tasks binds and discards`` () =
     // bind, `let! _ =` does
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``joinsValues`` () =\n    Task.WaitAll(fetch (), fetch ())\n    ()")
-        "task {\n        let! _ = Task.WhenAll(fetch (), fetch ())\n        ()\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``joinsValues`` () =
+                 Task.WaitAll(fetch (), fetch ())
+                 ()
+             """)
+        (fsharp
+            """
+            task {
+                    let! _ = Task.WhenAll(fetch (), fetch ())
+                    ()
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``WaitAll on a task array value becomes do-bang WhenAll`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``joinsArray`` () =\n    let ts = [| run (); run () |]\n    Task.WaitAll ts")
-        "task {\n        let ts = [| run (); run () |]\n        do! Task.WhenAll ts\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``joinsArray`` () =
+                 let ts = [| run (); run () |]
+                 Task.WaitAll ts
+             """)
+        (fsharp
+            """
+            task {
+                    let ts = [| run (); run () |]
+                    do! Task.WhenAll ts
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``WaitAll with a timeout is a different contract`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``timedJoin`` () =\n    let a = run ()\n    Task.WaitAll([| a |], 1000) |> ignore"
+            + fsharp
+                """
+                [<Fact>]
+                let ``timedJoin`` () =
+                    let a = run ()
+                    Task.WaitAll([| a |], 1000) |> ignore
+                """
         )
     )
 
@@ -409,22 +893,72 @@ let ``a blocking call inside Assert.Throws moves to ThrowsAsync and binds`` () =
     assertRewrite
         (scaffold
          + assertScaffold
-         + "[<Fact>]\nlet ``throws`` () =\n    let t = fetch ()\n    let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n    ignore ex.Message")
-        "task {\n        let t = fetch ()\n        let! ex = Assert.ThrowsAsync<InvalidOperationException>(fun () -> t :> System.Threading.Tasks.Task)\n        ignore ex.Message\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``throws`` () =
+                 let t = fetch ()
+                 let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())
+                 ignore ex.Message
+             """)
+        (fsharp
+            """
+            task {
+                    let t = fetch ()
+                    let! ex = Assert.ThrowsAsync<InvalidOperationException>(fun () -> t :> System.Threading.Tasks.Task)
+                    ignore ex.Message
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a discarded Assert.Throws with a successor binds to underscore`` () =
     assertRewrite
         (scaffold
          + assertScaffold
-         + "[<Fact>]\nlet ``throwsIgnored`` () =\n    Assert.Throws<InvalidOperationException>(fun () -> load () |> Async.RunSynchronously |> ignore) |> ignore\n    ()")
-        "task {\n        let! _ = Assert.ThrowsAsync<InvalidOperationException>(fun () -> load () |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task)\n        ()\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``throwsIgnored`` () =
+                 Assert.Throws<InvalidOperationException>(fun () -> load () |> Async.RunSynchronously |> ignore) |> ignore
+                 ()
+             """)
+        (fsharp
+            """
+            task {
+                    let! _ = Assert.ThrowsAsync<InvalidOperationException>(fun () -> load () |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task)
+                    ()
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``NUnit's ThrowsAsync returns the exception, so the let stays a let`` () =
     assertRewrite
-        "namespace NUnit.Framework\nopen System\nopen System.Threading.Tasks\ntype TestAttribute() =\n    inherit Attribute()\ntype Assert =\n    static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>\n    static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : 'E = Unchecked.defaultof<'E>\nmodule Tests =\n    let fetch () = Task.FromResult 1\n    [<Test>]\n    let ``throws`` () =\n        let t = fetch ()\n        let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())\n        ignore ex.Message"
-        "task {\n            let t = fetch ()\n            let ex = Assert.ThrowsAsync<InvalidOperationException>(fun () -> t :> System.Threading.Tasks.Task)\n            ignore ex.Message\n        } :> System.Threading.Tasks.Task"
+        (fsharp
+            """
+            namespace NUnit.Framework
+            open System
+            open System.Threading.Tasks
+            type TestAttribute() =
+                inherit Attribute()
+            type Assert =
+                static member Throws<'E when 'E :> exn>(f: Action) : 'E = Unchecked.defaultof<'E>
+                static member ThrowsAsync<'E when 'E :> exn>(f: Func<Task>) : 'E = Unchecked.defaultof<'E>
+            module Tests =
+                let fetch () = Task.FromResult 1
+                [<Test>]
+                let ``throws`` () =
+                    let t = fetch ()
+                    let ex = Assert.Throws<InvalidOperationException>(fun () -> t.Wait())
+                    ignore ex.Message
+            """)
+        (fsharp
+            """
+            task {
+                        let t = fetch ()
+                        let ex = Assert.ThrowsAsync<InvalidOperationException>(fun () -> t :> System.Threading.Tasks.Task)
+                        ignore ex.Message
+                    } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a test choreographing threads with a signal keeps its blocking waits`` () =
@@ -434,7 +968,15 @@ let ``a test choreographing threads with a signal keeps its blocking waits`` () 
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``worker`` () =\n    let signal = new System.Threading.ManualResetEventSlim(false)\n    let worker = Task.Run(fun () -> signal.Set())\n    signal.Wait()\n    worker.Wait()"
+            + fsharp
+                """
+                [<Fact>]
+                let ``worker`` () =
+                    let signal = new System.Threading.ManualResetEventSlim(false)
+                    let worker = Task.Run(fun () -> signal.Set())
+                    signal.Wait()
+                    worker.Wait()
+                """
         )
     )
 
@@ -442,14 +984,31 @@ let ``a test choreographing threads with a signal keeps its blocking waits`` () 
 let ``a comment trailing the last line stays on that line inside the block`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``reads`` () =\n    let res = load () |> Async.RunSynchronously\n    if res.X <> 1 then failwith \"wrong\" // drained by then")
-        "task {\n        let! res = load () |> Async.StartImmediateAsTask\n        if res.X <> 1 then failwith \"wrong\" // drained by then\n    } :> System.Threading.Tasks.Task"
+         + fsharp
+             """
+             [<Fact>]
+             let ``reads`` () =
+                 let res = load () |> Async.RunSynchronously
+                 if res.X <> 1 then failwith "wrong" // drained by then
+             """)
+        (fsharp
+            """
+            task {
+                    let! res = load () |> Async.StartImmediateAsTask
+                    if res.X <> 1 then failwith "wrong" // drained by then
+                } :> System.Threading.Tasks.Task
+            """)
 
 [<Fact>]
 let ``a comment trailing a bare awaitable test survives the upcast`` () =
     assertRewrite
         (scaffold
-         + "[<Fact>]\nlet ``bare`` () =\n    work () |> Async.RunSynchronously // one shot")
+         + fsharp
+             """
+             [<Fact>]
+             let ``bare`` () =
+                 work () |> Async.RunSynchronously // one shot
+             """)
         "work () |> Async.StartImmediateAsTask :> System.Threading.Tasks.Task // one shot"
 
 // ---- state that outlives a test ----
@@ -462,7 +1021,17 @@ let ``a test assigning a module-level mutable is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "let mutable testContext = 0\n\n[<Fact>]\nlet ``t`` () =\n    testContext <- 1\n    let r = load () |> Async.RunSynchronously\n    ignore r\n"
+            + fsharp
+                """
+                let mutable testContext = 0
+
+                [<Fact>]
+                let ``t`` () =
+                    testContext <- 1
+                    let r = load () |> Async.RunSynchronously
+                    ignore r
+
+                """
         )
     )
 
@@ -472,7 +1041,16 @@ let ``a test merely reading a module-level mutable is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "let mutable testContext = 0\n\n[<Fact>]\nlet ``t`` () =\n    let r = load () |> Async.RunSynchronously\n    ignore (r, testContext)\n"
+            + fsharp
+                """
+                let mutable testContext = 0
+
+                [<Fact>]
+                let ``t`` () =
+                    let r = load () |> Async.RunSynchronously
+                    ignore (r, testContext)
+
+                """
         )
     )
 
@@ -483,7 +1061,20 @@ let ``a class's own static mutable does not hold its tests back`` () =
     // NUnit and MSTest whatever they return, so both convert
     let source =
         scaffold
-        + "type Fixture() =\n    static let mutable created = 0\n    [<Fact>]\n    member _.``creates`` () =\n        let r = load () |> Async.RunSynchronously\n        created <- r.X\n    [<Fact>]\n    member _.``reads back`` () =\n        let r = load () |> Async.RunSynchronously\n        if r.X <> created then failwith \"wrong\"\n"
+        + fsharp
+            """
+            type Fixture() =
+                static let mutable created = 0
+                [<Fact>]
+                member _.``creates`` () =
+                    let r = load () |> Async.RunSynchronously
+                    created <- r.X
+                [<Fact>]
+                member _.``reads back`` () =
+                    let r = load () |> Async.RunSynchronously
+                    if r.X <> created then failwith "wrong"
+
+            """
 
     Assert.Equal(2, (findIn source).Length)
 
@@ -493,7 +1084,19 @@ let ``a class opted into parallel tests keeps its static state shared`` () =
     // beside each other: the class-local exemption no longer holds
     let source =
         scaffold
-        + "type ParallelizableAttribute(scope: int) =\n    inherit Attribute()\n[<Parallelizable(2)>]\ntype Fixture() =\n    static let mutable created = 0\n    [<Fact>]\n    member _.``creates`` () =\n        let r = load () |> Async.RunSynchronously\n        created <- r.X\n"
+        + fsharp
+            """
+            type ParallelizableAttribute(scope: int) =
+                inherit Attribute()
+            [<Parallelizable(2)>]
+            type Fixture() =
+                static let mutable created = 0
+                [<Fact>]
+                member _.``creates`` () =
+                    let r = load () |> Async.RunSynchronously
+                    created <- r.X
+
+            """
 
     Assert.Empty(findIn source)
 
@@ -503,7 +1106,20 @@ let ``another class's state still holds a test back`` () =
     // class, whichever class runs beside it
     let source =
         scaffold
-        + "type Holder() =\n    static let mutable created = 0\n    static member Created\n        with get () = created\n        and set v = created <- v\ntype Fixture() =\n    [<Fact>]\n    member _.``writes`` () =\n        let r = load () |> Async.RunSynchronously\n        Holder.Created <- r.X\n"
+        + fsharp
+            """
+            type Holder() =
+                static let mutable created = 0
+                static member Created
+                    with get () = created
+                    and set v = created <- v
+            type Fixture() =
+                [<Fact>]
+                member _.``writes`` () =
+                    let r = load () |> Async.RunSynchronously
+                    Holder.Created <- r.X
+
+            """
 
     Assert.Empty(findIn source)
 
@@ -513,7 +1129,16 @@ let ``a test assigning its OWN mutable still converts`` () =
     match
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``t`` () =\n    let mutable seen = 0\n    let r = load () |> Async.RunSynchronously\n    seen <- r.X\n    ignore seen\n"
+            + fsharp
+                """
+                [<Fact>]
+                let ``t`` () =
+                    let mutable seen = 0
+                    let r = load () |> Async.RunSynchronously
+                    seen <- r.X
+                    ignore seen
+
+                """
         )
     with
     | [ _ ] -> ()
@@ -529,7 +1154,19 @@ let ``a file that installs global state by reflection converts nothing`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "open System.Reflection\n\ntype Mock() =\n    do typeof<R>.GetProperty(\"x\", BindingFlags.NonPublic ||| BindingFlags.Static) |> ignore\n\n[<Fact>]\nlet ``t`` () =\n    let r = load () |> Async.RunSynchronously\n    ignore r\n"
+            + fsharp
+                """
+                open System.Reflection
+
+                type Mock() =
+                    do typeof<R>.GetProperty("x", BindingFlags.NonPublic ||| BindingFlags.Static) |> ignore
+
+                [<Fact>]
+                let ``t`` () =
+                    let r = load () |> Async.RunSynchronously
+                    ignore r
+
+                """
         )
     )
 
@@ -538,6 +1175,14 @@ let ``a test setting an environment variable is left alone`` () =
     Assert.Empty(
         findIn (
             scaffold
-            + "[<Fact>]\nlet ``t`` () =\n    Environment.SetEnvironmentVariable(\"K\", \"v\")\n    let r = load () |> Async.RunSynchronously\n    ignore r\n"
+            + fsharp
+                """
+                [<Fact>]
+                let ``t`` () =
+                    Environment.SetEnvironmentVariable("K", "v")
+                    let r = load () |> Async.RunSynchronously
+                    ignore r
+
+                """
         )
     )

@@ -47,7 +47,16 @@ let ``an internal class stored in an array of its type gains [<Sealed>] above th
 [<Fact>]
 let ``a type test in another file is the other trigger`` () =
     let tested =
-        "module B\n\nlet value (o: obj) =\n    match o with\n    | :? A.Node as n -> n.Value\n    | _ -> 0\n"
+        fsharp
+            """
+            module B
+
+            let value (o: obj) =
+                match o with
+                | :? A.Node as n -> n.Value
+                | _ -> 0
+
+            """
 
     let found, _ = sealedIn false node tested
 
@@ -58,7 +67,15 @@ let ``a type test in another file is the other trigger`` () =
 [<Fact>]
 let ``a downcast counts as a type test and both triggers are named together`` () =
     let both =
-        "module B\n\nlet slots: A.Node array = Array.zeroCreate 1\n\nlet cast (o: obj) = (o :?> A.Node).Value\n"
+        fsharp
+            """
+            module B
+
+            let slots: A.Node array = Array.zeroCreate 1
+
+            let cast (o: obj) = (o :?> A.Node).Value
+
+            """
 
     let found, _ = sealedIn false node both
 
@@ -84,7 +101,13 @@ let ``a class another file inherits is not sealed`` () =
 let ``a class an object expression builds on is not sealed`` () =
     let objExpr =
         nodeArray
-        + "\nlet special = { new A.Node(1) with\n                    member _.ToString() = \"one\" }\n"
+        + fsharp
+            """
+
+            let special = { new A.Node(1) with
+                                member _.ToString() = "one" }
+
+            """
 
     let found, _ = sealedIn false node objExpr
     Assert.Empty found
@@ -93,7 +116,16 @@ let ``a class an object expression builds on is not sealed`` () =
 let ``an object expression with the brace on the line above is still seen`` () =
     let objExpr =
         nodeArray
-        + "\nlet special =\n    {\n        new A.Node(1) with\n            member _.ToString() = \"one\"\n    }\n"
+        + fsharp
+            """
+
+            let special =
+                {
+                    new A.Node(1) with
+                        member _.ToString() = "one"
+                }
+
+            """
 
     let found, _ = sealedIn false node objExpr
     Assert.Empty found
@@ -101,7 +133,16 @@ let ``an object expression with the brace on the line above is still seen`` () =
 [<Fact>]
 let ``a class with an abstract or default member cannot be sealed`` () =
     let withSlot =
-        "module A\n\ntype internal Node(v: int) =\n    member _.Value = v\n    abstract Weight: unit -> int\n    default _.Weight() = v\n"
+        fsharp
+            """
+            module A
+
+            type internal Node(v: int) =
+                member _.Value = v
+                abstract Weight: unit -> int
+                default _.Weight() = v
+
+            """
 
     let found, _ = sealedIn false withSlot nodeArray
     Assert.Empty found
@@ -109,10 +150,27 @@ let ``a class with an abstract or default member cannot be sealed`` () =
 [<Fact>]
 let ``an already sealed class and an abstract class are not reported`` () =
     let sealedAlready =
-        "module A\n\n[<Sealed>]\ntype internal Node(v: int) =\n    member _.Value = v\n"
+        fsharp
+            """
+            module A
+
+            [<Sealed>]
+            type internal Node(v: int) =
+                member _.Value = v
+
+            """
 
     let abstractOne =
-        "module A\n\n[<AbstractClass>]\ntype internal Node(v: int) =\n    member _.Value = v\n    abstract Weight: unit -> int\n"
+        fsharp
+            """
+            module A
+
+            [<AbstractClass>]
+            type internal Node(v: int) =
+                member _.Value = v
+                abstract Weight: unit -> int
+
+            """
 
     Assert.Empty(fst (sealedIn false sealedAlready nodeArray))
     Assert.Empty(fst (sealedIn false abstractOne nodeArray))
@@ -135,7 +193,16 @@ let ``a record is never a candidate`` () =
 
 [<Fact>]
 let ``a public class seals only when the shape scope is open`` () =
-    let publicNode = "module A\n\ntype Node(v: int) =\n    member _.Value = v\n"
+    let publicNode =
+        fsharp
+            """
+            module A
+
+            type Node(v: int) =
+                member _.Value = v
+
+            """
+
     Assert.Empty(fst (sealedIn false publicNode nodeArray))
     Assert.Single(fst (sealedIn true publicNode nodeArray)) |> ignore
 
@@ -149,7 +216,16 @@ let ``without project results the rule says nothing`` () =
 [<Fact>]
 let ``existing attributes above the type line take the seal above them`` () =
     let attributed =
-        "module A\n\n/// A node.\n[<AllowNullLiteral>]\ntype internal Node(v: int) =\n    member _.Value = v\n"
+        fsharp
+            """
+            module A
+
+            /// A node.
+            [<AllowNullLiteral>]
+            type internal Node(v: int) =
+                member _.Value = v
+
+            """
 
     let found, recheck = sealedIn false attributed nodeArray
 
@@ -159,7 +235,18 @@ let ``existing attributes above the type line take the seal above them`` () =
         | Some(r, text) ->
             Assert.Equal(4, r.StartLine)
             let patched = applyEdit attributed r text
-            Assert.Contains("/// A node.\n[<Sealed>]\n[<AllowNullLiteral>]\ntype internal Node", patched)
+
+            Assert.Contains(
+                fsharp
+                    """
+                    /// A node.
+                    [<Sealed>]
+                    [<AllowNullLiteral>]
+                    type internal Node
+                    """,
+                patched
+            )
+
             Assert.Empty(recheck patched nodeArray)
         | None -> failwith "expected the attribute fix"
     | other -> failwith $"expected one suggestion, got %A{other}"
@@ -167,7 +254,14 @@ let ``existing attributes above the type line take the seal above them`` () =
 [<Fact>]
 let ``attributes on the type line itself keep the advice without an edit`` () =
     let inline' =
-        "module A\n\ntype [<AllowNullLiteral>] internal Node(v: int) =\n    member _.Value = v\n"
+        fsharp
+            """
+            module A
+
+            type [<AllowNullLiteral>] internal Node(v: int) =
+                member _.Value = v
+
+            """
 
     let found, _ = sealedIn false inline' nodeArray
 
@@ -190,7 +284,17 @@ let ``a subclass in another project of the repository vetoes the seal`` () =
 
     Directory.CreateDirectory(Path.Combine(dir, "tests")) |> ignore
 
-    File.WriteAllText(Path.Combine(dir, "tests", "Stub.fs"), "module Stub\n\ntype Fake() =\n    inherit A.Node(0)\n")
+    File.WriteAllText(
+        Path.Combine(dir, "tests", "Stub.fs"),
+        fsharp
+            """
+            module Stub
+
+            type Fake() =
+                inherit A.Node(0)
+
+            """
+    )
 
     Assert.Empty(SealedClass.find false tree source check (Some project))
 
@@ -203,7 +307,15 @@ let ``an object expression in a script of the repository vetoes the seal`` () =
 
     File.WriteAllText(
         Path.Combine(dir, "probe.fsx"),
-        "#load \"A.fs\"\n\nlet fake =\n    { new A.Node(0) with\n        member _.ToString() = \"\" }\n"
+        fsharp
+            """
+            #load "A.fs"
+
+            let fake =
+                { new A.Node(0) with
+                    member _.ToString() = "" }
+
+            """
     )
 
     Assert.Empty(SealedClass.find false tree source check (Some project))

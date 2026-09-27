@@ -71,10 +71,31 @@ let parse (source: string) : ParsedInput * ISourceText = parseNamed "Test.fs" so
 /// True when the source string parses without errors.
 let parsesCleanly (source: string) : bool = parsesCleanlyNamed "Test.fs" source
 
-/// Parse and fully typecheck a source string as a script. Returns the parse
-/// tree, source text, and check results (which may contain error diagnostics —
-/// callers assert on them as needed).
-let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
+let private errorsOf (checkResults: FSharpCheckFileResults) =
+    checkResults.Diagnostics
+    |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+
+/// A typed rule returns nothing on a file with type errors, so a test that
+/// expects no finding would pass on a broken input for the wrong reason: the
+/// typechecking entry points fail the test instead. The check reads the
+/// diagnostics the typecheck already produced, so it costs nothing.
+let requireTypechecks (entry: string) (source: string) (checkResults: FSharpCheckFileResults) =
+    match errorsOf checkResults with
+    | [||] -> ()
+    | errors ->
+        let listed =
+            errors
+            |> Array.map (fun d -> $"  ({d.StartLine},{d.StartColumn}) FS%04d{d.ErrorNumber} {d.Message}")
+            |> String.concat "\n"
+
+        failwith
+            $"Test input to {entry} does not typecheck, so a typed rule would find nothing in it; fix the input, or opt out explicitly (parseAndCheckAllowingErrors) if a broken input is the point of the test:\n{listed}\n--- source ---\n{source}"
+
+/// Parse and fully typecheck a source string as a script, WITHOUT requiring
+/// it to be free of type errors: for the tests where a broken input is the
+/// point - a rule must stand down, or survive, on a file that does not
+/// compile. Everything else calls `parseAndCheck`.
+let parseAndCheckAllowingErrors (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
     let sourceText = SourceText.ofString source
 
     let options, _ =
@@ -91,11 +112,16 @@ let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFile
     | FSharpCheckFileAnswer.Succeeded checkResults -> parseResults.ParseTree, sourceText, checkResults
     | FSharpCheckFileAnswer.Aborted -> failwith $"Typechecking was aborted, calling parseAndCheck with source: {source}"
 
+/// Parse and fully typecheck a source string as a script; fails the test
+/// when the input has a type error (see `requireTypechecks`).
+let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
+    let tree, sourceText, checkResults = parseAndCheckAllowingErrors source
+    requireTypechecks "parseAndCheck" source checkResults
+    tree, sourceText, checkResults
+
 /// `parseAndCheck` against the LEGACY .NET Framework reference set (the
-/// machine's mscorlib): the compilation a netstandard2.0/net4x project
-/// sees, where the char and span overloads of String do not exist. The
-/// rules that gate on a modern framework must stay quiet here.
-let parseAndCheckLegacyFramework (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
+/// machine's mscorlib), without requiring a clean typecheck.
+let parseAndCheckLegacyFrameworkAllowingErrors (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
     let sourceText = SourceText.ofString source
 
     let options, _ =
@@ -111,12 +137,22 @@ let parseAndCheckLegacyFramework (source: string) : ParsedInput * ISourceText * 
     | FSharpCheckFileAnswer.Aborted ->
         failwith $"Typechecking was aborted, calling parseAndCheckLegacyFramework with source: {source}"
 
+/// `parseAndCheck` against the LEGACY .NET Framework reference set (the
+/// machine's mscorlib): the compilation a netstandard2.0/net4x project
+/// sees, where the char and span overloads of String do not exist. The
+/// rules that gate on a modern framework must stay quiet here. Fails the
+/// test when the input has a type error there.
+let parseAndCheckLegacyFramework (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
+    let tree, sourceText, checkResults =
+        parseAndCheckLegacyFrameworkAllowingErrors source
+
+    requireTypechecks "parseAndCheckLegacyFramework" source checkResults
+    tree, sourceText, checkResults
+
 /// True when the source typechecks as a script without errors.
 let typechecksCleanly (source: string) : bool =
-    let _, _, checkResults = parseAndCheck source
-
-    checkResults.Diagnostics
-    |> Array.forall (fun d -> d.Severity <> FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+    let _, _, checkResults = parseAndCheckAllowingErrors source
+    Array.isEmpty (errorsOf checkResults)
 
 /// Replace `range` in `source` with `newText` (ranges are 1-based lines,
 /// 0-based columns).

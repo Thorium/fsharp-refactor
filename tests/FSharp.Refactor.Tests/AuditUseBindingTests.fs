@@ -62,7 +62,15 @@ let ``a task derived from the reader and returned through a local refuses the fi
     let s =
         expectNoFix
             "reader"
-            "module Test\nopen System.IO\nlet fetch (path: string) =\n    let reader = new StreamReader(path)\n    let pending = reader.ReadToEndAsync()\n    pending"
+            (fsharp
+                """
+                module Test
+                open System.IO
+                let fetch (path: string) =
+                    let reader = new StreamReader(path)
+                    let pending = reader.ReadToEndAsync()
+                    pending
+                """)
 
     Assert.Equal(Some UseBinding.Destination.ReadInResult, s.Destination)
 
@@ -71,14 +79,28 @@ let ``a reader from a command from the connection, returned, refuses the fix`` (
     expectNoFix
         "conn"
         (types
-         + "let openReader (sql: string) =\n    let conn = new Conn()\n    let cmd = conn.CreateCommand()\n    cmd.Text <- sql\n    cmd.ExecuteReader()")
+         + fsharp
+             """
+             let openReader (sql: string) =
+                 let conn = new Conn()
+                 let cmd = conn.CreateCommand()
+                 cmd.Text <- sql
+                 cmd.ExecuteReader()
+             """)
     |> ignore
 
     // through a chain of locals
     expectNoFix
         "conn"
         (types
-         + "let openReader (sql: string) =\n    let conn = new Conn()\n    let cmd = conn.CreateCommand()\n    let r = cmd.ExecuteReader()\n    r")
+         + fsharp
+             """
+             let openReader (sql: string) =
+                 let conn = new Conn()
+                 let cmd = conn.CreateCommand()
+                 let r = cmd.ExecuteReader()
+                 r
+             """)
     |> ignore
 
 [<Fact>]
@@ -87,7 +109,14 @@ let ``a derived local handed to a function or captured refuses the fix`` () =
         expectNoFix
             "conn"
             (types
-             + "let run (sink: Cmd -> unit) =\n    let conn = new Conn()\n    let cmd = conn.CreateCommand()\n    sink cmd\n    1")
+             + fsharp
+                 """
+                 let run (sink: Cmd -> unit) =
+                     let conn = new Conn()
+                     let cmd = conn.CreateCommand()
+                     sink cmd
+                     1
+                 """)
 
     Assert.Equal(Some(UseBinding.Destination.Function("sink", false)), s.Destination)
 
@@ -95,7 +124,14 @@ let ``a derived local handed to a function or captured refuses the fix`` () =
         expectNoFix
             "conn"
             (types
-             + "let run (defer: (unit -> int) -> unit) =\n    let conn = new Conn()\n    let cmd = conn.CreateCommand()\n    defer (fun () -> cmd.ExecuteNonQuery())\n    1")
+             + fsharp
+                 """
+                 let run (defer: (unit -> int) -> unit) =
+                     let conn = new Conn()
+                     let cmd = conn.CreateCommand()
+                     defer (fun () -> cmd.ExecuteNonQuery())
+                     1
+                 """)
 
     Assert.Equal(Some UseBinding.Destination.Captured, s.Destination)
 
@@ -104,13 +140,27 @@ let ``a derived local consumed in the scope still gets use`` () =
     expectFix
         "conn"
         (types
-         + "let count (sql: string) =\n    let conn = new Conn()\n    let cmd = conn.CreateCommand()\n    cmd.Text <- sql\n    let n = cmd.ExecuteNonQuery()\n    n + 1")
+         + fsharp
+             """
+             let count (sql: string) =
+                 let conn = new Conn()
+                 let cmd = conn.CreateCommand()
+                 cmd.Text <- sql
+                 let n = cmd.ExecuteNonQuery()
+                 n + 1
+             """)
 
     // a plain-valued container is evaluated and done
     expectFix
         "conn"
         (types
-         + "let probe () =\n    let conn = new Conn()\n    let r = conn.TryRead()\n    r")
+         + fsharp
+             """
+             let probe () =
+                 let conn = new Conn()
+                 let r = conn.TryRead()
+                 r
+             """)
 
 // ---- A1: a method group handed on ----
 
@@ -120,14 +170,24 @@ let ``a method group inside a lazy combinator as the result refuses the fix`` ()
         expectNoFix
             "c"
             (types
-             + "let upper (xs: string list) =\n    let c = new Conn()\n    Seq.map c.Convert xs")
+             + fsharp
+                 """
+                 let upper (xs: string list) =
+                     let c = new Conn()
+                     Seq.map c.Convert xs
+                 """)
 
     Assert.Equal(Some UseBinding.Destination.Captured, s.Destination)
 
     expectNoFix
         "c"
         (types
-         + "let upper (xs: string list) =\n    let c = new Conn()\n    xs |> List.map c.Convert")
+         + fsharp
+             """
+             let upper (xs: string list) =
+                 let c = new Conn()
+                 xs |> List.map c.Convert
+             """)
     |> ignore
 
 [<Fact>]
@@ -136,18 +196,37 @@ let ``a method group registered on a publisher refuses the fix`` () =
         expectNoFix
             "c"
             (types
-             + "let hook (changed: IEvent<unit>) =\n    let c = new Conn()\n    changed.Add c.Refresh\n    ()")
+             + fsharp
+                 """
+                 let hook (changed: IEvent<unit>) =
+                     let c = new Conn()
+                     changed.Add c.Refresh
+                     ()
+                 """)
 
     Assert.Equal(Some UseBinding.Destination.Captured, s.Destination)
 
 [<Fact>]
 let ``an invoked plain-valued member as the result still gets use`` () =
-    expectFix "c" (types + "let upper (s: string) =\n    let c = new Conn()\n    c.Convert s")
+    expectFix
+        "c"
+        (types
+         + fsharp
+             """
+             let upper (s: string) =
+                 let c = new Conn()
+                 c.Convert s
+             """)
 
     expectFix
         "c"
         (types
-         + "let upper (s: string) =\n    let c = new Conn()\n    c.Convert(s).Length")
+         + fsharp
+             """
+             let upper (s: string) =
+                 let c = new Conn()
+                 c.Convert(s).Length
+             """)
 
 // ---- A1: self-active objects ----
 
@@ -156,7 +235,14 @@ let ``a file system watcher refuses the fix`` () =
     let s =
         expectNoFix
             "w"
-            "module Test\nlet watch (path: string) (onChange: string -> unit) =\n    let w = new System.IO.FileSystemWatcher(path)\n    w.Changed.Add(fun e -> onChange e.FullPath)\n    w.EnableRaisingEvents <- true"
+            (fsharp
+                """
+                module Test
+                let watch (path: string) (onChange: string -> unit) =
+                    let w = new System.IO.FileSystemWatcher(path)
+                    w.Changed.Add(fun e -> onChange e.FullPath)
+                    w.EnableRaisingEvents <- true
+                """)
 
     Assert.Equal(Some UseBinding.Destination.SelfActive, s.Destination)
     Assert.Contains("work of its own", UseBinding.describeEscape s)
@@ -165,31 +251,66 @@ let ``a file system watcher refuses the fix`` () =
 let ``a threading timer built with a callback refuses the fix`` () =
     expectNoFix
         "t"
-        "module Test\nlet schedule (tick: unit -> unit) =\n    let t = new System.Threading.Timer((fun _ -> tick ()), null, 0, 1000)\n    ()"
+        (fsharp
+            """
+            module Test
+            let schedule (tick: unit -> unit) =
+                let t = new System.Threading.Timer((fun _ -> tick ()), null, 0, 1000)
+                ()
+            """)
     |> ignore
 
 [<Fact>]
 let ``a timer started in the scope refuses the fix`` () =
     expectNoFix
         "timer"
-        "module Test\nlet startHeartbeat (log: string -> unit) =\n    let timer = new System.Timers.Timer(1000.0)\n    timer.Elapsed.Add(fun _ -> log \"tick\")\n    timer.Start()"
+        (fsharp
+            """
+            module Test
+            let startHeartbeat (log: string -> unit) =
+                let timer = new System.Timers.Timer(1000.0)
+                timer.Elapsed.Add(fun _ -> log "tick")
+                timer.Start()
+            """)
     |> ignore
 
 [<Fact>]
 let ``a process, a listener and a socket refuse the fix`` () =
     expectNoFix
         "p"
-        "module Test\nlet launch (exe: string) =\n    let p = new System.Diagnostics.Process()\n    p.StartInfo.FileName <- exe\n    p.Start()"
+        (fsharp
+            """
+            module Test
+            let launch (exe: string) =
+                let p = new System.Diagnostics.Process()
+                p.StartInfo.FileName <- exe
+                p.Start()
+            """)
     |> ignore
 
     expectNoFix
         "l"
-        "module Test\nlet listen (port: int) =\n    let l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Any, port)\n    l.Start()\n    ()"
+        (fsharp
+            """
+            module Test
+            let listen (port: int) =
+                let l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Any, port)
+                l.Start()
+                ()
+            """)
     |> ignore
 
     expectNoFix
         "s"
-        "module Test\nopen System.Net.Sockets\nlet bind (port: int) =\n    let s = new Socket(SocketType.Stream, ProtocolType.Tcp)\n    s.Bind(System.Net.IPEndPoint(System.Net.IPAddress.Any, port))\n    s.Listen 10"
+        (fsharp
+            """
+            module Test
+            open System.Net.Sockets
+            let bind (port: int) =
+                let s = new Socket(SocketType.Stream, ProtocolType.Tcp)
+                s.Bind(System.Net.IPEndPoint(System.Net.IPAddress.Any, port))
+                s.Listen 10
+            """)
     |> ignore
 
 [<Fact>]
@@ -223,17 +344,40 @@ let pipe (log: string -> unit) =
 let ``a token source with a registration refuses the fix; one merely read still gets use`` () =
     expectNoFix
         "cts"
-        "module Test\nlet arm (onCancel: unit -> unit) =\n    let cts = new System.Threading.CancellationTokenSource()\n    cts.Token.Register(fun () -> onCancel ()) |> ignore\n    cts.CancelAfter 100"
+        (fsharp
+            """
+            module Test
+            let arm (onCancel: unit -> unit) =
+                let cts = new System.Threading.CancellationTokenSource()
+                cts.Token.Register(fun () -> onCancel ()) |> ignore
+                cts.CancelAfter 100
+            """)
     |> ignore
 
     expectFix
         "cts"
-        "module Test\nlet probe () =\n    let cts = new System.Threading.CancellationTokenSource()\n    cts.CancelAfter 100\n    cts.IsCancellationRequested"
+        (fsharp
+            """
+            module Test
+            let probe () =
+                let cts = new System.Threading.CancellationTokenSource()
+                cts.CancelAfter 100
+                cts.IsCancellationRequested
+            """)
 
 [<Fact>]
 let ``a unit Start call on any disposable refuses the fix`` () =
     let s =
-        expectNoFix "c" (types + "let run () =\n    let c = new Conn()\n    c.Start()\n    1")
+        expectNoFix
+            "c"
+            (types
+             + fsharp
+                 """
+                 let run () =
+                     let c = new Conn()
+                     c.Start()
+                     1
+                 """)
 
     Assert.Equal(Some UseBinding.Destination.SelfActive, s.Destination)
 
@@ -242,37 +386,94 @@ let ``a unit Start call on any disposable refuses the fix`` () =
 [<Fact>]
 let ``a reader over a constructor parameter is not the scope's to dispose`` () =
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\ntype LineSource(stream: Stream) =\n    member _.Next() =\n        let r = new StreamReader(stream)\n        r.ReadLine()"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type LineSource(stream: Stream) =
+                    member _.Next() =
+                        let r = new StreamReader(stream)
+                        r.ReadLine()
+                """
+        )
     )
 
 [<Fact>]
 let ``a client over an injected handler is not the scope's to dispose`` () =
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.Net.Http\ntype Api(handler: HttpMessageHandler) =\n    member _.Get(url: string) =\n        let client = new HttpClient(handler)\n        let s = client.GetStringAsync(url).Result\n        s.Length"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.Net.Http
+                type Api(handler: HttpMessageHandler) =
+                    member _.Get(url: string) =
+                        let client = new HttpClient(handler)
+                        let s = client.GetStringAsync(url).Result
+                        s.Length
+                """
+        )
     )
 
 [<Fact>]
 let ``a wrapper over a class field, a module value, a property or a record field is not the scope's`` () =
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\ntype Source(path: string) =\n    let stream = File.OpenRead path\n    member _.Next() =\n        let r = new StreamReader(stream)\n        r.ReadLine()"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Source(path: string) =
+                    let stream = File.OpenRead path
+                    member _.Next() =
+                        let r = new StreamReader(stream)
+                        r.ReadLine()
+                """
+        )
     )
 
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\nlet private shared = File.OpenRead \"x\"\nlet next () =\n    let r = new StreamReader(shared)\n    r.ReadLine()"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let private shared = File.OpenRead "x"
+                let next () =
+                    let r = new StreamReader(shared)
+                    r.ReadLine()
+                """
+        )
     )
 
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\ntype Holder() =\n    member val Input: Stream = null with get, set\n    member this.Next() =\n        let r = new StreamReader(this.Input)\n        r.ReadLine()"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Holder() =
+                    member val Input: Stream = null with get, set
+                    member this.Next() =
+                        let r = new StreamReader(this.Input)
+                        r.ReadLine()
+                """
+        )
     )
 
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\ntype Cfg = { Input: Stream }\nlet next (cfg: Cfg) =\n    let r = new StreamReader(cfg.Input)\n    r.ReadLine()"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                type Cfg = { Input: Stream }
+                let next (cfg: Cfg) =
+                    let r = new StreamReader(cfg.Input)
+                    r.ReadLine()
+                """
+        )
     )
 
 [<Fact>]
@@ -280,38 +481,90 @@ let ``a wrapper inside a lambda over a stream the function opened is not the lam
     // the stream is shared by every call of the lambda; the first `use`
     // would close it under the rest
     let suggestions =
-        useBindingsIn
-            "module Test\nopen System.IO\nlet lines (path: string) (keys: string list) =\n    let s = File.OpenRead path\n    keys |> List.map (fun k ->\n        let r = new StreamReader(s)\n        r.ReadLine() + k)"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                let lines (path: string) (keys: string list) =
+                    let s = File.OpenRead path
+                    keys |> List.map (fun k ->
+                        let r = new StreamReader(s)
+                        r.ReadLine() + k)
+                """
+        )
 
     Assert.DoesNotContain(suggestions, fun s -> s.Name = "r")
 
 [<Fact>]
 let ``compression and crypto streams over a caller's stream are not the scope's`` () =
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\nopen System.IO.Compression\nlet inflate (input: Stream) =\n    let z = new GZipStream(input, CompressionMode.Decompress)\n    z.ReadByte()"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                open System.IO.Compression
+                let inflate (input: Stream) =
+                    let z = new GZipStream(input, CompressionMode.Decompress)
+                    z.ReadByte()
+                """
+        )
     )
 
     Assert.Empty(
-        useBindingsIn
-            "module Test\nopen System.IO\nopen System.Security.Cryptography\nlet encrypt (output: Stream) (aes: Aes) =\n    let cs = new CryptoStream(output, aes.CreateEncryptor(), CryptoStreamMode.Write)\n    cs.WriteByte 1uy"
+        useBindingsIn (
+            fsharp
+                """
+                module Test
+                open System.IO
+                open System.Security.Cryptography
+                let encrypt (output: Stream) (aes: Aes) =
+                    let cs = new CryptoStream(output, aes.CreateEncryptor(), CryptoStreamMode.Write)
+                    cs.WriteByte 1uy
+                """
+        )
     )
 
 [<Fact>]
 let ``a wrapper over a stream this scope opened, a path or a locally built handler still gets use`` () =
     expectFix
         "r"
-        "module Test\nopen System.IO\nlet read (path: string) =\n    let s = File.OpenRead path\n    let r = new StreamReader(s)\n    r.ReadToEnd()"
+        (fsharp
+            """
+            module Test
+            open System.IO
+            let read (path: string) =
+                let s = File.OpenRead path
+                let r = new StreamReader(s)
+                r.ReadToEnd()
+            """)
 
     expectFix
         "w"
-        "module Test\nopen System.IO\nlet write (path: string) =\n    let w = new StreamWriter(path, false, System.Text.Encoding.UTF8)\n    w.Write \"x\""
+        (fsharp
+            """
+            module Test
+            open System.IO
+            let write (path: string) =
+                let w = new StreamWriter(path, false, System.Text.Encoding.UTF8)
+                w.Write "x"
+            """)
 
     // a wrapper over a LOCAL resource is the scope's: the stream is adopted
     // by the reader, and the reader is disposed here
     expectFix
         "r"
-        "module Test\nopen System.IO\nlet get (path: string) =\n    let stream = new FileStream(path, FileMode.Open)\n    let r = new StreamReader(stream)\n    let s = r.ReadLine()\n    s.Length"
+        (fsharp
+            """
+            module Test
+            open System.IO
+            let get (path: string) =
+                let stream = new FileStream(path, FileMode.Open)
+                let r = new StreamReader(stream)
+                let s = r.ReadLine()
+                s.Length
+            """)
 
 // ---- B4: a computation expression whose builder has no Using ----
 
@@ -320,7 +573,20 @@ let ``a let inside a builder without Using refuses the fix`` () =
     let s =
         expectNoFix
             "s"
-            "module Test\ntype MaybeBuilder() =\n    member _.Bind(m, f) = Option.bind f m\n    member _.Return x = Some x\nlet maybe = MaybeBuilder()\nlet firstByte (path: string) (probe: int64 -> int option) =\n    maybe {\n        let s = new System.IO.FileStream(path, System.IO.FileMode.Open)\n        let! n = probe s.Length\n        return n\n    }"
+            (fsharp
+                """
+                module Test
+                type MaybeBuilder() =
+                    member _.Bind(m, f) = Option.bind f m
+                    member _.Return x = Some x
+                let maybe = MaybeBuilder()
+                let firstByte (path: string) (probe: int64 -> int option) =
+                    maybe {
+                        let s = new System.IO.FileStream(path, System.IO.FileMode.Open)
+                        let! n = probe s.Length
+                        return n
+                    }
+                """)
 
     Assert.Equal(Some UseBinding.Destination.NoBuilderUsing, s.Destination)
     Assert.Contains("no 'Using'", UseBinding.describeEscape s)
@@ -329,21 +595,67 @@ let ``a let inside a builder without Using refuses the fix`` () =
 let ``a let inside a builder with Using, or a core builder, still gets use`` () =
     expectFix
         "s"
-        "module Test\ntype MaybeBuilder() =\n    member _.Bind(m, f) = Option.bind f m\n    member _.Return x = Some x\n    member _.Using(r: 'r, f: 'r -> 'a option) : 'a option when 'r :> System.IDisposable =\n        try f r finally r.Dispose()\nlet maybe = MaybeBuilder()\nlet firstByte (path: string) (probe: int64 -> int option) =\n    maybe {\n        let s = new System.IO.FileStream(path, System.IO.FileMode.Open)\n        let! n = probe s.Length\n        return n\n    }"
+        (fsharp
+            """
+            module Test
+            type MaybeBuilder() =
+                member _.Bind(m, f) = Option.bind f m
+                member _.Return x = Some x
+                member _.Using(r: 'r, f: 'r -> 'a option) : 'a option when 'r :> System.IDisposable =
+                    try f r finally r.Dispose()
+            let maybe = MaybeBuilder()
+            let firstByte (path: string) (probe: int64 -> int option) =
+                maybe {
+                    let s = new System.IO.FileStream(path, System.IO.FileMode.Open)
+                    let! n = probe s.Length
+                    return n
+                }
+            """)
 
     expectFix
         "s"
-        "module Test\nlet firstByte (path: string) (probe: int64 -> Async<int>) =\n    async {\n        let s = new System.IO.FileStream(path, System.IO.FileMode.Open)\n        let! n = probe s.Length\n        return n\n    }"
+        (fsharp
+            """
+            module Test
+            let firstByte (path: string) (probe: int64 -> Async<int>) =
+                async {
+                    let s = new System.IO.FileStream(path, System.IO.FileMode.Open)
+                    let! n = probe s.Length
+                    return n
+                }
+            """)
 
     expectFix
         "s"
-        "module Test\nlet bytes (path: string) =\n    seq {\n        let s = new System.IO.FileStream(path, System.IO.FileMode.Open)\n        yield s.ReadByte()\n    }"
+        (fsharp
+            """
+            module Test
+            let bytes (path: string) =
+                seq {
+                    let s = new System.IO.FileStream(path, System.IO.FileMode.Open)
+                    yield s.ReadByte()
+                }
+            """)
 
 [<Fact>]
 let ``a let inside a local function inside such a builder is ordinary code`` () =
     expectFix
         "s"
-        "module Test\ntype MaybeBuilder() =\n    member _.Bind(m, f) = Option.bind f m\n    member _.Return x = Some x\nlet maybe = MaybeBuilder()\nlet firstByte (path: string) =\n    maybe {\n        let size (p: string) =\n            let s = new System.IO.FileStream(p, System.IO.FileMode.Open)\n            s.Length\n        return size path\n    }"
+        (fsharp
+            """
+            module Test
+            type MaybeBuilder() =
+                member _.Bind(m, f) = Option.bind f m
+                member _.Return x = Some x
+            let maybe = MaybeBuilder()
+            let firstByte (path: string) =
+                maybe {
+                    let size (p: string) =
+                        let s = new System.IO.FileStream(p, System.IO.FileMode.Open)
+                        s.Length
+                    return size path
+                }
+            """)
 
 // ---- a lazy body runs after the scope ----
 
@@ -351,5 +663,11 @@ let ``a let inside a local function inside such a builder is ordinary code`` () 
 let ``a disposable read inside a returned lazy refuses the fix`` () =
     expectNoFix
         "s"
-        "module Test\nlet deferred (path: string) =\n    let s = new System.IO.FileStream(path, System.IO.FileMode.Open)\n    lazy (s.ReadByte())"
+        (fsharp
+            """
+            module Test
+            let deferred (path: string) =
+                let s = new System.IO.FileStream(path, System.IO.FileMode.Open)
+                lazy (s.ReadByte())
+            """)
     |> ignore

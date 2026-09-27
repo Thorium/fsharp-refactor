@@ -7,7 +7,13 @@ open FSharp.Refactor.Tests.Parsing
 
 /// Enough declarations for the cases to typecheck on their own.
 let private header =
-    "let f (i: int) = i * 2\nlet xs = [| 1; 2; 3 |]\nlet dimension = 8\n"
+    fsharp
+        """
+        let f (i: int) = i * 2
+        let xs = [| 1; 2; 3 |]
+        let dimension = 8
+
+        """
 
 let private found (body: string) =
     let tree, source, check = parseAndCheck (header + body)
@@ -38,7 +44,13 @@ let ``the clamp is FSharp.Core's max whatever the project calls max`` () =
     // the bare name, and a module named Operators defining one takes
     // `Operators.max`; the full name is FSharp.Core's
     let body =
-        "let max (a: int) (_: int) = a\nmodule Operators =\n    let max (_: int) (b: int) = b\nlet r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> f i)"
+        fsharp
+            """
+            let max (a: int) (_: int) = a
+            module Operators =
+                let max (_: int) (b: int) = b
+            let r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> f i)
+            """
 
     assertRewrites body "Array.init (FSharp.Core.Operators.max 0 dimension) (fun i -> f i)" false
 
@@ -127,7 +139,11 @@ let ``a compound count keeps its own parentheses`` () =
 [<Fact>]
 let ``a call as the count keeps its parentheses too`` () =
     assertRewrites
-        "let g (a: int) (b: int) = a + b\nlet r = [| 0 .. g 2 3 - 1 |] |> Array.map (fun i -> f i)"
+        (fsharp
+            """
+            let g (a: int) (b: int) = a + b
+            let r = [| 0 .. g 2 3 - 1 |] |> Array.map (fun i -> f i)
+            """)
         "Array.init (FSharp.Core.Operators.max 0 (g 2 3)) (fun i -> f i)"
         false
 
@@ -136,7 +152,15 @@ let ``only the framework's Count proves a non-negative count`` () =
     // a property somebody wrote can answer anything, so its NAME is no
     // proof - the sweep must not apply this one
     let source =
-        "type T() =\n    member _.Count = -1\n\nlet t = T()\nlet r = [| 0 .. t.Count - 1 |] |> Array.map (fun i -> i * 2)\n"
+        fsharp
+            """
+            type T() =
+                member _.Count = -1
+
+            let t = T()
+            let r = [| 0 .. t.Count - 1 |] |> Array.map (fun i -> i * 2)
+
+            """
 
     let tree, text, check = parseAndCheck source
 
@@ -147,7 +171,14 @@ let ``only the framework's Count proves a non-negative count`` () =
 [<Fact>]
 let ``a shadowing Array-length is not a proof either`` () =
     let source =
-        "module Array =\n    let length (_: int) = -1\n\nlet r = [| 0 .. Array.length 3 - 1 |] |> Array.map (fun i -> i * 2)\n"
+        fsharp
+            """
+            module Array =
+                let length (_: int) = -1
+
+            let r = [| 0 .. Array.length 3 - 1 |] |> Array.map (fun i -> i * 2)
+
+            """
 
     let tree, text, check = parseAndCheck source
 
@@ -158,8 +189,18 @@ let ``a shadowing Array-length is not a proof either`` () =
 [<Fact>]
 let ``a compiler directive inside the expression stands it down`` () =
     Assert.Empty(
-        found
-            "let r =\n    [| 0 .. dimension - 1 |]\n#if DEBUG\n    |> Array.map (fun i -> f i)\n#else\n    |> Array.map (fun i -> f i + 1)\n#endif"
+        found (
+            fsharp
+                """
+                let r =
+                    [| 0 .. dimension - 1 |]
+                #if DEBUG
+                    |> Array.map (fun i -> f i)
+                #else
+                    |> Array.map (fun i -> f i + 1)
+                #endif
+                """
+        )
     )
 
 [<Fact>]
@@ -183,7 +224,15 @@ let ``a function other than map stays`` () =
 let ``a shadowing Array module stays`` () =
     // the project's own `Array.map` has no `init` to rewrite to
     let source =
-        "module Array =\n    let map g (xs: int[]) = Array.map g xs\n\nlet dimension = 8\nlet r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> i * 2)\n"
+        fsharp
+            """
+            module Array =
+                let map g (xs: int[]) = Array.map g xs
+
+            let dimension = 8
+            let r = [| 0 .. dimension - 1 |] |> Array.map (fun i -> i * 2)
+
+            """
 
     let tree, text, check = parseAndCheck source
     Assert.Empty(RangeMap.find tree text check)
@@ -193,15 +242,32 @@ let ``a multi-line mapper under the range moves with its lines into Array.init``
     // FSharp.Azure.Quantum's AmplitudeAmplification: a 2^n amplitude array
     // built by mapping over a 2^n array of ints
     assertRewrites
-        "let r =\n    [| 0 .. dimension - 1 |]\n    |> Array.map (fun i ->\n        let d = f i\n        d + 1)"
-        "Array.init (FSharp.Core.Operators.max 0 dimension) (fun i ->\n        let d = f i\n        d + 1)"
+        (fsharp
+            """
+            let r =
+                [| 0 .. dimension - 1 |]
+                |> Array.map (fun i ->
+                    let d = f i
+                    d + 1)
+            """)
+        (fsharp
+            """
+            Array.init (FSharp.Core.Operators.max 0 dimension) (fun i ->
+                    let d = f i
+                    d + 1)
+            """)
         false
 
 [<Fact>]
 let ``a multi-line mapper whose body hangs left of the range keeps the map`` () =
     // spliced where the range stood, the body would sit left of `Array.init`
     let body =
-        "let r = [| 0 .. dimension - 1 |] |> Array.map (fun i ->\n    let d = f i\n    d + 1)"
+        fsharp
+            """
+            let r = [| 0 .. dimension - 1 |] |> Array.map (fun i ->
+                let d = f i
+                d + 1)
+            """
 
     Assert.True(typechecksCleanly (header + body), "the fixture itself must typecheck")
     Assert.Empty(found body)
@@ -228,7 +294,12 @@ let ``a second statement aligned to a first one after the arrow keeps the map`` 
     // left, the first leaves the second indented past it, and the second
     // becomes its argument - `tap i i` - with no error at all
     let statements =
-        "let tap (x: int) = ignore x; fun (y: int) -> y * 100\nlet r =\n"
+        fsharp
+            """
+            let tap (x: int) = ignore x; fun (y: int) -> y * 100
+            let r =
+
+            """
         + alignedUnder "    [| 0 .. dimension - 1 |] |> Array.map (fun i -> tap i |> ignore" [ "i)" ]
 
     Assert.True(typechecksCleanly (header + statements), "the fixture itself must typecheck")

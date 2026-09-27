@@ -38,7 +38,16 @@ let ``an open whose AutoOpen module would capture a name the file uses from else
     // `open Lib` brings Lib.Auto's `helper` with it, and the file's bare
     // `helper` comes from Other.Z: the open would rebind it
     let source =
-        "module Test\nopen Other.Z\nlet a = Lib.Util.f 1\nlet b = Lib.Util.f 2\nlet c = Lib.Util.f 3\nlet d = helper 4\n"
+        fsharp
+            """
+            module Test
+            open Other.Z
+            let a = Lib.Util.f 1
+            let b = Lib.Util.f 2
+            let c = Lib.Util.f 3
+            let d = helper 4
+
+            """
 
     match qualifiedIn libWithAutoOpen source with
     | [ s ] ->
@@ -49,7 +58,14 @@ let ``an open whose AutoOpen module would capture a name the file uses from else
 [<Fact>]
 let ``an AutoOpen module's names that the file does not use are no obstacle`` () =
     let source =
-        "module Test\nlet a = Lib.Util.f 1\nlet b = Lib.Util.f 2\nlet c = Lib.Util.f 3\n"
+        fsharp
+            """
+            module Test
+            let a = Lib.Util.f 1
+            let b = Lib.Util.f 2
+            let c = Lib.Util.f 3
+
+            """
 
     match qualifiedIn libWithAutoOpen source with
     | [ s ] ->
@@ -67,7 +83,16 @@ let ``an assembly-level AutoOpen re-applied by the open still counts`` () =
     let lib = "[<assembly: AutoOpen(\"Lib.Auto\")>]\ndo ()\n" + libWithAutoOpen
 
     let source =
-        "module Test\nopen Other.Z\nlet a = Lib.Util.f 1\nlet b = Lib.Util.f 2\nlet c = Lib.Util.f 3\nlet d = helper 4\n"
+        fsharp
+            """
+            module Test
+            open Other.Z
+            let a = Lib.Util.f 1
+            let b = Lib.Util.f 2
+            let c = Lib.Util.f 3
+            let d = helper 4
+
+            """
 
     match qualifiedIn lib source with
     | [ s ] -> Assert.Empty s.Edits
@@ -79,7 +104,18 @@ let ``uses inside the file's own AutoOpen module are shortened under an open pla
     // ClearBank.Net's tests: the uses sit in a nested [<AutoOpen>] module
     // that has an open of its own; the namespace open still goes at the top
     let source =
-        "namespace Tests\n[<AutoOpen>]\nmodule Helpers =\n    open Other.Z\n    let a = Lib.Util.f 1\n    let b = Lib.Util.f 2\nmodule More =\n    let c = Lib.Util.f 3\n"
+        fsharp
+            """
+            namespace Tests
+            [<AutoOpen>]
+            module Helpers =
+                open Other.Z
+                let a = Lib.Util.f 1
+                let b = Lib.Util.f 2
+            module More =
+                let c = Lib.Util.f 3
+
+            """
 
     match qualifiedIn libWithAutoOpen source with
     | [ s ] ->
@@ -94,10 +130,24 @@ let ``uses inside the file's own AutoOpen module are shortened under an open pla
 [<Fact>]
 let ``a RequireQualifiedAccess module keeps its own qualifier under the open`` () =
     let lib =
-        "namespace Lib\n[<RequireQualifiedAccess>]\nmodule Util =\n    let f (x: int) = x\n"
+        fsharp
+            """
+            namespace Lib
+            [<RequireQualifiedAccess>]
+            module Util =
+                let f (x: int) = x
+
+            """
 
     let source =
-        "module Test\nlet a = Lib.Util.f 1\nlet b = Lib.Util.f 2\nlet c = Lib.Util.f 3\n"
+        fsharp
+            """
+            module Test
+            let a = Lib.Util.f 1
+            let b = Lib.Util.f 2
+            let c = Lib.Util.f 3
+
+            """
 
     match qualifiedIn lib source with
     | [ s ] ->
@@ -109,10 +159,26 @@ let ``a RequireQualifiedAccess module keeps its own qualifier under the open`` (
 [<Fact>]
 let ``a RequireQualifiedAccess union's cases keep the type under the open`` () =
     let lib =
-        "namespace Lib\n[<RequireQualifiedAccess>]\ntype Kind =\n    | A\n    | B\n"
+        fsharp
+            """
+            namespace Lib
+            [<RequireQualifiedAccess>]
+            type Kind =
+                | A
+                | B
+
+            """
 
     let source =
-        "module Test\nlet a = Lib.Kind.A\nlet b = Lib.Kind.B\nlet c = Lib.Kind.A\nlet d (k: Lib.Kind) = match k with | Lib.Kind.A -> 1 | Lib.Kind.B -> 2\n"
+        fsharp
+            """
+            module Test
+            let a = Lib.Kind.A
+            let b = Lib.Kind.B
+            let c = Lib.Kind.A
+            let d (k: Lib.Kind) = match k with | Lib.Kind.A -> 1 | Lib.Kind.B -> 2
+
+            """
 
     match qualifiedIn lib source with
     | [ s ] ->
@@ -127,10 +193,32 @@ let ``a RequireQualifiedAccess union's case does not block an open that a same-n
     // `open Lib` brings no `A`: the union demands its qualifier, so the
     // file's own `A` from Other.Names is untouched
     let lib =
-        "namespace Lib\n[<RequireQualifiedAccess>]\ntype Kind =\n    | A\n    | B\nmodule Util =\n    let f (x: int) = x\nnamespace Other\nmodule Names =\n    let A = 1\n"
+        fsharp
+            """
+            namespace Lib
+            [<RequireQualifiedAccess>]
+            type Kind =
+                | A
+                | B
+            module Util =
+                let f (x: int) = x
+            namespace Other
+            module Names =
+                let A = 1
+
+            """
 
     let source =
-        "module Test\nopen Other.Names\nlet a = Lib.Util.f 1\nlet b = Lib.Util.f 2\nlet c = Lib.Util.f 3\nlet d = A + 1\n"
+        fsharp
+            """
+            module Test
+            open Other.Names
+            let a = Lib.Util.f 1
+            let b = Lib.Util.f 2
+            let c = Lib.Util.f 3
+            let d = A + 1
+
+            """
 
     match qualifiedIn lib source with
     | [ s ] ->
@@ -144,10 +232,31 @@ let ``a union without the attribute whose case the file already uses from elsewh
     // the same shape without RequireQualifiedAccess: `open Lib` would bring
     // the case `A` on top of Other.Names.A
     let lib =
-        "namespace Lib\ntype Kind =\n    | A\n    | B\nmodule Util =\n    let f (x: int) = x\nnamespace Other\nmodule Names =\n    let A = 1\n"
+        fsharp
+            """
+            namespace Lib
+            type Kind =
+                | A
+                | B
+            module Util =
+                let f (x: int) = x
+            namespace Other
+            module Names =
+                let A = 1
+
+            """
 
     let source =
-        "module Test\nopen Other.Names\nlet a = Lib.Util.f 1\nlet b = Lib.Util.f 2\nlet c = Lib.Util.f 3\nlet d = A + 1\n"
+        fsharp
+            """
+            module Test
+            open Other.Names
+            let a = Lib.Util.f 1
+            let b = Lib.Util.f 2
+            let c = Lib.Util.f 3
+            let d = A + 1
+
+            """
 
     match qualifiedIn lib source with
     | [ s ] -> Assert.Empty s.Edits

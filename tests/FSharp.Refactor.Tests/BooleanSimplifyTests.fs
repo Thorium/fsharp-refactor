@@ -46,8 +46,19 @@ let ``true or is left alone: the operand is skipped`` () =
 let ``the identity fires inside a query where clause`` () =
     // a strictly simpler tree of already-accepted shapes: safe in queries
     match
-        findIn
-            "module Test\nopen System.Linq\nlet f (xs: int list) =\n    query {\n        for x in xs.AsQueryable() do\n            where (x > 2 && true)\n            select x\n    }"
+        findIn (
+            fsharp
+                """
+                module Test
+                open System.Linq
+                let f (xs: int list) =
+                    query {
+                        for x in xs.AsQueryable() do
+                            where (x > 2 && true)
+                            select x
+                    }
+                """
+        )
     with
     | [ s ] -> Assert.Equal("x > 2", s.ReplacementText)
     | other -> failwithf "Expected one suggestion in the query, got %A" other
@@ -60,7 +71,13 @@ let ``a duplicated comparison collapses`` () =
 
 [<Fact>]
 let ``a duplicated property chain collapses`` () =
-    assertRewrite "module Test\nlet f (s: string) = s.Length = 0 && s.Length = 0" "s.Length = 0"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f (s: string) = s.Length = 0 && s.Length = 0
+            """)
+        "s.Length = 0"
 
 [<Fact>]
 let ``a negated duplicate collapses too`` () =
@@ -70,7 +87,15 @@ let ``a negated duplicate collapses too`` () =
 let ``the retry idiom is deliberately untouched`` () =
     // tryConnect() || tryConnect() retries on purpose; a call may lean on
     // its effects, so duplicates with calls inside never collapse
-    Assert.Empty(findIn "module Test\nlet f (tryConnect: unit -> bool) = tryConnect () || tryConnect ()")
+    Assert.Empty(
+        findIn (
+            fsharp
+                """
+                module Test
+                let f (tryConnect: unit -> bool) = tryConnect () || tryConnect ()
+                """
+        )
+    )
 
 [<Fact>]
 let ``a duplicated function application is untouched`` () =
@@ -87,24 +112,64 @@ let ``a call bound as a value keeps the literal that types it`` () =
     // FSharpPlus: `let _111 = parse "true" && true` — `parse` is SRTP and
     // the `&& true` is what makes its result a bool
     Assert.Empty(
-        findIn "module Test\nlet inline parse (s: string) = Unchecked.defaultof<'a>\nlet v = parse \"true\" && true"
+        findIn (
+            fsharp
+                """
+                module Test
+                let inline parse (s: string) = Unchecked.defaultof<'a>
+                let v = parse "true" && true
+                """
+        )
     )
 
 [<Fact>]
 let ``a call under an if still drops the literal`` () =
-    assertRewrite "module Test\nlet f (g: int -> bool) = if g 1 && true then 1 else 2" "g 1"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f (g: int -> bool) = if g 1 && true then 1 else 2
+            """)
+        "g 1"
 
 [<Fact>]
 let ``a comparison bound as a value still drops the literal`` () =
-    assertRewrite "module Test\nlet f (x: int) =\n    let v = x > 1 && true\n    v" "x > 1"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f (x: int) =
+                let v = x > 1 && true
+                v
+            """)
+        "x > 1"
 
 [<Fact>]
 let ``the kept operand touching a token beside it gets one space there, and no more`` () =
     // `if(true) && true then` is legal; the kept `true` would read `iftrue`
-    assertRewrite "module Test\nlet f () = if(true) && true then 1 else 2" " true"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f () = if(true) && true then 1 else 2
+            """)
+        " true"
 
     assertRewrite
-        "module Test\nlet f (x: int) =\n    match(true)&& x <= 0 with\n    | true -> 1\n    | false -> 2"
+        (fsharp
+            """
+            module Test
+            let f (x: int) =
+                match(true)&& x <= 0 with
+                | true -> 1
+                | false -> 2
+            """)
         " x <= 0"
 
-    assertRewrite "module Test\nlet f (x: int) = (x <= 0 && true)" "x <= 0"
+    assertRewrite
+        (fsharp
+            """
+            module Test
+            let f (x: int) = (x <= 0 && true)
+            """)
+        "x <= 0"

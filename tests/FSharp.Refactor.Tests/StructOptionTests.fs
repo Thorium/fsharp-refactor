@@ -24,49 +24,125 @@ let private assertStructOption (source: string) (expectedPatched: string) =
 [<Fact>]
 let ``definition and match site move to ValueOption together`` () =
     assertStructOption
-        "let private tryHalf (n: int) = if n % 2 = 0 then Some(n / 2) else None\n\nlet describe (n: int) =\n    match tryHalf n with\n    | Some h -> string h\n    | None -> \"odd\""
-        "let private tryHalf (n: int) = if n % 2 = 0 then ValueSome(n / 2) else ValueNone\n\nlet describe (n: int) =\n    match tryHalf n with\n    | ValueSome h -> string h\n    | ValueNone -> \"odd\""
+        (fsharp
+            """
+            let private tryHalf (n: int) = if n % 2 = 0 then Some(n / 2) else None
+
+            let describe (n: int) =
+                match tryHalf n with
+                | Some h -> string h
+                | None -> "odd"
+            """)
+        (fsharp
+            """
+            let private tryHalf (n: int) = if n % 2 = 0 then ValueSome(n / 2) else ValueNone
+
+            let describe (n: int) =
+                match tryHalf n with
+                | ValueSome h -> string h
+                | ValueNone -> "odd"
+            """)
 
 [<Fact>]
 let ``two match sites are both rewritten`` () =
     assertStructOption
-        "let private pick (n: int) = if n > 0 then Some n else None\nlet a (n: int) =\n    match pick n with\n    | Some v -> v\n    | None -> 0\n\nlet b (n: int) =\n    match pick (n + 1) with\n    | Some v -> v\n    | _ -> 1"
-        "let private pick (n: int) = if n > 0 then ValueSome n else ValueNone\nlet a (n: int) =\n    match pick n with\n    | ValueSome v -> v\n    | ValueNone -> 0\n\nlet b (n: int) =\n    match pick (n + 1) with\n    | ValueSome v -> v\n    | _ -> 1"
+        (fsharp
+            """
+            let private pick (n: int) = if n > 0 then Some n else None
+            let a (n: int) =
+                match pick n with
+                | Some v -> v
+                | None -> 0
+
+            let b (n: int) =
+                match pick (n + 1) with
+                | Some v -> v
+                | _ -> 1
+            """)
+        (fsharp
+            """
+            let private pick (n: int) = if n > 0 then ValueSome n else ValueNone
+            let a (n: int) =
+                match pick n with
+                | ValueSome v -> v
+                | ValueNone -> 0
+
+            let b (n: int) =
+                match pick (n + 1) with
+                | ValueSome v -> v
+                | _ -> 1
+            """)
 
 [<Fact>]
 let ``use as a first-class value keeps the option`` () =
     Assert.Empty(
-        structOptionIn
-            "let private pick (n: int) = if n > 0 then Some n else None\nlet firsts (xs: int list) = xs |> List.tryPick pick"
+        structOptionIn (
+            fsharp
+                """
+                let private pick (n: int) = if n > 0 then Some n else None
+                let firsts (xs: int list) = xs |> List.tryPick pick
+                """
+        )
     )
 
 [<Fact>]
 let ``a let-bound result keeps the option`` () =
     Assert.Empty(
-        structOptionIn
-            "let private pick (n: int) = if n > 0 then Some n else None\nlet f (n: int) =\n    let r = pick n\n    r |> Option.isSome"
+        structOptionIn (
+            fsharp
+                """
+                let private pick (n: int) = if n > 0 then Some n else None
+                let f (n: int) =
+                    let r = pick n
+                    r |> Option.isSome
+                """
+        )
     )
 
 [<Fact>]
 let ``public functions are left alone`` () =
     Assert.Empty(
-        structOptionIn
-            "let pick (n: int) = if n > 0 then Some n else None\nlet f (n: int) =\n    match pick n with\n    | Some v -> v\n    | None -> 0"
+        structOptionIn (
+            fsharp
+                """
+                let pick (n: int) = if n > 0 then Some n else None
+                let f (n: int) =
+                    match pick n with
+                    | Some v -> v
+                    | None -> 0
+                """
+        )
     )
 
 [<Fact>]
 let ``a non-constructor result position keeps the option`` () =
     // the body returns a computed option, not a literal constructor
     Assert.Empty(
-        structOptionIn
-            "let private pick (xs: int list) = List.tryHead xs\nlet f (xs: int list) =\n    match pick xs with\n    | Some v -> v\n    | None -> 0"
+        structOptionIn (
+            fsharp
+                """
+                let private pick (xs: int list) = List.tryHead xs
+                let f (xs: int list) =
+                    match pick xs with
+                    | Some v -> v
+                    | None -> 0
+                """
+        )
     )
 
 [<Fact>]
 let ``an explicit return annotation is left alone`` () =
     Assert.Empty(
-        structOptionIn
-            "let private pick (n: int) : int option = if n > 0 then Some n else None\nlet f (n: int) =\n    match pick n with\n    | Some v -> v\n    | None -> 0"
+        structOptionIn (
+            fsharp
+                """
+                let private pick (n: int) : int option = if n > 0 then Some n else None
+                let f (n: int) =
+                    match pick n with
+                    | Some v -> v
+                    | None -> 0
+                """
+        )
     )
 
 [<Fact>]
@@ -74,13 +150,47 @@ let ``a recursive function's match on its own call moves too`` () =
     // the self-call's patterns sit inside the definition, where the use
     // scan used not to look: `| Some d` against a voption is FS0001
     assertStructOption
-        "let rec private depth (n: int) =\n    if n <= 0 then Some 0\n    else\n        match depth (n - 1) with\n        | Some d -> Some (d + 1)\n        | None -> None\n\nlet show (n: int) =\n    match depth n with\n    | Some d -> string d\n    | None -> \"-\""
-        "let rec private depth (n: int) =\n    if n <= 0 then ValueSome 0\n    else\n        match depth (n - 1) with\n        | ValueSome d -> ValueSome (d + 1)\n        | ValueNone -> ValueNone\n\nlet show (n: int) =\n    match depth n with\n    | ValueSome d -> string d\n    | ValueNone -> \"-\""
+        (fsharp
+            """
+            let rec private depth (n: int) =
+                if n <= 0 then Some 0
+                else
+                    match depth (n - 1) with
+                    | Some d -> Some (d + 1)
+                    | None -> None
+
+            let show (n: int) =
+                match depth n with
+                | Some d -> string d
+                | None -> "-"
+            """)
+        (fsharp
+            """
+            let rec private depth (n: int) =
+                if n <= 0 then ValueSome 0
+                else
+                    match depth (n - 1) with
+                    | ValueSome d -> ValueSome (d + 1)
+                    | ValueNone -> ValueNone
+
+            let show (n: int) =
+                match depth n with
+                | ValueSome d -> string d
+                | ValueNone -> "-"
+            """)
 
 [<Fact>]
 let ``an annotated result constructor keeps the option`` () =
     // `(ValueSome n : int option)` would not compile
     Assert.Empty(
-        structOptionIn
-            "let private pick (n: int) = if n > 0 then (Some n : int option) else None\nlet a (n: int) =\n    match pick n with\n    | Some v -> v\n    | None -> 0"
+        structOptionIn (
+            fsharp
+                """
+                let private pick (n: int) = if n > 0 then (Some n : int option) else None
+                let a (n: int) =
+                    match pick n with
+                    | Some v -> v
+                    | None -> 0
+                """
+        )
     )

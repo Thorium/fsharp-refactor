@@ -155,12 +155,39 @@ let private withScriptAnd (setup: string -> unit) (directives: string) (test: Sc
     try
         setup scripts
 
-        File.WriteAllText(Path.Combine(src, "Util.fs"), "module Lib.Util\nlet one = 1\n")
-        File.WriteAllText(Path.Combine(src, "Core.fs"), "module Lib.Core\nlet size = Util.one + 1\n")
+        File.WriteAllText(
+            Path.Combine(src, "Util.fs"),
+            fsharp
+                """
+                module Lib.Util
+                let one = 1
+
+                """
+        )
+
+        File.WriteAllText(
+            Path.Combine(src, "Core.fs"),
+            fsharp
+                """
+                module Lib.Core
+                let size = Util.one + 1
+
+                """
+        )
 
         File.WriteAllText(
             Path.Combine(src, "Lib.fsproj"),
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Util.fs\" />\n    <Compile Include=\"Core.fs\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+                  <ItemGroup>
+                    <Compile Include="Util.fs" />
+                    <Compile Include="Core.fs" />
+                  </ItemGroup>
+                </Project>
+
+                """
         )
 
         let script = Path.Combine(scripts, "build.fsx")
@@ -197,7 +224,14 @@ let ``a FAKE 4 script with an #I-resolved #r by name still gets its missing #loa
     // `#I "packages/FAKE/tools"` + `#r "FakeLib.dll"`: the dll is not beside
     // the script, and treating that as a broken directive silenced the
     // rule on every FAKE 4 build script
-    withScript "#I \"packages/FAKE/tools\"\n#r \"FakeLib.dll\"\n#load \"../src/Lib/Core.fs\"" expectUtilLoad
+    withScript
+        (fsharp
+            """
+            #I "packages/FAKE/tools"
+            #r "FakeLib.dll"
+            #load "../src/Lib/Core.fs"
+            """)
+        expectUtilLoad
 
 [<Fact>]
 let ``a #r of an assembly by name is not a broken directive`` () =
@@ -213,7 +247,12 @@ let ``a #r by name that an #I directory does hold is resolved there`` () =
             let tools = Path.Combine(scripts, "packages", "FAKE", "tools")
             Directory.CreateDirectory tools |> ignore
             File.WriteAllText(Path.Combine(tools, "FakeLib.dll"), ""))
-        "#I \"packages/FAKE/tools\"\n#r \"FakeLib.dll\"\n#load \"../src/Lib/Core.fs\""
+        (fsharp
+            """
+            #I "packages/FAKE/tools"
+            #r "FakeLib.dll"
+            #load "../src/Lib/Core.fs"
+            """)
         expectUtilLoad
 
 [<Fact>]
@@ -225,7 +264,12 @@ let ``a #r with a path into an #I directory is checked there too`` () =
             let tools = Path.Combine(scripts, "packages", "FAKE", "tools")
             Directory.CreateDirectory tools |> ignore
             File.WriteAllText(Path.Combine(tools, "FakeLib.dll"), ""))
-        "#I \"packages/FAKE\"\n#r \"tools/FakeLib.dll\"\n#load \"../src/Lib/Core.fs\""
+        (fsharp
+            """
+            #I "packages/FAKE"
+            #r "tools/FakeLib.dll"
+            #load "../src/Lib/Core.fs"
+            """)
         expectUtilLoad
 
 [<Fact>]
@@ -267,18 +311,48 @@ let private writeMultiTargetSolution (root: string) =
 
     write
         "src/Lib/Library.fs"
-        "module Lib\n\nlet add (a: int, b: int) = a + b\n\n#if NETSTANDARD\nlet three () = add (1, 2)\n#else\nlet three () = add (1, 2)\n#endif\n"
+        (fsharp
+            """
+            module Lib
 
-    write "src/Lib/Other.fs" "module Other\n\nlet mul (a: int, b: int) = a * b\n\nlet internal six () = mul (2, 3)\n"
+            let add (a: int, b: int) = a + b
+
+            #if NETSTANDARD
+            let three () = add (1, 2)
+            #else
+            let three () = add (1, 2)
+            #endif
+
+            """)
+
+    write
+        "src/Lib/Other.fs"
+        (fsharp
+            """
+            module Other
+
+            let mul (a: int, b: int) = a * b
+
+            let internal six () = mul (2, 3)
+
+            """)
 
     write
         "tests/Tests/Tests.fsproj"
         $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Tests.fs\" />\n  </ItemGroup>\n  <ItemGroup>\n    <ProjectReference Include=\"../../src/Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
 
-    write "tests/Tests/Tests.fs" "module Tests\n\nlet three () = Lib.add (1, 2)\n"
+    write
+        "tests/Tests/Tests.fs"
+        (fsharp
+            """
+            module Tests
+
+            let three () = Lib.add (1, 2)
+
+            """)
 
     let entries =
-        [ "Lib", "src\\Lib\\Lib.fsproj"; "Tests", "tests\\Tests\\Tests.fsproj" ]
+        [ "Lib", """src\Lib\Lib.fsproj"""; "Tests", """tests\Tests\Tests.fsproj""" ]
         |> List.map (fun (name, path) ->
             $"Project(\"{{F2A71F9B-5D33-465A-A702-920D77279786}}\") = \"{name}\", \"{path}\", \"{{{Guid.NewGuid()}}}\"\nEndProject")
         |> String.concat "\n"
@@ -364,7 +438,7 @@ let ``a definition the all-frameworks arbiter puts back takes the sibling's rewr
 /// output, and one stderr line — the marker in front, no "error" in it.
 let private timedOut =
     Program.TimeCapMark
-    + " 'dotnet build \"Lib.fsproj\" --nologo -v q' had not finished after 15 minutes, so it was stopped."
+    + """ 'dotnet build "Lib.fsproj" --nologo -v q' had not finished after 15 minutes, so it was stopped."""
 
 [<Fact>]
 let ``runProcessIn marks a child stopped at the cap, so the classifier need not read the prose`` () =
@@ -382,7 +456,7 @@ let ``only the marker says a build was stopped at the cap`` () =
     Assert.True(Program.stoppedAtTimeCap (Program.buildFailureLines "" timedOut))
     // the prose alone, quoted by something else, is not the cap
     Assert.False(Program.stoppedAtTimeCap [| "the build had not finished after 15 minutes, so it was stopped." |])
-    Assert.False(Program.stoppedAtTimeCap [| "error MSB3073: The command \"sign.cmd\" exited with code 1." |])
+    Assert.False(Program.stoppedAtTimeCap [| """error MSB3073: The command "sign.cmd" exited with code 1.""" |])
     Assert.False(Program.stoppedAtTimeCap [||])
 
 [<Fact>]
@@ -420,7 +494,7 @@ let ``only a compiler error line counts as a compiler error`` () =
     // tooling, not code
     Assert.False(Program.hasCompilerErrors [| "error NETSDK1005: Assets file doesn't have a target for 'net8.0'" |])
     Assert.False(Program.hasCompilerErrors [| "error MSB4019: The imported project was not found" |])
-    Assert.False(Program.hasCompilerErrors [| "error MSB3073: The command \"sign.cmd\" exited with code 1." |])
+    Assert.False(Program.hasCompilerErrors [| """error MSB3073: The command "sign.cmd" exited with code 1.""" |])
     Assert.False(Program.hasCompilerErrors [||])
 
 [<Fact>]
@@ -629,7 +703,20 @@ let private writeConsumerSolution (root: string) (consumerFramework: string) =
 
     write
         "src/Lib/Library.fs"
-        "module Lib\n\ntype Shape =\n    | Circle of radius: float\n    | Square of side: float\n\nlet area (shape: Shape) =\n    match shape with\n    | Circle r -> 3.0 * r * r\n    | Square s -> s * s\n"
+        (fsharp
+            """
+            module Lib
+
+            type Shape =
+                | Circle of radius: float
+                | Square of side: float
+
+            let area (shape: Shape) =
+                match shape with
+                | Circle r -> 3.0 * r * r
+                | Square s -> s * s
+
+            """)
 
     write
         "src/Consumer/Consumer.csproj"
@@ -637,10 +724,23 @@ let private writeConsumerSolution (root: string) (consumerFramework: string) =
 
     write
         "src/Consumer/Use.cs"
-        "namespace Consumer\n{\n    public static class Use\n    {\n        public static double Radius(Lib.Shape shape) => shape is Lib.Shape.Circle c ? c.radius : 0.0;\n    }\n}\n"
+        (fsharp
+            """
+            namespace Consumer
+            {
+                public static class Use
+                {
+                    public static double Radius(Lib.Shape shape) => shape is Lib.Shape.Circle c ? c.radius : 0.0;
+                }
+            }
+
+            """)
 
     let entries =
-        [ "Lib", "src\\Lib\\Lib.fsproj"; "Consumer", "src\\Consumer\\Consumer.csproj" ]
+        [
+            "Lib", """src\Lib\Lib.fsproj"""
+            "Consumer", """src\Consumer\Consumer.csproj"""
+        ]
         |> List.map (fun (name, path) ->
             $"Project(\"{{F2A71F9B-5D33-465A-A702-920D77279786}}\") = \"{name}\", \"{path}\", \"{{{Guid.NewGuid()}}}\"\nEndProject")
         |> String.concat "\n"
@@ -745,7 +845,17 @@ let ``FR0130 leaves a library's public constants alone in a plain run and annota
 
         File.WriteAllText(
             library,
-            "module Lib\n\nlet ConnectionName = \"orders\"\n\nlet private Retries = 3\n\nlet describe () = ConnectionName + string Retries\n"
+            fsharp
+                """
+                module Lib
+
+                let ConnectionName = "orders"
+
+                let private Retries = 3
+
+                let describe () = ConnectionName + string Retries
+
+                """
         )
 
         let normalised () =
@@ -754,15 +864,37 @@ let ``FR0130 leaves a library's public constants alone in a plain run and annota
         let code, output = runTool [| project; "--codes"; "FR0130"; "--no-color" |]
         Assert.True((code = 0), $"exit {code}:\n{output}")
         // the private constant is contained and gains the attribute...
-        Assert.Contains("[<Literal>]\nlet private Retries", normalised ())
+        Assert.Contains(
+            fsharp
+                """
+                [<Literal>]
+                let private Retries
+                """,
+            normalised ()
+        )
         // ...the public one is the library's API and keeps its getter
-        Assert.DoesNotContain("[<Literal>]\nlet ConnectionName", normalised ())
+        Assert.DoesNotContain(
+            fsharp
+                """
+                [<Literal>]
+                let ConnectionName
+                """,
+            normalised ()
+        )
 
         let code, output =
             runTool [| project; "--codes"; "FR0130"; "--api-changes"; "--no-color" |]
 
         Assert.True((code = 0), $"exit {code}:\n{output}")
-        Assert.Contains("[<Literal>]\nlet ConnectionName", normalised ())
+
+        Assert.Contains(
+            fsharp
+                """
+                [<Literal>]
+                let ConnectionName
+                """,
+            normalised ()
+        )
     finally
         cleanup root
 
@@ -799,7 +931,7 @@ let ``a framework list commented out of the project file is not one of its frame
             String.concat
                 "\n"
                 [
-                    "<Project Sdk=\"Microsoft.NET.Sdk\">"
+                    """<Project Sdk="Microsoft.NET.Sdk">"""
                     "  <PropertyGroup>"
                     "    <!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks> -->"
                     "    <!--TargetFramework>net48</TargetFramework-->"
@@ -832,11 +964,39 @@ let ``the configuration probe reads a compile item by the name the project spell
 
         File.WriteAllText(
             project,
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Library.fs\" />\n    <Compile Include=\"Branching.fs\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <Compile Include="Library.fs" />
+                    <Compile Include="Branching.fs" />
+                  </ItemGroup>
+                </Project>
+
+                """
         )
 
-        File.WriteAllText(Path.Combine(dir, "Library.fs"), "module Lib\n\nlet answer = 42\n")
-        File.WriteAllText(Path.Combine(dir, "Branching.fs"), "module Other\n\nlet flag = 1\n")
+        File.WriteAllText(
+            Path.Combine(dir, "Library.fs"),
+            fsharp
+                """
+                module Lib
+
+                let answer = 42
+
+                """
+        )
+
+        File.WriteAllText(
+            Path.Combine(dir, "Branching.fs"),
+            fsharp
+                """
+                module Other
+
+                let flag = 1
+
+                """
+        )
 
         Assert.False(Program.hasConfigurationConditionals project, "no source branches on the configuration")
 
@@ -846,12 +1006,31 @@ let ``the configuration probe reads a compile item by the name the project spell
 
         File.WriteAllText(
             branching,
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Compile Include=\"Branching.fs\" />\n    <Compile Include=\"Debugging.fs\" />\n  </ItemGroup>\n</Project>\n"
+            fsharp
+                """
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <ItemGroup>
+                    <Compile Include="Branching.fs" />
+                    <Compile Include="Debugging.fs" />
+                  </ItemGroup>
+                </Project>
+
+                """
         )
 
         File.WriteAllText(
             Path.Combine(dir, "Debugging.fs"),
-            "module Debugging\n\n#if DEBUG\nlet verbose = true\n#else\nlet verbose = false\n#endif\n"
+            fsharp
+                """
+                module Debugging
+
+                #if DEBUG
+                let verbose = true
+                #else
+                let verbose = false
+                #endif
+
+                """
         )
 
         Assert.True(Program.hasConfigurationConditionals branching, "Debugging.fs branches on DEBUG")
@@ -958,7 +1137,7 @@ let ``every verification build runs, however the first one fails`` () =
     let ran = ResizeArray<string>()
 
     let signing =
-        "Lib.fsproj(40,5): error MSB3073: The command \"sign.cmd\" exited with code 1."
+        """Lib.fsproj(40,5): error MSB3073: The command "sign.cmd" exited with code 1."""
 
     let result =
         Program.buildEach
@@ -1006,11 +1185,29 @@ let ``a consumer is verified even when the other configuration fails on its tool
         let libSource = Path.Combine(dir, "src", "Lib", "Library.fs")
 
         let signing =
-            "  <Target Name=\"SignRelease\" AfterTargets=\"Build\" Condition=\"'$(Configuration)' == 'Release'\">\n    <Exec Command=\"exit 1\" />\n  </Target>\n</Project>"
+            fsharp
+                """
+                  <Target Name="SignRelease" AfterTargets="Build" Condition="'$(Configuration)' == 'Release'">
+                    <Exec Command="exit 1" />
+                  </Target>
+                </Project>
+                """
 
         File.WriteAllText(libProject, File.ReadAllText(libProject).Replace("</Project>", signing))
 
-        File.AppendAllText(libSource, "\n#if DEBUG\nlet mode = \"debug\"\n#else\nlet mode = \"release\"\n#endif\n")
+        File.AppendAllText(
+            libSource,
+            fsharp
+                """
+
+                #if DEBUG
+                let mode = "debug"
+                #else
+                let mode = "release"
+                #endif
+
+                """
+        )
 
         let _code, output =
             runTool [| solution; "--api-changes"; "--codes"; "FR0016"; "--no-color" |]
