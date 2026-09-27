@@ -347,8 +347,19 @@ let private spelled (fileText: string) (name: string) =
 /// dropped as collisions and came back a pass later under the pattern's
 /// letters; they take the function's name numbered instead (`parseRegex2`),
 /// as CSharp.Refactor's CR0109 does, before the pattern's is tried. The
-/// chosen name is claimed here.
-let private hoistName (claimed: HashSet<string>) (fileText: string) (decl: SynModuleDecl) (fromPattern: string) =
+/// chosen name is claimed here, against the declaration that took it.
+///
+/// A sibling's claim numbers before the whole name: `isPostcode`'s two
+/// regexes are `postcodeRegex` and `postcodeRegex2`, where the whole-name
+/// fallback gave `isPostcodeRegex` to the second - a name that reads as the
+/// function's one regex. A name the file already spells, or another
+/// declaration took, still falls back to the whole name first.
+let private hoistName
+    (claimed: Dictionary<string, range>)
+    (fileText: string)
+    (decl: SynModuleDecl)
+    (fromPattern: string)
+    =
     let fromBinding = nameFromBinding decl
 
     let numbered =
@@ -356,12 +367,26 @@ let private hoistName (claimed: HashSet<string>) (fileText: string) (decl: SynMo
         | first :: _ -> [ for i in 2..9 -> first + string i ]
         | [] -> []
 
+    let siblingTookFirst =
+        match fromBinding with
+        | first :: _ ->
+            match claimed.TryGetValue first with
+            | true, claimant -> Range.equals claimant decl.Range
+            | false, _ -> false
+        | [] -> false
+
+    let candidates =
+        if siblingTookFirst then
+            numbered @ fromBinding @ [ fromPattern ]
+        else
+            fromBinding @ numbered @ [ fromPattern ]
+
     let name =
-        fromBinding @ numbered @ [ fromPattern ]
-        |> List.tryFind (fun n -> not (spelled fileText n || claimed.Contains n))
+        candidates
+        |> List.tryFind (fun n -> not (spelled fileText n || claimed.ContainsKey n))
         |> Option.defaultValue fromPattern
 
-    claimed.Add name |> ignore
+    claimed[name] <- decl.Range
     name
 
 /// Methods whose static (input, pattern) overloads map onto an instance call.
@@ -493,8 +518,8 @@ let private countTest (op: string) (k: int) (flipped: bool) =
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
 
-    // names the hoists of this pass have taken (hoistName)
-    let claimed = HashSet<string>()
+    // names the hoists of this pass have taken, and by which declaration (hoistName)
+    let claimed = Dictionary<string, range>()
     let index = AstIndex.ofTree parseTree
 
     let stringOperation (r: range) (replacement: string) =
