@@ -99,8 +99,11 @@ let private fixTexts (messages: Message list) =
 
 // ---- D2: a later file of the same executable ----
 
+/// Sixteen names: FR0035 leaves a shorter literal alone, its linear probe
+/// being the faster one.
 let private dataSource (modifier: string) =
-    $"module Data\n\nlet {modifier}names = [ \"a\"; \"b\" ]\n\nlet check (xs: string list) =\n    for x in xs do\n        if List.contains x names then printfn \"%%s\" x\n"
+    let names = [ 'a' .. 'p' ] |> List.map (fun c -> $"\"{c}\"") |> String.concat "; "
+    $"module Data\n\nlet {modifier}names = [ {names} ]\n\nlet check (xs: string list) =\n    for x in xs do\n        if List.contains x names then printfn \"%%s\" x\n"
 
 let private loopPerfOnFirst (modifier: string) (programSource: string) =
     let dir = freshDir "exe-loopperf"

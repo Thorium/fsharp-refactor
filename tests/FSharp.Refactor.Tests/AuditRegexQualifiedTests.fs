@@ -192,7 +192,7 @@ let ``FR0015: a hoisted Match keeps its Success continuation on the call`` () =
         "module Test\nopen System.Text.RegularExpressions\nlet g (xs: string list) =\n    xs |> List.map (fun x -> Regex.Match(x, \"b+\").Success)"
 
     let patched = hoistPatched source
-    Assert.Contains("bRegex.Match(x).Success", patched)
+    Assert.Contains("gRegex.Match(x).Success", patched)
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
@@ -202,7 +202,7 @@ let ``FR0015: a hoisted Split keeps its index continuation on the call`` () =
         "module Test\nopen System.Text.RegularExpressions\nlet g (xs: string list) =\n    xs |> List.map (fun s -> Regex.Split(s, \"p+\").[0])"
 
     let patched = hoistPatched source
-    Assert.Contains("pRegex.Split(s).[0]", patched)
+    Assert.Contains("gRegex.Split(s).[0]", patched)
     Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
 
 [<Fact>]
@@ -213,7 +213,7 @@ let ``FR0015: a hoisted IsMatch is a parenthesised call`` () =
     let patched = hoistPatched source
 
     Assert.Equal(
-        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if acRegex.IsMatch(s) then printfn \"%s\" s",
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if fRegex.IsMatch(s) then printfn \"%s\" s",
         patched
     )
 

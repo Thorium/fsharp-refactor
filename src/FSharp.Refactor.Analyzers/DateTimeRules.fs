@@ -17,6 +17,12 @@
 ///    read CREATES bug 1.
 ///
 /// Both shapes are typed-gated to System.DateTime/System.DateTimeOffset.
+///
+/// A Fable project bound to a browser (a Fable.Browser.* reference) runs on
+/// the end user's own clock: `DateTime.Today` is their date and
+/// `DateTime.Now` their time, so both stay quiet there, while a UTC cut is
+/// nobody's midnight in a browser too and keeps its note. A Fable project
+/// for Node or Deno is a server and gets every message.
 module FSharp.Refactor.DateTimeRules
 
 open FSharp.Compiler.CodeAnalysis

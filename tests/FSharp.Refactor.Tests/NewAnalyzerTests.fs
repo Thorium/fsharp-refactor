@@ -292,7 +292,7 @@ let ``a regex call in a function body is hoisted once per call, a module value's
 let ``regex call in a loop is hoisted above the declaration`` () =
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for s in xs do\n        if Regex.IsMatch(s, \"a.c\") then printfn \"%s\" s"
-        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if acRegex.IsMatch(s) then printfn \"%s\" s"
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        if fRegex.IsMatch(s) then printfn \"%s\" s"
 
 [<Fact>]
 let ``hoist without the open stays advice-only`` () =
@@ -309,7 +309,7 @@ let ``hoist without the open stays advice-only`` () =
 let ``regex Replace in a loop is hoisted with both remaining arguments`` () =
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for s in xs do\n        printfn \"%s\" (Regex.Replace(s, \"a.c\", \"-\"))"
-        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        printfn \"%s\" (acRegex.Replace(s, \"-\"))"
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    for s in xs do\n        printfn \"%s\" (fRegex.Replace(s, \"-\"))"
 
 [<Fact>]
 let ``literal match in a loop reports only the string operation`` () =
@@ -332,7 +332,7 @@ let ``regex call in a List.filter lambda is hoisted like a loop`` () =
     // a lambda handed to a collection function runs once per element
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> Regex.IsMatch(s, \"a.c\"))"
-        "module Test\nopen System.Text.RegularExpressions\nlet private acRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> acRegex.IsMatch(s))"
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a.c\"\nlet f (xs: string list) =\n    xs |> List.filter (fun s -> fRegex.IsMatch(s))"
 
 [<Fact>]
 let ``regex call in a lambda given to a non-collection function is not a loop`` () =
@@ -364,7 +364,7 @@ let private assertRegexConstructionHoist (source: string) (expectedPatched: stri
 let ``regex constructed in a for loop is hoisted and the binding becomes an alias`` () =
     assertRegexConstructionHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
-        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex \"a+\"\nlet f (xs: string list) =\n    for x in xs do\n        let r = aRegex\n        r.IsMatch x |> ignore"
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a+\"\nlet f (xs: string list) =\n    for x in xs do\n        let r = fRegex\n        r.IsMatch x |> ignore"
 
 [<Fact>]
 let ``regex constructed in a List.map lambda is hoisted with the Split chain intact`` () =
@@ -373,19 +373,19 @@ let ``regex constructed in a List.map lambda is hoisted with the Split chain int
     // regex =` and the `.Split(v)` after it stay as they were
     assertRegexConstructionHoist
         "module Test\nopen System.Text.RegularExpressions\nlet expandMultiProperties (properties: (string * string) list) =\n    properties |> List.map (fun (k, v) ->\n        let regex = Regex(\";([a-z,A-Z,0-9,_,-]*)=\")\n        let splits = regex.Split(v)\n        k, splits)"
-        "module Test\nopen System.Text.RegularExpressions\nlet private azAZ09Regex = Regex(\";([a-z,A-Z,0-9,_,-]*)=\")\nlet expandMultiProperties (properties: (string * string) list) =\n    properties |> List.map (fun (k, v) ->\n        let regex = azAZ09Regex\n        let splits = regex.Split(v)\n        k, splits)"
+        "module Test\nopen System.Text.RegularExpressions\nlet private expandMultiPropertiesRegex = Regex(\";([a-z,A-Z,0-9,_,-]*)=\")\nlet expandMultiProperties (properties: (string * string) list) =\n    properties |> List.map (fun (k, v) ->\n        let regex = expandMultiPropertiesRegex\n        let splits = regex.Split(v)\n        k, splits)"
 
 [<Fact>]
 let ``regex constructed with constant RegexOptions keeps them in the hoisted binding`` () =
     assertRegexConstructionHoist
         "module Test\nopen System.Text.RegularExpressions\nlet f (xs: string list) =\n    xs |> List.map (fun x -> Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant ||| RegexOptions.Multiline).IsMatch x)"
-        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant ||| RegexOptions.Multiline)\nlet f (xs: string list) =\n    xs |> List.map (fun x -> aRegex.IsMatch x)"
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex(\"a+\", RegexOptions.IgnoreCase ||| RegexOptions.CultureInvariant ||| RegexOptions.Multiline)\nlet f (xs: string list) =\n    xs |> List.map (fun x -> fRegex.IsMatch x)"
 
 [<Fact>]
 let ``a qualified regex construction hoists without the open`` () =
     assertRegexConstructionHoist
         "module Test\nlet f (xs: string list) =\n    for x in xs do\n        let r = new System.Text.RegularExpressions.Regex(\"a+\")\n        r.IsMatch x |> ignore"
-        "module Test\nlet private aRegex = new System.Text.RegularExpressions.Regex(\"a+\")\nlet f (xs: string list) =\n    for x in xs do\n        let r = aRegex\n        r.IsMatch x |> ignore"
+        "module Test\nlet private fRegex = new System.Text.RegularExpressions.Regex(\"a+\")\nlet f (xs: string list) =\n    for x in xs do\n        let r = fRegex\n        r.IsMatch x |> ignore"
 
 [<Fact>]
 let ``a declined regex construction stays silent here and remains FR0037's note`` () =
@@ -427,15 +427,15 @@ let ``a hoisted regex binding lands above the declaration's doc comment`` () =
     // the declaration is outside the range and is walked over the same way
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\n\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a+\") then ()"
-        "module Test\nopen System.Text.RegularExpressions\n\nlet private aRegex = Regex \"a+\"\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch(x) then ()"
+        "module Test\nopen System.Text.RegularExpressions\n\nlet private fRegex = Regex \"a+\"\n/// Counts the a-runs.\n/// Two lines of it.\nlet f (xs: string list) =\n    for x in xs do\n        if fRegex.IsMatch(x) then ()"
 
     assertRegexHoist
         "module Test\nopen System.Text.RegularExpressions\nlet g = 1\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if Regex.IsMatch(x, \"a+\") then ()"
-        "module Test\nopen System.Text.RegularExpressions\nlet g = 1\nlet private aRegex = Regex \"a+\"\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if aRegex.IsMatch(x) then ()"
+        "module Test\nopen System.Text.RegularExpressions\nlet g = 1\nlet private fRegex = Regex \"a+\"\n// counts the a-runs\nlet f (xs: string list) =\n    for x in xs do\n        if fRegex.IsMatch(x) then ()"
 
     assertRegexConstructionHoist
         "module Test\nopen System.Text.RegularExpressions\n/// Counts the a-runs.\nlet f (xs: string list) =\n    for x in xs do\n        let r = Regex \"a+\"\n        r.IsMatch x |> ignore"
-        "module Test\nopen System.Text.RegularExpressions\nlet private aRegex = Regex \"a+\"\n/// Counts the a-runs.\nlet f (xs: string list) =\n    for x in xs do\n        let r = aRegex\n        r.IsMatch x |> ignore"
+        "module Test\nopen System.Text.RegularExpressions\nlet private fRegex = Regex \"a+\"\n/// Counts the a-runs.\nlet f (xs: string list) =\n    for x in xs do\n        let r = fRegex\n        r.IsMatch x |> ignore"
 
 // ---- FR0016 StructDu ----
 

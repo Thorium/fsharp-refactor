@@ -53,6 +53,7 @@
 module FSharp.Refactor.RegexUsage
 
 open System
+open System.Collections.Generic
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
@@ -282,6 +283,87 @@ let private nameFromPattern (pattern: string) =
         + String(letters.[1..])
         + "Regex"
 
+/// A name from the module-level binding the regex serves - `isPostcode`
+/// gives `postcodeRegex`, `collapseSpaces` gives `collapseSpacesRegex` - or
+/// nothing when the binding has no plain name. A predicate's `is`/`has` goes:
+/// the regex is the postcode's, not the question's. Names spelled from the
+/// pattern (`aZ12dAZddAZ2Regex` for a UK postcode, `sRegex` for `s+`) said
+/// nothing a reader could use (GitHub #6).
+let private nameFromBinding (decl: SynModuleDecl) =
+    let head =
+        match decl with
+        | SynModuleDecl.Let(bindings = SynBinding(headPat = pat) :: _) ->
+            let rec named (p: SynPat) =
+                match p with
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    Some (List.last ids).idText
+                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                | SynPat.Typed(pat = inner)
+                | SynPat.Attrib(pat = inner)
+                | SynPat.Paren(pat = inner) -> named inner
+                | _ -> None
+
+            named pat
+        | _ -> None
+
+    let regexName (stem: string) =
+        string (Char.ToLowerInvariant stem.[0]) + stem.Substring 1 + "Regex"
+
+    match head with
+    | Some n when
+        n.Length > 0
+        && Char.IsLetter n.[0]
+        && n |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
+        ->
+        let stem =
+            [ "is"; "has" ]
+            |> List.tryPick (fun prefix ->
+                if
+                    n.Length > prefix.Length
+                    && n.StartsWith prefix
+                    && Char.IsUpper n.[prefix.Length]
+                then
+                    Some(n.Substring prefix.Length)
+                else
+                    None)
+            |> Option.defaultValue n
+
+        // the whole name second: `isPostcodeRegex` where `postcodeRegex`
+        // is taken reads far better than the pattern's letters
+        List.distinct [ regexName stem; regexName n ]
+    | _ -> []
+
+/// Does the file spell `name` as a whole identifier? A substring test read
+/// `zipRegex` as taken by `unzipRegex`.
+let private spelled (fileText: string) (name: string) =
+    Regex.IsMatch(fileText, $@"(?<![\w']){Regex.Escape name}(?![\w'])")
+
+/// The hoisted binding's name: the first of the binding's names the file
+/// does not spell yet (a second regex of the same function finds the first
+/// taken once it is in), else the pattern's.
+///
+/// `claimed`: the names earlier sites of this pass took. Every regex of one
+/// function derives the same name, so without it the second and third were
+/// dropped as collisions and came back a pass later under the pattern's
+/// letters; they take the function's name numbered instead (`parseRegex2`),
+/// as CSharp.Refactor's CR0109 does, before the pattern's is tried. The
+/// chosen name is claimed here.
+let private hoistName (claimed: HashSet<string>) (fileText: string) (decl: SynModuleDecl) (fromPattern: string) =
+    let fromBinding = nameFromBinding decl
+
+    let numbered =
+        match fromBinding with
+        | first :: _ -> [ for i in 2..9 -> first + string i ]
+        | [] -> []
+
+    let name =
+        fromBinding @ numbered @ [ fromPattern ]
+        |> List.tryFind (fun n -> not (spelled fileText n || claimed.Contains n))
+        |> Option.defaultValue fromPattern
+
+    claimed.Add name |> ignore
+    name
+
 /// Methods whose static (input, pattern) overloads map onto an instance call.
 let private hoistableMethods = set [ "IsMatch"; "Match"; "Matches"; "Split" ]
 
@@ -326,7 +408,8 @@ let private hoistLine (source: ISourceText) (floorLine: int) (column: int) (star
 
 /// The name a hoist's insertion text declares, for the collision check
 /// between two hoists in one file.
-let private hoistedNameIn = Regex(@"let private (\w+) =", RegexOptions.Compiled)
+let private hoistedNameIn =
+    Regex(@"let private (\w+) = (.+)", RegexOptions.Compiled)
 
 /// The string operation a literal-pattern MATCH TEST is: `Contains`, or
 /// `StartsWith` with `StringComparison.Ordinal` for a `^`-anchored pattern.
@@ -409,6 +492,9 @@ let private countTest (op: string) (k: int) (flipped: bool) =
 /// Find literal-pattern IsMatch calls and loop-resident static Regex calls.
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
+
+    // names the hoists of this pass have taken (hoistName)
+    let claimed = HashSet<string>()
     let index = AstIndex.ofTree parseTree
 
     let stringOperation (r: range) (replacement: string) =
@@ -455,6 +541,49 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 else
                     acc)
             0
+
+    // the module (or namespace) a declaration sits directly in: a binding
+    // is reachable from its siblings below it, not from a sibling module's
+    // declarations
+    let parentOf (decl: SynModuleDecl) =
+        index.Decls
+        |> Array.tryPick (fun (path, d) ->
+            if Range.equals d.Range decl.Range then
+                path |> List.tryHead |> Option.map (fun (n: SyntaxNode) -> n.Range)
+            else
+                None)
+
+    // a module-level binding ABOVE `decl`, in the same module, that already
+    // holds exactly this Regex - `let private zipRegex = Regex @"^\d{5}$"`
+    // hoisted for one function serves the next one spelling the same
+    // pattern, rather than a second binding building the same Regex again
+    let existingHoist (decl: SynModuleDecl) (rhs: string) =
+        let home = parentOf decl
+
+        index.Decls
+        |> Array.tryPick (fun (path, d) ->
+            match d with
+            | SynModuleDecl.Let(
+                isRecursive = false
+                bindings = [ SynBinding(
+                                 isMutable = false; headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = e) ]) when
+                d.Range.EndLine < decl.Range.StartLine
+                && (match home, path with
+                    | Some h, (parent: SyntaxNode) :: _ -> Range.equals h parent.Range
+                    | _ -> false)
+                && (textOfRange source e.Range).Trim() = rhs
+                // the name must still MEAN that binding at the site: a
+                // parameter, local or lambda binder of the same name in the
+                // declaration shadows it, and `digitsRegex.IsMatch` would reach
+                // the caller's own value (a string: no compile; a Regex: a
+                // different pattern, silently)
+                && not (spelled (textOfRange source decl.Range) id.idText)
+                // and exist in the build the site is compiled in: one under an
+                // `#if` the site is not under is absent from the other build
+                && conditionAt source d.Range.StartLine = conditionAt source decl.Range.StartLine
+                ->
+                Some id.idText
+            | _ -> None)
 
     // the insertion edit for `let private <name> = <rhs>` above `decl`,
     // indented to it; a call under `#if` yields a hoisted instance under
@@ -583,46 +712,49 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                     match patternArg, runsRepeatedly path with
                     | Some patternExpr, ValueSome repeat ->
-                        let name =
+                        let patternName =
                             match patternExpr with
                             | StringLiteral pattern -> nameFromPattern pattern
                             | _ -> "compiledRegex"
+
+                        let rhs = sprintf "Regex %s" (textOfRange source patternExpr.Range)
+
+                        let callReplacement (name: string) =
+                            match methodName, args with
+                            | "Replace", [ input; _; repl ] ->
+                                sprintf
+                                    "%s.Replace(%s, %s)"
+                                    name
+                                    (textOfRange source input.Range)
+                                    (textOfRange source repl.Range)
+                            // a parenthesised method call, never a
+                            // juxtaposition: `Regex.Match(x, "p").Success`
+                            // is the call's receiver of `.Success`, and
+                            // `pRegex.Match x.Success` would hand the
+                            // continuation to the ARGUMENT instead
+                            | _, [ input; _ ] -> sprintf "%s.%s(%s)" name methodName (textOfRange source input.Range)
+                            | _ -> ""
 
                         let edits =
                             match enclosingLet path with
                             | Some decl when
                                 regexOpenAbove decl
                                 && (hoistableMethods.Contains methodName || methodName = "Replace")
-                                && not (fileText.Value.Contains name)
+                                && callReplacement "r" <> ""
                                 ->
-                                let callReplacement =
-                                    match methodName, args with
-                                    | "Replace", [ input; _; repl ] ->
-                                        sprintf
-                                            "%s.Replace(%s, %s)"
-                                            name
-                                            (textOfRange source input.Range)
-                                            (textOfRange source repl.Range)
-                                    // a parenthesised method call, never a
-                                    // juxtaposition: `Regex.Match(x, "p").Success`
-                                    // is the call's receiver of `.Success`, and
-                                    // `pRegex.Match x.Success` would hand the
-                                    // continuation to the ARGUMENT instead
-                                    | _, [ input; _ ] ->
-                                        sprintf "%s.%s(%s)" name methodName (textOfRange source input.Range)
-                                    | _ -> ""
+                                match existingHoist decl rhs with
+                                // the same Regex, already a binding above: use it
+                                | Some name -> [ expr.Range, textOfRange source expr.Range, callReplacement name ]
+                                | None ->
+                                    let name = hoistName claimed fileText.Value decl patternName
 
-                                if callReplacement = "" then
-                                    []
-                                else
-                                    [
-                                        hoistInsert
-                                            decl
-                                            expr.Range.StartLine
-                                            name
-                                            (sprintf "Regex %s" (textOfRange source patternExpr.Range))
-                                        expr.Range, textOfRange source expr.Range, callReplacement
-                                    ]
+                                    if spelled fileText.Value name then
+                                        []
+                                    else
+                                        [
+                                            hoistInsert decl expr.Range.StartLine name rhs
+                                            expr.Range, textOfRange source expr.Range, callReplacement name
+                                        ]
                             | _ -> []
 
                         // a static call in a function body is served from the
@@ -663,19 +795,27 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                     match pattern, enclosingLet path, runsRepeatedly path with
                     | Some pattern, Some decl, ValueSome repeat when qualified || regexOpenAbove decl ->
-                        let name = nameFromPattern pattern
+                        let rhs = textOfRange source expr.Range
 
-                        if not (fileText.Value.Contains name) then
+                        let edits =
+                            match existingHoist decl rhs with
+                            // the same construction, already a binding above
+                            | Some name -> [ expr.Range, rhs, name ]
+                            | None ->
+                                let name = hoistName claimed fileText.Value decl (nameFromPattern pattern)
+
+                                if spelled fileText.Value name then
+                                    []
+                                else
+                                    [ hoistInsert decl expr.Range.StartLine name rhs; expr.Range, rhs, name ]
+
+                        if not edits.IsEmpty then
                             suggestions.Add
                                 {
                                     Range = expr.Range
-                                    OriginalText = textOfRange source expr.Range
+                                    OriginalText = rhs
                                     Kind = RegexSuggestionKind.HoistConstruction
-                                    Edits =
-                                        [
-                                            hoistInsert decl expr.Range.StartLine name (textOfRange source expr.Range)
-                                            expr.Range, textOfRange source expr.Range, name
-                                        ]
+                                    Edits = edits
                                     Repeat = repeat
                                 }
                     | _ -> ()
@@ -692,13 +832,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // spell different bindings under the same name), so only the first
     // keeps its fix - and a construction without a fix is not this rule's
     // to report, FR0037 notes it
-    let seenNames = System.Collections.Generic.HashSet<string>()
+    // The same Regex hoisted from two sites in one pass would become two
+    // bindings building it twice: only the first (topmost, so its binding
+    // lands above the others) keeps its fix, and the rest take that binding
+    // over on the next pass (`existingHoist`)
+    let seenNames = HashSet<string>()
+    let seenRegexes = HashSet<string>()
 
     let hoistedName (s: Suggestion) =
         match s.Edits with
         | (_, _, insertText) :: _ ->
             let m = hoistedNameIn.Match insertText
-            if m.Success then Some m.Groups.[1].Value else None
+
+            if m.Success then
+                Some(m.Groups.[1].Value, m.Groups.[2].Value.TrimEnd())
+            else
+                None
         | [] -> None
 
     // the string operation's range is the call's, or the `.Success` /
@@ -711,10 +860,24 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                o.Kind = RegexSuggestionKind.StringOperation
                && Range.rangeContainsRange o.Range s.Range)
            |> not)
+    |> List.sortBy (fun s -> s.Range.StartLine, s.Range.StartColumn)
     |> List.choose (fun s ->
-        match s.Kind, hoistedName s with
-        | RegexSuggestionKind.HoistFromLoop, Some name when not (seenNames.Add name) -> Some { s with Edits = [] }
-        | RegexSuggestionKind.HoistConstruction, Some name when not (seenNames.Add name) -> None
+        let duplicate =
+            match hoistedName s with
+            | Some(name, rhs) ->
+                // both sets always take the pair: `||` would skip the second
+                let freshName = seenNames.Add name
+                let freshRegex = seenRegexes.Add rhs
+                not (freshName && freshRegex)
+            | None -> false
+
+        match s.Kind with
+        // a loop's site keeps its note meanwhile; a plain function body's is
+        // reported only with a fix, as where it is found
+        | RegexSuggestionKind.HoistFromLoop when duplicate && s.Repeat = Repeat.LoopIteration ->
+            Some { s with Edits = [] }
+        | RegexSuggestionKind.HoistFromLoop when duplicate -> None
+        | RegexSuggestionKind.HoistConstruction when duplicate -> None
         | _ -> Some s)
 
 /// Keep only what the `perCall` knob allows.

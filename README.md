@@ -199,11 +199,11 @@ but silences the analyzer for everyone.
 | Flag | |
 |---|---|
 | `--dry-run` | Report only: lists every fix it would make, with file and position, and writes nothing. Rewriting is never implicit - drop the flag to let it edit. |
-| `--codes FR0002,FR0031` | Restrict the run to chosen rules. |
-| `--categories <list>` | Restrict the run to kinds of rule: `correctness`, `performance`, `idiom`, `cosmetic`. Combined with `--codes` it narrows further, in either order. See [Someone else's codebase](#someone-elses-codebase). |
+| `--codes FR0002,FR0031` | Restrict the run to chosen rules; the other analyzers do not run. |
+| `--categories <list>` | Restrict the run to kinds of rule: `correctness`, `performance`, `idiom`, `cosmetic`. Combined with `--codes` it narrows further, in either order. The analyzers of the rules left out do not run at all. A filtered run can stop at a point a full run passes through: FR0157 (idiom) leaves a `| _ ->` that FR0072 (correctness) closes in the next pass of a full run, so an idiom-only run leaves it open. See [Someone else's codebase](#someone-elses-codebase). |
 | `--jobs <n>` | Typecheck that many files at once (default 4, clamped to 2-4 by core count). Trades CPU for wall clock; because FCS reuses each file's prefix within one incremental build, the gain peaks around 4 and reverses if pushed higher. `--jobs 1` is the sequential sweep. |
 | `--framework <tfm>` | Analyse against this target framework instead of the narrowest one - see below. |
-| `--max-passes <n>` | Fix-then-reanalyze iterations (default 5). |
+| `--max-passes <n>` | Fix-then-reanalyze iterations (default 5). A pass after the first sweeps only the files the previous pass changed and those compiled after the first of them. |
 | `--help` | The same list, from the tool itself (`-h` and `/?` also work). |
 | `--api-changes` | Also apply the cross-file fixes described below. |
 | `--no-if-defs` | Never emit `#if`/`#else`/`#endif` pairs for capability fixes on multi-targeted projects (see below). The fixes stay plain, and any the legacy frameworks reject are put back by the final build check. |
@@ -480,6 +480,21 @@ comment each. Nothing in it changes anything until you edit a line - flip
 what you disagree with, delete the rest to keep following the defaults as
 they change. It refuses to overwrite an existing config.
 
+The formatter's settings count too, where a rule would otherwise undo them
+on every run: `fsharp_space_before_lowercase_invocation = false` in an
+`.editorconfig` (Fantomas writing `f(x)`, not its default `f (x)`) keeps
+FR0013 quiet unless this file or `--codes` turns it on by name.
+
+A Fable project (one referencing Fable.Core) changes a few answers. Its
+public values are exported to JavaScript, Python, Dart or Rust, so FR0130
+leaves them alone. FR0038 skips its culture note, since every Fable target
+compares strings ordinally. A project bound to JavaScript (a Fable.Browser.*,
+Fable.Node, Fable.Deno or Fable.Promise reference) is single-threaded, so
+FR0162 stays quiet there; one bound to a browser runs on the user's own
+clock, so FR0121 leaves `DateTime.Today` and `DateTime.Now` alone. The
+representation rules stay on: the Rust target stores a `[<Struct>]` record by
+value.
+
 ```json
 {
   "rules": {
@@ -574,6 +589,21 @@ hoists:
 {
   "rules": {
     "FR0015": { "perCall": false }
+  }
+}
+```
+
+FR0035 takes `minElements` (default 8), the written-out elements a probed
+module-level list or array literal needs before a HashSet pays; below that
+the linear probe is the faster one, even when every probe misses. It also
+takes `setMinElements` (default 16), the elements needed before the literal
+converts in place to an F# `Set`, a comparison tree that pays later; a
+shorter one gets the HashSet companion instead:
+
+```json
+{
+  "rules": {
+    "FR0035": { "minElements": 8, "setMinElements": 24 }
   }
 }
 ```

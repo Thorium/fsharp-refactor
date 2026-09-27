@@ -246,6 +246,21 @@ let ``FR0164: a condition over a mutable or a Span, or a comment in the loop, ke
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
+let ``FR0164: a let mutable in another function is not the condition's name`` () =
+    // `limit` in `prune` is its parameter; the `let mutable limit` of
+    // `count` is out of its scope and cannot be what the closure captures
+    let source =
+        "module M\nopen System.Collections.Generic\nlet count (xs: int list) =\n    let mutable limit = 0\n    for x in xs do\n        limit <- limit + x\n    limit\nlet prune (items: List<int>) (limit: int) =\n    for x in items do\n        if x < limit then items.Remove x |> ignore"
+
+    match enumerationMutationsIn source with
+    | [ s ] ->
+        let (r, _, replacement) = s.Filter.Value
+        Assert.Equal("items.RemoveAll(fun x -> x < limit) |> ignore", replacement)
+        let filtered = applyEdit source r replacement
+        Assert.True(typechecksCleanly filtered, $"Filtered source does not typecheck:\n%s{filtered}")
+    | other -> failwithf "Expected one finding, got %A" other
+
+[<Fact>]
 let ``FR0164: a removal from a dictionary or set, an edit to another collection, and a concurrent one stay quiet`` () =
     let source =
         "module M\nopen System.Collections.Generic\nopen System.Collections.Concurrent\nlet prune (d: Dictionary<int, int>) (h: HashSet<int>) =\n    for KeyValue(k, v) in d do\n        if v < 0 then d.Remove k |> ignore\n        d.[k] <- v + 1\n    for x in h do\n        if x < 0 then h.Remove x |> ignore\nlet copy (src: List<int>) (dst: List<int>) =\n    for x in src do\n        dst.Add x\nlet bag (b: ConcurrentBag<int>) =\n    for x in b do\n        b.Add x\nlet immutable (xs: int list) (acc: List<int>) =\n    for x in xs do\n        acc.Add x"

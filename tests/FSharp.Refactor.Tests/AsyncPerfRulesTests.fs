@@ -1587,7 +1587,11 @@ let ``FR0055: a one-call Parse body becomes TryParse`` () =
             offer.Edits
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
-        Assert.Contains("match System.Int32.TryParse s with\n    | true, v -> v\n    | false, _ -> 0", patched)
+        Assert.Contains(
+            "match System.Int32.TryParse s with\n    | true, parsed -> parsed\n    | false, _ -> 0",
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected two findings, got %A" other
 
@@ -1605,7 +1609,11 @@ let ``FR0055: a Some-wrapped Parse body pairs with its None fallback`` () =
             offer.Edits
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
-        Assert.Contains("match System.Int32.TryParse s with\n    | true, v -> Some v\n    | false, _ -> None", patched)
+        Assert.Contains(
+            "match System.Int32.TryParse s with\n    | true, parsed -> Some parsed\n    | false, _ -> None",
+            patched
+        )
+
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -1656,7 +1664,10 @@ let ``FR0055: a Parse caught narrowly for its own failures is TryParse as contro
             offer.Edits
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
-        Assert.Contains("match Decimal.TryParse s with\n    | true, v -> Some v\n    | false, _ -> None", patched)
+        Assert.Contains(
+            "match Decimal.TryParse s with\n    | true, parsed -> Some parsed\n    | false, _ -> None",
+            patched
+        )
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
@@ -1702,8 +1713,13 @@ let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow 
                     |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) acc)
                 source
 
-        Assert.Contains("    match Int32.TryParse s with\n    | true, v -> v\n    | false, _ -> 0", patched)
-        Assert.Contains("    match Guid.TryParse s with\n    | true, v -> Some v\n    | false, _ -> None", patched)
+        Assert.Contains("    match Int32.TryParse s with\n    | true, parsed -> parsed\n    | false, _ -> 0", patched)
+
+        Assert.Contains(
+            "    match Guid.TryParse s with\n    | true, parsed -> Some parsed\n    | false, _ -> None",
+            patched
+        )
+
         Assert.Contains("| false, _ -> fallback", patched)
         Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
     | other -> failwithf "Expected three findings, got %A" other

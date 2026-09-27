@@ -831,9 +831,22 @@ let testFilesMentioning (analyzedFile: string) (literal: string) : (string * str
 /// "all" | "no-correctness" | "none".
 let suppressionPolicy (analyzedFile: string) : string = (configFor analyzedFile).Suppressions
 
+/// Did the run's `--codes` or the file's fsharprefactor.json turn this rule
+/// ON by name? Such an ask outranks a preference the analyzers only infer
+/// (the formatter's settings in .editorconfig).
+let isExplicitlyOn (analyzedFile: string) (code: string) (analyzerName: string) : bool =
+    forcedOn code analyzerName
+    || (let rules = rulesFor analyzedFile
+
+        rules.TryFind(code.ToLowerInvariant())
+        |> Option.orElseWith (fun () -> rules.TryFind(analyzerName.ToLowerInvariant()))
+            =
+            Some true)
+
 let isRuleEnabled (analyzedFile: string) (code: string) (analyzerName: string) : bool =
     not (isGeneratedFile analyzedFile)
     && not (isIgnoredPath analyzedFile)
+    && Scope.allowed code analyzerName
     && (forcedOn code analyzerName
         || isEnabledIn (rulesFor analyzedFile) code analyzerName)
 

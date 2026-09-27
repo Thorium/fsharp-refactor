@@ -23,6 +23,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\Visibility.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\AstIndex.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\Configuration.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\EditorConfig.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\ProjectSources.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\SignatureFile.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CapabilityFix.fs" />

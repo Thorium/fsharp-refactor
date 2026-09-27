@@ -31,7 +31,10 @@
 /// the same answer in the tool and in an editor, no compile needed. The
 /// file's own namespace, and namespaces a `[<RequireQualified
 /// Access>]`-style convention keeps long (Microsoft.FSharp.*), are left
-/// alone.
+/// alone. So is a namespace whose open would ALSO reach another one through
+/// a partial path - a user `Core` beside Microsoft.FSharp.Core, a user `IO`
+/// under `open System` - since F# opens every match and rejects the
+/// partial one (FS0893).
 module FSharp.Refactor.QualifiedNames
 
 open FSharp.Compiler.CodeAnalysis
@@ -1425,6 +1428,22 @@ let find
                         own <> ""
                         && (moduleNamed (own + "." + ns) || not (Map.isEmpty (scopeNames (own + "." + ns)))))
 
+                // an `open` resolves against every namespace already open as
+                // well - `Microsoft.FSharp` always, and each open of the block -
+                // and opens EVERY match: `open Core` for a user namespace `Core`
+                // also opened Microsoft.FSharp.Core, re-opened its Operators
+                // over a user's earlier-opened `tan`, and the compiler rejects
+                // the partial path outright (FS0893, an error). `open IO` after
+                // `open System` is the same. Checked for every open of the block,
+                // wherever it sits: a note is the price of one listed below it
+                let partialPathRoot =
+                    "Microsoft.FSharp" :: (blocks.[block].Opened |> List.map fst)
+                    |> List.distinct
+                    |> List.tryFind (fun root ->
+                        root <> ns
+                        && (moduleNamed (root + "." + ns)
+                            || not (Map.isEmpty (scopeNames (root + "." + ns)))))
+
                 // a name an ENCLOSING namespace already provides — the F#
                 // compiler's every file sits under `FSharp.Compiler`, whose
                 // own `SR` module is in scope unqualified; `open FSComp` to
@@ -1453,9 +1472,12 @@ let find
                     elif moduleNamed ns then
                         Some $"a module spelled '{ns}' is what the open would resolve to, and it refuses to be opened"
                     else
-                        match relativeShadow, enclosingShadow with
-                        | Some own, _ -> Some $"inside '{own}' the open would resolve to '{own}.{ns}' first"
-                        | None, Some(own, shadowed) ->
+                        match relativeShadow, partialPathRoot, enclosingShadow with
+                        | Some own, _, _ -> Some $"inside '{own}' the open would resolve to '{own}.{ns}' first"
+                        | None, Some root, _ ->
+                            Some
+                                $"`open {ns}` would also open '{root}.{ns}' through a partial path, which the compiler rejects (FS0893)"
+                        | None, None, Some(own, shadowed) ->
                             // the enclosing module is this file's own: the
                             // name is the file's own definition
                             let ownDefinitions = Set.intersect shadowed definedHere
@@ -1465,7 +1487,7 @@ let find
                             else
                                 let reach = if shadowed.Count = 1 then "reaches" else "reach"
                                 Some $"{quoted shadowed} already {reach} this file from the enclosing '{own}'"
-                        | None, None -> None
+                        | None, None, None -> None
 
                 if alreadyOpen && removals.IsEmpty then
                     None

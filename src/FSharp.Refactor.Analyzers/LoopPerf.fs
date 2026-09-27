@@ -19,7 +19,11 @@
 ///
 /// Both only fire when the probed collection / constructed value is
 /// loop-invariant as far as the syntax shows: a probe of the loop variable
-/// itself is never flagged.
+/// itself is never flagged. FR0035 also stays quiet on a module-level
+/// literal of fewer than eight written-out elements, where the linear probe
+/// is the faster one, and converts one of fewer than sixteen through the
+/// HashSet companion rather than in place to an F# Set (`literalSize`;
+/// `{ "FR0035": { "minElements": 8, "setMinElements": 16 } }`).
 module FSharp.Refactor.LoopPerf
 
 open FSharp.Compiler.CodeAnalysis
@@ -444,6 +448,44 @@ let loopBinders (path: SyntaxNode list) =
     else
         ValueNone
 
+/// How many elements a list or array literal writes out, or None when it is
+/// no such literal (a range, a comprehension, a call).
+let private literalCount (rhs: SynExpr) : int option =
+    let rec elements (e: SynExpr) =
+        match e with
+        | SynExpr.Sequential(expr1 = a; expr2 = b) -> elements a @ elements b
+        | e -> [ e ]
+
+    // a written-out element, not a generator of any number of them
+    let rec written (e: SynExpr) =
+        match e with
+        | SynExpr.For _
+        | SynExpr.ForEach _
+        | SynExpr.While _
+        | SynExpr.YieldOrReturn _
+        | SynExpr.YieldOrReturnFrom _
+        | SynExpr.IndexRange _
+        | SynExpr.IfThenElse _
+        | SynExpr.Match _
+        | SynExpr.LetOrUse _ -> false
+        | SynExpr.Paren(expr = inner) -> written inner
+        | _ -> true
+
+    let rec count (rhs: SynExpr) =
+        match rhs with
+        | SynExpr.Typed(expr = inner) -> count inner
+        | SynExpr.ArrayOrList(exprs = exprs) -> Some exprs.Length
+        | SynExpr.ArrayOrListComputed(expr = inner) ->
+            let items = elements inner
+
+            if items |> List.forall written then
+                Some items.Length
+            else
+                None
+        | _ -> None
+
+    count rhs
+
 /// Find per-iteration linear probes and expensive constructions.
 ///
 /// `allowApiChanges`: the in-place conversion (`|> Set.ofList`) changes
@@ -461,7 +503,15 @@ let loopBinders (path: SyntaxNode list) =
 /// binding that is not private then converts in place only when nothing
 /// after it mentions it. `find` passes the constant "no", which is the
 /// right answer for a real `--api-changes` and moot for a closed gate.
-let findWith
+///
+/// `setFloor`: the written-out elements a literal needs before it converts
+/// in place to an F# `Set`, a comparison tree that beats the linear probe
+/// only from about 12 elements when every probe misses and about 20 when
+/// half hit (measured on .NET 10). A shorter literal takes the HashSet
+/// companion instead, which pays from about 8 - the caller drops what is
+/// shorter still.
+let findWithSetFloor
+    (setFloor: int)
     (seenByLaterFile: string -> bool)
     (allowApiChanges: bool)
     (check: FSharpCheckFileResults option)
@@ -598,9 +648,9 @@ let findWith
                                 // name is one of these probes, the binding
                                 // itself becomes the set — no companion, the
                                 // module value stays immutable, and Set's own
-                                // Contains member takes the probes (measured
-                                // 2.5x over the list scan even at five
-                                // elements; the companion HashSet remains the
+                                // Contains member takes the probes (a literal
+                                // too short for a set to pay is dropped by the
+                                // floor, see literalSize; the companion HashSet remains the
                                 // spelling when other uses need the original)
                                 // A `seq { ... }` is no candidate: it re-runs
                                 // on every probe, over state that may have
@@ -652,6 +702,7 @@ let findWith
                                     setOfFunction.IsSome
                                     && not strayUse
                                     && confined
+                                    && (literalCount declRhs |> Option.forall (fun n -> n >= setFloor))
                                     && (check
                                         |> Option.bind (fun c -> elementComparable c source moduleIdent)
                                         |> Option.defaultValue false)
@@ -770,7 +821,44 @@ let findWith
 
     contains, List.ofSeq constructions
 
+/// `findWithSetFloor` with no floor: every literal the other guards allow
+/// converts in place - the shape the rule's own tests pin down.
+let findWith
+    (seenByLaterFile: string -> bool)
+    (allowApiChanges: bool)
+    (check: FSharpCheckFileResults option)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    =
+    findWithSetFloor 0 seenByLaterFile allowApiChanges check parseTree source
+
 /// `findWith` for a caller whose opt-in is its own: `--api-changes`, or no
 /// opt-in at all. No later file is consulted.
 let find (allowApiChanges: bool) (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source: ISourceText) =
     findWith (fun _ -> false) allowApiChanges check parseTree source
+
+/// How many elements the list or array literal of a module-level binding
+/// writes out, or None when the binding is no such literal (a range, a
+/// comprehension, a call, a binding of another file): the size FR0035's
+/// floors read. Measured on .NET 10, 4M probes, best of three, strings:
+/// with every probe missing (the list's worst case) the list takes 12 ms
+/// at four elements against HashSet 46 and Set 26, 29 at eight against
+/// HashSet 22 and Set 31, 43 at twelve against Set 38; with half the probes
+/// hitting, 34 at eight against HashSet 28 and Set 49, 59 at sixteen against
+/// Set 71, 67 at twenty-four against Set 59. Ints cross a little earlier. So
+/// a HashSet pays from about eight and an F# Set from about twelve to
+/// twenty - and under Fable either is also runtime library bundled in.
+let literalSize (parseTree: ParsedInput) (name: string) : int option =
+    (AstIndex.ofTree parseTree).Decls
+    |> Array.tryPick (fun (_, decl) ->
+        match decl with
+        | SynModuleDecl.Let(bindings = [ SynBinding(isMutable = false; headPat = pat; expr = rhs) ]) ->
+            match pat with
+            | SynPat.Named(ident = SynIdent(ident = id))
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) when
+                id.idText = name
+                ->
+                Some(literalCount rhs)
+            | _ -> None
+        | _ -> None)
+    |> Option.flatten

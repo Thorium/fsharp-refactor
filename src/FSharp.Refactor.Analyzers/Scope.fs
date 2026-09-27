@@ -82,3 +82,28 @@ let forced (code: string) (analyzerName: string) =
     |> Set.exists (fun c ->
         c.Equals(code, StringComparison.OrdinalIgnoreCase)
         || c.Equals(analyzerName, StringComparison.OrdinalIgnoreCase))
+
+/// The codes the run is restricted to - `--codes`, narrowed by
+/// `--categories` - or None for every rule. A rule outside it is off, so
+/// its analyzer never runs: filtering only the messages once cost a
+/// `--categories correctness` run minutes per pass in FR0147, an idiom
+/// rule whose every message was then thrown away.
+///
+/// An AsyncLocal, unlike the rest of the scope: it SWITCHES RULES OFF,
+/// and a process-wide switch would take them from whatever else runs
+/// beside the run - a test class in parallel with a test driving the
+/// tool. It flows into the tasks and threads the run starts (the sweep's
+/// checks, DeepStack's workers) and nowhere else.
+let private allowedCodes = System.Threading.AsyncLocal<Set<string> option>()
+
+let restrictTo (codes: Set<string> option) = allowedCodes.Value <- codes
+
+/// Does the run's restriction, if any, let this code or analyzer name run?
+let allowed (code: string) (analyzerName: string) =
+    match allowedCodes.Value with
+    | None -> true
+    | Some codes ->
+        codes
+        |> Set.exists (fun c ->
+            c.Equals(code, StringComparison.OrdinalIgnoreCase)
+            || c.Equals(analyzerName, StringComparison.OrdinalIgnoreCase))

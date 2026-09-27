@@ -301,14 +301,21 @@ let private mutableFactsOf (index: AstIndex.Index) =
 let capturesMutableLocal (index: AstIndex.Index) (bodyRange: range) : bool =
     let mutableLets, byrefNames = mutableFactsOf index
 
-    // a `let mutable` inside the body is the body's own
+    // only a `let mutable` whose scope ENCLOSES the body can be captured by
+    // it: the let's range runs from the binding to the end of the block it
+    // opens. One inside the body is the body's own, and one in another
+    // function - `let mutable limit` elsewhere in the file - is a different
+    // name, which used to downgrade this body's fix all the same
     let mutableNames =
         mutableLets
         |> Array.choose (fun (letRange, name) ->
-            if Range.rangeContainsRange bodyRange letRange then
-                None
+            if
+                Range.rangeContainsRange letRange bodyRange
+                && not (Range.rangeContainsRange bodyRange letRange)
+            then
+                Some name
             else
-                Some name)
+                None)
 
     let names = Set.ofArray (Array.append mutableNames byrefNames)
 

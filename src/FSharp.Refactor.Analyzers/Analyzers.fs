@@ -65,22 +65,42 @@ module private DeepStack =
     let private onWorker = new ThreadLocal<bool>(fun () -> false)
     let private queue = new BlockingCollection<unit -> unit>()
 
+    /// `work` bound to the execution context of the code that QUEUES it. A
+    /// worker is a long-lived thread, and a thread keeps the context of whoever
+    /// started it: every later job saw the AsyncLocal values of the first run
+    /// that created the workers - its `--codes` restriction (Scope.restrictTo)
+    /// switched rules off for every later run in the process, test or MCP
+    /// request, whatever that run asked for.
+    let private inCallersContext (work: unit -> unit) : unit -> unit =
+        match ExecutionContext.Capture() with
+        | null -> work
+        | context -> fun () -> ExecutionContext.Run(context, (fun _ -> work ()), null)
+
     let private workers =
         lazy
-            (for i in 1 .. max 2 Environment.ProcessorCount do
-                let t =
-                    Thread(
-                        (fun () ->
-                            onWorker.Value <- true
+            // started with no context of their own: each job brings its caller's
+            (use _ =
+                if ExecutionContext.IsFlowSuppressed() then
+                    { new IDisposable with
+                        member _.Dispose() = ()
+                    }
+                else
+                    ExecutionContext.SuppressFlow() :> IDisposable
 
-                            for work in queue.GetConsumingEnumerable() do
-                                work ()),
-                        stackBytes
-                    )
+             for i in 1 .. max 2 Environment.ProcessorCount do
+                 let t =
+                     Thread(
+                         (fun () ->
+                             onWorker.Value <- true
 
-                t.IsBackground <- true
-                t.Name <- $"fsharp-refactor deep stack {i}"
-                t.Start())
+                             for work in queue.GetConsumingEnumerable() do
+                                 work ()),
+                         stackBytes
+                     )
+
+                 t.IsBackground <- true
+                 t.Name <- $"fsharp-refactor deep stack {i}"
+                 t.Start())
 
     /// Run `work` on a deep-stack worker and hand back its result — or,
     /// already on one, run it right here (a rule calling a rule).
@@ -93,14 +113,16 @@ module private DeepStack =
             let mutable result = Unchecked.defaultof<'T>
             let mutable failure: System.Runtime.ExceptionServices.ExceptionDispatchInfo = null
 
-            queue.Add(fun () ->
-                try
+            queue.Add(
+                inCallersContext (fun () ->
                     try
-                        result <- work ()
-                    with e ->
-                        failure <- System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture e
-                finally
-                    done'.Set())
+                        try
+                            result <- work ()
+                        with e ->
+                            failure <- System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture e
+                    finally
+                        done'.Set())
+            )
 
             done'.Wait()
             done'.Dispose()
@@ -128,11 +150,13 @@ module private DeepStack =
                         System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously
                     )
 
-                queue.Add(fun () ->
-                    try
-                        completion.SetResult(work ())
-                    with e ->
-                        completion.SetException e)
+                queue.Add(
+                    inCallersContext (fun () ->
+                        try
+                            completion.SetResult(work ())
+                        with e ->
+                            completion.SetException e)
+                )
 
                 return! Async.AwaitTask completion.Task
         }
@@ -578,6 +602,52 @@ let private referencesAssembly (name: string) (options: AnalyzerProjectOptions) 
         && System.IO.Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"')
            |> fun n -> n.Equals(name, StringComparison.OrdinalIgnoreCase))
 
+/// A Fable project: it references Fable.Core, and its code runs as
+/// JavaScript, Python, Dart or Rust rather than on .NET - so advice resting
+/// on the .NET runtime alone (culture-bound comparison, a constant's IL) is
+/// beside the point there. Which target is not known from the project: a
+/// question only one of them settles needs `isFableJavaScript`. And a
+/// representation choice stays: the Rust target stores a [<Struct>] record
+/// by value and a reference record behind a counted pointer.
+let private isFable (options: AnalyzerProjectOptions) = referencesAssembly "Fable.Core" options
+
+/// The simple names of a project's references.
+let private referenceNames (options: AnalyzerProjectOptions) =
+    options.OtherOptions
+    |> List.choose (fun (arg: string) ->
+        if arg.StartsWith "-r:" then
+            Some(System.IO.Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"'))
+        else
+            None)
+
+/// A browser binding by assembly name. The Fable.Browser.* PACKAGES ship
+/// assemblies without the prefix - Fable.Browser.Dom's is Browser.Dom.dll,
+/// Fable.Browser.Event's Browser.Event.dll - and the compiler arguments
+/// carry the assembly, so a test for "Fable.Browser." never matched a real
+/// project (Kasino's web client).
+let private isBrowserBinding (assemblyName: string) =
+    assemblyName.StartsWith("Browser.", StringComparison.OrdinalIgnoreCase)
+    || assemblyName.StartsWith("Fable.Browser.", StringComparison.OrdinalIgnoreCase)
+
+/// Fable code bound to a BROWSER (a Fable.Browser.* package, direct or
+/// through Feliz, Fable.React, Oxpecker.Solid...): its clock and timezone
+/// are the end user's own. A Fable project for Node or Deno is a server,
+/// whose local clock is the deployment's, as on .NET.
+let private isFableBrowser (options: AnalyzerProjectOptions) =
+    isFable options && referenceNames options |> List.exists isBrowserBinding
+
+/// Fable code positively bound to JAVASCRIPT - the browser bindings, Node,
+/// Deno, or JS promises. `Fable.Core` alone says nothing of the target:
+/// Fable also compiles to Rust and Python, where two threads DO race, and
+/// to Dart; only JavaScript's single thread settles a threading question.
+let private isFableJavaScript (options: AnalyzerProjectOptions) =
+    isFable options
+    && referenceNames options
+       |> List.exists (fun n ->
+           isBrowserBinding n
+           || [ "Fable.Node"; "Fable.Deno"; "Fable.Promise" ]
+              |> List.exists (fun js -> n.Equals(js, StringComparison.OrdinalIgnoreCase)))
+
 /// `task { }` needs FSharp.Core 6, and a Fable project compiles to a
 /// target where a test's blocking IS the behaviour under test — Fable's
 /// own suites assert `Async.RunSynchronously` semantics — so neither may
@@ -898,12 +968,21 @@ let cachedFailureCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private dateTimeMessages
     (fileName: string)
+    (browser: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     (offerNowFix: bool)
     checkResults
     : Message list =
     DateTimeRules.find parseTree source checkResults
+    // in a browser the local clock IS the end user's: `DateTime.Today` is
+    // their date and `DateTime.Now` their time, which is what the advice
+    // asks for. A UTC cut stays wrong there too
+    |> List.filter (fun s ->
+        not browser
+        || match s.Kind with
+           | DateTimeRules.WallClockKind.UtcDateCut text -> text.Contains "UtcNow"
+           | DateTimeRules.WallClockKind.LocalNow -> false)
     |> List.map (fun s ->
         match s.Kind, s.FixRange with
         | DateTimeRules.WallClockKind.UtcDateCut text, _ ->
@@ -931,12 +1010,25 @@ let private dateTimeMessages
 [<EditorAnalyzer("DateTimeRules", "Timezone-random date cuts; opt-in UtcNow rewrite", HelpBase)>]
 let dateTimeEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0121" "DateTimeRules" (fun () ->
-        whenChecked ctx (dateTimeMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText true))
+        whenChecked
+            ctx
+            (dateTimeMessages
+                ctx.FileName
+                (isFableBrowser ctx.ProjectOptions)
+                ctx.ParseFileResults.ParseTree
+                ctx.SourceText
+                true))
 
 [<CliAnalyzer("DateTimeRules", "Timezone-random date cuts; opt-in UtcNow rewrite", HelpBase)>]
 let dateTimeCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0121" "DateTimeRules" (fun () ->
-        dateTimeMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText false ctx.CheckFileResults)
+        dateTimeMessages
+            ctx.FileName
+            (isFableBrowser ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            false
+            ctx.CheckFileResults)
 
 // ---- FR0123 MonitorLock ----
 
@@ -1538,6 +1630,15 @@ let hintsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0013 RedundantParens ----
 
+/// The repository's Fantomas settings say it writes `f(x)`
+/// (`fsharp_space_before_lowercase_invocation = false` in .editorconfig), and
+/// FR0013 was not asked for by name: the formatter and the sweep would undo
+/// each other's style on every run. FR0094 has no such signal - Fantomas's
+/// default already writes `s.Contains("x")` - and keeps its own switch.
+let private fantomasWantsCallParens (fileName: string) =
+    EditorConfig.keepsLowercaseCallParens fileName
+    && not (Configuration.isExplicitlyOn fileName "FR0013" "RedundantParens")
+
 let private redundantParensMessages (parseTree: ParsedInput) (source: ISourceText) : Message list =
     RedundantParens.find parseTree source
     |> List.map (fun s ->
@@ -1550,12 +1651,18 @@ let private redundantParensMessages (parseTree: ParsedInput) (source: ISourceTex
 [<EditorAnalyzer("RedundantParens", "Drop redundant parentheses around single atomic arguments", HelpBase)>]
 let redundantParensEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0013" "RedundantParens" (fun () ->
-        redundantParensMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        if fantomasWantsCallParens ctx.FileName then
+            []
+        else
+            redundantParensMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("RedundantParens", "Drop redundant parentheses around single atomic arguments", HelpBase)>]
 let redundantParensCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0013" "RedundantParens" (fun () ->
-        redundantParensMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        if fantomasWantsCallParens ctx.FileName then
+            []
+        else
+            redundantParensMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0094 MethodCallParens ----
 
@@ -2888,12 +2995,27 @@ let private loopPerfMessages
     if not (containsEnabled || constructionEnabled) then
         []
     else
+        // two floors, one per fix (LoopPerf.literalSize has the measurements):
+        // a literal shorter than `minElements` is probed fastest as it is;
+        // one shorter than `setMinElements` takes the HashSet companion, which
+        // pays from about 8, rather than the in-place F# Set, a comparison
+        // tree that pays only from about 12 to 20
+        let minElements =
+            Configuration.parameterInt fileName "FR0035" "ContainsInLoop" "minElements" 8
+
+        let setMinElements =
+            Configuration.parameterInt fileName "FR0035" "ContainsInLoop" "setMinElements" 16
+
         let contains, constructions =
-            LoopPerf.findWith seenByLaterFile scopeOpen check parseTree source
+            LoopPerf.findWithSetFloor setMinElements seenByLaterFile scopeOpen check parseTree source
 
         let containsMessages =
             if containsEnabled then
                 contains
+                |> List.filter (fun s ->
+                    match LoopPerf.literalSize parseTree s.CollectionName with
+                    | Some n -> n >= minElements
+                    | None -> true)
                 |> List.map (fun s ->
                     if not s.Fix.IsEmpty then
                         hint
@@ -3024,11 +3146,16 @@ let typeChecksCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private charOverloadMessages
     (offerOrdinal: bool)
+    (fable: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     checkResults
     : Message list =
     CharOverload.find parseTree source checkResults
+    // the culture note rests on .NET's culture-sensitive string overload;
+    // Fable's runtimes compare ordinally either way, so the choice it asks
+    // the author to make does not exist there
+    |> List.filter (fun s -> not (fable && s.ReplacementText.IsNone))
     |> List.map (fun s ->
         match s.ReplacementText with
         | Some replacement ->
@@ -3079,12 +3206,19 @@ let private charOverloadMessages
 [<EditorAnalyzer("CharOverload", "Use char overloads for single-character strings", HelpBase)>]
 let charOverloadEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0038" "CharOverload" (fun () ->
-        whenChecked ctx (charOverloadMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+        whenChecked
+            ctx
+            (charOverloadMessages true (isFable ctx.ProjectOptions) ctx.ParseFileResults.ParseTree ctx.SourceText))
 
 [<CliAnalyzer("CharOverload", "Use char overloads for single-character strings", HelpBase)>]
 let charOverloadCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0038" "CharOverload" (fun () ->
-        charOverloadMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+        charOverloadMessages
+            false
+            (isFable ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            ctx.CheckFileResults)
 
 // ---- FR0039 CaseInsensitive ----
 
@@ -3675,6 +3809,7 @@ let hexStringCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private swallowedExceptionMessages
     (offerFixes: bool)
+    (fableJavaScript: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     (check: FSharpCheckFileResults option)
@@ -3708,6 +3843,11 @@ let private swallowedExceptionMessages
     |> List.collect (fun (s: SwallowedException.Suggestion) ->
         let clause = s.FallbackText |> Option.defaultValue "()"
 
+        // Fable's JavaScript async hands cancellation to its own
+        // continuation, never through a `with`, so there is none for a
+        // catch-all to swallow (a Rust or Python target is not assumed alike)
+        let swallowedKinds = if fableJavaScript then "" else "cancellation and "
+
         let message =
             match s.Probe with
             // a probe answers for a missing path instead of throwing: the
@@ -3724,7 +3864,7 @@ let private swallowedExceptionMessages
                 | Some fallback ->
                     $"'with %s{s.PatternText} -> %s{fallback}' swallows every exception and disguises the failure as a legitimate result; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line."
                 | None ->
-                    $"'with %s{s.PatternText} -> ()' silently swallows every exception, including cancellation and programming errors; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line."
+                    $"'with %s{s.PatternText} -> ()' silently swallows every exception, including %s{swallowedKinds}programming errors; the best fix is usually a guard on the value that would throw and no catch at all, then a specific exception type, then at least a log line."
 
         // each offer is its own message: an editor applies every fix of
         // one message together
@@ -3733,12 +3873,22 @@ let private swallowedExceptionMessages
 [<EditorAnalyzer("SwallowedException", "Empty catch-all handlers swallow every exception", HelpBase)>]
 let swallowedExceptionEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0055" "SwallowedException" (fun () ->
-        swallowedExceptionMessages true ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+        swallowedExceptionMessages
+            true
+            (isFableJavaScript ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            ctx.CheckFileResults)
 
 [<CliAnalyzer("SwallowedException", "Empty catch-all handlers swallow every exception", HelpBase)>]
 let swallowedExceptionCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0055" "SwallowedException" (fun () ->
-        swallowedExceptionMessages false ctx.ParseFileResults.ParseTree ctx.SourceText (Some ctx.CheckFileResults))
+        swallowedExceptionMessages
+            false
+            (isFableJavaScript ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText
+            (Some ctx.CheckFileResults))
 
 // ---- FR0168 ParseControlFlow ----
 
@@ -4355,13 +4505,19 @@ let matchGuardsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0130 LiteralConst ----
 
+/// `fable`: a Fable project exports every public module value of its
+/// JavaScript, Python, Dart or Rust output, and a [<Literal>] is inlined and dropped
+/// from those exports - a consumer outside F# that imports it breaks, and
+/// no --api-changes can see that consumer: only private and internal values
+/// there, with nothing counted as held back for a flag that cannot help.
 let private literalConstMessages
     (scopeOpen: bool)
+    (fable: bool)
     (boundAsPatternElsewhere: string -> bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     : Message list =
-    widened scopeOpen (fun scope ->
+    let build scope =
         LiteralConst.findWith boundAsPatternElsewhere scope parseTree source
         |> List.map (fun s ->
             let insertRange, text = s.Fix
@@ -4372,13 +4528,16 @@ let private literalConstMessages
                 s.Range
                 (fix insertRange "" text
                  :: (s.SignatureEdits
-                     |> List.map (fun (r, original, replacement) -> fix r original replacement)))))
+                     |> List.map (fun (r, original, replacement) -> fix r original replacement))))
+
+    if fable then build false else widened scopeOpen build
 
 [<EditorAnalyzer("LiteralConst", "Module-level constants gain [<Literal>]", HelpBase)>]
 let literalConstEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0130" "LiteralConst" (fun () ->
         literalConstMessages
             (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            (isFable ctx.ProjectOptions)
             (patternBoundInSibling ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
@@ -4388,6 +4547,7 @@ let literalConstCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0130" "LiteralConst" (fun () ->
         literalConstMessages
             (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            (isFable ctx.ProjectOptions)
             (patternBoundInSibling ctx.FileName ctx.ProjectOptions)
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
@@ -6303,12 +6463,22 @@ let private lazyInitMessages (parseTree: ParsedInput) (source: ISourceText) : Me
 [<EditorAnalyzer("LazyInit", "Check-then-assign on a shared mutable is a racing Lazy", HelpBase)>]
 let lazyInitEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0162" "LazyInit" (fun () ->
-        lazyInitMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        // JavaScript runs one thread: no second one races. Fable's Rust and
+        // Python targets have threads, so only a JavaScript-bound project
+        if isFableJavaScript ctx.ProjectOptions then
+            []
+        else
+            lazyInitMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 [<CliAnalyzer("LazyInit", "Check-then-assign on a shared mutable is a racing Lazy", HelpBase)>]
 let lazyInitCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0162" "LazyInit" (fun () ->
-        lazyInitMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+        // JavaScript runs one thread: no second one races. Fable's Rust and
+        // Python targets have threads, so only a JavaScript-bound project
+        if isFableJavaScript ctx.ProjectOptions then
+            []
+        else
+            lazyInitMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
 
 // ---- FR0163 DroppedTimer ----
 

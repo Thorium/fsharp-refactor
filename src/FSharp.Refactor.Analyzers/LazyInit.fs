@@ -19,8 +19,13 @@
 /// assignment sits under a test of its own emptiness — an `if` on
 /// `x.IsNone`/`isNull x`/`x = null`/`Option.isNone x`, or the `None` arm of
 /// a `match x with`. An assignment inside `lock` is guarded and stands
-/// the note down for that mutable. Note only: the reads move too, and
-/// where the value is reset elsewhere `Lazy` is the wrong tool.
+/// the note down for that mutable. A store inside a lambda under the test
+/// is not guarded by it (the lambda runs later), and a store of the empty
+/// value anywhere is a RESET - an in-flight task dropped once it settles,
+/// so the next call retries - where `Lazy`, which never runs twice, is the
+/// wrong tool: no note. Note only: the reads move too. A Fable project
+/// bound to JavaScript (one thread) gets no note at all; its Rust and
+/// Python targets have threads that race like .NET's.
 module FSharp.Refactor.LazyInit
 
 open FSharp.Compiler.Syntax
@@ -135,13 +140,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 | SyntaxNode.SynExpr(SynExpr.App _ as app) -> headIsLock app
                 | _ -> false)
 
+        // a lambda between the test and the store runs LATER - a
+        // continuation, a callback - when the test no longer holds
+        let lambdas =
+            path
+            |> List.choose (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.Lambda _ as l) when Range.rangeContainsRange l.Range assignment ->
+                    Some l.Range
+                | _ -> None)
+
+        let noLambdaInside (test: range) =
+            lambdas |> List.forall (Range.rangeContainsRange test >> not)
+
         let underTest =
             path
             |> List.exists (fun node ->
                 match node with
                 | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenE)) ->
-                    Range.rangeContainsRange thenE.Range assignment && emptinessTest name cond
-                | SyntaxNode.SynExpr m -> emptyArmOf name m assignment
+                    Range.rangeContainsRange thenE.Range assignment
+                    && emptinessTest name cond
+                    && noLambdaInside thenE.Range
+                | SyntaxNode.SynExpr m -> emptyArmOf name m assignment && noLambdaInside m.Range
                 | _ -> false)
 
         guardedByLock, underTest
@@ -152,17 +172,24 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     [
         for name, bindingRange in candidates do
             // every store, qualified (`M.cache <- ...`) or not
-            let assignments =
+            let stores =
                 index.Exprs
                 |> Array.choose (fun (path, e) ->
                     match e with
-                    | SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _) when
+                    | SynExpr.LongIdentSet(SynLongIdent(id = ids), value, _) when
                         not ids.IsEmpty && (List.last ids).idText = name
                         ->
-                        Some(path, e.Range)
+                        Some(path, e.Range, value)
                     | _ -> None)
 
-            if not (Array.isEmpty assignments) then
+            // a store of the EMPTY value resets the slot so that a later call
+            // fills it again - an in-flight task dropped once it settles, a
+            // cache invalidated - and a Lazy can never run twice
+            let resets = stores |> Array.exists (fun (_, _, value) -> isEmpty value)
+
+            let assignments = stores |> Array.map (fun (path, r, _) -> path, r)
+
+            if not (Array.isEmpty assignments || resets) then
                 let classified = assignments |> Array.map (fun (path, r) -> r, classify name path r)
 
                 let anyLocked = classified |> Array.exists (fun (_, (locked, _)) -> locked)

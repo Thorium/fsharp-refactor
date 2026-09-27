@@ -2341,6 +2341,23 @@ let internal recordExtra (file: string) (before: string) =
 /// the duration of its apply, empty otherwise.
 let private linkedFiles = System.Collections.Generic.HashSet<string>()
 
+/// Rules whose insertions at ONE point may all land in the same pass. FR0006
+/// puts every active pattern it extracts right above the enclosing
+/// declaration, and keeps one suggestion per generated name, so its texts at
+/// a point never define a name twice. Taken one per pass, a match with three
+/// guards took three passes and tripped the re-fire guard (GitHub #2). Not a
+/// general rule: two FR0071 hoists of a same-named binding to one point would
+/// shadow each other, which only a later pass, seeing the first, can refuse.
+/// FR0015 qualifies the same way: its hoists of one pass claim distinct names
+/// (a function's second regex takes its numbered name), one Regex text is
+/// hoisted once per pass, and each binding is a self-contained `Regex`
+/// construction the others do not read.
+let private stackingCodes = set [ "FR0006"; "FR0015" ]
+
+/// Findings (suggestion groups) the last `applyEditGroups` applied, beside the
+/// edit count it returns - one finding can be many edits.
+let mutable private appliedFindings = 0
+
 /// Returns the number of fixes applied and the files they changed.
 /// `suppressed` holds fixes rolled back by an earlier pass's verification;
 /// re-applying one would only be rolled back again.
@@ -2357,6 +2374,7 @@ let private applyEditGroups
     (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
     : int * AppliedFile list =
     let mutable applied = 0
+    appliedFindings <- 0
 
     let appliedFiles: AppliedFile list =
         [
@@ -2364,10 +2382,14 @@ let private applyEditGroups
                 let file = kv.Key
                 let text = readSource file
 
-                // bottom-up, so earlier splices never shift later ranges
+                // bottom-up, so earlier splices never shift later ranges. Edits
+                // at ONE point (stacked insertions, stackingCodes) go in the
+                // later suggestion first: each lands before the one already
+                // there, so they read in the order they were found - not
+                // `parseRegex3`, `parseRegex2`, `parseRegex` upside down
                 let edits =
                     kv.Value
-                    |> Seq.sortByDescending (fun (_, _, f) -> f.FromRange.StartLine, f.FromRange.StartColumn)
+                    |> Seq.sortByDescending (fun (group, _, f) -> f.FromRange.StartLine, f.FromRange.StartColumn, group)
                     |> List.ofSeq
 
                 let groupEdits =
@@ -2377,16 +2399,31 @@ let private applyEditGroups
                     |> Map.map (fun _ es -> List.ofSeq es)
 
                 let mutable current = text
-                let mutable appliedRanges: Range list = []
+                let mutable appliedRanges: (Range * string * bool) list = []
                 let mutable appliedHere: (int * string * Fix) list = []
                 let groupDecisions = System.Collections.Generic.Dictionary<int, bool>()
 
-                let overlaps (r: Range) =
+                let pointInsertion (r: Range) (fromText: string) =
+                    fromText = "" && Range.equals (Range.mkRange r.FileName r.Start r.Start) r
+
+                // two insertions at ONE point stack when the same rule made both in
+                // one pass and guarantees their texts never clash (stackingCodes)
+                let overlaps (code: string) (f: Fix) =
+                    let r = f.FromRange
+
                     appliedRanges
-                    |> List.exists (fun a ->
-                        Range.rangeContainsPos a r.Start
-                        || Range.rangeContainsPos a r.End
-                        || Range.rangeContainsRange r a)
+                    |> List.exists (fun (a, aCode, aInsertion) ->
+                        let stacks =
+                            aInsertion
+                            && aCode = code
+                            && stackingCodes.Contains code
+                            && pointInsertion r f.FromText
+                            && Range.equals a r
+
+                        not stacks
+                        && (Range.rangeContainsPos a r.Start
+                            || Range.rangeContainsPos a r.End
+                            || Range.rangeContainsRange r a))
 
                 // can this edit be spliced into `current` exactly as promised?
                 // (start/end computed against original coordinates, which stay
@@ -2432,7 +2469,7 @@ let private applyEditGroups
                         |> List.forall (fun (_, code, f) ->
                             not (suppressed.Contains(fixKey code file f))
                             && not (putBackFiles.Contains(Path.GetFullPath file))
-                            && not (overlaps f.FromRange)
+                            && not (overlaps code f)
                             && (f.ToText.Replace("\r", "") = f.FromText.Replace("\r", "") || (viable f).IsSome))
                         && members
                            |> List.exists (fun (_, _, f) -> f.ToText.Replace("\r", "") <> f.FromText.Replace("\r", ""))
@@ -2440,8 +2477,8 @@ let private applyEditGroups
                     if ok then
                         // reserve every member's range at once, so no other group
                         // can interleave between this one's edits
-                        for _, _, f in members do
-                            appliedRanges <- f.FromRange :: appliedRanges
+                        for _, code, f in members do
+                            appliedRanges <- (f.FromRange, code, pointInsertion f.FromRange f.FromText) :: appliedRanges
                     elif members.Length > 1 then
                         let _, code, f = List.head members
 
@@ -2471,17 +2508,35 @@ let private applyEditGroups
                             current <- current.Remove(startIndex, endIndex - startIndex).Insert(startIndex, toText)
                             appliedHere <- (groupId, code, f) :: appliedHere
                             applied <- applied + 1
-
-                            // once per file: the first fix line in a linked file says so
-                            let linked =
-                                if linkedFiles.Remove(Path.GetFullPath(file).ToLowerInvariant()) then
-                                    " note: linked file"
-                                else
-                                    ""
-
-                            printfn
-                                $"  {code} {kindColumn code} {Path.GetFileName file}({f.FromRange.StartLine},{f.FromRange.StartColumn}){linked}"
                         | None -> ()
+
+                // one line per FINDING, at its first edit, with the edit count when
+                // it has several: a line per edit printed an FR0147 open as seven
+                // lines, and the pass total then disagreed with the report's
+                // finding count for no visible reason (GitHub #6)
+                appliedHere
+                |> List.groupBy (fun (g, _, _) -> g)
+                |> List.map (fun (_, members) ->
+                    let _, code, first =
+                        members
+                        |> List.minBy (fun (_, _, f) -> f.FromRange.StartLine, f.FromRange.StartColumn)
+
+                    code, first.FromRange, members.Length)
+                |> List.sortByDescending (fun (_, r, _) -> r.StartLine, r.StartColumn)
+                |> List.iter (fun (code, r, edits) ->
+                    appliedFindings <- appliedFindings + 1
+
+                    // once per file: the first fix line in a linked file says so
+                    let linked =
+                        if linkedFiles.Remove(Path.GetFullPath(file).ToLowerInvariant()) then
+                            " note: linked file"
+                        else
+                            ""
+
+                    let count = if edits > 1 then $" ({edits} edits)" else ""
+
+                    printfn
+                        $"  {code} {kindColumn code} {Path.GetFileName file}({r.StartLine},{r.StartColumn}){count}{linked}")
 
                 if current <> text && not dryRun then
                     recordExtra file text
@@ -5398,6 +5453,23 @@ let private markSwept (options: FSharpProjectOptions) =
             sweptFiles.Add(Path.GetFullPath(f).ToLowerInvariant(), fileSweepKey key f)
             |> ignore
 
+/// The files the pass after this one sweeps: the ones this pass changed and
+/// every file compiled after the first of them - what a fix can have
+/// enabled work in, since a later file sees the earlier ones' new shape. A
+/// file compiled BEFORE every change is typechecked exactly as it was, and
+/// its analysis would only repeat itself; the last pass of a run, the one
+/// that finds nothing, was a full sweep for no answer. The residual: the
+/// few rules that read a LATER file (FR0035 asking whether one still reads
+/// a binding, FR0130 a pattern in a sibling) may find new work in an earlier
+/// file only on the next run - a fix missed, never a wrong one applied.
+let private nextSweepScope (sourceFiles: string array) (changed: AppliedFile list) : Set<string> =
+    let key (f: string) = Path.GetFullPath(f).ToLowerInvariant()
+    let changedKeys = changed |> List.map (fun cf -> key cf.Path) |> Set.ofList
+
+    match sourceFiles |> Array.tryFindIndex (fun f -> changedKeys.Contains(key f)) with
+    | Some first -> sourceFiles.[first..] |> Array.map key |> Set.ofArray |> Set.union changedKeys
+    | None -> changedKeys
+
 let private runPass
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
@@ -5407,6 +5479,9 @@ let private runPass
     (apiChanges: bool)
     (jobs: int)
     (onlyFile: string option)
+    // passes after the first: the lowercased full paths worth sweeping
+    // again (see `nextSweepScope`), or None for every file.
+    (sweepScope: Set<string> option)
     (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
     (blockedRuleFile: System.Collections.Generic.HashSet<string * string>)
     =
@@ -5728,6 +5803,13 @@ let private runPass
             options.SourceFiles
             |> Array.filter (fun f -> String.Equals(Path.GetFullPath f, only, StringComparison.OrdinalIgnoreCase))
         | None -> options.SourceFiles
+
+    let named =
+        match sweepScope with
+        | Some scope ->
+            named
+            |> Array.filter (fun f -> scope.Contains(Path.GetFullPath(f).ToLowerInvariant()))
+        | None -> named
 
     // vendored and generated code a compilation nonetheless includes —
     // paket-files above all — is neither analyzed nor typechecked here:
@@ -7666,6 +7748,11 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 PublicSurfaceHeld = not heldConsumers.IsEmpty
             }
 
+        // the analyzers of rules outside --codes/--categories never run,
+        // rather than running for messages the run then discards (an
+        // AsyncLocal: it reaches this run's work and nothing beside it)
+        Scope.restrictTo opts.Codes
+
         // Not worth skipping on a dry run: measured, the cost simply
         // moves to runPass's own ParseAndCheckProject, which is only
         // cheap here BECAUSE this call warmed FCS. One full project
@@ -8038,7 +8125,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                     // --dry-run writes nothing; saying "applied" there reads
                     // as though the project had just been rewritten
                     printfn
-                        $"""  {apiApplied} api-changing fix(es) {if opts.DryRun then "would be applied" else "applied"}"""
+                        $"""  {apiApplied} api-changing edit(s) {if opts.DryRun then "would be applied" else "applied"}"""
 
                     if opts.DryRun then
                         // nothing was written, so a second round would
@@ -8052,6 +8139,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
             let mutable pass = 0
             let mutable lastApplied = -1
+            let mutable sweepScope: Set<string> option = None
 
             // divergence guard: a rule re-firing in the same file for a
             // THIRD pass while the file has GROWN since the run began is
@@ -8106,6 +8194,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                             opts.ApiChanges
                             opts.Jobs
                             onlyFile
+                            sweepScope
                             suppressed
                             blockedRuleFile)
 
@@ -8113,12 +8202,15 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 totalApplied <- totalApplied + applied
                 runTotalApplied <- runTotalApplied + applied
 
+                if applied > 0 then
+                    sweepScope <- Some(nextSweepScope options.SourceFiles changedFiles)
+
                 if not opts.DryRun then
                     updateDivergenceGuard changedFiles
                     recordTies changedFiles
 
                 let prefix = if opts.DryRun then "would be " else ""
-                Out.good $"  {lastApplied} fix(es) {prefix}applied"
+                Out.good $"  {lastApplied} edit(s) {prefix}applied, from {appliedFindings} finding(s)"
 
                 if opts.DryRun then
                     lastApplied <- 0 // a dry run never converges; stop after one pass
@@ -9151,6 +9243,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
             // later analyzer calls in the same process api-changes- or
             // forced-code-scoped
             Scope.reset ()
+            Scope.restrictTo None
 
 /// --rules: the catalog, human table by default, JSON on request.
 let private printRules (json: bool) =

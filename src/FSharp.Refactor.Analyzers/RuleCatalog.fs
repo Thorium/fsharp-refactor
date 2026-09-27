@@ -539,6 +539,17 @@ let knobs: (string * Knob list) list =
             number "tailLines" 40 "non-awaiting lines after the last await that earn a tail extraction"
             flag "hoistReturnOnAsync" false "extend the return hoist (not the FS3511 advice) to async { }"
         ]
+        "FR0035",
+        [
+            number
+                "minElements"
+                8
+                "how many written-out elements a probed list or array literal needs before a HashSet pays"
+            number
+                "setMinElements"
+                16
+                "how many it needs before converting in place to an F# Set, a comparison tree that pays later"
+        ]
         "FR0049",
         [
             flag "syncSwap" false "let a sweep swap an awaited call for its synchronous sibling"

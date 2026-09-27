@@ -412,6 +412,53 @@ let private argumentMayThrow (check: FSharpCheckFileResults option) (source: ISo
 
     may arg
 
+let private unannotatedStringParameterRegex =
+    Regex @"(?<![\w'])(?:let|use|mutable|private|internal|public)$"
+
+/// Is `id` an unannotated PARAMETER holding a string - `fun s ->`,
+/// `let f s =` - whose type inference fixes only later? `Int32.Parse s`
+/// resolves there (its one-argument overload wins), but `TryParse` has
+/// several (string, ReadOnlySpan<char>, ...) and fails as ambiguous
+/// (`xs |> List.map <| fun s -> ...`): the rewrite then annotates the
+/// argument. A binder written `(s: string)`, or a `let s = ...` whose right
+/// side fixes its type first, needs nothing.
+let private unannotatedStringParameter (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) =
+    let r = id.idRange
+
+    match
+        OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), [ id.idText ])
+    with
+    | Some use' ->
+        match use'.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as v ->
+            (try
+                not v.IsModuleValueOrMember
+                && (let t = OptionModule.stripAbbreviations v.FullType
+
+                    t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.String")
+                && (match v.DeclarationLocation with
+                    | d when d.FileName = r.FileName && d.EndLine >= 1 && d.EndLine <= source.GetLineCount() ->
+                        let declLine = source.GetLineString(d.EndLine - 1)
+                        let following = declLine.Substring(min d.EndColumn declLine.Length).TrimStart()
+                        let preceding = declLine.Substring(0, min d.StartColumn declLine.Length).TrimEnd()
+
+                        // `let s = ...` (the binder right after `let`, `use`,
+                        // `mutable` or an access modifier) is a value; `let
+                        // f s =` has the FUNCTION after `let`, and `s` is its
+                        // parameter
+                        let valueBinding = unannotatedStringParameterRegex.IsMatch preceding
+
+                        not (following.StartsWith ':' || valueBinding)
+                    | _ -> false)
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 false)
+        | _ -> false
+    | None -> false
+
+let private tryParseOfferRegex = Regex @"(?<![\w'])(?:else|then)$"
+let private tryParseOfferRegex2 = Regex @"(?<![<>=!:|])=$"
+let private tryParseOfferRegex3 = Regex @"(?<![\w'])fun(?![\w'])"
+
 /// The TryParse offer for a try whose body is one Parse call: the miss
 /// arm spelled out, as FR0014 spells its TryGetValue one — a bare `_`
 /// hides what a two-case tuple match falls through on. A `Some (T.Parse
@@ -430,22 +477,84 @@ let private tryParseOffer
         let a = textOfRange source arg.Range
 
         let a =
-            match arg with
-            | SynExpr.Ident _
-            | SynExpr.Const _
-            | SynExpr.LongIdent _ -> a
+            match arg, check with
+            | SynExpr.Ident id, Some c when unannotatedStringParameter c source id -> $"({a}: string)"
+            | SynExpr.Ident _, _
+            | SynExpr.Const _, _
+            | SynExpr.LongIdent _, _ -> a
             | _ -> $"({a})"
+
+        // the success binder: a name the file does not spell, so it never
+        // shadows one in scope - `v` in `if v = "" then None else try Some
+        // (DateTime.Parse v) with _ -> None` made two `v`s one line apart
+        let binder =
+            let fileText = source.GetSubTextString(0, source.Length)
+
+            [ "parsed"; "parsedValue"; "result"; "v" ]
+            |> List.tryFind (fun n -> not (Regex.IsMatch(fileText, $@"(?<![\w.']){n}(?![\w'])")))
+            |> Option.defaultValue "parsed'"
 
         let arms =
             match wrapper, fallback with
-            | Some "Some", "None" -> Some("Some v", "None")
-            | Some "ValueSome", "ValueNone" -> Some("ValueSome v", "ValueNone")
-            | None, other when other <> "None" && other <> "ValueNone" -> Some("v", other)
+            | Some "Some", "None" -> Some($"Some {binder}", "None")
+            | Some "ValueSome", "ValueNone" -> Some($"ValueSome {binder}", "ValueNone")
+            | None, other when other <> "None" && other <> "ValueNone" -> Some(binder, other)
             | _ -> None
 
         match arms with
         | Some(success, failure) ->
-            let pad = String.replicate expr.Range.StartColumn " "
+            let r = expr.Range
+            let startLine = source.GetLineString(r.StartLine - 1)
+            let before = startLine.Substring(0, min r.StartColumn startLine.Length)
+            let endLine = source.GetLineString(r.EndLine - 1)
+            let after = endLine.Substring(min r.EndColumn endLine.Length).Trim()
+
+            // a try after `else`/`then`/`->`/`=` on its line, with nothing
+            // after it, moves to lines of its own under that line, indented
+            // one step: a `match` wedged onto the `else` line, its arms
+            // aligned far right under it, compiled but read badly (GitHub
+            // #6). Anything else keeps the match where the try was
+            let breakAfter =
+                let trimmed = before.TrimEnd()
+
+                // the moved match sits one step under the LINE's indent, so
+                // the construct the keyword belongs to must open that line:
+                // an arm's `| pat ->`, an `if`/`elif`/`else`, a `let`/`use`/
+                // member binding. `let x = if c then try` would leave the
+                // match offside of its `if` (FS0058), and a lambda's body
+                // (`<| fun s -> try`) would leave the lambda altogether
+                let lineStart = trimmed.TrimStart()
+
+                let opensWith (keywords: string list) =
+                    keywords |> List.exists (fun k -> Regex.IsMatch(lineStart, $@"^{k}(?![\w'])"))
+
+                let ownsTheLine =
+                    if trimmed.EndsWith "->" then
+                        lineStart.StartsWith '|'
+                    elif tryParseOfferRegex.IsMatch trimmed then
+                        opensWith [ "if"; "elif"; "else" ]
+                    elif tryParseOfferRegex2.IsMatch trimmed then
+                        opensWith [ "let"; "use"; "member"; "override"; "default"; "static"; "and" ]
+                    else
+                        false
+
+                if
+                    lineStart <> ""
+                    && (after = "" || after.StartsWith "//")
+                    && ownsTheLine
+                    && not (tryParseOfferRegex3.IsMatch trimmed)
+                then
+                    Some trimmed.Length
+                else
+                    None
+
+            let editRange, pad, lead =
+                match breakAfter with
+                | Some column ->
+                    let lineIndent = startLine.Length - startLine.TrimStart().Length
+                    let pad = String.replicate (lineIndent + 4) " "
+                    Range.mkRange r.FileName (Position.mkPos r.StartLine column) r.End, pad, $"\n{pad}"
+                | None -> r, String.replicate r.StartColumn " ", ""
 
             [
                 {
@@ -453,9 +562,9 @@ let private tryParseOffer
                         $"Fix: {typeName}.TryParse instead of a catch - the parse failing is the expected case, not an exception"
                     Edits =
                         [
-                            expr.Range,
-                            textOfRange source expr.Range,
-                            $"match {typeName}.TryParse {a} with\n{pad}| true, v -> {success}\n{pad}| false, _ -> {failure}"
+                            editRange,
+                            textOfRange source editRange,
+                            $"{lead}match {typeName}.TryParse {a} with\n{pad}| true, {binder} -> {success}\n{pad}| false, _ -> {failure}"
                         ]
                 }
             ]
