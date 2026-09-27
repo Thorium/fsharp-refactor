@@ -76,10 +76,12 @@ let ``the README's kind summary matches the rules it lists`` () =
         |> List.countBy (fun (_, category) -> RuleCatalog.name category)
         |> Map.ofList
 
+    // `\r?`: a Windows checkout (core.autocrlf) gives the README CRLF line
+    // endings, and a multiline `$` matches only before `\n`
     let claimed =
         Regex.Matches(
             readme,
-            @"^\| `(correctness|performance|idiom|cosmetic)` \|.*\| (\d+) \|$",
+            @"^\| `(correctness|performance|idiom|cosmetic)` \|.*\| (\d+) \|\r?$",
             RegexOptions.Multiline
         )
         |> Seq.map (fun m -> m.Groups.[1].Value, int m.Groups.[2].Value)
