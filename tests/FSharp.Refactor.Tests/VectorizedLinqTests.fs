@@ -145,7 +145,7 @@ let ``FR0041: a blocked-account lookup over an int array is swept to Enumerable.
             Assert.True(s.ReplacementText.IsSome, "Array.contains on an int array carries a fix")
             let patched = applyEdit source s.Range s.ReplacementText.Value
             Assert.Contains(expected, patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected exactly one contains suggestion, got %A" other
 
     // the direct form read the probe before the array: a call probed against

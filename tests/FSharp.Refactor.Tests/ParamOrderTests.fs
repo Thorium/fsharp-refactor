@@ -18,7 +18,7 @@ let private assertParamOrder (source: string) (expectedPatched: string) =
             |> List.fold (fun acc (r, _, t) -> applyEdit acc r t) source
 
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one param-order suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]

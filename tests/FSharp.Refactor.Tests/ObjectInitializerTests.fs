@@ -32,7 +32,7 @@ let ``property sets after a construction fold into it`` () =
         Assert.Equal(2, s.Count)
         Assert.Equal("""Henkilo(Id = 1L, Etunimi = "x")""", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -70,7 +70,7 @@ let ``existing constructor arguments are kept and the properties appended`` () =
     | [ s ] ->
         Assert.Equal("""P("bob", Age = 42)""", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -186,7 +186,7 @@ let ``a long construction is laid out across lines and still compiles`` () =
     | [ s ] ->
         Assert.Contains("\n", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
         for line in patched.Split '\n' do
             Assert.True(line.TrimEnd().Length <= 110, $"line too long: %s{line}")
@@ -210,7 +210,7 @@ let ``new plus existing constructor arguments`` () =
     match objInitIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -233,7 +233,7 @@ let ``several constructor arguments keep their order`` () =
     | [ s ] ->
         Assert.Equal("""P("x", 1, Age = 42)""", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -255,7 +255,7 @@ let ``empty parens written with a space still splice correctly`` () =
     | [] -> () // standing down is acceptable
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected at most one suggestion, got %A" other
 
 [<Fact>]
@@ -275,7 +275,7 @@ let ``a generic type's construction splices correctly`` () =
     | [] -> ()
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected at most one suggestion, got %A" other
 
 [<Fact>]
@@ -298,7 +298,7 @@ let ``a constructor parameter feeding the property still folds`` () =
     | [ s ] ->
         Assert.Equal("X(5, Y = 4)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -337,7 +337,7 @@ let ``assignments with nothing after them must not orphan the binding`` () =
     | [] -> ()
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected at most one suggestion, got %A" other
 
 [<Fact>]
@@ -362,7 +362,7 @@ let ``a static factory method is not a construction`` () =
     | [] -> ()
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected at most one suggestion, got %A" other
 
 [<Fact>]
@@ -407,7 +407,7 @@ let ``a cast value is parenthesised`` () =
     | [ s ] ->
         Assert.Equal("Cmd(Connection = (con :?> Conn))", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -447,7 +447,7 @@ let ``a plain constructor argument still folds`` () =
     | [ s ] ->
         Assert.Equal("Wrap(m, Id = 1L)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected the plain argument to fold, got %A" other
 
 [<Fact>]
@@ -521,7 +521,7 @@ let ``a call past 100 columns takes the fantomas layout under the let`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -544,5 +544,5 @@ let ``a short call with a null and a negative literal stays on one line, unparen
     | [ s ] ->
         Assert.Equal("Cfg(Name = null, Depth = -1)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other

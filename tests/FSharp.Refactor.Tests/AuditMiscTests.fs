@@ -324,7 +324,7 @@ let ``FR0111: a same-line else-if ladder flattens every link in one pass`` () =
         applyAll source (found |> List.map (fun s -> s.Range, s.ReplacementText))
 
     Assert.Equal(source.Replace("else if", "elif"), patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0111: an own-line ladder flattens as one fix with every block moved left`` () =
@@ -366,7 +366,7 @@ let ``FR0111: an own-line ladder flattens as one fix with every block moved left
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one elif suggestion for the whole ladder, got %A" other
 
 [<Fact>]
@@ -400,7 +400,7 @@ let ``FR0111: a moved block carries its same-line link with it`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one elif suggestion for the whole ladder, got %A" other
 
 [<Fact>]
@@ -442,7 +442,7 @@ let ``FR0111: a link that stays ends the chain and the ladder below starts its o
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 // ---- FR0023: same-typed and churn-heavy reorders ----
 
@@ -507,7 +507,7 @@ let ``FR0023: distinct types and no more direct calls than lambdas still swap`` 
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one param-order suggestion, got %A" other
 
 // ---- FR0101: the opening alias names the loop variable ----
@@ -525,7 +525,7 @@ let private assertIndexedLoop (source: string) (expectedPatched: string) =
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one indexed-loop fix, got %A" other
 
 [<Fact>]

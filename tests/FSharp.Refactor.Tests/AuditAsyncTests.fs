@@ -19,7 +19,7 @@ let private testsIn (source: string) =
 /// No FR0142 suggestion — and the fixture typechecks, so the silence is
 /// the rule's decision rather than a broken scaffold's.
 let private assertNoTestRewrite (source: string) =
-    Assert.True(typechecksCleanly source, $"Fixture does not typecheck:\n%s{source}")
+    assertTypechecks "Fixture" source
     Assert.Empty(testsIn source)
 
 let private singlesIn (source: string) =
@@ -39,7 +39,7 @@ let private singleSite (source: string) =
 
 let private assertPatchedTypechecks (source: string) (fixes: (FSharp.Compiler.Text.range * string * string) list) =
     let patched = applyFixes source fixes
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
     patched
 
 /// An xUnit-shaped Assert declared in the fixture (the module is named
@@ -125,7 +125,7 @@ let ``A3 FR0142: a Wait asserted with the inner exception type still moves`` () 
         Assert.Contains("let! ex = Assert.ThrowsAsync<InvalidOperationException>(fun () -> t)", s.ReplacementText)
 
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -518,7 +518,7 @@ let ``B6 FR0142: the ValueTask receiver spells AsTask in a test too`` () =
         )
 
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -662,7 +662,7 @@ let ``C5 FR0079: WaitAll over one task becomes a Wait on it, not the bare task``
             Assert.Equal("Task.WaitAll [| t |]", original)
             Assert.Equal("t.Wait()", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the Wait offer"
     | other -> failwithf "Expected one single-awaitable finding, got %A" other
 
@@ -685,7 +685,7 @@ let ``C5 FR0079: a non-identifier element is parenthesised before the Wait`` () 
         | Some(r, _, replacement) ->
             Assert.Equal("(make ()).Wait()", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the Wait offer"
     | other -> failwithf "Expected one single-awaitable finding, got %A" other
 

@@ -15,9 +15,6 @@ open FSharp.Refactor.Tests.Parsing
 
 let private lines (xs: string list) = String.concat "\n" xs
 
-let private assertTypechecks (source: string) =
-    Assert.True(typechecksCleanly source, $"Fixture does not typecheck:\n%s{source}")
-
 // ---- 1: FR0118 CancellationOverload ----
 
 let private cancellationIn (source: string) =
@@ -52,7 +49,7 @@ let ``FR0118: a cleanup call in a with handler or a finally never receives the t
                 "}"
             ]
 
-    assertTypechecks handler
+    assertTypechecks "Fixture" handler
     Assert.Empty(cancellationIn handler)
 
     let finallyBlock =
@@ -67,7 +64,7 @@ let ``FR0118: a cleanup call in a with handler or a finally never receives the t
                 "}"
             ]
 
-    assertTypechecks finallyBlock
+    assertTypechecks "Fixture" finallyBlock
     Assert.Empty(cancellationIn finallyBlock)
 
     // an explicit None in the handler is the author cutting the chain on
@@ -84,7 +81,7 @@ let ``FR0118: a cleanup call in a with handler or a finally never receives the t
                 "}"
             ]
 
-    assertTypechecks explicitNone
+    assertTypechecks "Fixture" explicitNone
     Assert.Empty(cancellationIn explicitNone)
 
 [<Fact>]
@@ -106,7 +103,7 @@ let ``FR0118: the same call in the try body still gets the token`` () =
         Assert.Equal(CancellationOverload.TokenGap.Omitted, s.Kind)
         let patched = applyEdit source s.Range s.Replacement
         Assert.Contains("do! tx.RollbackAsync(ct)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one token suggestion, got %A" other
 
 // ---- 2: FR0075 UseBinding ----
@@ -133,7 +130,7 @@ let ``FR0075: a task from the binder handed to a collection refuses the fix`` ()
                 Task.WhenAll tasks
             """
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
 
     match useBindingsIn source |> List.filter (fun s -> s.Name = "reader") with
     | [ s ] ->
@@ -159,7 +156,7 @@ let ``FR0075: a task from the binder finished in the scope still gets the fix`` 
     | [ s ] ->
         Assert.True(Some("let", "use") = s.Fix, $"Expected a fix for 'reader', got %A{s}")
         let patched = applyEdit source s.Range "use"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one use-binding fix for 'reader', got %A" other
 
 // ---- 3 and 4: FR0012 HintEngine ----
@@ -176,7 +173,7 @@ let ``FR0012: map over map with effectful mappers is not fused`` () =
         let source =
             $"module Test\nlet f (xs: {t}) = {m}.map (fun x -> printfn \"a\"; x + 1) ({m}.map (fun x -> printfn \"b\"; x * 2) xs)"
 
-        assertTypechecks source
+        assertTypechecks "Fixture" source
         Assert.Empty(hintsIn source)
 
     // and the pure spelling is not a built-in hint either
@@ -247,7 +244,7 @@ let ``FR0015: an anchored-start literal becomes the ordinal StartsWith`` () =
         | [ (range, _, replacement) ] ->
             Assert.Equal("""s.StartsWith("abc", System.StringComparison.Ordinal)""", replacement)
             let patched = applyEdit source range replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected exactly one edit, got %A" other
     | other -> failwithf "Expected exactly one regex suggestion, got %A" other
 
@@ -317,7 +314,7 @@ let ``FR0039: the culture-sensitive lowering keeps the idiomatic ordinal fix`` (
             Assert.Equal(Some expected, s.Replacement)
             Assert.True(s.CultureReplacement.IsSome, "the culture alternative is offered beside the default")
             let patched = applyEdit source s.Range s.Replacement.Value
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected one suggestion for %s, got %A" source other
 
 [<Fact>]
@@ -393,7 +390,7 @@ let ``FR0039: the invariant lowering keeps its fix`` () =
     | [ s ] ->
         Assert.Equal(Some """String.Equals(x, "abc", StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 // ---- 7: FR0142 TestReturnsTask ----
@@ -433,7 +430,7 @@ let ``FR0142: a test whose final expression is the value it returns is not wrapp
                 "        x + 1"
             ]
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
     Assert.Empty(testsIn source)
 
 [<Fact>]
@@ -453,7 +450,7 @@ let ``FR0142: a unit test with the same blocking let still moves`` () =
     | [ s ] ->
         Assert.Contains("let! x = fetch()", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 // ---- 8: FR0002 OptionModule ----
@@ -476,7 +473,7 @@ let ``FR0002: an arm calling the enclosing let rec keeps its tail call`` () =
                 | None -> acc
             """
 
-    assertTypechecks topLevel
+    assertTypechecks "Fixture" topLevel
     Assert.Empty(optionsIn topLevel)
 
     let local =
@@ -491,7 +488,7 @@ let ``FR0002: an arm calling the enclosing let rec keeps its tail call`` () =
                 loop xs 0
             """
 
-    assertTypechecks local
+    assertTypechecks "Fixture" local
     Assert.Empty(optionsIn local)
 
 [<Fact>]
@@ -510,5 +507,5 @@ let ``FR0002: the same arms without a recursive call still fold`` () =
     | [ s ] ->
         Assert.StartsWith("Option.map", s.Target)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other

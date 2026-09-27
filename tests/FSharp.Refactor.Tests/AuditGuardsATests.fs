@@ -28,11 +28,8 @@ let private applyAll (source: string) (edits: (range * string * string) list) =
 /// A negative test on a typed rule proves nothing when the input has a
 /// type error: every typed rule returns [] on errors. So the input is
 /// checked first.
-let private assertTypechecks (source: string) =
-    Assert.True(typechecksCleanly source, $"Test input does not typecheck:\n%s{source}")
-
 let private assertPatchedTypechecks (patched: string) =
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 // ---- 1: FR0107 flag loop: a same-file predicate ----
 
@@ -107,7 +104,7 @@ let ``FR0107: a method on another type in the predicate keeps the loop`` () =
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -125,7 +122,7 @@ let ``FR0107: an effectful FSharp.Core call in the predicate keeps the loop`` ()
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -142,7 +139,7 @@ let ``FR0107: a record field holding a function is a call and keeps the loop`` (
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -162,7 +159,7 @@ let ``FR0107: a same-file chain deeper than three declarations keeps the loop`` 
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -181,7 +178,7 @@ let ``FR0107: a mutable holding a function is an unknown callee and keeps the lo
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -214,7 +211,7 @@ let ``FR0107: a partial FSharp.Core function in the predicate keeps the loop`` (
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
     // Operators.max over two values is total, and still passes
@@ -248,7 +245,7 @@ let ``FR0107: an extension member on a BCL type in the predicate keeps the loop`
                 found
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 // ---- 2: FR0071 LoopInvariant: what the statement calls, division ----
@@ -301,7 +298,7 @@ let ``FR0071: a local mutable assigned in the loop stays in it`` () =
                 total
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -322,7 +319,7 @@ let ``FR0071: a local mutable a same-scope closure writes stays in the loop`` ()
                 total
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -344,7 +341,7 @@ let ``FR0071: a pipeline head that writes the mutable keeps the binding in the l
                     x + c)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
     // a head that is a plain value leaves nothing to run, and the lambda
@@ -382,7 +379,7 @@ let ``FR0071: a function-typed field, a user getter and an active pattern are ca
                     ignore (x + c)
             """
 
-    assertTypechecks viaField
+    assertTypechecks "Test input" viaField
     Assert.Empty(invariantsIn viaField)
 
     let viaGetter =
@@ -400,7 +397,7 @@ let ``FR0071: a function-typed field, a user getter and an active pattern are ca
                     ignore (counter.Next + x + c)
             """
 
-    assertTypechecks viaGetter
+    assertTypechecks "Test input" viaGetter
     Assert.Empty(invariantsIn viaGetter)
 
     let viaActivePattern =
@@ -418,7 +415,7 @@ let ``FR0071: a function-typed field, a user getter and an active pattern are ca
                     | Bumped n -> ignore (n + c)
             """
 
-    assertTypechecks viaActivePattern
+    assertTypechecks "Test input" viaActivePattern
     Assert.Empty(invariantsIn viaActivePattern)
 
     // a BCL getter cannot reach a mutable of this file
@@ -453,7 +450,7 @@ let ``FR0071: a module mutable read beside a call into another assembly stays in
                     System.Console.WriteLine(x + c)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -472,7 +469,7 @@ let ``FR0071: a module mutable written two calls deep stays in the loop`` () =
                     ignore (x + c)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -507,7 +504,7 @@ let ``FR0071: a division by a variable stays in the loop`` () =
                     sink (x + c)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 // ---- 3: FR0157 StringUnion: the null arm ----
@@ -590,7 +587,7 @@ let ``FR0157: a guarded null arm stays open and the rule stands down`` () =
             let b = describe "uk"
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(unionsIn source)
 
 [<Fact>]
@@ -611,7 +608,7 @@ let ``FR0157: a null beside a literal in one or-pattern stands the rule down`` (
             let b = describe "uk"
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(unionsIn source)
 
     let literalFirst =
@@ -628,7 +625,7 @@ let ``FR0157: a null beside a literal in one or-pattern stands the rule down`` (
             let b = describe "uk"
             """
 
-    assertTypechecks literalFirst
+    assertTypechecks "Test input" literalFirst
     Assert.Empty(unionsIn literalFirst)
 
 // ---- 4: FR0003 Composition: every identifier of a path ----
@@ -650,7 +647,7 @@ let ``FR0003: a field read through a mutable record keeps the lambda`` () =
             let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(compositionsIn source)
 
 [<Fact>]
@@ -665,7 +662,7 @@ let ``FR0003: a mutable field read keeps the lambda`` () =
             let f (xs: int list) = xs |> List.map (fun x -> x |> addN cfg.N |> string)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(compositionsIn source)
 
 [<Fact>]
@@ -778,7 +775,7 @@ let ``FR0002: a member arm calling itself through its self identifier keeps the 
                     | None -> acc
             """
 
-    assertTypechecks viaThis
+    assertTypechecks "Test input" viaThis
     Assert.Empty(optionsIn viaThis)
 
     let viaOwnName =
@@ -792,7 +789,7 @@ let ``FR0002: a member arm calling itself through its self identifier keeps the 
                     | None -> acc
             """
 
-    assertTypechecks viaOwnName
+    assertTypechecks "Test input" viaOwnName
     Assert.Empty(optionsIn viaOwnName)
 
 [<Fact>]
@@ -809,7 +806,7 @@ let ``FR0002: a static member calling itself through the type's name keeps the m
                     | None -> acc
             """
 
-    assertTypechecks viaTypeName
+    assertTypechecks "Test input" viaTypeName
     Assert.Empty(optionsIn viaTypeName)
 
     // a module's `let rec` called through the module's name (a recursive
@@ -825,7 +822,7 @@ let ``FR0002: a static member calling itself through the type's name keeps the m
                     | None -> acc
             """
 
-    assertTypechecks viaModuleName
+    assertTypechecks "Test input" viaModuleName
     Assert.Empty(optionsIn viaModuleName)
 
 [<Fact>]

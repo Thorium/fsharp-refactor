@@ -20,7 +20,7 @@ let private assertIndexedLoop (source: string) (expectedPatched: string) =
     | [ s ] ->
         let patched = applyAll source s.Edits
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one indexed-loop fix, got %A" other
 
 [<Fact>]
@@ -315,7 +315,7 @@ let private assertTypeTestFix (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one type-test-chain fix, got %A" other
 
 [<Fact>]

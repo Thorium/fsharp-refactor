@@ -22,9 +22,6 @@ let private applyAll (source: string) (edits: (FSharp.Compiler.Text.range * stri
 /// A negative test on a typed rule proves nothing when the input has a
 /// type error: every typed rule returns [] on errors. So the input is
 /// checked first.
-let private assertTypechecks (source: string) =
-    Assert.True(typechecksCleanly source, $"Test input does not typecheck:\n%s{source}")
-
 // ---- FR0071 LoopInvariant ----
 
 let private invariantsIn (source: string) =
@@ -48,7 +45,7 @@ let ``FR0071: a pipe into a function is a call and stays in the loop`` () =
                     handle line
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -66,7 +63,7 @@ let ``FR0071: a backward pipe and a composition stay in the loop too`` () =
                     sink (x + c + d a)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -86,7 +83,7 @@ let ``FR0071: a mutable a called function writes is not invariant`` () =
                     sink (x + c)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(invariantsIn source)
 
 [<Fact>]
@@ -119,7 +116,7 @@ let ``FR0071: a mutable read beside a same-file call that does not write it stil
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one invariant note, got %A" other
 
 [<Fact>]
@@ -148,7 +145,7 @@ let ``FR0071: an arithmetic invariant over an immutable still hoists`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one invariant note, got %A" other
 
 // ---- FR0050 Accumulation: checked sum ----
@@ -176,7 +173,7 @@ let ``FR0050: an integer accumulator never becomes sum or sumBy`` () =
     for s in folds do
         Assert.DoesNotContain("sum", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0050: a float accumulator still becomes sumBy`` () =
@@ -195,7 +192,7 @@ let ``FR0050: a float accumulator still becomes sumBy`` () =
     | [ s ], _ ->
         Assert.Equal("items |> List.sumBy (fun x -> x * 2.0)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
 [<Fact>]
@@ -245,7 +242,7 @@ let ``FR0107: a user function in the predicate keeps the loop`` () =
                 bad
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -264,7 +261,7 @@ let ``FR0107: a user function handed to a core function keeps the loop`` () =
                 bad
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(flagLoopsIn source)
 
 [<Fact>]
@@ -284,7 +281,7 @@ let ``FR0107: a property read and a core operator still become exists`` () =
     | [ s ] ->
         Assert.Equal("let bad = files |> List.exists (fun file -> file.Length > 3)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one flag-loop suggestion, got %A" other
 
 [<Fact>]
@@ -314,14 +311,14 @@ let private conversionsIn (source: string) =
 let ``FR0004: a lambda removing from the source keeps the eager copy`` () =
     // `Seq.iter` over the ResizeArray it removes from throws
     // InvalidOperationException on the second element
-    assertTypechecks (
-        fsharp
+    assertTypechecks
+        "Test input"
+        (fsharp
             """
             module T
             let f (rs: ResizeArray<int>) =
                 rs |> Seq.toList |> List.iter (fun x -> rs.Remove x |> ignore)
-            """
-    )
+            """)
 
     Assert.Empty(
         conversionsIn (
@@ -380,7 +377,7 @@ let ``FR0003: a stage applying a function in its argument keeps the lambda`` () 
             let f (xs: int list) = xs |> List.map (fun x -> x |> addN (compute ()) |> string)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(compositionsIn source)
 
 [<Fact>]
@@ -393,7 +390,7 @@ let ``FR0003: a property read in a stage argument keeps the lambda`` () =
             let f (xs: int list) = xs |> List.map (fun x -> x |> addT System.DateTime.Now |> string)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(compositionsIn source)
 
 [<Fact>]
@@ -407,7 +404,7 @@ let ``FR0003: a mutable in a stage argument keeps the lambda`` () =
             let f (xs: int list) = xs |> List.map (fun x -> x |> addN n |> string)
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(compositionsIn source)
 
 [<Fact>]
@@ -424,7 +421,7 @@ let ``FR0003: a literal stage argument still composes`` () =
     | [ s ] ->
         Assert.Equal("addN 3 >> string", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 // ---- FR0044 Reraise: a payload is not the caught exception ----
@@ -437,7 +434,7 @@ let private assertReraise (source: string) =
     match reraiseIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range "reraise ()"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one reraise suggestion, got %A" other
 
 [<Fact>]
@@ -453,7 +450,7 @@ let ``FR0044: raising a field of the caught exception is not a rethrow`` () =
                 with ParseFailed(_, inner) -> raise inner
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(reraiseIn source)
 
 [<Fact>]

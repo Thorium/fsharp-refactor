@@ -15,7 +15,7 @@ let private assertSingleSuggestion (source: string) (expectedReplacement: string
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+        assertParses "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)

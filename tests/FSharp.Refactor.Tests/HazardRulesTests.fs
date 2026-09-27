@@ -33,7 +33,7 @@ let ``FR0159: a float conversion of an integer division converts the operands fi
             |> List.sortByDescending (fun s -> s.Range.StartLine)
             |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
@@ -102,7 +102,7 @@ let ``FR0160: a wrapper constructed without the caught exception gains it as the
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
@@ -360,7 +360,7 @@ let ``FR0164: a collection edited inside a for loop over itself walks a snapshot
             |> List.sortByDescending (fun s -> s.Range.StartLine)
             |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
         let (r, _, replacement) = a.Filter.Value
         let filtered = applyEdit source r replacement
@@ -375,7 +375,7 @@ let ``FR0164: a collection edited inside a for loop over itself walks a snapshot
             filtered
         )
 
-        Assert.True(typechecksCleanly filtered, $"Filtered source does not typecheck:\n%s{filtered}")
+        assertTypechecks "Filtered source" filtered
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
@@ -426,7 +426,7 @@ let ``FR0164: a condition over a mutable or a Span, or a comment in the loop, ke
                     if x < 0 then items.Remove x |> ignore
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
 
     match enumerationMutationsIn source with
     | [ a; b; c ] ->
@@ -440,7 +440,7 @@ let ``FR0164: a condition over a mutable or a Span, or a comment in the loop, ke
             |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
 
         Assert.Contains("// negative entries are stale", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
@@ -467,7 +467,7 @@ let ``FR0164: a let mutable in another function is not the condition's name`` ()
         let (r, _, replacement) = s.Filter.Value
         Assert.Equal("items.RemoveAll(fun x -> x < limit) |> ignore", replacement)
         let filtered = applyEdit source r replacement
-        Assert.True(typechecksCleanly filtered, $"Filtered source does not typecheck:\n%s{filtered}")
+        assertTypechecks "Filtered source" filtered
     | other -> failwithf "Expected one finding, got %A" other
 
 [<Fact>]
@@ -525,7 +525,7 @@ let ``FR0159: a negative literal operand keeps its parentheses`` () =
     | [ s ] ->
         Assert.Equal("float x / float (-2)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one finding, got %A" other
 
 [<Fact>]
@@ -750,7 +750,7 @@ let ``FR0123: the statements between the acquire and its release move under a tr
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two leak notes, got %A" other
 
 [<Fact>]

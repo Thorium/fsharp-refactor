@@ -16,7 +16,7 @@ let private assertRewrite (source: string) (expectedFunction: string) =
         Assert.Equal(expectedFunction, s.FunctionName)
         let patched = applyEdit source s.Range "Array"
         Assert.Contains("Array." + expectedFunction, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]

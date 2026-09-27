@@ -354,7 +354,7 @@ let ``leading plain lets hoist above the builder and the result typechecks`` () 
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``the documenting comment block hoists with its binding`` () =
@@ -399,7 +399,7 @@ let ``the documenting comment block hoists with its binding`` () =
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a mutable leading let stops the hoist before it`` () =
@@ -436,7 +436,7 @@ let ``a mutable leading let stops the hoist before it`` () =
         if not edits.IsEmpty then
             let patched = applyEdits source edits
             Assert.Contains("let mutable m", patched.Substring(patched.IndexOf "task {"))
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
     | None -> () // no hoist advice at all is acceptable too
 
 [<Fact>]
@@ -473,7 +473,7 @@ let ``the non-awaiting tail wraps into a local function and typechecks`` () =
     Assert.Contains("return runTail ()", patched)
     // the comment travels inside the wrapper region untouched
     Assert.Contains("// combine everything", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a return whose value hides behind a block comment keeps its keyword`` () =
@@ -510,7 +510,7 @@ let ``a return whose value hides behind a block comment keeps its keyword`` () =
     Assert.NotEmpty edits
     let patched = applyEdits source edits
     Assert.Contains("return (*{Sum = *) s1 + s2 + s3", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``an already extracted tail is not wrapped again`` () =
@@ -648,7 +648,7 @@ let ``a tail holding a use never becomes a plain closure`` () =
     if not edits.IsEmpty then
         let patched = applyEdits source edits
         Assert.Contains("let runTail () = task {", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a tail whose branches all return hoists the return instead of extracting`` () =
@@ -686,7 +686,7 @@ let ``a tail whose branches all return hoists the return instead of extracting``
     let patched = applyEdits source hoists
     Assert.DoesNotContain("let runTail () = task {", patched)
     Assert.Contains("return\n", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a one-line branch keeps its hoisted return on the same line`` () =
@@ -717,7 +717,7 @@ let ``a one-line branch keeps its hoisted return on the same line`` () =
     Assert.NotEmpty hoists
     let patched = applyEdits source hoists
     Assert.Contains("""return if result then None else (Some "failed") }""", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``an oversized if split produces two tasks and typechecks`` () =
@@ -745,7 +745,7 @@ let ``an oversized if split produces two tasks and typechecks`` () =
     let patched = applyEdits source edits
     Assert.Contains("if cond then task {", patched)
     Assert.Contains("} else task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``an elif chain stays advice only`` () =
@@ -802,7 +802,7 @@ let ``a backgroundTask split keeps its builder`` () =
     Assert.Contains("if cond then backgroundTask {", patched)
     Assert.Contains("} else backgroundTask {", patched)
     Assert.DoesNotContain("then task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a split fires when only one arm awaits`` () =
@@ -832,7 +832,7 @@ let ``a split fires when only one arm awaits`` () =
     Assert.NotEmpty edits
     let patched = applyEdits source edits
     Assert.Contains("if cond then task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``the embedding-generator shape splits`` () =
@@ -893,7 +893,7 @@ let ``the embedding-generator shape splits`` () =
     Assert.Contains("// zero-input contract: no model touch", patched)
     Assert.Contains("if inputs.Length = 0 then task {", patched)
     Assert.Contains("} else task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``an early-return tail hoists its return ahead of the branch`` () =
@@ -932,7 +932,7 @@ let ``an early-return tail hoists its return ahead of the branch`` () =
     // the bindings before the branch are untouched - nothing moved
     Assert.Contains("let s1 = x1 + 1", patched)
     Assert.DoesNotContain("let runTail () = task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``awaiting match arms stay advice without a fix`` () =
@@ -1061,7 +1061,7 @@ let ``the control without a use takes the plain closure`` () =
     let patched = applyEdits (tailBody "") (tailEditsFor (tailBody ""))
     Assert.Contains("let runTail () =", patched)
     Assert.DoesNotContain("let runTail () = task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a leading use forces the task-returning variant`` () =
@@ -1070,7 +1070,7 @@ let ``a leading use forces the task-returning variant`` () =
     Assert.NotEmpty edits
     let patched = applyEdits source edits
     Assert.Contains("let runTail () = task {", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a use in the middle of the tail is caught too`` () =
@@ -1094,7 +1094,7 @@ let ``a use in the middle of the tail is caught too`` () =
     if not edits.IsEmpty then
         let patched = applyEdits source edits
         Assert.Contains("let runTail () = task {", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``an async tail with a use keeps CE syntax as well`` () =
@@ -1118,7 +1118,7 @@ let ``an async tail with a use keeps CE syntax as well`` () =
     if not edits.IsEmpty then
         let patched = applyEdits source edits
         Assert.Contains("let runTail () = async {", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
 // ---- a hand-tuned hot path is not restructured (suave's HttpOutput.fs) ----
 
@@ -1411,7 +1411,7 @@ let ``hoistReturnOnAsync hoists the return in an async block`` () =
     )
 
     Assert.DoesNotContain("| 1 -> return x", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``hoistReturnOnAsync brings only the hoist, never the FS3511 advice`` () =
@@ -1509,7 +1509,7 @@ let ``a use ahead of the branch still hoists - it stays CE code`` () =
 
     Assert.NotEmpty hoists
     let patched = applyEdits source hoists
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a tail closing on a bare return extracts as a plain closure`` () =
@@ -1549,7 +1549,7 @@ let ``a tail closing on a bare return extracts as a plain closure`` () =
     let patched = applyEdits source edits
     Assert.DoesNotContain("runTail () = task {", patched)
     Assert.Contains("return runTail ()", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 
 [<Fact>]

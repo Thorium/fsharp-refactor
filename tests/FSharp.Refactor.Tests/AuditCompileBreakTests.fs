@@ -49,7 +49,7 @@ let ``FR0049: a parenthesised tail is returned whole, not from inside the parent
         Assert.Contains("return (r, 1)", patched)
         Assert.DoesNotContain("(return", patched)
         Assert.Contains("let! r = t", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one taskify suggestion, got %A" other
 
 [<Fact>]
@@ -72,7 +72,7 @@ let ``FR0049: a parenthesised blocking drain in tail position is still return-ba
     | [ s ] ->
         let patched = applyAll source s.Edits
         Assert.Contains("return! t", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one taskify suggestion, got %A" other
 
 // ---- FR0013 RedundantParens ----

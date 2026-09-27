@@ -17,7 +17,7 @@ let private assertPatched (source: string) (expectedReplacement: string) (guarde
         Assert.Equal(expectedReplacement, s.ReplacementText)
         Assert.Equal(guarded, s.Guarded)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)

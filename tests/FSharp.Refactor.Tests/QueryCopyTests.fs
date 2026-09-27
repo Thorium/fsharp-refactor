@@ -42,7 +42,7 @@ let private assertRewritesWith (pipelines: bool) (body: string) (expected: strin
         Assert.Contains(expected, patched)
         // the standing rule: the produced text must be right on its own,
         // never rescued by a compile check afterwards
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 let private assertRewrites = assertRewritesWith false
@@ -237,10 +237,7 @@ let ``without open System.Linq the knob's pipeline is a note`` () =
             + body
         )
 
-    Assert.True(
-        typechecksCleanly (source.GetSubTextString(0, source.Length)),
-        source.GetSubTextString(0, source.Length)
-    )
+    assertTypechecks "Test input" (source.GetSubTextString(0, source.Length))
 
     match QueryCopy.find true tree source check with
     | [ s ] -> Assert.False s.Fixable

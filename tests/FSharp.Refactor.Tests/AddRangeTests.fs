@@ -13,7 +13,7 @@ let private assertAddRange (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one AddRange suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -181,7 +181,7 @@ let ``a STEPPED range source is handled or left alone, never mis-emitted`` () =
                 s.Range
                 s.ReplacementText
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected at most one suggestion, got %A" other
 
 [<Fact>]

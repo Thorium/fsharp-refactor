@@ -23,7 +23,7 @@ let private assertSuggestion
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+        assertParses "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 /// Like assertSuggestion but for headerless script sources: verifies the
@@ -37,7 +37,7 @@ let private assertCheckedSuggestion
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one checked suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]

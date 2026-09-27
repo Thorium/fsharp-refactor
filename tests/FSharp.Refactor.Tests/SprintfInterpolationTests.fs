@@ -15,7 +15,7 @@ let private assertSprintfFix (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one sprintf suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -89,7 +89,7 @@ let private assertHoleFix (source: string) (expectedPatched: string) =
     | [ s ] ->
         let patched = applyEdit source s.Range s.Specifier
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one hole suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]

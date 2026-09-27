@@ -631,7 +631,7 @@ let ``FR0168: a try on the else line becomes a match on lines of its own, with a
         patched
     )
 
-    Assert.True(typechecksCleanly patched, patched)
+    assertTypechecks "Patched source" patched
 
 /// Every offer of FR0168 applied to `source`, bottom-up.
 let private tryParsePatched (source: string) =
@@ -704,7 +704,7 @@ let ``FR0168: only a parameter inferred late gets its argument annotated`` () =
     Assert.Contains("Int32.TryParse (s: string) with", patched)
     // annotated, or fixed by its right side: left as written
     Assert.Equal(2, Regex.Matches(patched, @"Int32\.TryParse s with").Count)
-    Assert.True(typechecksCleanly patched, patched)
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``EditorConfig: a section glob it cannot translate matches nothing instead of throwing`` () =

@@ -166,7 +166,7 @@ let ``a misspelled name in a one-parameter function is corrected to that paramet
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one FR0061 message, got %A" other
 
 // ---- FR0063 / FR0064 ExceptionRules ----
@@ -478,7 +478,7 @@ let ``the editor makes public mutable state private, with internal as the altern
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
         Assert.Equal("internal ", (List.exactlyOne makeInternal.Fixes).ToText)
     | other -> failwithf "Expected the FR0062 note and its internal alternative, got %A" other
 
@@ -768,7 +768,7 @@ let private assertHoisted (source: string) (expectedPatched: string) =
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one invariant note, got %A" other
 
 [<Fact>]
@@ -1011,7 +1011,7 @@ let private assertExpanded (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one wildcard note, got %A" other
 
 [<Fact>]
@@ -1284,7 +1284,7 @@ let ``the small struct record gains an attribute fix that typechecks`` () =
                 patched
             )
 
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected an attribute fix"
     | other -> failwithf "Expected one struct suggestion, got %A" other
 
@@ -1353,7 +1353,7 @@ let ``a file-private option field migrates with every use`` () =
         Assert.Contains("r.Seen |> ValueOption.map (fun d -> d.Year) |> ValueOption.defaultValue 0", patched)
         Assert.Contains("r.Seen.IsSome", patched)
         Assert.Contains("defaultValueArg r.Seen now", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one migratable field, got %A" other
 
 [<Fact>]
@@ -1432,7 +1432,7 @@ let ``a file-private tuple field migrates with every use`` () =
         Assert.Contains("| struct (x, y) -> string (x + y)", patched)
         Assert.Contains("let struct (a, b) = p.A", patched)
         Assert.Contains("p.A = struct (0, 0)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one migratable tuple field, got %A" other
 
 [<Fact>]
@@ -1509,7 +1509,7 @@ let ``equality with None migrates the literal too`` () =
     | [ (_, Some edits) ] ->
         let patched = applyMigration source edits
         Assert.Contains("r.Seen = ValueNone", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected a migratable field, got %A" other
 
 [<Fact>]
@@ -1528,7 +1528,7 @@ let ``a record pattern destructuring Some migrates`` () =
         let patched = applyMigration source edits
         Assert.Contains("{ Seen = ValueSome d }", patched)
         Assert.Contains("{ Seen = ValueNone }", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected a migratable field, got %A" other
 
 // ---- FR0120 CatchLogException ----
@@ -1579,7 +1579,7 @@ let ``a handler log without the exception gains it first`` () =
         let full = loggerScaffold + source
         let patched = applyEdit full s.Range $"{s.ExceptionName}, "
         Assert.Contains("""logger.LogError(ex, "work failed")""", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one catch-log suggestion, got %A" other
 
 [<Fact>]
@@ -1763,7 +1763,7 @@ let ``a bare Now carries the opt-in UtcNow rewrite`` () =
         | Some r ->
             let patched = applyEdit source r "UtcNow"
             Assert.Contains("System.DateTime.UtcNow", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the Now fix range"
     | other -> failwithf "Expected one wall-clock suggestion, got %A" other
 
@@ -1877,7 +1877,7 @@ let ``the canonical Enter-try-finally-Exit becomes lock`` () =
             Assert.Contains("lock gate (fun () ->", patched)
             Assert.Contains("// guarded increment", patched)
             Assert.DoesNotContain("Monitor.Exit", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the lock rewrite"
     | other -> failwithf "Expected one monitor suggestion, got %A" other
 
@@ -1953,7 +1953,7 @@ let ``FR0123: a statement after the finally still leaves the Enter guarded`` () 
             Assert.Contains("value <- value + 1", patched)
             Assert.EndsWith("value", patched.TrimEnd())
             Assert.DoesNotContain("Monitor.Exit", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the lock rewrite"
     | other -> failwithf "Expected one guarded suggestion, got %A" other
 
@@ -2304,7 +2304,7 @@ let ``a zero-width space inside a regular literal gains the escape fix`` () =
             Assert.Equal("""\u200B""", replacement)
             let patched = applyEdit source r replacement
             Assert.Contains("""\u200B""", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the escape fix inside a regular literal"
     | other -> failwithf "Expected one invisible finding, got %A" other
 
@@ -2471,7 +2471,7 @@ let ``an obsolete Managed constructor becomes the static factory`` () =
     | [ s ] ->
         Assert.Equal("System.Security.Cryptography.SHA256.Create()", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one obsolete-ctor suggestion, got %A" other
 
 [<Fact>]
@@ -2488,7 +2488,7 @@ let ``RNGCryptoServiceProvider maps to RandomNumberGenerator`` () =
     | [ s ] ->
         Assert.Equal("RandomNumberGenerator.Create()", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one RNG suggestion, got %A" other
 
 [<Fact>]
@@ -2562,7 +2562,7 @@ let ``a guard that only tests the binder becomes the literal pattern`` () =
 
         Assert.Contains("""| "A" -> 1""", patched)
         Assert.Contains("""| "B" -> 2""", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two guard suggestions, got %A" other
 
 [<Fact>]
@@ -2581,7 +2581,7 @@ let ``function-style matching gets the same rewrite`` () =
         Assert.Equal("42", s.LiteralText)
         let patched = applyEdit source s.Range s.LiteralText
         Assert.Contains("| 42 -> \"yes\"", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one function-guard suggestion, got %A" other
 
 [<Fact>]
@@ -2675,7 +2675,7 @@ let ``a private constant string gains the Literal attribute`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one literal suggestion, got %A" other
 
 [<Fact>]
@@ -3063,7 +3063,7 @@ let ``a trailing comment on a public binding becomes its XML doc`` () =
         )
 
         Assert.False(patched.Contains "n // monthly")
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one doc promotion, got %A" other
 
 [<Fact>]
@@ -3090,7 +3090,7 @@ let ``a union case's trailing comment docs the case`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one case promotion, got %A" other
 
 [<Fact>]
@@ -3145,7 +3145,7 @@ let ``a five-word private name becomes a double-backtick name everywhere`` () =
         let patched = applyMigration source s.Edits
         Assert.Contains("let private ``this is my very complex method`` (x: int)", patched)
         Assert.Contains("let use1 () = ``this is my very complex method`` 1", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one quoting suggestion, got %A" other
 
 [<Fact>]
@@ -3163,7 +3163,7 @@ let ``a snake-case local renames inside its function`` () =
     | [ s ] ->
         let patched = applyMigration source s.Edits
         Assert.Contains("let ``this is my very complex case`` = 4", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one local quoting suggestion, got %A" other
 
 [<Fact>]
@@ -3238,7 +3238,7 @@ let ``an XAndY case name names its own fields`` () =
         Assert.Equal<string list>([ "interest"; "rate" ], s.Names)
         let patched = applyMigration source s.Edits
         Assert.Contains("| InterestAndRate of interest: float * rate: float", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one name-sourced suggestion, got %A" other
 
 [<Fact>]
@@ -3257,7 +3257,7 @@ let ``a clear trailing comment names the fields`` () =
         Assert.Equal<string list>([ "interest"; "rate" ], s.Names)
         let patched = applyMigration source s.Edits
         Assert.Contains("| Pair of interest: float * rate: float // interest and rate", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one comment-sourced suggestion, got %A" other
 
 [<Fact>]
@@ -3355,7 +3355,7 @@ let ``a UtcNow-fed private DateTime field migrates to DateTimeOffset`` () =
         Assert.Contains("Seen: DateTimeOffset", patched)
         Assert.Contains("""{ Seen = DateTimeOffset.UtcNow; Name = "a" }""", patched)
         Assert.Contains("r.Seen.Year", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one DateTimeOffset migration, got %A" other
 
 [<Fact>]
@@ -3688,7 +3688,7 @@ let ``a fully qualified UtcNow write migrates too`` () =
     | [ (_, Some edits) ] ->
         let patched = applyMigration source edits
         Assert.Contains("{ Seen = System.DateTimeOffset.UtcNow }", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected the qualified migration, got %A" other
 
 // ---- FR0062 setup-singleton gate / FR0067 culture fixes ----
@@ -3740,7 +3740,7 @@ let ``the culture fix grows the parenthesised argument list`` () =
             let source = "module Test\nlet f (s: string) = System.DateTime.Parse(s)"
             let patched = applyEdit source r replacement
             Assert.Contains("System.DateTime.Parse(s, System.Globalization.CultureInfo.InvariantCulture)", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "expected a culture fix"
     | other -> failwithf "Expected one culture suggestion, got %A" other
 
@@ -3756,7 +3756,7 @@ let ``the culture fix wraps a juxtaposed argument`` () =
             let source = "module Test\nlet f (s: string) = System.DateTime.Parse s"
             let patched = applyEdit source r replacement
             Assert.Contains("System.DateTime.Parse (s, System.Globalization.CultureInfo.InvariantCulture)", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "expected a culture fix"
     | other -> failwithf "Expected one culture suggestion, got %A" other
 
@@ -3866,7 +3866,7 @@ let ``the weak protocol constant swaps to Tls12`` () =
 
             let patched = applyEdit source r "Tls12"
             Assert.Contains("SecurityProtocolType.Tls12", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "expected the protocol ident range"
     | other -> failwithf "Expected one protocol suggestion, got %A" other
 
@@ -3889,7 +3889,7 @@ let ``an existing Globalization open keeps the culture spelling short`` () =
             let r, _, replacement = mk "InvariantCulture"
             let patched = applyEdit source r replacement
             Assert.Contains("System.DateTime.Parse(s, CultureInfo.InvariantCulture)", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "expected a culture fix"
     | other -> failwithf "Expected one culture suggestion, got %A" other
 
@@ -3915,7 +3915,7 @@ let ``a zero-argument Guid constructor states Empty`` () =
         Assert.Equal("Guid.NewGuid()", s.NewGuidText)
         let patched = applyEdit source s.Range s.EmptyText
         Assert.Contains("let id = Guid.Empty", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one Guid suggestion, got %A" other
 
 [<Fact>]
@@ -3927,7 +3927,7 @@ let ``new System Guid keeps its qualification`` () =
         Assert.Equal("System.Guid.Empty", s.EmptyText)
         let patched = applyEdit source s.Range s.NewGuidText
         Assert.Contains("let id = System.Guid.NewGuid()", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified Guid suggestion, got %A" other
 
 [<Fact>]
@@ -3981,7 +3981,7 @@ let ``compact tuple spelling keeps its compact field names`` () =
     | [ s ] ->
         let patched = applyMigration source s.Edits
         Assert.Contains("| RxAndRy of rx:int*ry:int", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one compact suggestion, got %A" other
 
 // ---- FR0035 startup-set quick-fix ----
@@ -4010,7 +4010,7 @@ let ``a startup list whose only uses are probes converts in place to a Set`` () 
         let patched = applyMigration source s.Fix
         Assert.Contains("""let private allowed = [ "a"; "b"; "c" ] |> Set.ofList""", patched)
         Assert.Contains("if allowed.Contains x then", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
@@ -4035,7 +4035,7 @@ let ``a list with other uses keeps its type and gains the HashSet companion`` ()
         let patched = applyMigration source s.Fix
         Assert.Contains("let private allowedProbeSet = System.Collections.Generic.HashSet(allowed)", patched)
         Assert.Contains("if allowedProbeSet.Contains x then", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
@@ -4116,7 +4116,7 @@ let ``an array literal converts with ofArray`` () =
         let patched = applyMigration source s.Fix
         Assert.Contains("[| 1; 2; 3 |] |> Set.ofArray", patched)
         Assert.Contains("if allowed.Contains x then", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
@@ -4177,7 +4177,7 @@ let ``two probes of one startup list convert together with one companion`` () =
         Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(patched, "Set.ofList").Count)
         Assert.Contains("if allowed.Contains x then", patched)
         Assert.Contains("if allowed.Contains y then", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two contains suggestions, got %A" other
 
 // ---- FR0005 return!-identity collapse / FR0029 single-return arms ----
@@ -4208,7 +4208,7 @@ let ``a return-bang around a single-return task is a no-op machine`` () =
         let patched = applyEdit source s.Range s.ReplacementText
         Assert.Contains("return! t", patched)
         Assert.False(patched.Contains "return! task {")
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one identity strip, got %A" other
 
 [<Fact>]
@@ -4959,7 +4959,7 @@ let ``FR0120: a Logary event pipeline in a handler without addExn gets the stage
         // the insertion point sits right after the event stage
         let patched = applyEdit (loggerScaffold + source) s.Range " |> Message.addExn ex"
         Assert.Contains("""Message.eventError "sync failed {Id}" |> Message.addExn ex |> Message.setField""", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one Logary finding, got %A" other
 
 [<Fact>]
@@ -5136,7 +5136,7 @@ let ``FR0035: a PUBLIC startup list keeps its type and gets the HashSet companio
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
@@ -5165,7 +5165,7 @@ let ``FR0035: a list of a NoComparison record takes the HashSet companion, never
         let patched = applyMigration source s.Fix
         Assert.DoesNotContain("Set.ofList", patched)
         Assert.Contains("allowedProbeSet", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -5215,7 +5215,7 @@ let ``FR0035: a public list converts in place under --api-changes`` () =
     | [ s ] ->
         let patched = applyMigration source s.Fix
         Assert.Contains("|> Set.ofList", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
@@ -5236,7 +5236,7 @@ let ``FR0035: a list in a private module converts in place`` () =
     | [ s ] ->
         let patched = applyMigration source s.Fix
         Assert.Contains("|> Set.ofList", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 [<Fact>]
@@ -5361,7 +5361,7 @@ let ``FR0035: sensor thresholds holding a NaN never become a Set`` () =
     | [ s ] ->
         let patched = applyMigration plain s.Fix
         Assert.Contains("[ 1.5; -2.0; 3.0 ] |> Set.ofList", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
 // ---- FR0132 comment and file guards (suave, test fixtures) ----
@@ -5474,7 +5474,7 @@ let ``FR0131 a byref parameter passed along by address is never attributed`` () 
                         tryGetValue key t &v
             """
 
-    Assert.True(typechecksCleanly source, "the fixture itself must typecheck")
+    assertTypechecks "The fixture" source
     Assert.Empty(tailCallsIn source)
 
 [<Fact>]
@@ -5487,7 +5487,7 @@ let ``FR0131 an inref parameter vetoes the binding too`` () =
                 if n <= 0 then r else count (n - 1) &r
             """
 
-    Assert.True(typechecksCleanly source, "the fixture itself must typecheck")
+    assertTypechecks "The fixture" source
     Assert.Empty(tailCallsIn source)
 
 [<Fact>]
@@ -5542,7 +5542,7 @@ let ``FR0123: the lock lambda closes at the end of its last line`` () =
             )
 
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the lock rewrite"
     | other -> failwithf "Expected one monitor suggestion, got %A" other
 
@@ -5581,7 +5581,7 @@ let ``FR0123: a comment ending the body keeps the paren on its own line`` () =
             )
 
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the lock rewrite"
     | other -> failwithf "Expected one monitor suggestion, got %A" other
 
@@ -5868,7 +5868,7 @@ let ``FR0151: a ReflectionTypeLoadException handler reading only Message gets th
             // the null filter is the point: on .NET Framework these can be null
             Assert.Contains("isNull", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected a fix for ReflectionTypeLoadException"
     | other -> failwithf "Expected one exception-detail suggestion, got %A" other
 
@@ -6082,7 +6082,7 @@ let ``FR0151: a rethrowing GetTypes handler is offered the types that loaded`` (
             Assert.Contains("reraise", original)
             Assert.Contains("e.Types", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the carry-on alternative fix"
     | other -> failwithf "Expected one suggestion, got %A" other
 
@@ -6129,7 +6129,7 @@ let ``FR0151: a mid-line rethrow gets the fix without a trailing comment`` () =
         | Some(r, _, replacement) ->
             Assert.DoesNotContain("//", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the carry-on alternative fix"
     | other -> failwithf "Expected one suggestion, got %A" other
 
@@ -6155,7 +6155,7 @@ let ``FR0151: an end-of-line rethrow keeps the TODO comment`` () =
         | Some(r, _, replacement) ->
             Assert.Contains("// TODO", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the carry-on alternative fix"
     | other -> failwithf "Expected one suggestion, got %A" other
 
@@ -6182,7 +6182,7 @@ let ``FR0151: a longer chain off Message must not be swallowed by the fix`` () =
         match s.Fix with
         | Some(r, _, replacement) ->
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> () // declining to fix a chain is the correct answer too
     | other -> failwithf "Expected one suggestion, got %A" other
 

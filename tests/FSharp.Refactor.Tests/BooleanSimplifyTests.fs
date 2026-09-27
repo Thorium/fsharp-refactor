@@ -13,7 +13,7 @@ let private assertRewrite (source: string) (expected: string) =
     | [ s ] ->
         Assert.Equal(expected, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+        assertParses "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 // ---- FR0108 identity elements ----

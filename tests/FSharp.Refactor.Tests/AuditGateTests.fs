@@ -92,7 +92,7 @@ let ``FR0006 spells a nullness-annotated parameter as the plain type`` () =
         Assert.DoesNotContain("null", s.InsertText)
         let patched = applyEdit nullableGuardSource s.ClauseRange s.ClauseText
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
         // ... and under the nullness-aware compilation it came from
         let _, _, patchedCheck = parseAndCheckWith [ "--checknulls" ] patched
         Assert.Empty(errorsOf patchedCheck)
@@ -117,7 +117,7 @@ let ``FR0006 still annotates an overloaded member's parameter`` () =
         Assert.Contains("(|IsPathRooted|_|) (input: string)", s.InsertText)
         let patched = applyEdit source s.ClauseRange s.ClauseText
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 // ---- A10: the project-minimum FSharp.Core gate ----
@@ -490,7 +490,7 @@ let ``FR0005 still strips an async returned from a task`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one strip, got %A" other
 
 [<Fact>]
@@ -515,7 +515,7 @@ let ``FR0005 still strips an async returned from an async`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one strip, got %A" other
 
 [<Fact>]
@@ -540,7 +540,7 @@ let ``FR0005 still strips a task returned from a backgroundTask`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one strip, got %A" other
 
 // ---- A13: FR0007 respects a comment naming the reason ----

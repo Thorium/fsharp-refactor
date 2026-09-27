@@ -21,9 +21,6 @@ open FSharp.Refactor.Tests.Parsing
 
 let private lines (xs: string list) = String.concat "\n" xs
 
-let private assertTypechecks (source: string) =
-    Assert.True(typechecksCleanly source, $"Fixture does not typecheck:\n%s{source}")
-
 // ---- 1: FR0012 HintEngine, the untyped name gate ----
 
 let private hintsTyped (source: string) =
@@ -114,7 +111,7 @@ let ``FR0075: a CancellationTokenSource whose token a user function receives is 
                 }
             """
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
 
     match useBindingsIn source with
     | [ s ] ->
@@ -142,7 +139,7 @@ let ``FR0075: a token handed to Async.Start or to an unawaited BCL task is advis
                 1
             """
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
 
     match useBindingsIn source |> List.sortBy (fun s -> s.Range.StartLine) with
     | [ a; b ] ->
@@ -177,14 +174,14 @@ let ``FR0075: a token an awaited BCL call observes keeps the fix`` () =
                 1
             """
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
 
     match useBindingsIn source |> List.sortBy (fun s -> s.Range.StartLine) with
     | [ a; b ] ->
         Assert.True(Some("let", "use") = a.Fix, $"Expected a fix for the task's 'cts', got %A{a}")
         Assert.True(Some("let", "use") = b.Fix, $"Expected a fix for the sync 'cts', got %A{b}")
         let patched = applyEdit (applyEdit source b.Range "use") a.Range "use"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two use-binding fixes for 'cts', got %A" other
 
 [<Fact>]
@@ -207,7 +204,7 @@ let ``FR0075: a token handed to a constructor or stored in a collection is advis
                 1
             """
 
-    assertTypechecks constructed
+    assertTypechecks "Fixture" constructed
 
     match useBindingsIn constructed with
     | [ s ] ->
@@ -229,7 +226,7 @@ let ``FR0075: a token handed to a constructor or stored in a collection is advis
                 1
             """
 
-    assertTypechecks stored
+    assertTypechecks "Fixture" stored
 
     match useBindingsIn stored with
     | [ s ] ->
@@ -490,11 +487,11 @@ let ``FR0029: a property read may throw where a record field cannot`` () =
         )
 
     let viaProperty = fixture "let v = opt.Value"
-    assertTypechecks viaProperty
+    assertTypechecks "Fixture" viaProperty
     Assert.Empty(hoistsInTyped viaProperty)
 
     let viaField = fixture "let v = record.Field"
-    assertTypechecks viaField
+    assertTypechecks "Fixture" viaField
 
     match hoistsInTyped viaField with
     | [ (1, edits) ] ->
@@ -548,7 +545,7 @@ let ``FR0029: an exposed task hoists the lets that cannot throw and stops at the
             ]
         )
 
-    assertTypechecks typed
+    assertTypechecks "Fixture" typed
 
     match hoistsInTyped typed with
     | [ (1, edits) ] ->
@@ -586,7 +583,7 @@ let ``FR0049: a parenthesised tail hiding a blocking site stands the body down``
             }
             """
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
     Assert.Empty(taskifyIn source)
 
 [<Fact>]
@@ -611,7 +608,7 @@ let ``FR0049: a parenthesised tail with no blocking site is still returned whole
         let patched = applyAll source s.Edits
         Assert.Contains("return (let q = r in q + 1)", patched)
         Assert.Contains("let! r = t", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one taskify suggestion, got %A" other
 
 // ---- 5: FR0012 HintEngine, property reads and interpolation in a fused mapper ----
@@ -668,7 +665,7 @@ let ``FR0012: map fusion counts an extension member on a BCL type as a call`` ()
             let f (xs: int list) = List.map (fun (s: string) -> s.Loud) (List.map string xs)
             """
 
-    assertTypechecks extensionProperty
+    assertTypechecks "Fixture" extensionProperty
     Assert.Empty(hintsTyped extensionProperty)
 
     let extensionMethod =
@@ -682,7 +679,7 @@ let ``FR0012: map fusion counts an extension member on a BCL type as a call`` ()
             let f (xs: int list) = List.map (fun (s: string) -> s.Shout()) (List.map string xs)
             """
 
-    assertTypechecks extensionMethod
+    assertTypechecks "Fixture" extensionMethod
     Assert.Empty(hintsTyped extensionMethod)
 
 [<Fact>]
@@ -722,7 +719,7 @@ let ``FR0029: a split whose condition may throw stays advice under a public func
                 "    }"
             ]
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
     let tree, sourceText, check = parseAndCheck source
 
     let splits =
@@ -751,7 +748,7 @@ let ``FR0029: a let whose name is read after the task is not hoisted`` () =
                 "    log id"
             ]
 
-    assertTypechecks source
+    assertTypechecks "Fixture" source
 
     for _, edits in hoistsIn source do
         Assert.Empty edits

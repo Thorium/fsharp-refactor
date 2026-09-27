@@ -13,7 +13,7 @@ let private assertMerge (source: string) (expectedPatched: string) =
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one merge suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]

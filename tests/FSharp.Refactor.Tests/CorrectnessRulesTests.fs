@@ -14,7 +14,7 @@ let private assertReraise (source: string) =
     match reraiseIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range "reraise ()"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one reraise suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -132,7 +132,7 @@ let private assertNaN (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one NaN suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -449,7 +449,7 @@ let ``FR0046: a lock on a string literal gets a lock object before the binding``
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one weak-lock finding, got %A" other
 
 [<Fact>]
@@ -482,7 +482,7 @@ let ``FR0046: a lock on a module string value gets its lock object next to that 
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one weak-lock finding, got %A" other
 
 [<Fact>]
@@ -503,10 +503,10 @@ let ``FR0105: the editor's first offer widens to int64 and typechecks, the secon
         | Some(r, _, widened), Some(r2, _, checked') ->
             Assert.Equal("Checked.int (int64 seconds * 1_000_000L)", widened)
             let patched = applyEdit source r widened
-            Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
+            assertTypechecks "Widened source" patched
             Assert.Equal("Checked.( * ) seconds 1_000_000", checked')
             let patched2 = applyEdit source r2 checked'
-            Assert.True(typechecksCleanly patched2, $"Checked source does not typecheck:\n%s{patched2}")
+            assertTypechecks "Checked source" patched2
         | other -> failwithf "Expected both offers, got %A" other
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -528,7 +528,7 @@ let ``FR0105: the widening rewrites the whole arithmetic expression and narrows 
         | Some(r, _, widened) ->
             Assert.Equal("Checked.int ((1000000L * 1000000L + 5L) / 100000L)", widened)
             let patched = applyEdit source r widened
-            Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
+            assertTypechecks "Widened source" patched
         | None -> failwith "Expected the widening offer"
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -563,7 +563,7 @@ let ``FR0046: a lock in a nested module gets its lock object in that module, ind
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one weak-lock finding, got %A" other
 
 // ---- FR0126: the argument-list alternative ----
@@ -673,7 +673,7 @@ let ``FR0044: a rethrow-only handler inside a task goes with its try`` () =
                 patched.Replace("\r", "")
             )
 
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the removal edit"
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 

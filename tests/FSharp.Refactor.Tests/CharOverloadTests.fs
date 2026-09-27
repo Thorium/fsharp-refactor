@@ -15,7 +15,7 @@ let private assertCharFix (source: string) (expectedReplacement: string) =
         | Some replacement ->
             Assert.Equal(expectedReplacement, replacement)
             let patched = applyEdit source s.Range replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None ->
             failwith
                 $"Expected a fix, got an advisory, calling assertCharFix with source: {source}, expectedReplacement: {expectedReplacement}"
@@ -102,7 +102,7 @@ let ``FR0038: Contains carries the portable IndexOf form for a narrow target`` (
         | Some(r, _, replacement) ->
             Assert.Equal("s.IndexOf 'x' >= 0", replacement)
             let patched = applyEdit "let f (s: string) = s.Contains \"x\"" r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the portable offer"
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 

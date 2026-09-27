@@ -26,7 +26,7 @@ let private expectFix (name: string) (source: string) =
     | [ s ] ->
         Assert.True(Some("let", "use") = s.Fix, $"Expected a fix for '%s{name}', got %A{s}")
         let patched = applyEdit source s.Range "use"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one use-binding fix for '%s', got %A" name other
 
 // a disposable with a derived-value surface: a command from a connection,

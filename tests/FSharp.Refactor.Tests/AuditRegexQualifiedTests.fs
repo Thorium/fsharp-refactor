@@ -93,7 +93,7 @@ let ``FR0147: a whole file under #if takes its open under the module line, not a
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -127,7 +127,7 @@ let ``FR0147: a #if between two top-level declarations still takes the open unde
         | other -> failwithf "Expected one open inside the #if, got %A" other
 
         let patched = applyAll source s.Edits
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 // ---- FR0147 QualifiedNames: B9, files without a module header ----
@@ -167,7 +167,7 @@ let ``FR0147: a script's open lands after its leading hash directives`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -199,7 +199,7 @@ let ``FR0147: a first declaration's doc block keeps its let`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -272,7 +272,7 @@ let ``FR0015: a plain Replace replacement still becomes String.Replace`` () =
         | [ (r, _, replacement) ] ->
             Assert.Equal("""s.Replace("abc", "x")""", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected one edit, got %A" other
     | other -> failwithf "Expected one string-operation fix, got %A" other
 
@@ -301,7 +301,7 @@ let ``FR0015: a hoisted Match keeps its Success continuation on the call`` () =
 
     let patched = hoistPatched source
     Assert.Contains("gRegex.Match(x).Success", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0015: a hoisted Split keeps its index continuation on the call`` () =
@@ -317,7 +317,7 @@ let ``FR0015: a hoisted Split keeps its index continuation on the call`` () =
 
     let patched = hoistPatched source
     Assert.Contains("gRegex.Split(s).[0]", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0015: a hoisted IsMatch is a parenthesised call`` () =
@@ -346,7 +346,7 @@ let ``FR0015: a hoisted IsMatch is a parenthesised call`` () =
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 // ---- FR0105 CheckedArithmetic: A6, the widening offer ----
 
@@ -363,7 +363,7 @@ let private assertNoWiden (source: string) =
         match s.CheckedFix with
         | Some(r, _, checked') ->
             let patched = applyEdit source r checked'
-            Assert.True(typechecksCleanly patched, $"Checked source does not typecheck:\n%s{patched}")
+            assertTypechecks "Checked source" patched
         | None -> failwith "Expected the Checked offer"
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -411,7 +411,7 @@ let ``FR0105: a binding's whole right-hand side still widens, as a prefix call``
         | Some(r, _, widened) ->
             Assert.Equal("Checked.int (int64 seconds * 1_000_000L)", widened)
             let patched = applyEdit source r widened
-            Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
+            assertTypechecks "Widened source" patched
         | None -> failwith "Expected the widening offer"
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -432,7 +432,7 @@ let ``FR0105: a local binding and an assignment widen too`` () =
         | Some(r, _, widened) ->
             Assert.Equal("Checked.int (int64 seconds * 1_000_000L)", widened)
             let patched = applyEdit local r widened
-            Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
+            assertTypechecks "Widened source" patched
         | None -> failwith "Expected the widening offer on a local binding"
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -452,7 +452,7 @@ let ``FR0105: a local binding and an assignment widen too`` () =
         | Some(r, _, widened) ->
             Assert.Equal("Checked.int (int64 seconds * 1_000_000L)", widened)
             let patched = applyEdit assignment r widened
-            Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
+            assertTypechecks "Widened source" patched
         | None -> failwith "Expected the widening offer on an assignment"
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -466,6 +466,6 @@ let ``FR0105: the widening climbs a parenthesised operand of a wider arithmetic`
         | Some(r, _, widened) ->
             Assert.Equal("Checked.int ((1000000L * 1000000L + 5L) / 100000L)", widened)
             let patched = applyEdit source r widened
-            Assert.True(typechecksCleanly patched, $"Widened source does not typecheck:\n%s{patched}")
+            assertTypechecks "Widened source" patched
         | None -> failwith "Expected the widening offer"
     | other -> failwithf "Expected one finding, got %A" other

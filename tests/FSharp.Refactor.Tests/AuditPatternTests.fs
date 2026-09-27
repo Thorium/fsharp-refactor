@@ -27,7 +27,7 @@ let private assertOptionMatch (source: string) (expectedTarget: string) (expecte
         Assert.Equal(expectedTarget, s.Target)
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertSimplification (source: string) (expectedReplacement: string) =
@@ -35,7 +35,7 @@ let private assertSimplification (source: string) (expectedReplacement: string) 
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -196,7 +196,7 @@ let ``B3: a char literal quote does not hide the self-call after it`` () =
         Assert.True s.IsSelfRecursive
         Assert.StartsWith("let rec lexString", s.InsertText)
         let patched = applyExtraction source s
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one rec extraction, got %A" other
 
 [<Fact>]
@@ -214,7 +214,7 @@ let ``B3: a name in an interpolated string's text is still no reference`` () =
         Assert.False s.IsSelfRecursive
         Assert.StartsWith("let helper", s.InsertText)
         let patched = applyExtraction source s
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 // ---- B12: `#if`-wrapped insertions inside an indented module ----
@@ -264,7 +264,7 @@ let ``B12: an active pattern under #if carries the module's indentation`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -316,7 +316,7 @@ let ``B12: a rec group member under #if carries the module's indentation`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -335,7 +335,7 @@ let ``B12: an unconditioned extraction still rides on the group's indentation`` 
         Assert.Equal(4, s.InsertRange.StartColumn)
         Assert.Equal("let g (y: int) : int = y + 1\n\n    ", s.InsertText)
         let patched = applyExtraction source s
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 // ---- FR0116: every leaver in one pass, comments along, no whitespace tail ----
@@ -386,7 +386,7 @@ let ``every member that can leave goes in one pass, in dependency order`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -419,7 +419,7 @@ let ``the last member leaves no whitespace-only line behind`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -459,7 +459,7 @@ let ``a plain comment directly above the member travels with it`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -498,7 +498,7 @@ let ``a commented member and the plain last member leave as one removal`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -567,5 +567,5 @@ let ``a merged removal headed by a comment ends at column 0 before a staying mem
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other

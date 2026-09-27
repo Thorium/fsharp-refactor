@@ -16,7 +16,7 @@ let private assertSingleSuggestion (source: string) (expectedPatched: string) =
         let patched = applyEdit source s.ClauseRange s.ClauseText
         let patched = applyEdit patched s.InsertRange s.InsertText
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
@@ -219,7 +219,7 @@ let ``an overloaded method guard annotates the extracted input`` () =
                 s.ClauseText
 
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one annotated suggestion, got %A" other
 
 [<Fact>]

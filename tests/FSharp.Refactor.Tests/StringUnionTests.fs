@@ -62,7 +62,7 @@ let private assertRewrite (source: string) (expected: string) =
     | [ s ] ->
         let patched = applyEdits source s.Edits
         Assert.Equal(expected, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
         s
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
@@ -918,7 +918,7 @@ let private assertClosedRewrite (source: string) (expected: string) =
     | [ s ] ->
         let patched = applyEdits source s.Edits
         Assert.Equal(expected, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
         s
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
@@ -1535,7 +1535,7 @@ let ``a null nested in an option pattern goes like a top-level one`` () =
     | [ s ] ->
         let patched = applyEdits source s.Edits
         Assert.DoesNotContain("null", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d" other.Length
 
     // a literal no arm names leaves `Some null` live: no spelling on the union

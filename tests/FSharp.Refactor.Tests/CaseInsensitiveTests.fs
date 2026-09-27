@@ -55,7 +55,7 @@ let private assertGuardFix (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one guard suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -138,7 +138,7 @@ let ``an ASCII literal comparison gets the OrdinalIgnoreCase fix`` () =
     | [ s ] ->
         Assert.Equal(Some """String.Equals(role, "user", StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -155,7 +155,7 @@ let ``inequality wraps the fix in not`` () =
     | [ s ] ->
         Assert.Equal(Some """not (String.Equals(role, "USER", StringComparison.OrdinalIgnoreCase))""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -175,7 +175,7 @@ let ``a file without open System gets the qualified spelling`` () =
         )
 
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 
@@ -196,7 +196,7 @@ let ``a backticked receiver keeps its quoting in the rewrite`` () =
         | Some r ->
             Assert.Contains("``the role``", r)
             let patched = applyEdit source s.Range r
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> () // standing down is also acceptable
     | other -> failwithf "Expected one suggestion, got %A" other
 
@@ -236,7 +236,7 @@ let ``an invariant-lowered StartsWith against an ASCII literal gets the comparis
     | [ s ] ->
         Assert.Equal(Some """path.StartsWith("file:", StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -263,7 +263,7 @@ let ``a culture-lowered StartsWith gets the ordinal fix and the culture alternat
         )
 
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -285,7 +285,7 @@ let ``a lowered call that names its StringComparison keeps that choice`` () =
             Assert.Equal(Some $"path.StartsWith(\"file:\", StringComparison.{expected})", s.Replacement)
             Assert.Equal(None, s.CultureReplacement)
             let patched = applyEdit source s.Range s.Replacement.Value
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected one suggestion for %s, got %A" comparison other
 
 [<Fact>]
@@ -328,7 +328,7 @@ let ``the parenthesized argument spelling fixes the same way, qualified without 
     | [ s ] ->
         Assert.Equal(Some """path.EndsWith(".CSV", System.StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -345,7 +345,7 @@ let ``a lowered Contains fixes where the StringComparison overload exists`` () =
     | [ s ] ->
         Assert.Equal(Some """s.Contains("error", StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -411,7 +411,7 @@ let ``an invariant-lowered IndexOf against an agreeing literal gets the fix`` ()
     | [ s ] ->
         Assert.Equal(Some """email.IndexOf("@example.", StringComparison.OrdinalIgnoreCase)""", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -432,5 +432,5 @@ let ``the culture-aware alternative also typechecks`` () =
         )
 
         let patched = applyEdit source s.Range s.CultureReplacement.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other

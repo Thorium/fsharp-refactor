@@ -29,7 +29,7 @@ let ``an else holding a whole if flattens to elif`` () =
     match elseIfsIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
         // the nested if's block moves left with it: then-body and else
         // both sit at the outer if's depth
@@ -123,7 +123,7 @@ let ``a condition continuing on a second line keeps its alignment under elif`` (
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one elif suggestion, got %A" other
 
 // ---- FR0112 equality chain -> match ----
@@ -151,7 +151,7 @@ let ``an equality chain over one ident becomes a match`` () =
         Assert.Contains("| 2 -> \"b\"", s.ReplacementText)
         Assert.Contains("| _ -> \"c\"", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one chain suggestion, got %A" other
 
 [<Fact>]
@@ -170,7 +170,7 @@ let ``verbatim string literals chain into a match with their prefix intact`` () 
     | [ s ] ->
         Assert.Contains("""| @"a\b" -> 1""", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one verbatim chain suggestion, got %A" other
 
 [<Fact>]
@@ -234,7 +234,7 @@ let ``a two-arm string chain converts too`` () =
     | [ s ] ->
         Assert.Contains("""| "json" -> 1""", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one string chain suggestion, got %A" other
 
 // ---- FR0113 nested if merge ----
@@ -259,7 +259,7 @@ let ``nested ifs with the same else merge`` () =
     | [ s ] ->
         Assert.Contains("if x = 1 && y = 2 then", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one merge suggestion, got %A" other
 
 [<Fact>]
@@ -311,7 +311,7 @@ let ``both elses absent merges the unit shape`` () =
         Assert.Contains("if x = 1 && y = 2 then", s.ReplacementText)
         Assert.Contains("g ()", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one unit merge suggestion, got %A" other
 
 [<Fact>]
@@ -330,7 +330,7 @@ let ``an or-condition gains parens before joining the and`` () =
     | [ s ] ->
         Assert.Contains("(x = 1 || x = 2) && y = 3", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one parenthesized merge, got %A" other
 
 // ---- FR0110 missing DU cases ----
@@ -367,7 +367,7 @@ let ``an incomplete DU match gains raising arms`` () =
         Assert.Equal<string list>([ "Blue" ], s.MissingCases)
         Assert.Contains("| Blue -> raise (System.NotImplementedException())", s.InsertText)
         let patched = applyInsert source s
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one missing-case suggestion, got %A" other
 
 [<Fact>]
@@ -396,7 +396,7 @@ let ``inside a computation expression the raising arm rides the siblings' return
     | [ s ] ->
         Assert.Contains("| Deal _ -> return raise (System.NotImplementedException())", s.InsertText)
         let patched = applyInsert source s
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one missing-case suggestion, got %A" other
 
     // and a plain match keeps the bare raise
@@ -498,7 +498,7 @@ let ``a large then behind a small else flips`` () =
     | [ s ] ->
         Assert.StartsWith("if not (x = 1) then", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one flip suggestion, got %A" other
 
 [<Fact>]
@@ -701,7 +701,7 @@ let ``the extraction applies to a compiling result`` () =
             + s.InsertText
             + afterRemove.Substring insertAt
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -759,7 +759,7 @@ let ``a head referencing no member is re-crowned in place`` () =
         let patched = source |> replace s.AndRange "let rec" |> replace s.LetRecRange "let"
         Assert.Contains("let helper", patched)
         Assert.Contains("let rec f2", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one head re-crown, got %A" other
 
 [<Fact>]
@@ -1085,7 +1085,7 @@ let ``the merged or-pattern applies to a compiling result`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one merge, got %A" other
 
 [<Fact>]
@@ -1313,7 +1313,7 @@ let ``an INDENTED group's commented member extracts without eating indentation``
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -1435,7 +1435,7 @@ let ``a record-updating member leaves the group with its parameter and return ty
         // remove first (later range), then insert at the group's start
         let patched = applyEdit source s.RemoveRange ""
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -1487,7 +1487,7 @@ let ``a backticked parameter keeps its backticks when annotated`` () =
         Assert.StartsWith("let clear (``the register``: int) (p: Picker) : Picker =", s.InsertText)
         let patched = applyEdit source s.RemoveRange ""
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -1513,7 +1513,7 @@ let ``a member testing the type of a bare parameter leaves with its header writt
         Assert.StartsWith("let second (buf: Buf) (x: obj) : unit =", s.InsertText)
         let patched = applyEdit source s.RemoveRange ""
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
     // without the typed tree there is nothing to write out: it stays
@@ -1541,7 +1541,7 @@ let ``a member reading a shared record label off a bare parameter leaves with it
         Assert.StartsWith("let pending (register: int) (m: Model) : int =", s.InsertText)
         let patched = applyEdit source s.RemoveRange ""
         let patched = applyEdit patched s.InsertRange s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]
@@ -1618,7 +1618,7 @@ let ``FR0111: the moved block's elif chain and else dedent with it`` () =
     match elseIfsIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
         Assert.Equal(
             fsharp
@@ -1666,7 +1666,7 @@ let ``FR0111: an if on the else's own line is already flat and only the keyword 
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one elif suggestion, got %A" other
 
 [<Fact>]
@@ -1708,7 +1708,7 @@ let ``a member leaves without the next member's doc comment`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one extraction, got %A" other
 
 [<Fact>]

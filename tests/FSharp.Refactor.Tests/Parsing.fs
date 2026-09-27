@@ -79,17 +79,17 @@ let private errorsOf (checkResults: FSharpCheckFileResults) =
 /// expects no finding would pass on a broken input for the wrong reason: the
 /// typechecking entry points fail the test instead. The check reads the
 /// diagnostics the typecheck already produced, so it costs nothing.
+let private listed (errors: FSharp.Compiler.Diagnostics.FSharpDiagnostic[]) =
+    errors
+    |> Array.map (fun d -> $"  ({d.StartLine},{d.StartColumn}) FS%04d{d.ErrorNumber} {d.Message}")
+    |> String.concat "\n"
+
 let requireTypechecks (entry: string) (source: string) (checkResults: FSharpCheckFileResults) =
     match errorsOf checkResults with
     | [||] -> ()
     | errors ->
-        let listed =
-            errors
-            |> Array.map (fun d -> $"  ({d.StartLine},{d.StartColumn}) FS%04d{d.ErrorNumber} {d.Message}")
-            |> String.concat "\n"
-
         failwith
-            $"Test input to {entry} does not typecheck, so a typed rule would find nothing in it; fix the input, or opt out explicitly (parseAndCheckAllowingErrors) if a broken input is the point of the test:\n{listed}\n--- source ---\n{source}"
+            $"Test input to {entry} does not typecheck, so a typed rule would find nothing in it; fix the input, or opt out explicitly (parseAndCheckAllowingErrors) if a broken input is the point of the test:\n{listed errors}\n--- source ---\n{source}"
 
 /// Parse and fully typecheck a source string as a script, WITHOUT requiring
 /// it to be free of type errors: for the tests where a broken input is the
@@ -153,6 +153,36 @@ let parseAndCheckLegacyFramework (source: string) : ParsedInput * ISourceText * 
 let typechecksCleanly (source: string) : bool =
     let _, _, checkResults = parseAndCheckAllowingErrors source
     Array.isEmpty (errorsOf checkResults)
+
+/// Fails the test, listing the compiler's errors above the source, when the
+/// source does not typecheck as a script. `what` names the text in the
+/// message: "Patched source", "Test input", "The fixture".
+let assertTypechecks (what: string) (source: string) : unit =
+    let _, _, checkResults = parseAndCheckAllowingErrors source
+
+    match errorsOf checkResults with
+    | [||] -> ()
+    | errors -> failwith $"{what} does not typecheck:\n{listed errors}\n--- source ---\n{source}"
+
+/// As `assertTypechecks`, for the parse alone.
+let assertParses (what: string) (source: string) : unit =
+    let sourceText = SourceText.ofString source
+
+    let parsingOptions =
+        { FSharpParsingOptions.Default with
+            SourceFiles = [| "Test.fs" |]
+        }
+
+    let result =
+        checker.ParseFile("Test.fs", sourceText, parsingOptions)
+        |> Async.RunSynchronously
+
+    if result.ParseHadErrors then
+        let errors =
+            result.Diagnostics
+            |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+
+        failwith $"{what} does not parse:\n{listed errors}\n--- source ---\n{source}"
 
 /// Replace `range` in `source` with `newText` (ranges are 1-based lines,
 /// 0-based columns).

@@ -21,7 +21,7 @@ let private assertMatchBang (source: string) (expectedPatched: string) =
     | [ s ] ->
         let patched = applyAll source s.Edits
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one match! note, got %A" other
 
 [<Fact>]
@@ -151,7 +151,7 @@ let ``the three-part mutable-condition loop collapses to while!`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one while! note, got %A" other
 
 [<Fact>]
@@ -207,7 +207,7 @@ let private assertFlattened (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one flatten note, got %A" other
 
 [<Fact>]
@@ -333,7 +333,7 @@ let ``a contained local disposable becomes a use binding`` () =
                 s.Range
                 "use"
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one use-binding fix, got %A" other
 
 [<Fact>]
@@ -497,7 +497,7 @@ let ``List map piped to ignore becomes iter`` () =
                 s.Range
                 s.ReplacementText.Value
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one map-ignore fix, got %A" other
 
 [<Fact>]
@@ -643,7 +643,7 @@ let ``missing interface members get NotImplementedException stubs`` () =
     | [ s ] ->
         Assert.Equal<string list>([ "Stop"; "Name" ] |> List.sort, s.MissingNames |> List.sort)
         let patched = applyEdit source s.Range s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one implement-missing fix, got %A" other
 
 [<Fact>]
@@ -667,7 +667,7 @@ let ``an inherited interface stubs in its own section`` () =
         Assert.Contains("Dispose", s.MissingNames)
         Assert.Contains("interface IDisposable with", s.InsertText)
         let patched = applyEdit source s.Range s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one inherited-stub fix, got %A" other
 
 [<Fact>]
@@ -755,7 +755,7 @@ let ``a property with getter and setter stubs both`` () =
         Assert.Contains("with get () =", s.InsertText)
         Assert.Contains("and set _v =", s.InsertText)
         let patched = applyEdit source s.Range s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one get-set stub fix, got %A" other
 
 // ---- FR0080 TabIndentation ----
@@ -788,7 +788,7 @@ let ``leading tabs expand to spaces line by line`` () =
             patched
         )
 
-        Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+        assertParses "Patched source" patched
     | other -> failwithf "Expected exactly one tab note, got %A" other
 
 [<Fact>]
@@ -981,7 +981,7 @@ let private assertSyntaxFix (kind: RedundantSyntax.Kind) (source: string) (expec
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
         Assert.Equal(expectedPatched, patched)
-        Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+        assertParses "Patched source" patched
     | other -> failwithf "Expected exactly one %A fix, got %A" kind other
 
 [<Fact>]
@@ -1111,7 +1111,7 @@ let ``new on a non-disposable construction is noted`` () =
         let patched =
             applyEdit "module Test\nlet sb = new System.Text.StringBuilder()" s.Range ""
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one redundant-new fix, got %A" other
 
 [<Fact>]
@@ -1169,7 +1169,7 @@ let ``a cons pattern laid out over several lines keeps its layout`` () =
                 | _ -> None
             """
 
-    Assert.True(typechecksCleanly source, "the input must be real code for the silence to mean anything")
+    assertTypechecks "Test input" source
     let conses, _, _ = cleanupsIn source
     Assert.Empty conses
 
@@ -1408,7 +1408,7 @@ let private assertFailwithContext (source: string) (expectedPatched: string) =
     | [ s ] ->
         let patched = applyEdit source s.Range s.ReplacementText
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one failwith-context hint, got %A" other
 
 [<Fact>]
@@ -1891,7 +1891,7 @@ let ``a function's wildcard arm is named so its argument can be quoted`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one function-arm hint, got %A" other
 
     // a `function` over a type that prints nothing stays quiet, and so does
@@ -2075,12 +2075,7 @@ module M =
     match newsIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range ""
-
-        Assert.True(
-            typechecksCleanly patched,
-            $"Patched source does not typecheck:
-%s{patched}"
-        )
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected the one-fragment construction to qualify, got %A" other
 
 // ---- FR0086 and an expected FormattableString ----
@@ -2234,7 +2229,7 @@ let ``FR0077 also offers stubs returning the empty value of each member's type``
         Assert.Contains("member _.Name = \"\"", s.EmptyInsertText)
         Assert.DoesNotContain("NotImplementedException", s.EmptyInsertText)
         let patched = applyEdit source s.Range s.EmptyInsertText
-        Assert.True(typechecksCleanly patched, $"Empty-value stubs do not typecheck:\n%s{patched}")
+        assertTypechecks "The empty-value stub file" patched
     | other -> failwithf "Expected exactly one implement-missing fix, got %A" other
 
 [<Fact>]
@@ -2337,7 +2332,7 @@ let ``FR0147: a namespace spelled three times becomes an open after the existing
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified-names finding, got %A" other
 
 [<Fact>]
@@ -2387,7 +2382,7 @@ let ``FR0147: the same file without a tupled call gets its System.Linq open`` ()
         Assert.Equal(None, s.Reason)
         let patched = applyAll source s.Edits
         Assert.Contains("open System.Linq", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected an offered System.Linq finding, got %A" other
 
 [<Fact>]
@@ -2456,7 +2451,7 @@ let ``FR0147: a tupled call that already resolves to an instance overload of tha
         let patched = applyAll source s.Edits
         Assert.Contains("open System", patched)
         Assert.Contains("""s.EndsWith("x", StringComparison.Ordinal)""", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected an offered System finding, got %A" other
 
 [<Fact>]
@@ -2485,7 +2480,7 @@ let ``FR0147: only the namespace part goes, a type stays qualified by its name``
         )
 
         Assert.Contains("Path.GetFileName p", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified-names finding, got %A" other
 
 [<Fact>]
@@ -2723,7 +2718,7 @@ let ``FR0147: namespaces come deepest first, and their opens end up shallow to d
         )
 
         Assert.Contains("let d = List<int>()", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected the deep namespace first and the shallow one second, got %A" other
 
 [<Fact>]
@@ -2951,7 +2946,7 @@ let ``FR0147: a file without a module line gets the open before its first declar
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified-names finding, got %A" other
 
 [<Fact>]
@@ -3164,7 +3159,7 @@ let ``FR0147: the open goes under the module line, not under the doc comment abo
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified-names finding, got %A" other
 
 [<Fact>]
@@ -3201,7 +3196,7 @@ let ``FR0147: an open further down the file covers nothing above it`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified-names finding, got %A" other
 
 [<Fact>]
@@ -3221,7 +3216,7 @@ let ``FR0147: each top-level namespace block gets its own open`` () =
             $"namespace {ns}\nopen System.Threading.Tasks\nmodule {name} =\n    let a = Task.FromResult 1\n    let b = Task.Delay 10\n    let c (t: Task<int>) = t.Result"
 
         Assert.Equal(shortened "A" "M" + "\n" + shortened "B" "N", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one finding per block, got %A" other
 
 [<Fact>]
@@ -3323,7 +3318,7 @@ let ``FR0147: an open inside a nested module does not count for the file`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one qualified-names fix, got %A" other
 
 // ---- FR0085: a function spelled like the type keeps the `new` ----
@@ -3597,7 +3592,7 @@ let ``FR0140: a lambda argument is parenthesised before the named properties`` (
     | [ s ] ->
         Assert.Equal("""Cfg((fun _ -> false), Hosted = true, Name = "x")""", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one construction rewrite, got %A" other
 
 [<Fact>]
@@ -4713,7 +4708,7 @@ let ``FR0150: a use captured by a returned task is flagged and moved inside`` ()
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one escaping-use note, got %A" other
 
 [<Fact>]
@@ -4855,7 +4850,7 @@ let ``FR0150: unrelated statements between the use and the computation stay outs
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one escaping-use note, got %A" other
 
 [<Fact>]
@@ -4905,7 +4900,7 @@ let ``FR0150: the fix through a binding keeps the statements before it in place`
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one escaping-use note, got %A" other
 
 [<Fact>]
@@ -4932,7 +4927,7 @@ let ``FR0150: an async computation is the same shape`` () =
             |> List.sortByDescending (fun (r, _, _) -> r.StartLine, r.StartColumn)
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one escaping-use note, got %A" other
 
 [<Fact>]
@@ -5144,5 +5139,5 @@ let ``FR0147: the tupled-call guard declines one namespace, not the file`` () =
         Assert.Equal(None, s.Reason)
         let patched = applyAll source s.Edits
         Assert.Contains("open System.Threading.Tasks", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected an offered System.Threading.Tasks finding, got %A" other

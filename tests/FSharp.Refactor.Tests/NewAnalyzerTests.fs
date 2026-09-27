@@ -30,7 +30,7 @@ let private assertRegexFix (source: string) (expectedReplacement: string) =
         | [ (range, _, replacement) ] ->
             Assert.Equal(expectedReplacement, replacement)
             let patched = applyEdit source range replacement
-            Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+            assertParses "Patched source" patched
         | other -> failwithf "Expected exactly one edit, got %A" other
     | other -> failwithf "Expected exactly one regex suggestion, got %d: %A" (List.length other) other
 
@@ -109,7 +109,7 @@ let ``FR0015: Match(...).Success and a Matches(...).Count test are the same Cont
         patched
     )
 
-    Assert.True(typechecksCleanly patched, patched)
+    assertTypechecks "Patched source" patched
 
     for input in [ "abcd"; "xabcd"; "abc"; ""; "abcdabcd" ] do
         Assert.Equal(
@@ -165,7 +165,7 @@ let ``FR0015: a literal-pattern Regex.Split is a String.Split with that separato
         let _, _, replacement = s.Edits.Head
         Assert.Equal("""s.Split([| ", " |], System.StringSplitOptions.None)""", replacement)
         let patched = applyEdit source s.Range replacement
-        Assert.True(typechecksCleanly patched, patched)
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
     for input in [ "a, b, c"; ", a, "; ""; "abc"; ", , " ] do
@@ -211,7 +211,7 @@ let private assertRegexHoist (source: string) (expectedPatched: string) =
             |> List.fold (fun acc (r, _, t) -> applyEdit acc r t) source
 
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one hoist suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -278,7 +278,8 @@ let ``a member access after the test keeps the argument parenthesised`` () =
     assertRegexFix source """s.Contains("abc")"""
 
     match regexIn source with
-    | [ { Edits = [ (range, _, replacement) ] } ] -> Assert.True(typechecksCleanly (applyEdit source range replacement))
+    | [ { Edits = [ (range, _, replacement) ] } ] ->
+        assertTypechecks "Patched source" (applyEdit source range replacement)
     | other -> failwithf "Expected one edit, got %A" other
 
 [<Fact>]
@@ -531,7 +532,7 @@ let private assertRegexConstructionHoist (source: string) (expectedPatched: stri
             |> List.fold (fun acc (r, _, t) -> applyEdit acc r t) source
 
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one construction hoist, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -786,7 +787,7 @@ let private assertPatchedStructDu (suggestions: StructDu.Suggestion list) (sourc
     | [ s ] ->
         let patched = applyEdit source s.InsertRange s.InsertText
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one struct-DU suggestion, got %d: %A" (List.length other) other
 
 let private assertStructDu (source: string) (expectedPatched: string) =
@@ -1581,7 +1582,7 @@ let ``FR0149: a try wrapping only the start moves its handler inside`` () =
                 patched
             )
 
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the move-the-handler-inside fix"
     | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
 
@@ -1614,7 +1615,7 @@ let ``FR0149: several handler clauses travel verbatim`` () =
             let patched = applyEdit source r replacement
             Assert.Contains(":? OperationCanceledException", patched)
             Assert.Contains("e when e.Message = \"x\"", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the move-the-handler-inside fix"
     | other -> failwithf "Expected exactly one unhandled-start note, got %A" other
 

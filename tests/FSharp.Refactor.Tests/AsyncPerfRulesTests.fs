@@ -101,7 +101,7 @@ let ``Thread Sleep in an async gets the Async Sleep fix`` () =
                     """
 
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | _ -> failwith "Expected a fix for Thread.Sleep"
     | other -> failwithf "Expected exactly one Sleep site, got %A" other
 
@@ -147,7 +147,7 @@ let private assertFold (source: string) (expectedReplacement: string) =
     | [ s ], _ ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
 [<Fact>]
@@ -274,7 +274,7 @@ let private assertFlagRewrite (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one flag-loop suggestion, got %A" other
 
 [<Fact>]
@@ -487,7 +487,7 @@ let ``a trailing member access keeps the call parenthesised`` () =
     | [ s ] ->
         Assert.Equal("(System.Convert.ToHexString bytes)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one hex suggestion, got %A" other
 
 [<Fact>]
@@ -1536,7 +1536,7 @@ let ``a GetResult binding inside task becomes a let bang bind`` () =
             Assert.Equal("t", receiver)
             let patched = applyEdit (applyEdit source rhsRange receiver) kwRange "let!"
             Assert.Contains("let! x = t", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the let!-bind pair, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -1559,7 +1559,7 @@ let ``a GetResult boundary call swaps to a provable sync sibling`` () =
             let patched = applyEdit (applyEdit source dropRange "") nameRange "ReadAllText"
             Assert.Contains("System.IO.File.ReadAllText(path)", patched)
             Assert.DoesNotContain("GetAwaiter", patched)
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the sibling swap pair, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -1674,7 +1674,7 @@ let ``RunSynchronously binding inside async becomes a native bind`` () =
         Assert.NotEmpty s.Fixes
         let patched = applyAll source s.Fixes
         Assert.Contains("let! x = comp", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one RunSynchronously site, got %A" other
 
 [<Fact>]
@@ -1695,7 +1695,7 @@ let ``RunSynchronously binding inside task binds the async directly`` () =
         Assert.NotEmpty s.Fixes
         let patched = applyAll source s.Fixes
         Assert.Contains("let! x = comp", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one RunSynchronously site, got %A" other
 
 [<Fact>]
@@ -1728,7 +1728,7 @@ let ``a GetResult binding inside async binds via AwaitTask`` () =
         Assert.NotEmpty s.Fixes
         let patched = applyAll source s.Fixes
         Assert.Contains("let! x = Async.AwaitTask t", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
 [<Fact>]
@@ -1747,7 +1747,7 @@ let ``a Result binding inside task becomes a plain bind`` () =
         Assert.NotEmpty s.Fixes
         let patched = applyAll source s.Fixes
         Assert.Contains("let! x = t", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one Result site, got %A" other
 
 [<Fact>]
@@ -1767,7 +1767,7 @@ let ``a Result binding on a call inside async parenthesizes the AwaitTask arg`` 
         Assert.NotEmpty s.Fixes
         let patched = applyAll source s.Fixes
         Assert.Contains("Async.AwaitTask (", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one Result site, got %A" other
 
 [<Fact>]
@@ -1810,7 +1810,7 @@ let ``an omitted token is appended from the in-scope parameter`` () =
         Assert.Equal(", ct", s.Replacement)
         let patched = applyEdit source s.Range s.Replacement
         Assert.Contains("Task.Delay(100, ct)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one token suggestion, got %A" other
 
 let private unobservedLoopsIn (source: string) =
@@ -1875,7 +1875,7 @@ let ``FR0118: a loop under a token that never reads it is noted once, at the out
                 patched
             )
 
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected both loops to carry the fix, got %A" other
     | other -> failwithf "Expected two loop notes, got %A" other
 
@@ -1994,7 +1994,7 @@ let ``CancellationToken None is replaced by the in-scope token`` () =
         Assert.Equal(CancellationOverload.TokenGap.NonePassed, s.Kind)
         let patched = applyEdit source s.Range s.Replacement
         Assert.Contains("Task.Delay(100, ct)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one propagation suggestion, got %A" other
 
 [<Fact>]
@@ -2063,7 +2063,7 @@ let ``a trailing lambda argument is wrapped before the token is appended`` () =
     | [ s ] ->
         let patched = applyEdit source s.Range s.Replacement
         Assert.Contains("t.ContinueWith((fun (_: Task) -> ()), ct)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one token suggestion, got %A" other
 
 [<Fact>]
@@ -2158,7 +2158,7 @@ let ``a blocking read inside task becomes its async twin`` () =
         Assert.Equal("ReadLine", s.MethodName)
         let patched = applyAwaitable source s
         Assert.Contains("let! line = reader.ReadLineAsync()", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one awaitable suggestion, got %A" other
 
 
@@ -2213,7 +2213,7 @@ let ``a blocking statement inside task becomes do-bang`` () =
     | [ s ] ->
         let patched = applyAwaitable source s
         Assert.Contains("do! writer.WriteAsync(s)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one statement suggestion, got %A" other
 
 [<Fact>]
@@ -2232,7 +2232,7 @@ let ``inside async the twin bridges via AwaitTask`` () =
     | [ s ] ->
         let patched = applyAwaitable source s
         Assert.Contains("let! line = reader.ReadLineAsync() |> Async.AwaitTask", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one bridged suggestion, got %A" other
 
 [<Fact>]
@@ -2311,7 +2311,7 @@ let ``FR0119 the juxtaposed atomic argument is the common F# spelling`` () =
     | [ s ] ->
         let patched = applyAwaitable source s
         Assert.Contains("do! writer.WriteAsync s", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one juxtaposed suggestion, got %A" other
 
 // ---- FR0049 Taskify: file-private boundary drains become task-returning ----
@@ -2368,7 +2368,7 @@ let ``a private boundary drain becomes a task and its caller awaits`` () =
         )
 
         Assert.Contains("let! s = fetch 1", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one taskify suggestion, got %A" other
 
 [<Fact>]
@@ -2392,7 +2392,7 @@ let ``an async caller bridges with Async.AwaitTask`` () =
     | [ s ] ->
         let patched = applyTaskify source s
         Assert.Contains("let! s = Async.AwaitTask (fetch 2)", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one async-caller suggestion, got %A" other
 
 [<Fact>]
@@ -2414,7 +2414,7 @@ let ``a return-position caller becomes return-bang`` () =
     | [ s ] ->
         let patched = applyTaskify source s
         Assert.Contains("return! fetch 3", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one return-position suggestion, got %A" other
 
 [<Fact>]
@@ -2585,7 +2585,7 @@ let ``a fold whose body looks up a member on the accumulator hands the tuple ove
     | [ s ], _ ->
         Assert.Contains("||> List.fold (fun node x -> node.Append x)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
 [<Fact>]
@@ -2915,7 +2915,7 @@ let ``FR0055: a pure division body gets the guard, and the catch goes`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one swallowed-exception finding, got %A" other
 
 [<Fact>]
@@ -2950,7 +2950,7 @@ let ``FR0055: a one-call Parse body becomes TryParse`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two findings, got %A" other
 
 [<Fact>]
@@ -2982,7 +2982,7 @@ let ``FR0055: a Some-wrapped Parse body pairs with its None fallback`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one finding, got %A" other
 
 let private parseControlFlowIn (source: string) =
@@ -3053,7 +3053,7 @@ let ``FR0055: a Parse caught narrowly for its own failures is TryParse as contro
                 offer.Edits
                 |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
 
         let offer = b.Offers |> List.head
 
@@ -3172,7 +3172,7 @@ let ``FR0168: a catch-all around a Parse is the same TryParse, with the swallow 
         )
 
         Assert.Contains("| false, _ -> fallback", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
@@ -3305,7 +3305,7 @@ let ``FR0055: a file-IO body gets the narrower catch`` () =
             |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) source
 
         Assert.Contains("with (:? System.IO.IOException | :? System.UnauthorizedAccessException) as ex ->", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one finding, got %A" other
 
 [<Fact>]
@@ -3408,7 +3408,7 @@ let ``FR0049: a statement-position Wait inside task becomes do-bang`` () =
         match s.Fixes with
         | [ (_, "t.Wait()", "do! t") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the do! fix, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -3428,7 +3428,7 @@ let ``FR0049: WaitAll inside task becomes do-bang WhenAll`` () =
         match s.Fixes with
         | [ (_, _, "do! System.Threading.Tasks.Task.WhenAll(a, b)") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the WhenAll fix, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -3448,7 +3448,7 @@ let ``FR0049: a Wait on a generic task inside async awaits the upcast task`` () 
         match s.Fixes with
         | [ (_, _, "do! Async.AwaitTask (t :> System.Threading.Tasks.Task)") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the AwaitTask fix, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -3496,7 +3496,7 @@ let ``FR0049: a blocking call inside Assert.Throws moves with the assert`` () =
             )
 
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the let!-bind pair, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -3777,7 +3777,7 @@ let ``FR0050: a fold followed by nothing but the accumulator collapses into the 
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
 [<Fact>]
@@ -3807,7 +3807,7 @@ let ``FR0050: an annotated mutable keeps its annotation on the folded binding`` 
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one fold suggestion, got %A" other
 
 [<Fact>]
@@ -3910,7 +3910,7 @@ let ``FR0119 a stream flush inside task still becomes do-bang FlushAsync`` () =
     | [ s ] ->
         let patched = applyAwaitable source s
         Assert.Contains("do! stream.FlushAsync()", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one FlushAsync suggestion, got %A" other
 
 // ---- FR0049: tasks known complete, console blocking points, primitives ----
@@ -4535,7 +4535,7 @@ let ``FR0049: Result on a ContinueWith antecedent is noted for its AggregateExce
             )
 
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected one bind edit, got %A" other
     | other -> failwithf "Expected exactly one antecedent note, got %A" other
 
@@ -4610,7 +4610,7 @@ let ``FR0049: Task.Run around a RunSynchronously becomes Async.StartAsTask`` () 
         match s.Fixes with
         | [ (_, _, "comp |> Async.StartAsTask") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the StartAsTask fix, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -4634,7 +4634,7 @@ let ``FR0049: an ignored Task.Run keeps do-bang through an upcast`` () =
         match s.Fixes with
         | [ (_, _, "(comp |> Async.StartAsTask) :> System.Threading.Tasks.Task") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the upcast StartAsTask fix, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -4677,7 +4677,7 @@ let ``FR0049: a thread-choreographed body still gets the Task.Run rewrite`` () =
         match s.Fixes with
         | [ (_, _, "comp |> Async.StartAsTask") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the StartAsTask fix to survive the veto, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -4702,7 +4702,7 @@ let ``FR0049: a name merely ENDING in Thread is not thread choreography`` () =
         match s.Fixes with
         | [ (_, "t.Wait()", "do! t") ] ->
             let patched = applyFixes source s.Fixes
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected the do! fix to survive the veto, got %A" other
     | other -> failwithf "Expected exactly one blocking site, got %A" other
 
@@ -4765,7 +4765,7 @@ let ``FR0168: a try in the middle of a line rewrites to a match whose arms compi
                     |> List.fold (fun acc (r, _, replacement) -> applyEdit acc r replacement) acc)
                 source
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two findings, got %A" other
 
 // ---- FR0119 AwaitableOverload: AwaitTask raises AggregateException ----
@@ -4976,5 +4976,5 @@ let ``FR0053 a trailing slice or indexer keeps the call parenthesised`` () =
         | [ s ] ->
             Assert.Equal("(System.Convert.ToHexString bytes)", s.ReplacementText)
             let patched = applyEdit source s.Range s.ReplacementText
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | other -> failwithf "Expected exactly one hex suggestion for %s, got %A" tail other

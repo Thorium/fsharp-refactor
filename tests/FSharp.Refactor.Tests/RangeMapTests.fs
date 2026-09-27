@@ -27,7 +27,7 @@ let private assertRewrites (body: string) (expected: string) (expectedProven: bo
         // the standing rule: the produced text must be right on its own,
         // never rescued by a compile check afterwards
         let patched = applyEdit (header + body) s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]
@@ -269,7 +269,7 @@ let ``a multi-line mapper whose body hangs left of the range keeps the map`` () 
                 d + 1)
             """
 
-    Assert.True(typechecksCleanly (header + body), "the fixture itself must typecheck")
+    assertTypechecks "The fixture" (header + body)
     Assert.Empty(found body)
 
 /// Every later line aligned under the first line's token after the arrow.
@@ -285,7 +285,7 @@ let ``match arms aligned to a match after the arrow keep the map`` () =
         "let r =\n"
         + alignedUnder "    [| 0 .. dimension |] |> Array.map (fun i -> match i with" [ "| 0 -> f 0"; "| _ -> i)" ]
 
-    Assert.True(typechecksCleanly (header + arms), "the fixture itself must typecheck")
+    assertTypechecks "The fixture" (header + arms)
     Assert.Empty(found arms)
 
 [<Fact>]
@@ -302,7 +302,7 @@ let ``a second statement aligned to a first one after the arrow keeps the map`` 
             """
         + alignedUnder "    [| 0 .. dimension - 1 |] |> Array.map (fun i -> tap i |> ignore" [ "i)" ]
 
-    Assert.True(typechecksCleanly (header + statements), "the fixture itself must typecheck")
+    assertTypechecks "The fixture" (header + statements)
     Assert.Empty(found statements)
 
 [<Fact>]

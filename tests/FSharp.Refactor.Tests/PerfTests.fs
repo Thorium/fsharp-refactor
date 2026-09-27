@@ -170,7 +170,7 @@ let ``a Substring fed to Parse becomes AsSpan`` () =
     | [ sug ] ->
         let patched = applyEdit source sug.Range "AsSpan"
         Assert.Contains("Int32.Parse(s.AsSpan(6, 5))", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one AsSpan suggestion, got %A" other
 
 [<Fact>]
@@ -193,7 +193,7 @@ let ``FR0106: a file that does not open System cannot see AsSpan and keeps its S
     let opened = source.Replace("open System.Text.RegularExpressions", "open System")
 
     match substringSpansIn opened with
-    | [ sug ] -> Assert.True(typechecksCleanly (applyEdit opened sug.Range "AsSpan"))
+    | [ sug ] -> assertTypechecks "Patched source" (applyEdit opened sug.Range "AsSpan")
     | other -> failwithf "Expected exactly one AsSpan suggestion, got %A" other
 
 [<Fact>]
@@ -212,7 +212,7 @@ let ``a Substring fed to TryParse becomes AsSpan`` () =
     match substringSpansIn source with
     | [ sug ] ->
         let patched = applyEdit source sug.Range "AsSpan"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one TryParse suggestion, got %A" other
 
 [<Fact>]
@@ -316,7 +316,7 @@ let ``a Substring fed to StringBuilder.Append or TextWriter.Write becomes AsSpan
     Assert.Contains("w.Write(s.AsSpan 6)", patched)
     Assert.Contains("sw.WriteLine(s.AsSpan(0, 3))", patched)
     Assert.Contains("Console.Write(s.Substring 1)", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``a user type's Parse with a span overload of its own is not assumed identical either`` () =
@@ -408,7 +408,7 @@ let ``FR0166: a slice compared with a literal is StartsWith or EndsWith, exactly
     )
 
     let patched = patchedWith source found
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0166: a module mutable reset by a call between the guard and the cut - directly, through a chain or a byref - is not exact; a reader loop is``
@@ -478,7 +478,7 @@ let ``FR0166: a Substring compared with a literal is exact only under a length g
     Assert.Equal("""s.EndsWith("MED", StringComparison.Ordinal)""", found.[3].ReplacementText)
 
     let patched = patchedWith source found
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0166: an else branch is guarded only when the failed condition proves Length at least the cut`` () =
@@ -590,7 +590,7 @@ let ``FR0166: a guard proves nothing about a mutable receiver or a getter read t
                 a, c, e
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
     Assert.Equal<bool list>([ false; false; true ], prefixComparesIn source |> List.map (fun s -> s.Exact))
 
     // a `let mutable` not written between the guard and the cut is one
@@ -619,7 +619,7 @@ let ``FR0166: a guard proves nothing about a mutable receiver or a getter read t
             let moduleValueReset () = current.Length >= 6 && (reset (); true) && current.Substring(0, 6) = "ORDER-"
             """
 
-    Assert.True(typechecksCleanly reader)
+    assertTypechecks "Test input" reader
     Assert.Equal<bool list>([ true; true; true; false ], prefixComparesIn reader |> List.map (fun s -> s.Exact))
 
     // writes the window must see: the rest of an `if` condition after the
@@ -653,7 +653,7 @@ let ``FR0166: a guard proves nothing about a mutable receiver or a getter read t
                 member this.B = fld.Length >= 6 && fld.Substring(0, 6) = "ORDER-"
             """
 
-    Assert.True(typechecksCleanly windows)
+    assertTypechecks "Test input" windows
 
     Assert.Equal<bool list>(
         [ false; false; false; false; true ],
@@ -676,7 +676,7 @@ let ``FR0166: a guard proves nothing about a mutable receiver or a getter read t
             let h (s: byref<string>) = if s.Length >= 6 then (s <- ""; s.Substring(0, 6) = "ORDER-") else false
             """
 
-    Assert.True(typechecksCleanly getters)
+    assertTypechecks "Test input" getters
 
     Assert.Equal<bool list>([ true; false; true; false ], prefixComparesIn getters |> List.map (fun s -> s.Exact))
 
@@ -712,7 +712,7 @@ let ``FR0166: a dotted receiver is proven through its member's type`` () =
         found |> List.map (fun s -> s.ReplacementText)
     )
 
-    Assert.True(typechecksCleanly (patchedWith source found))
+    assertTypechecks "Patched source" (patchedWith source found)
 
 // ---- FR0167 CharArrayCopy ----
 
@@ -765,7 +765,7 @@ let ``FR0167: a ToCharArray copy read once by a loop or an Array function walks 
         |> List.fold (fun src s -> applyEdit src s.Range s.ReplacementText) source
 
     Assert.Contains("for c in s do", patched)
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0167: a bound copy, a sliced copy, a Seq or map consumer and a non-string receiver are left alone`` () =
@@ -831,7 +831,7 @@ let ``FR0167: on FSharp.Core 9 an order-code check walks nonNull s and still thr
         |> List.sortByDescending (fun s -> s.Range.StartLine, s.Range.StartColumn)
         |> List.fold (fun src s -> applyEdit src s.Range s.ReplacementText) source
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
     // below FSharp.Core 9 there is no nonNull: the bare String twin, editor only
     let older =
@@ -868,7 +868,7 @@ let ``FR0167: a project's own nonNull does not take the rewrite's`` () =
         Assert.True s.Exact
         Assert.Equal("String.exists Char.IsDigit (FSharp.Core.Operators.nonNull code)", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
         // and the name binds to FSharp.Core's, not to either helper
         let _, patchedText, patchedCheck =
@@ -1112,7 +1112,7 @@ let ``FR0170: a loop over Keys reading the indexer becomes a KeyValue loop`` () 
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two findings, got %A" other
 
 [<Fact>]
@@ -1253,7 +1253,7 @@ let ``FR0171: an ASCII literal handed to GetBytes is a byte string literal`` () 
             |> List.sortByDescending (fun s -> s.Range.StartLine)
             |> List.fold (fun acc s -> applyEdit acc s.Range s.ReplacementText) source
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected four findings, got %A" other
 
 [<Fact>]
@@ -1311,7 +1311,7 @@ let ``FR0170: a read deferred under a lambda, lazy, computation expression or ob
             """
 
     // the rule stands down on a compile error: the source must be clean
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
     Assert.Empty(dictKeysLoopsIn source)
 
 [<Fact>]
@@ -1362,7 +1362,7 @@ let ``FR0170: what visibly writes the dictionary before a read keeps the loop`` 
                         printfn "%s" this.Table.[key]
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
 
     match dictKeysLoopsIn source with
     | [ s ] -> Assert.Equal(27, s.Range.StartLine)
@@ -1443,7 +1443,7 @@ let ``FR0170: reassignment, aliases, a visibly writing getter, outer loops, loca
                     printfn "%d %d" n d.[k]
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
 
     match dictKeysLoopsIn source with
     | [ s ] -> Assert.Equal(37, s.Range.StartLine)
@@ -1498,7 +1498,7 @@ let ``FR0170: interface calls and a user collection convert; a suspension in seq
                 }
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
 
     Assert.Equal<int list>(
         [ 7; 11; 15; 23 ],
@@ -1534,7 +1534,7 @@ let ``FR0170: a callback before the read converts unless a definition of this fi
                 }
             """
 
-    Assert.True(typechecksCleanly unreached)
+    assertTypechecks "Test input" unreached
 
     // the plain function converts; inside `task { }` the function may write
     // the dictionary while the loop waits, so no local is unreached there
@@ -1573,7 +1573,7 @@ let ``FR0170: a callback before the read converts unless a definition of this fi
                     printfn "%d" d.[k]
             """
 
-    Assert.True(typechecksCleanly escaped)
+    assertTypechecks "Test input" escaped
     Assert.Equal(3, (dictKeysLoopsIn escaped).Length)
 
     // what is visible keeps the loop: a writer taken as a value and called,
@@ -1622,7 +1622,7 @@ let ``FR0170: a callback before the read converts unless a definition of this fi
                 }
             """
 
-    Assert.True(typechecksCleanly hidden)
+    assertTypechecks "Test input" hidden
 
     Assert.Equal<int list>([ 17; 27 ], dictKeysLoopsIn hidden |> List.map (fun s -> s.Range.StartLine) |> List.sort)
 
@@ -1662,7 +1662,7 @@ let ``FR0170: a callback before the read converts unless a definition of this fi
                     printfn "%d" d.[k]
             """
 
-    Assert.True(typechecksCleanly lookups)
+    assertTypechecks "Test input" lookups
     Assert.Equal(3, (dictKeysLoopsIn lookups).Length)
 
 [<Fact>]
@@ -1702,7 +1702,7 @@ let ``FR0170: a helper of this file before the read converts unless its body tou
                     printfn "%s %d" l shared.[k]
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
 
     Assert.Equal<int list>([ 14; 18 ], dictKeysLoopsIn source |> List.map (fun s -> s.Range.StartLine) |> List.sort)
 
@@ -1730,7 +1730,7 @@ let ``FR0170: a helper of this file before the read converts unless its body tou
                 }
             """
 
-    Assert.True(typechecksCleanly unitStatements)
+    assertTypechecks "Test input" unitStatements
     Assert.Equal(2, (dictKeysLoopsIn unitStatements).Length)
 
     // a helper forcing a sequence whose generator writes, an active pattern
@@ -1771,7 +1771,7 @@ let ``FR0170: a helper of this file before the read converts unless its body tou
                 }
             """
 
-    Assert.True(typechecksCleanly reached)
+    assertTypechecks "Test input" reached
     Assert.Empty(dictKeysLoopsIn reached)
 
 [<Fact>]
@@ -1817,7 +1817,7 @@ let ``FR0170: LINQ, field stores, another dictionary's writes and a yield of the
                     yield string d.[k] ]
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
     Assert.Equal(6, (dictKeysLoopsIn source).Length)
 
 [<Fact>]
@@ -1846,7 +1846,7 @@ let ``FR0170: a call that runs after the reads, or takes the read as its argumen
                     printfn "%d %d" total d.[k]
             """
 
-    Assert.True(typechecksCleanly source)
+    assertTypechecks "Test input" source
     Assert.Equal(3, (dictKeysLoopsIn source).Length)
 
     // the everyday shapes beside the guards: copying into another
@@ -1884,7 +1884,7 @@ let ``FR0170: a call that runs after the reads, or takes the read as its argumen
                     printfn "%d %s" year d.[k].Name
             """
 
-    Assert.True(typechecksCleanly everyday)
+    assertTypechecks "Test input" everyday
     Assert.Equal(6, (dictKeysLoopsIn everyday).Length)
 
 [<Fact>]

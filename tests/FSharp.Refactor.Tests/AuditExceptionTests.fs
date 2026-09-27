@@ -14,9 +14,6 @@ open FSharp.Refactor.Tests.Parsing
 /// A negative test on a typed rule proves nothing when the input has a
 /// type error: every typed rule returns [] on errors. So the input is
 /// checked first.
-let private assertTypechecks (source: string) =
-    Assert.True(typechecksCleanly source, $"Test input does not typecheck:\n%s{source}")
-
 // ---- FR0044 Reraise: A5 rebinding, B11 closures ----
 
 let private reraiseIn (source: string) =
@@ -27,11 +24,11 @@ let private assertReraise (source: string) =
     match reraiseIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range "reraise ()"
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one reraise suggestion, got %d: %A" (List.length other) other
 
 let private assertNoReraise (source: string) =
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(reraiseIn source)
 
 [<Fact>]
@@ -169,7 +166,7 @@ let private guardOf (s: SwallowedException.Suggestion) =
     s.Offers |> List.tryFind (fun o -> o.Label.StartsWith "Fix: guard")
 
 let private assertNoGuard (source: string) =
-    assertTypechecks source
+    assertTypechecks "Test input" source
 
     match swallowedIn source with
     | [ s ] -> Assert.True((guardOf s).IsNone, $"no guard expected, got %A{guardOf s}")
@@ -183,7 +180,7 @@ let private assertGuard (source: string) (expected: string) =
             let r, _, replacement = List.exactlyOne o.Edits
             Assert.Equal(expected, replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the guard offer"
     | other -> failwithf "Expected one finding, got %A" other
 
@@ -262,7 +259,7 @@ let ``FR0055: a tuple carrying Error reports the failure, not a disguised result
                 with _ -> (state, Error "step failed")
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(swallowedIn source)
 
 [<Fact>]
@@ -279,7 +276,7 @@ let ``FR0055: Choice2Of2 and Failure slots carry the failure too`` () =
                 with _ -> (state, Failure "")
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
     Assert.Empty(swallowedIn source)
 
 [<Fact>]
@@ -322,14 +319,14 @@ let ``FR0055: the log offer on a bare Exception type test binds the exception`` 
                 with :? System.Exception -> ()
             """
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
 
     match logOfferIn source with
     | Some offer ->
         let patched = applyOffer source offer
         Assert.Contains("with :? System.Exception as ex ->", patched)
         Assert.Contains("logger.LogError(ex, ", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | None -> failwith "Expected the log offer"
 
 [<Fact>]
@@ -350,7 +347,7 @@ let ``FR0055: the log offer on a wildcard still binds and typechecks`` () =
     | Some offer ->
         let patched = applyOffer source offer
         Assert.Contains("with ex ->", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | None -> failwith "Expected the log offer"
 
 [<Fact>]
@@ -375,7 +372,7 @@ let ``FR0055: the log offer picks a binder the function does not already use`` (
         Assert.Contains("with exn ->", patched)
         Assert.Contains("logger.LogError(exn, ", patched)
         Assert.Contains("""exn.Message, "work", ex)""", patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | None -> failwith "Expected the log offer"
 
 // ---- FR0151 ExceptionDetail: C3 interpolated read, C4 rethrow position and two messages ----
@@ -403,7 +400,7 @@ let ``FR0151: a Message read inside an interpolated string is reported but not f
     // the report's repro: the replacement carries `"; "`, which a `$"..."`
     // hole may not hold (FS3373)
     let source = handlerOf "        log $\"load failed: {e.Message}\"\n        [||]"
-    assertTypechecks source
+    assertTypechecks "Test input" source
 
     match exceptionDetailIn source with
     | [ s ] -> Assert.True(s.Fix.IsNone, """no Message fix inside a $"..." hole""")
@@ -418,7 +415,7 @@ let ``FR0151: a plain Message read keeps its fix`` () =
         match s.Fix with
         | Some(r, _, replacement) ->
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the Message fix"
     | other -> failwithf "Expected one suggestion, got %A" other
 
@@ -435,7 +432,7 @@ let ``FR0151: a statement-position rethrow gets no carry-on fix`` () =
                 """
         )
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
 
     match exceptionDetailIn source with
     | [ s ] ->
@@ -454,7 +451,7 @@ let ``FR0151: a deliberate wrap is not a rethrow`` () =
                 """
         )
 
-    assertTypechecks source
+    assertTypechecks "Test input" source
 
     match exceptionDetailIn source with
     | [ s ] -> Assert.True(s.AlternativeFix.IsNone, "a wrap changes the thrown type: no carry-on fix")
@@ -467,7 +464,7 @@ let private assertCarryOn (source: string) =
         | Some(r, _, replacement) ->
             Assert.Contains("e.Types", replacement)
             let patched = applyEdit source r replacement
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the carry-on alternative fix"
     | other -> failwithf "Expected one suggestion, got %A" other
 

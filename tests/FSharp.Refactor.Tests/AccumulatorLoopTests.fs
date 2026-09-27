@@ -30,7 +30,7 @@ let private assertRewrite (source: string) (expected: string) =
     | [ s ] ->
         let patched = applyEdits source s.Edits
         Assert.Equal(expected, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
         s
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
@@ -591,7 +591,7 @@ let ``the arrays knob buys the array expression for an indexed drain`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, patched)
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -628,7 +628,7 @@ let ``the explicitYield knob spells every yield for an older compiler`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, patched)
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]

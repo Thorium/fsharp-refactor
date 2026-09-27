@@ -877,7 +877,10 @@ let source =
 whose input does not typecheck: a typed rule finds nothing in a file with a
 type error, so a "no finding" test on a broken input would pass for the
 wrong reason. A test where the broken input is the point (FR0077 and FR0145
-fix compile errors) calls `parseAndCheckAllowingErrors`.
+fix compile errors) calls `parseAndCheckAllowingErrors`. A patched source is
+checked with `assertTypechecks "Patched source" patched` (`assertParses` for
+a parse-only rule): a failure lists the compiler's errors above the source,
+where the boolean `typechecksCleanly` would only say false.
 
 A one- or two-line input can stay an escaped `"...\n..."` literal. Keep a
 literal escaped where it must be a constant (an attribute argument, a

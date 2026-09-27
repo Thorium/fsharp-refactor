@@ -22,7 +22,7 @@ let private assertRewrite (source: string) (expectedBody: string) =
     | [ s ] ->
         Assert.Equal(expectedBody, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]

@@ -29,7 +29,7 @@ let private assertPatched
             |> List.fold (fun acc e -> applyEdit acc e.Range e.Replacement) source
 
         Assert.Equal(expectedPatched, patched)
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertSingleSuggestion (source: string) (expectedPatched: string) =

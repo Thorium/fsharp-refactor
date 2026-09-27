@@ -16,7 +16,7 @@ let private assertConcat (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one concat suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -361,7 +361,7 @@ let ``the concat alternative of a plus chain also typechecks`` () =
     | [ s ] ->
         Assert.Equal(Some """System.String.Concat("x", a, "-", b)""", s.ConcatAlternative)
         let patched = applyEdit source s.Range s.ConcatAlternative.Value
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -414,7 +414,7 @@ let ``FR0032: the editor fix appends a plain IDisposable disposing every created
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected two leaked-field findings, got %A" other
 
 [<Fact>]
@@ -451,7 +451,7 @@ let ``FR0047: the missed field under a wrapper the body disposes goes after it``
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
 [<Fact>]
@@ -486,7 +486,7 @@ let ``FR0047: a missed wrapper over a field the body disposes goes before it`` (
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
 [<Fact>]

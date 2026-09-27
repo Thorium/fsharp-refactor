@@ -15,7 +15,7 @@ let private assertSingleSuggestion (source: string) (expectedReplacement: string
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(parsesCleanly patched, $"Patched source does not parse:\n%s{patched}")
+        assertParses "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
@@ -172,7 +172,7 @@ let ``map-map fusion of a bare-parameter lookup keeps the pipe that types it`` (
     | [ s ] ->
         Assert.Equal("pairs |> List.map (fst >> (fun s -> s.Length))", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
     assertSingleSuggestion
@@ -849,7 +849,7 @@ let private assertTypedRewrite (source: string) (expected: string) =
     | [ s ] ->
         Assert.Equal(expected, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]

@@ -25,7 +25,7 @@ let ``obvious empties are added inline and the result typechecks`` () =
         Assert.True s.AllObvious
         Assert.Equal<string list>([ "Tags"; "Timeout"; "Owners" ], s.Missing)
         let patched = applyEdit source s.Range s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -53,7 +53,7 @@ let ``a multi-line record gets one field per line at the label column`` () =
         )
 
         let patched = applyEdit source s.Range s.InsertText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -68,9 +68,9 @@ let ``a field with no obvious default gets a placeholder, and a zero alternative
         Assert.Equal("""; Retries = raise (System.NotImplementedException "Retries")""", s.InsertText)
         Assert.Equal("; Retries = 0", s.ZeroInsertText)
         let patched = applyEdit source s.Range s.InsertText
-        Assert.True(typechecksCleanly patched, $"Placeholder form does not typecheck:\n%s{patched}")
+        assertTypechecks "Placeholder form" patched
         let zeroed = applyEdit source s.Range s.ZeroInsertText
-        Assert.True(typechecksCleanly zeroed, $"Zero form does not typecheck:\n%s{zeroed}")
+        assertTypechecks "Zero form" zeroed
     | other -> failwithf "Expected one suggestion, got %A" other
 
 [<Fact>]
@@ -115,5 +115,5 @@ let ``a Guid field zeroes to Guid.Empty`` () =
     | [ s ] ->
         Assert.Equal("; Id = System.Guid.Empty", s.ZeroInsertText)
         let zeroed = applyEdit source s.Range s.ZeroInsertText
-        Assert.True(typechecksCleanly zeroed, $"Zero form does not typecheck:\n%s{zeroed}")
+        assertTypechecks "Zero form" zeroed
     | other -> failwithf "Expected one suggestion, got %A" other

@@ -13,7 +13,7 @@ let private assertSingleSuggestion (source: string) (expectedReplacement: string
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
 
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
@@ -219,7 +219,7 @@ let private assertTryAdd (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one TryAdd suggestion, got %d: %A" (List.length other) other
 
 [<Fact>]
@@ -405,14 +405,14 @@ let ``an elif chain peels one TryGetValue level per pass`` () =
         Assert.Contains("if mapped.ContainsKey \"Id\"", s.ReplacementText)
         Assert.DoesNotContain("elif", s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
 
         // second pass over the patched text peels the next level
         match findIn patched with
         | [ s2 ] ->
             Assert.Contains("""match mapped.TryGetValue "Id" with""", s2.ReplacementText)
             let patched2 = applyEdit patched s2.Range s2.ReplacementText
-            Assert.True(typechecksCleanly patched2, $"Second pass does not typecheck:\n%s{patched2}")
+            assertTypechecks "Second pass" patched2
         | other -> failwithf "Expected the second level on pass two, got %A" other
     | other -> failwithf "Expected exactly one chain suggestion, got %A" other
 
@@ -427,7 +427,7 @@ let private assertGetOrAdd (source: string) (expectedReplacement: string) =
     | [ s ] ->
         Assert.Equal(expectedReplacement, s.ReplacementText)
         let patched = applyEdit source s.Range s.ReplacementText
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected exactly one GetOrAdd suggestion, got %d: %A" (List.length other) other
 
 let private assertNoGetOrAdd (source: string) = Assert.Empty(findGetOrAddIn source)

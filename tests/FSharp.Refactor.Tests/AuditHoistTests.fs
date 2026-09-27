@@ -80,7 +80,7 @@ let ``FR0029: a record payload continuing below its return keeps its field align
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0029: a list payload continuing below its return keeps its element alignment`` () =
@@ -112,7 +112,7 @@ let ``FR0029: a list payload continuing below its return keeps its element align
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 [<Fact>]
 let ``FR0029: a continuation line with less indentation than the strip removes withholds the hoist`` () =
@@ -133,7 +133,7 @@ let ``FR0029: a continuation line with less indentation than the strip removes w
                 }
             """
 
-    Assert.True(typechecksCleanly source, "the fixture itself must compile")
+    assertTypechecks "The fixture" source
     Assert.Empty(hoistEditsIn source)
 
 [<Fact>]
@@ -166,7 +166,7 @@ let ``FR0029: a single-line record payload still hoists`` () =
         patched
     )
 
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 // ---- B1: FR0029 return hoist over a string literal spanning lines ----
 
@@ -177,7 +177,7 @@ let ``FR0029: a triple-quoted string spanning lines inside the branch withholds 
     let source =
         "module Test\nlet f (c: int) =\n    task {\n        let! x = System.Threading.Tasks.Task.FromResult 1\n        match c with\n        | 1 -> return \"\"\"first\nsecond\"\"\"\n        | _ -> return \"x\"\n    }"
 
-    Assert.True(typechecksCleanly source, "the fixture itself must compile")
+    assertTypechecks "The fixture" source
     Assert.Empty(hoistEditsIn source)
 
 [<Fact>]
@@ -198,7 +198,7 @@ let ``FR0029: a plain string spanning lines inside the branch withholds the hois
                 }
             """
 
-    Assert.True(typechecksCleanly source, "the fixture itself must compile")
+    assertTypechecks "The fixture" source
     Assert.Empty(hoistEditsIn source)
 
 [<Fact>]
@@ -219,7 +219,7 @@ let ``FR0029: a single-line string in the branch still hoists`` () =
     let edits = hoistEditsIn source
     Assert.NotEmpty edits
     let patched = applyEdits source edits
-    Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+    assertTypechecks "Patched source" patched
 
 // ---- C6: FR0047 editor fix for a Dispose that still uses the field ----
 
@@ -261,7 +261,7 @@ let ``FR0047: a Dispose that only cancels the field disposes it after the cancel
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected the cancel-without-dispose note, got %A" other
 
 [<Fact>]
@@ -343,7 +343,7 @@ let ``FR0047: an untouched field is still disposed first in Dispose`` () =
             patched
         )
 
-        Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+        assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one undisposed-field finding, got %A" other
 
 // ---- C7: Text.reindentBlock literal guard ----
@@ -540,6 +540,6 @@ let ``FR0149: a printfn handler with a comment inside the body still moves`` () 
                 patched
             )
 
-            Assert.True(typechecksCleanly patched, $"Patched source does not typecheck:\n%s{patched}")
+            assertTypechecks "Patched source" patched
         | None -> failwith "Expected the move-the-handler-inside fix"
     | other -> failwithf "Expected exactly one unhandled-start note, got %A" other

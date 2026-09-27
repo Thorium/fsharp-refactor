@@ -60,12 +60,10 @@ let private optionMatches (source: string) =
 
 [<Fact>]
 let ``the builder stub itself typechecks`` () =
-    Assert.True(
-        typechecksCleanly (
-            builderStub
-            + "let q = select { for a in table<Address> do where (a.AddressLine2 <> None) }"
-        )
-    )
+    assertTypechecks
+        "The builder stub"
+        (builderStub
+         + "let q = select { for a in table<Address> do where (a.AddressLine2 <> None) }")
 
 [<Fact>]
 let ``FR0010 leaves a None comparison inside a where projection alone`` () =
@@ -109,7 +107,7 @@ let ``FR0010 still rewrites the same comparison in a plain conditional`` () =
     match simplifications src with
     | [ s ] ->
         Assert.Equal("a.AddressLine2.IsSome", s.ReplacementText)
-        Assert.True(typechecksCleanly (applyEdit src s.Range s.ReplacementText))
+        assertTypechecks "Patched source" (applyEdit src s.Range s.ReplacementText)
     | other -> failwithf "expected one suggestion, got %A" other
 
 [<Fact>]
@@ -178,7 +176,7 @@ let ``FR0012 still rewrites the null comparison in a plain conditional`` () =
     match hints src with
     | [ s ] ->
         Assert.Equal("not (isNull a.Line2)", s.ReplacementText)
-        Assert.True(typechecksCleanly (applyEdit src s.Range s.ReplacementText))
+        assertTypechecks "Patched source" (applyEdit src s.Range s.ReplacementText)
     | other -> failwithf "expected one suggestion, got %A" other
 
 [<Fact>]
@@ -232,7 +230,7 @@ let ``FR0034 still rewrites the IsSome-and-Value chain outside`` () =
     match optionMatches src with
     | [ s ] ->
         Assert.Equal("cityFilter |> Option.exists (fun v -> a.City = v)", s.ReplacementText)
-        Assert.True(typechecksCleanly (applyEdit src s.Range s.ReplacementText))
+        assertTypechecks "Patched source" (applyEdit src s.Range s.ReplacementText)
     | other -> failwithf "expected one suggestion, got %A" other
 
 // ---- A2: a file's own `isNull` shadows FSharp.Core's ----
@@ -308,7 +306,7 @@ let ``FR0012 still emits isNull when only unrelated names are defined`` () =
     match hints src with
     | [ s ] ->
         Assert.Equal("isNull s", s.ReplacementText)
-        Assert.True(typechecksCleanly (applyEdit src s.Range s.ReplacementText))
+        assertTypechecks "Patched source" (applyEdit src s.Range s.ReplacementText)
     | other -> failwithf "expected one suggestion, got %A" other
 
 [<Fact>]
@@ -331,7 +329,7 @@ let ``FR0012 rewrites a null test in a type-test guard and leaves the Count test
         Assert.Equal("isNull c.ArgumentList", s.ReplacementText)
         let patched = applyEdit src s.Range s.ReplacementText
         Assert.Contains("when isNull c.ArgumentList || c.ArgumentList.Arguments.Count = 0 ->", patched)
-        Assert.True(typechecksCleanly patched)
+        assertTypechecks "Patched source" patched
     | other -> failwithf "expected one suggestion, got %A" other
 
 // ---- A5: a unit-of-measure float is a float with NaN ----
@@ -394,5 +392,5 @@ let ``FR0012 still flips a negated ordering on an int`` () =
     match hints src with
     | [ s ] ->
         Assert.Equal("n < 0", s.ReplacementText)
-        Assert.True(typechecksCleanly (applyEdit src s.Range s.ReplacementText))
+        assertTypechecks "Patched source" (applyEdit src s.Range s.ReplacementText)
     | other -> failwithf "expected one suggestion, got %A" other
