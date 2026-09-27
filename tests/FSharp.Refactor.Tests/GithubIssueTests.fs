@@ -562,6 +562,54 @@ let ``FR0015: two regexes of one function both hoist in one pass, the second num
     Assert.Contains(inserted, fun t -> t.StartsWith "let private checkRegex2 = Regex")
 
 [<Fact>]
+let ``FR0015: an is-prefixed function's second regex is numbered, not given the whole name`` () =
+    // `isPostcode` names its first regex `postcodeRegex`; the second took
+    // `isPostcodeRegex`, which reads as the function's one regex
+    let source =
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let isPostcode (country: string) (s: string) =
+                match country with
+                | "GB" -> Regex.IsMatch(s, @"^[A-Z]{1,2}\d[A-Z\d]?\d[A-Z]{2}$")
+                | _ -> Regex.IsMatch(s, @"^\d{5}$")
+
+            """
+
+    let inserted =
+        regexEdits source |> List.filter (fun t -> t.StartsWith "let private")
+
+    Assert.Equal(2, inserted.Length)
+    Assert.Contains(inserted, fun t -> t.StartsWith "let private postcodeRegex = Regex")
+    Assert.Contains(inserted, fun t -> t.StartsWith "let private postcodeRegex2 = Regex")
+
+[<Fact>]
+let ``FR0015: a name another function took still falls back to the whole name`` () =
+    // the numbering is for a function's own second regex; another function
+    // sharing the stem keeps the clearer whole name
+    let source =
+        fsharp
+            """
+            module Forms
+
+            open System.Text.RegularExpressions
+
+            let hasPostcode (s: string) = Regex.IsMatch(s, @"\d[A-Z]{2}$")
+            let isPostcode (s: string) = Regex.IsMatch(s, @"^[A-Z]{1,2}\d")
+
+            """
+
+    let inserted =
+        regexEdits source |> List.filter (fun t -> t.StartsWith "let private")
+
+    Assert.Equal(2, inserted.Length)
+    Assert.Contains(inserted, fun t -> t.StartsWith "let private postcodeRegex = Regex")
+    Assert.Contains(inserted, fun t -> t.StartsWith "let private isPostcodeRegex = Regex")
+
+[<Fact>]
 let ``FR0015: a binding the site's declaration shadows is not reused`` () =
     // a parameter named like the binding: reusing it would reach the
     // caller's value - a string does not compile, a Regex silently tests a
