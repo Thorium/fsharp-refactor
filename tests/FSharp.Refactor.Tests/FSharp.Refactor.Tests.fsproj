@@ -113,6 +113,18 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" />
     <PackageReference Update="FSharp.Core" Version="10.1.201" />
+    <!-- The .NET Framework 4.8 reference assemblies, for the legacy-framework
+         compilations in Parsing.fs. Only Windows ships them in Program Files;
+         this package carries the same files to every OS. Its assets stay out
+         of the build: the tests only read the files from its folder. -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies.net48" Version="1.0.3" GeneratePathProperty="true" ExcludeAssets="all" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>Net48ReferenceAssemblies</_Parameter1>
+      <_Parameter2>$(PkgMicrosoft_NETFramework_ReferenceAssemblies_net48)/build/.NETFramework/v4.8</_Parameter2>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>
