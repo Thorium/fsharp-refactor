@@ -6,6 +6,8 @@ The analyzers package, the `fsharp-refactor` tool and both editor extensions sha
 
 From GitHub pull requests #7 and #8. FR0015 numbers a function's second regex before it falls back to the function's whole name: `isPostcode` with two patterns hoists `postcodeRegex` and `postcodeRegex2`, where the second had taken `isPostcodeRegex`, a name that reads as the function's one regex. The whole name still comes first where the file already spells the stem name or another declaration took it, so `hasPostcode` and `isPostcode` keep `isPostcodeRegex`.
 
+FR0168 takes a user member named like a throwing one of the BCL - a `Get`, `First` or `Last` of the user's own type - as a read, as it takes any user getter, and offers the TryParse fix: the names it knows to throw are those of the BCL and FSharp.Core, and LINQ's `First()` still keeps the try, as a `Parse`, `Single` or indexer of the user's own does, since those throw by convention.
+
 The tests: a failing typecheck or parse assertion lists the compiler's errors above the source. The README kind-summary check accepts the CRLF line endings of a Windows checkout, and the tests compiled against the legacy .NET Framework reference set run only on Windows, the one platform where that set resolves - on the Linux CI one failed its input check.
 
 

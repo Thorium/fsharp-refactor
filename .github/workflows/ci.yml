@@ -8,12 +8,14 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # a pinned image, as the SDK is: ubuntu-latest moves to a new release
+    # on GitHub's schedule, not on a change of ours
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           # exact pin: dotnet-fsharplint crashed (exit 255, its unhandled-
           # exception path) on a runner-picked newer SDK that no local
@@ -22,7 +24,7 @@ jobs:
           dotnet-version: 10.0.302
 
       - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
 
@@ -93,7 +95,7 @@ jobs:
           dotnet pack src/FSharp.Refactor.Tool -c Release -o artifacts
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nupkg
           path: artifacts/*.nupkg
@@ -101,12 +103,12 @@ jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           # exact pin: dotnet-fsharplint crashed (exit 255, its unhandled-
           # exception path) on a runner-picked newer SDK that no local
@@ -132,10 +134,10 @@ jobs:
     needs: build
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.302
 
@@ -151,7 +153,7 @@ jobs:
           $p.Close()
 
       - name: Upload VSIX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vsix
           path: src/FSharp.Refactor.Vsix/artifacts/FSharp.Refactor.vsix
@@ -175,26 +177,26 @@ jobs:
   # wires Ionide's FSharp.analyzersPath (with consent) on activation
   vscode-ext:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.302
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Build VS Code extension
         shell: pwsh
         run: pwsh -File src/FSharp.Refactor.VsCode/CreateVsCodeVsix.ps1
 
       - name: Upload VS Code extension artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vscode-extension
           path: src/FSharp.Refactor.VsCode/artifacts/*.vsix

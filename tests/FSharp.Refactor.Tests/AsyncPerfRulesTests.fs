@@ -3240,6 +3240,64 @@ let ``FR0168: an argument that can throw on its own keeps the try, whatever the 
     |> ignore
 
 [<Fact>]
+let ``FR0168: a user member named like a throwing BCL one is a read, LINQ First is not`` () =
+    // the throwing names (First, Last, Get, ...) are known of the BCL
+    // and FSharp.Core: a user's own `Get` or `First` is a user getter, the
+    // fix by default, as `c.Text` is
+    let source =
+        fsharp
+            """
+            module Test
+            open System
+            open System.Linq
+            type Settings() =
+                member _.Get(key: string) = key
+                member _.First = "1"
+                member _.Last = "2"
+            let get (c: Settings) = try Int32.Parse(c.Get "port") with _ -> 0
+            let first (c: Settings) = try Int32.Parse c.First with _ -> 0
+            let last (c: Settings) = try Int32.Parse c.Last with _ -> 0
+            let linq (xs: string list) = try Int32.Parse(xs.First()) with _ -> 0
+            """
+
+    match parseControlFlowIn source with
+    | [ get; first; last; linq ] ->
+        for s in [ get; first; last ] do
+            Assert.False(s.ArgumentMayThrow, $"line {s.Range.StartLine}")
+            Assert.NotEmpty s.Offers
+
+        Assert.True(linq.ArgumentMayThrow)
+        Assert.Empty linq.Offers
+    | other -> failwithf "Expected four findings, got %A" other
+
+[<Fact>]
+let ``FR0168: a user Parse, Single or indexer throws by convention and keeps the try`` () =
+    // Parse throws where TryParse answers, whoever declares it; Single and
+    // Item throw on a miss as `xs.[i]` does - the catch answered those too
+    let source =
+        fsharp
+            """
+            module Test
+            open System
+            type Port =
+                { Text: string }
+                static member Parse(s: string) = if s = "" then failwith "empty" else { Text = s }
+            type Bag() =
+                member _.Single() = "1"
+                member _.Item(i: int) = string i
+            let parsed (s: string) = try Int32.Parse((Port.Parse s).Text) with _ -> 0
+            let single (b: Bag) = try Int32.Parse(b.Single()) with _ -> 0
+            let item (b: Bag) = try Int32.Parse(b.Item 3) with _ -> 0
+            """
+
+    match parseControlFlowIn source with
+    | [ parsed; single; item ] ->
+        for s in [ parsed; single; item ] do
+            Assert.True(s.ArgumentMayThrow, $"line {s.Range.StartLine}")
+            Assert.Empty s.Offers
+    | other -> failwithf "Expected three findings, got %A" other
+
+[<Fact>]
 let ``FR0168: a bare name is a read, a static property opened by open type included`` () =
     // a getter that throws is the accepted residual: the fix by default
     let source =

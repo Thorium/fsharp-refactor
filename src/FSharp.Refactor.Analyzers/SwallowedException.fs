@@ -363,6 +363,48 @@ let private argumentMayThrow (check: FSharpCheckFileResults option) (source: ISo
 
     let ownedMembers = set [ "Value"; "Head"; "Tail"; "Force"; "Span" ]
 
+    // names that throw by .NET convention, whoever declares them: Parse
+    // where TryParse answers, a conversion, Single and ElementAt on a miss,
+    // an indexer as `xs.[i]` does
+    let conventionallyThrowing =
+        set
+            [
+                "Parse"
+                "ParseExact"
+                "Item"
+                "Single"
+                "ElementAt"
+                "ChangeType"
+                "ToInt32"
+                "ToInt64"
+                "ToInt16"
+                "ToByte"
+                "ToSByte"
+                "ToUInt32"
+                "ToUInt64"
+                "ToUInt16"
+                "ToDouble"
+                "ToSingle"
+                "ToDecimal"
+                "ToChar"
+                "ToDateTime"
+            ]
+
+    // the other throwing names are known of the BCL and FSharp.Core only: a
+    // user's own `Get` or `First` is a user getter, taken as a read. The
+    // DECLARING entity, so a LINQ extension counts as Enumerable's and a
+    // user's extension on String as the user's
+    let declaredByPlatform (v: FSharpMemberOrFunctionOrValue) =
+        let owner =
+            try
+                v.DeclaringEntity
+                |> Option.bind (fun e -> e.TryFullName)
+                |> Option.defaultValue ""
+            with OptionModule.FcsSymbolFailure ->
+                ""
+
+        owner.StartsWith "System." || owner.StartsWith "Microsoft.FSharp."
+
     // any of the segments given: `o.Value.Trim()` reads the Value on the way
     let throwingRead (segments: Ident list) =
         segments
@@ -374,6 +416,8 @@ let private argumentMayThrow (check: FSharpCheckFileResults option) (source: ISo
                      | Some(:? FSharpField) -> false
                      | Some(:? FSharpMemberOrFunctionOrValue as v) when ownedMembers.Contains segment.idText ->
                          throwingOwners.Contains(OptionModule.enclosingFullName v)
+                     | Some(:? FSharpMemberOrFunctionOrValue as v) ->
+                         conventionallyThrowing.Contains segment.idText || declaredByPlatform v
                      | _ -> true)
                 | None -> true))
 
