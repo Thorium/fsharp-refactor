@@ -901,38 +901,37 @@ let ``FR0106, FR0166 and FR0167 stay quiet in a legacy .NET Framework compilatio
     // the same shapes fire against modern .NET above; against mscorlib the
     // char and span overloads of String are absent, so nothing is proven
     // and nothing fires — this is how netstandard2.0/net4x stay untouched.
-    // Only Windows ships the .NET Framework reference assemblies a legacy
-    // script compilation resolves; elsewhere the fixture cannot typecheck
-    if OperatingSystem.IsWindows() then
-        let source =
-            fsharp
-                """
-                module Test
-                open System
-                open System.Text
-                let f (s: string) (sb: StringBuilder) =
-                    sb.Append(s.Substring(6, 5)) |> ignore
-                    let a = s.[..5] = "ORDER-"
-                    let b = s.Length >= 6 && s.Substring(0, 6) = "ORDER-"
-                    let mutable n = 0
-                    for c in s.ToCharArray() do n <- n + int c
-                    let d = Array.exists Char.IsDigit (s.ToCharArray())
-                    Int32.Parse(s.Substring(0, 2)), a, b, n, d
-                """
+    // The legacy compilation reads the net48 reference assemblies from a NuGet
+    // package (Parsing.fs), so this runs on every OS, not only Windows
+    let source =
+        fsharp
+            """
+            module Test
+            open System
+            open System.Text
+            let f (s: string) (sb: StringBuilder) =
+                sb.Append(s.Substring(6, 5)) |> ignore
+                let a = s.[..5] = "ORDER-"
+                let b = s.Length >= 6 && s.Substring(0, 6) = "ORDER-"
+                let mutable n = 0
+                for c in s.ToCharArray() do n <- n + int c
+                let d = Array.exists Char.IsDigit (s.ToCharArray())
+                Int32.Parse(s.Substring(0, 2)), a, b, n, d
+            """
 
-        let tree, sourceText, check =
-            FSharp.Refactor.Tests.Parsing.parseAndCheckLegacyFramework source
+    let tree, sourceText, check =
+        FSharp.Refactor.Tests.Parsing.parseAndCheckLegacyFramework source
 
-        Assert.False(FSharp.Refactor.OptionModule.hasErrors check, "the legacy fixture itself must typecheck")
-        Assert.Empty(FSharp.Refactor.SubstringSpan.find tree sourceText check)
-        Assert.Empty(FSharp.Refactor.PrefixCompare.find true tree sourceText check)
-        Assert.Empty(FSharp.Refactor.CharArrayCopy.find tree sourceText check)
+    Assert.False(FSharp.Refactor.OptionModule.hasErrors check, "the legacy fixture itself must typecheck")
+    Assert.Empty(FSharp.Refactor.SubstringSpan.find tree sourceText check)
+    Assert.Empty(FSharp.Refactor.PrefixCompare.find true tree sourceText check)
+    Assert.Empty(FSharp.Refactor.CharArrayCopy.find tree sourceText check)
 
-        // and the modern compilation of the very same text fires all three
-        let tree, sourceText, check = FSharp.Refactor.Tests.Parsing.parseAndCheck source
-        Assert.Equal(2, (FSharp.Refactor.SubstringSpan.find tree sourceText check).Length)
-        Assert.Equal(2, (FSharp.Refactor.PrefixCompare.find true tree sourceText check).Length)
-        Assert.Equal(2, (FSharp.Refactor.CharArrayCopy.find tree sourceText check).Length)
+    // and the modern compilation of the very same text fires all three
+    let tree, sourceText, check = FSharp.Refactor.Tests.Parsing.parseAndCheck source
+    Assert.Equal(2, (FSharp.Refactor.SubstringSpan.find tree sourceText check).Length)
+    Assert.Equal(2, (FSharp.Refactor.PrefixCompare.find true tree sourceText check).Length)
+    Assert.Equal(2, (FSharp.Refactor.CharArrayCopy.find tree sourceText check).Length)
 
 // ---- CapabilityFix dual-framework emission ----
 

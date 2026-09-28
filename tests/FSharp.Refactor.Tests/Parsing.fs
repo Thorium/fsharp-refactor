@@ -119,14 +119,53 @@ let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFile
     requireTypechecks "parseAndCheck" source checkResults
     tree, sourceText, checkResults
 
-/// `parseAndCheck` against the LEGACY .NET Framework reference set (the
-/// machine's mscorlib), without requiring a clean typecheck.
+/// The .NET Framework 4.8 reference assemblies a legacy compilation reads,
+/// from the Microsoft.NETFramework.ReferenceAssemblies.net48 package (see the
+/// test project). `assumeDotNetFramework = true` alone resolves them from
+/// Program Files, which only Windows has: on Linux the script got no usable
+/// mscorlib, `string` itself did not resolve, and a legacy test could only
+/// pass for the wrong reason.
+let private net48References =
+    lazy
+        (let directory =
+            System.Reflection.Assembly
+                .GetExecutingAssembly()
+                .GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
+            |> Seq.cast<System.Reflection.AssemblyMetadataAttribute>
+            |> Seq.find (fun a -> a.Key = "Net48ReferenceAssemblies")
+            |> fun a -> a.Value
+
+         [
+             "mscorlib"
+             "System"
+             "System.Core"
+             "System.Numerics"
+             "System.Xml"
+             "System.Data"
+             "Facades/netstandard"
+             "Facades/System.Runtime"
+         ]
+         |> List.map (fun name -> Path.Combine(directory, name + ".dll"))
+         // FSharp.Core targets netstandard, which the facade above bridges
+         |> fun framework -> typeof<list<int>>.Assembly.Location :: framework)
+
+/// `parseAndCheck` against the LEGACY .NET Framework reference set
+/// (net48's mscorlib), without requiring a clean typecheck.
 let parseAndCheckLegacyFrameworkAllowingErrors (source: string) : ParsedInput * ISourceText * FSharpCheckFileResults =
     let sourceText = SourceText.ofString source
 
-    let options, _ =
-        checker.GetProjectOptionsFromScript("Legacy.fsx", sourceText, assumeDotNetFramework = true)
-        |> Async.RunSynchronously
+    let options =
+        let scriptOptions, _ =
+            checker.GetProjectOptionsFromScript("Legacy.fsx", sourceText, assumeDotNetFramework = true)
+            |> Async.RunSynchronously
+
+        { scriptOptions with
+            OtherOptions =
+                [|
+                    yield! scriptOptions.OtherOptions |> Array.filter (fun o -> not (o.StartsWith "-r:"))
+                    for reference in net48References.Value -> "-r:" + reference
+                |]
+        }
 
     let parseResults, answer =
         checker.ParseAndCheckFileInProject("Legacy.fsx", source.GetHashCode(), sourceText, options)
@@ -137,8 +176,8 @@ let parseAndCheckLegacyFrameworkAllowingErrors (source: string) : ParsedInput * 
     | FSharpCheckFileAnswer.Aborted ->
         failwith $"Typechecking was aborted, calling parseAndCheckLegacyFramework with source: {source}"
 
-/// `parseAndCheck` against the LEGACY .NET Framework reference set (the
-/// machine's mscorlib): the compilation a netstandard2.0/net4x project
+/// `parseAndCheck` against the LEGACY .NET Framework reference set
+/// (net48's mscorlib): the compilation a netstandard2.0/net4x project
 /// sees, where the char and span overloads of String do not exist. The
 /// rules that gate on a modern framework must stay quiet here. Fails the
 /// test when the input has a type error there.
