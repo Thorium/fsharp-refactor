@@ -91,7 +91,7 @@ let private ssnullbRegex = Regex @"\s*\|\s*null\b"
 /// The original guard `Path.IsPathRooted p` infers from the match variable;
 /// the extracted pattern's `input` has no such context, and a .NET method
 /// group with overloads (IsPathRooted takes string OR ReadOnlySpan<char>)
-/// then fails resolution — found live on Fuuga. An F# function infers
+/// then fails resolution. An F# function infers
 /// fine; a member gets its resolved parameter type spelled out; an
 /// unresolvable guard skips the suggestion.
 let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText) (fnExpr: SynExpr) : string voption =
@@ -120,7 +120,7 @@ let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText)
                         // a nullness-aware compilation formats a BCL
                         // parameter as `string | null` — F# 9 syntax that a
                         // sibling target on LangVersion 8 reads as an
-                        // or-pattern (FS0018: FsToolkit's tests, net8.0 beside
+                        // or-pattern (FS0018 on a net8.0 target beside
                         // net9.0). The annotation is optional, the pattern
                         // body is the same, and a guard accepting null takes
                         // a plain `string` just as well: drop it always
@@ -282,10 +282,10 @@ let find
                                             Range.mkRange pat.Range.FileName pat.Range.Start guard.Range.End
 
                                         // a variable the body never reads becomes `_`:
-                                        // `| c when Char.IsDigit c -> Decimal` bound `c` only
-                                        // for the guard, and `| IsDigit c -> Decimal` left
-                                        // it unused — FS1182, an error under
-                                        // FsAutoComplete's warnings-as-errors
+                                        // `| c when Char.IsDigit c -> Decimal` binds `c` only
+                                        // for the guard, and `| IsDigit c -> Decimal` would
+                                        // leave it unused — FS1182, an error under
+                                        // warnings-as-errors
                                         // (identifierPattern, not \b: `n'` ends
                                         // in a prime, where \b finds no boundary)
                                         let bodyReads = mentionsIdentifier (textOfRange source body.Range) var.idText

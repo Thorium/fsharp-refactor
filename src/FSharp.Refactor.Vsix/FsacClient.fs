@@ -1,7 +1,7 @@
 /// The FsAutoComplete sidecar: one process per Visual Studio session,
 /// spoken to over LSP. Out-of-process on purpose — VS's own F# tools load
 /// their own FSharp.Compiler.Service in-proc, and loading ours beside it
-/// is the assembly-binding wound Visual F# Power Tools kept reopening.
+/// invites assembly-binding conflicts.
 /// FSAC brings project cracking, incremental checking and analyzer
 /// loading; this extension only renders what it publishes.
 module FSharp.Refactor.Vsix.FsacClient
@@ -16,10 +16,10 @@ open FSharp.Refactor.Vsix.Lsp
 
 /// One key spelling for a document, whatever the URI looked like: the
 /// sidecar publishes `file:///c%3A/...` (lowercase drive, encoded colon)
-/// while the editor hands us `C:\...` — comparing URIs raw meant the
+/// while the editor hands us `C:\...` — comparing URIs raw would mean the
 /// stored diagnostics could never be FOUND again. TOTAL by construction:
-/// GetFullPath throwing on a URI-shaped input escaped the listener thread
-/// once and took the whole of Visual Studio down with it.
+/// GetFullPath throwing on a URI-shaped input would escape the listener
+/// thread and take the whole of Visual Studio down with it.
 let normalizePath (p: string) =
     // an LSP URI with an ENCODED drive colon (file:///c%3A/...) decodes
     // via Uri.LocalPath to unix-style "/c:/dir/file" — strip to a
@@ -205,8 +205,8 @@ let private hasExited (s: Session) =
         true
 
 /// Forget THAT session — a newer one already in its place stays — so the
-/// next `ensure` starts a fresh sidecar. Before this the dead session was
-/// kept and every send went on writing to its pipe.
+/// next `ensure` starts a fresh sidecar instead of every send going on
+/// writing to the dead one's pipe.
 let private dropSession (s: Session) (reason: string) =
     lock startLock (fun () ->
         match session with
@@ -227,8 +227,8 @@ let private live () : Session option =
 /// One exchange with the live sidecar, or `fallback` when there is none.
 /// Nothing thrown leaves this function: the callers sit on timer threads
 /// and inside MEF calls, where an unhandled exception ENDS Visual Studio
-/// — the IOException from writing to an exited sidecar's pipe did just
-/// that. A broken pipe, or any failure once the process is gone, drops
+/// — the IOException from writing to an exited sidecar's pipe is one such.
+/// A broken pipe, or any failure once the process is gone, drops
 /// the session so the next `ensure` restarts it.
 let private trySend (what: string) (fallback: 'a) (f: Session -> 'a) : 'a =
     match live () with

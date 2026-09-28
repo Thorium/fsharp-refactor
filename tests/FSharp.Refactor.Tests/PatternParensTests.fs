@@ -147,7 +147,7 @@ let ``a unit member parameter is left alone too`` () =
 
 [<Fact>]
 let ``a typed clause pattern keeps its parens`` () =
-    // from the corpus: `| (request: HttpRequestMessage) when ... ->`.
+    // `| (request: HttpRequestMessage) when ... ->`.
     // Bare, `| request: HttpRequestMessage when ... ->` does not parse.
     assertNoSuggestion (
         fsharp
@@ -197,7 +197,7 @@ let ``a function head still loses the parens around its wildcard parameter`` () 
 
 [<Fact>]
 let ``an object expression member keeps the parens around its parameter`` () =
-    // FSharp.CloudAgent and Mibo: `{ new I with member _.M(x) = ... }`
+    // `{ new I with member _.M(x) = ... }`
     Assert.Empty(
         findIn (
             fsharp

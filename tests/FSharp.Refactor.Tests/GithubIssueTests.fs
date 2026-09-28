@@ -1,6 +1,5 @@
-/// Regressions from the GitHub issues #1-#6 (a run over a ~370-file Fable
-/// codebase, 0.8.33/0.8.34): FR0147 opening a namespace a partial path also
-/// reaches, FR0162 on a cache that resets, rules whose .NET reasoning does
+/// Regressions for a Fable codebase: FR0147 opening a namespace a partial
+/// path also reaches, FR0162 on a cache that resets, rules whose .NET reasoning does
 /// not hold under Fable, the analyzers `--codes` leaves out, FR0015's names,
 /// FR0168's layout and Fantomas's call style. FR0006's stacked insertions
 /// and the narrower later passes are the tool's, in the end-to-end test at
@@ -20,7 +19,7 @@ open FSharp.Compiler.Text
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 
-// ---- #1: FR0147 and partial paths ----
+// ---- FR0147 and partial paths ----
 
 /// FR0147's suggestions for B, compiled after A.
 let private qualifiedIn (sourceA: string) (sourceB: string) =
@@ -185,7 +184,7 @@ let private fableCore = [ "Fable.Core" ]
 /// Fable.Browser.Dom package ships Browser.Dom.dll, without the prefix.
 let private fableBrowser = [ "Fable.Core"; "Browser.Dom"; "Browser.Event" ]
 
-// ---- #3: FR0162 on a cache that resets ----
+// ---- FR0162 on a cache that resets ----
 
 [<Literal>]
 let private inFlightSource =
@@ -236,7 +235,7 @@ let ``FR0162: a JavaScript-bound Fable project gets no note - one thread`` () =
 let ``FR0162: Fable.Core alone keeps the note - the Rust and Python targets have threads`` () =
     Assert.NotEmpty(ofCode "FR0162" (run Analyzers.lazyInitCliAnalyzer (contextWith fableCore racingCacheSource)))
 
-// ---- #4: the rules whose .NET reasoning Fable changes ----
+// ---- the rules whose .NET reasoning Fable changes ----
 
 [<Fact>]
 let ``FR0121: in a browser DateTime.Today is the user's own date`` () =
@@ -381,7 +380,7 @@ let ``LoopPerf.literalSize counts written-out elements only`` () =
     Assert.Equal(None, LoopPerf.literalSize tree "d")
     Assert.Equal(Some 1, LoopPerf.literalSize tree "e")
 
-// ---- #5: --codes / --categories keep the other analyzers from running ----
+// ---- --codes / --categories keep the other analyzers from running ----
 
 [<Fact>]
 let ``a rule outside the run's allowed codes is off, so its analyzer never runs`` () =
@@ -433,9 +432,9 @@ let ``a rule outside the run's allowed codes is off, so its analyzer never runs`
 [<Fact>]
 let ``the restriction reaches the deep-stack workers per call and does not outlive the run that set it`` () =
     // BooleanSimplify checks its codes inside the worker. The workers are
-    // long-lived threads: before each job ran under its caller's context,
-    // they kept the one of whichever run created them, and a `--codes` run
-    // switched these rules off for every later run in the process
+    // long-lived threads: unless each job runs under its caller's context,
+    // they keep the one of whichever run created them, and a `--codes` run
+    // switches these rules off for every later run in the process
     let source = "module M\n\nlet f (x: bool) = x && true\n"
 
     let codes () =
@@ -451,7 +450,7 @@ let ``the restriction reaches the deep-stack workers per call and does not outli
 
     Assert.Contains("FR0108", codes ())
 
-// ---- #6: FR0015's names, FR0168's layout, Fantomas's call style ----
+// ---- FR0015's names, FR0168's layout, Fantomas's call style ----
 
 [<Fact>]
 let ``FR0015: the hoisted regex is named after the binding it serves`` () =
@@ -540,8 +539,8 @@ let ``FR0015: one pattern at two sites becomes one binding, the second site reus
 
 [<Fact>]
 let ``FR0015: two regexes of one function both hoist in one pass, the second numbered`` () =
-    // each regex of a function derives the function's name; the second
-    // used to be dropped as a collision and return a pass later under the
+    // each regex of a function derives the function's name; the second is
+    // not dropped as a collision to return a pass later under the
     // pattern's letters
     let source =
         fsharp
@@ -563,8 +562,8 @@ let ``FR0015: two regexes of one function both hoist in one pass, the second num
 
 [<Fact>]
 let ``FR0015: an is-prefixed function's second regex is numbered, not given the whole name`` () =
-    // `isPostcode` names its first regex `postcodeRegex`; the second took
-    // `isPostcodeRegex`, which reads as the function's one regex
+    // `isPostcode` names its first regex `postcodeRegex`; `isPostcodeRegex`
+    // for the second would read as the function's one regex
     let source =
         fsharp
             """
@@ -843,7 +842,7 @@ let ``FR0013: Fantomas told to write f(x) keeps the parentheses, unless FR0013 i
     File.WriteAllText(Path.Combine(asked, Configuration.ConfigFileName), """{ "rules": { "FR0013": true } }""")
     Assert.NotEmpty(ofCode "FR0013" (run Analyzers.redundantParensCliAnalyzer (contextIn asked [] source)))
 
-// ---- #2 and #5 end to end: FR0006 in one pass, the second pass narrower ----
+// ---- end to end: FR0006 in one pass, the second pass narrower ----
 
 [<Fact>]
 [<Trait("Category", "Slow")>]

@@ -1,6 +1,6 @@
-/// Audit fixes for the async rules: FR0049 (SyncOverAsync), FR0142
+/// Guards for the async rules: FR0049 (SyncOverAsync), FR0142
 /// (TestReturnsTask, through the shared BlockingSites.assertThrows) and
-/// FR0079 (SingleAwaitable). Each finding gets its repro (no fix, or the
+/// FR0079 (SingleAwaitable). Each hazard gets its repro (no fix, or the
 /// corrected fix) and a positive shape the fix was designed for.
 module FSharp.Refactor.Tests.AuditAsyncTests
 

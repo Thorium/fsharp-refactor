@@ -44,8 +44,8 @@ open FSharp.Refactor.Text
 
 /// A replacement that is just a name or a dotted path needs no parentheses
 /// when it lands in an operand position. Built once: this is consulted for
-/// every hint of every file, and constructing it there re-parsed the pattern
-/// every time — which is what our own FR0015 flags.
+/// every hint of every file, and constructing it there would re-parse the
+/// pattern every time — which is what FR0015 flags.
 let private plainOperand = System.Text.RegularExpressions.Regex @"^[\w.]+$"
 
 /// An application of atoms — `isNull x`, `not (isNull x)`, `List.isEmpty
@@ -79,8 +79,8 @@ type Hint =
             /// boolean `&&` or `||` on the right side, with that operator's
             /// text and whether the occurrence is its LEFT operand. An
             /// operand is bracketed by precedence, not like an argument:
-            /// `not ((List.isEmpty a) && (List.isEmpty b))` is what the De
-            /// Morgan rules produced before this distinction.
+            /// bracketed like an argument, the De Morgan rules would produce
+            /// `not ((List.isEmpty a) && (List.isEmpty b))`.
             RhsBoolOperandSpans: Map<int, string * bool>
             /// Metavariables that must bind pure atoms because the right side
             /// drops or duplicates them.
@@ -110,15 +110,15 @@ type Hint =
             /// The names the right side introduces that are not
             /// metavariables — `isNull`, `not`, `List.collect`,
             /// `op_Inequality` — each of which must still resolve to
-            /// FSharp.Core's at the site. Earcut defines its own narrower
-            /// `let inline isNull (node: Node)`, and `x = null ===> isNull x`
-            /// handed it a list: the rewrite did not compile.
+            /// FSharp.Core's at the site. Under a file's own narrower
+            /// `let inline isNull (node: Node)`, `x = null ===> isNull x`
+            /// would hand it a list: the rewrite would not compile.
             RhsNames: string list
             /// The names the left side spells that are not metavariables -
             /// `id`, `not`, `List.map` - each of which must resolve to
             /// FSharp.Core's at the site: inside a computation expression
-            /// `id "rule"` is the builder's custom operation (FsCDK's
-            /// `lifecycleRule { id "x" }`), and `id x ===> x` erased it.
+            /// `id "rule"` is the builder's custom operation
+            /// (`lifecycleRule { id "x" }`), which `id x ===> x` would erase.
             LhsNames: string list
             /// Whether those names are FSharp.Core's - true for the built-in
             /// rules, false for a repository's own (`hints` in its config),
@@ -133,9 +133,8 @@ type Hint =
             /// is rendered back as a pipeline, `x |> f args`: rendered as
             /// the application `f args x`, a lambda among `args` is
             /// type-checked before `x`, and a member lookup on its
-            /// parameter meets an indeterminate type. Fable's UnionTests,
-            /// Nu's WorldModuleEntity and PethostBackup's Util all lost
-            /// `xs |> M.map (fun x -> x.Member) |> M.concat` this way.
+            /// parameter meets an indeterminate type:
+            /// `xs |> M.map (fun x -> x.Member) |> M.concat` stops compiling.
             PipeTail: string option
         }
 
@@ -599,8 +598,8 @@ let defaultRules =
         "true && x ===> x"
         "false || x ===> x"
         // `fold (+) 0` -> `sum` is NOT here: the fold adds unchecked and
-        // wraps, `sum` adds checked and throws OverflowException (Mibo's
-        // Tests.fs; verified in fsi on [| Int32.MaxValue; 1 |])
+        // wraps, `sum` adds checked and throws OverflowException (on
+        // [| Int32.MaxValue; 1 |])
         "List.sum (List.map f x) ===> List.sumBy f x"
         "Array.sum (Array.map f x) ===> Array.sumBy f x"
         "Seq.sum (Seq.map f x) ===> Seq.sumBy f x"
@@ -681,8 +680,8 @@ let private resolvedOperandType
 /// Does `name`, as the matched expression spells it, resolve to FSharp.Core
 /// at the site? Asked of every non-operator left-side name of a built-in
 /// rule once it matches: a plain `id` inside a computation expression is
-/// the builder's custom operation (FsCDK's `lifecycleRule { id "rule" }`),
-/// which `id x ===> x` erased, and `not` or `List.map` can be shadowed the
+/// the builder's custom operation (`lifecycleRule { id "rule" }`), which
+/// `id x ===> x` would erase, and `not` or `List.map` can be shadowed the
 /// same way. Unresolvable is not proven: the hint stands down.
 let private nameResolvesToCore (check: FSharpCheckFileResults) (source: ISourceText) (expr: SynExpr) (name: string) =
     if name.StartsWith "op_" then
@@ -762,9 +761,9 @@ let private isProvablyBool (check: FSharpCheckFileResults) (source: ISourceText)
 /// projection, the eventual return type — to name no System.Double/Single.
 /// A unit-of-measure float is a float with NaN too: `float<length>` is not
 /// an abbreviation of System.Double to FCS but FSharp.Core's own
-/// `float<'Measure>` definition, and svg_path's `not (tolerance >=
-/// 0.0<length>)` — the deliberate NaN-rejecting guard — was flipped to
-/// `tolerance < 0.0<length>` past the System.Double check.
+/// `float<'Measure>` definition, so a System.Double check alone would flip
+/// `not (tolerance >= 0.0<length>)` — a deliberate NaN-rejecting guard —
+/// to `tolerance < 0.0<length>`.
 let private isProvablyNotFloat (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) : bool =
     let floatNames =
         set
@@ -823,7 +822,7 @@ let private isProvablyNotFloat (check: FSharpCheckFileResults) (source: ISourceT
 /// is checked. Collapsing that to `Array.maxBy File.GetLastWriteTime
 /// logFiles` checks the projection while the element type is still
 /// unknown, and F# answers "a unique overload for method
-/// 'GetLastWriteTime' could not be determined". Found live on prismatic.
+/// 'GetLastWriteTime' could not be determined".
 ///
 /// No hint may move such a binding. Adding the annotation that would
 /// rescue it is a different, much larger fix, and a rule that is not sure
@@ -861,8 +860,7 @@ let private isOverloadedMethodGroup (check: FSharpCheckFileResults) (source: ISo
 /// ordinary equality — only the type checker ever knows better. A hint that
 /// rewrites `x = true` to `x` therefore turns a property assignment into a
 /// stray identifier: "The value or constructor 'AutoReset' is not defined",
-/// and the constructor is suddenly handed two positional arguments. Found on
-/// Fuuga's LspClient.
+/// and the constructor is suddenly handed two positional arguments.
 ///
 /// Position is the only syntactic signal available here — the engine runs
 /// under --parse-only, where no symbol can be resolved — so an equality
@@ -880,8 +878,7 @@ let private maybeNamedArgument (path: SyntaxNode list) (e: SynExpr) =
 
     // an operator application is not a call: `a = null || b` puts the
     // equality under the `||` application (either side), where no argument
-    // is ever named — the guard used to withhold every null hint beside a
-    // `||` or `&&`
+    // is ever named
     let isOperatorApp (e: SynExpr) =
         match e with
         | SynExpr.App(isInfix = true; funcExpr = SingleIdent op)
@@ -905,9 +902,8 @@ let private maybeNamedArgument (path: SyntaxNode list) (e: SynExpr) =
 /// grammar or the reader does: an infix expression of lower or equal
 /// precedence, a lambda, a match, an if, a tuple. A function application,
 /// a method call, a dotted access and a name all stand bare beside `&&`
-/// and `||` — the sweep found `not ((List.isEmpty a) && (List.isEmpty b))`
-/// and `not ((json.ContainsKey "Case") && (json.ContainsKey "Fields"))`,
-/// which read worse than the code they replaced.
+/// and `||` — `not ((List.isEmpty a) && (List.isEmpty b))` reads worse
+/// than the code it replaces.
 let private boolOperandText (source: ISourceText) (op: string) (isLeft: bool) (bound: SynExpr) =
     let inner = stripParens bound
     let text = textOfRange source inner.Range
@@ -922,8 +918,8 @@ let private boolOperandText (source: ISourceText) (op: string) (isLeft: bool) (b
     // an `||` operand under `&&` keeps its brackets. Equal precedence on
     // the LEFT is the grammar's own grouping - `a || b || c` IS
     // `(a || b) || c` - so those brackets go: the De Morgan rules fold
-    // `not a && not b && not c` in two steps, and the second used to
-    // bracket the first's result, `not ((a || b) || c)`. On the right the
+    // `not a && not b && not c` in two steps, and the second would
+    // otherwise bracket the first's result, `not ((a || b) || c)`. On the right the
     // brackets keep the grouping visible
     let lowOrEqualPrecedence (opText: string) =
         match opText with
@@ -1324,7 +1320,7 @@ let find
     // attribute arguments are constant/property-assignment territory:
     // `[<DllImport(..., SetLastError = true)>]` is not an equality to
     // simplify (the property even RESOLVES to a bool field, so the typed
-    // gate alone waves it through — found live on Fuuga), and a rewrite
+    // gate alone waves it through), and a rewrite
     // that introduces a call would not compile there at all. No hint
     // fires inside one.
     let attributeArgRanges =
@@ -1399,15 +1395,13 @@ let find
                 // a built-in rule's left side spelling a name that is not
                 // FSharp.Core's at the site matched something else by shape.
                 // With a clean typed check the names prove themselves; without
-                // one (a parse-only caller, a file with any error) the one
-                // shape that has actually matched something else is a
-                // computation expression's CUSTOM OPERATION — a builder's `id`
-                // matched `id x ===> x` on a file with one unrelated type error
-                // and lost its keyword — and a custom operation exists only
+                // one (a parse-only caller, a file with any error) the shape
+                // that can match something else is a computation expression's
+                // CUSTOM OPERATION — a builder's `id` matching `id x ===> x`
+                // would lose its keyword — and a custom operation exists only
                 // inside a `builder { }` body. There the hint stands down;
-                // outside one the shape fires as it always has (a shadowing
-                // `let id x = ...` is the typed gate's to catch, and the
-                // untyped path never had it)
+                // outside one the shape fires (a shadowing `let id x = ...` is
+                // the typed gate's to catch)
                 let lhsForeign =
                     match typedCheck with
                     | Some c when hint.CoreNames ->

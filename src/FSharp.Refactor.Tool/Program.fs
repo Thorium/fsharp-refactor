@@ -195,7 +195,7 @@ module private Out =
     let note text =
         line Console.Out Console.IsOutputRedirected ConsoleColor.DarkCyan text
 
-    /// Failure. Stays on stderr, where it already was.
+    /// Failure. Stays on stderr.
     let bad text =
         line Console.Error Console.IsErrorRedirected ConsoleColor.Red text
 
@@ -368,8 +368,8 @@ let rec private parseArgsLoop opts args =
     | "--project" :: path :: rest
     | "--script" :: path :: rest -> parseArgsLoop { opts with Target = path } rest
     | "--codes" :: codes :: rest ->
-        // codes are spelled upper case in the catalogue; accepting either
-        // costs nothing and a lower-case code used to match nothing at all
+        // codes are spelled upper case in the catalogue; either case is
+        // accepted, so a lower-case code still matches
         let parsed =
             codes.Split ','
             |> Array.map (fun c -> c.Trim().ToUpperInvariant())
@@ -538,7 +538,7 @@ let internal TimeCapMark = "[stopped at the time cap]"
 
 /// No child process gets to hang the tool.
 ///
-/// Three ways that happens, and all three have. Draining one pipe to
+/// Three ways that happens. Draining one pipe to
 /// completion before the other deadlocks as soon as the child fills the one
 /// nobody is reading. An inherited stdin lets a child that decides to prompt
 /// — NuGet asking for feed credentials is the usual one — wait forever on a
@@ -566,8 +566,8 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
 
     // A child that cannot START is the fourth way: a blocked or missing
     // executable (a paket bootstrapper under application control, `mono`
-    // absent, `dotnet` not on the PATH) throws out of Process.Start, and
-    // that unwound the whole sweep from one checkout's restore. Reported
+    // absent, `dotnet` not on the PATH) throws out of Process.Start, which
+    // would unwind the whole sweep from one checkout's restore. Reported
     // the way a failed exit is, so the caller skips that target and the
     // run goes on.
     let started =
@@ -640,9 +640,9 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
 
 /// Long enough for a real build of a large project, short enough that a
 /// stuck one is reported rather than waited on forever. FSREF_BUILD_MINUTES
-/// raises it for a project whose compile alone takes longer: FSharpPlus's
-/// SRTP-heavy test project needs ~23 minutes, and was skipped as "does not
-/// build" at the default.
+/// raises it for a project whose compile alone takes longer: an SRTP-heavy
+/// test project can need over twenty minutes, and would be skipped as "does
+/// not build" at the default.
 let private processTimeout =
     match Environment.GetEnvironmentVariable "FSREF_BUILD_MINUTES" with
     | null
@@ -658,11 +658,11 @@ let private runProcess (timeout: TimeSpan) (fileName: string) (arguments: string
 /// The files among `files` that git ignores, by full lower-cased path.
 /// A compilation includes what its project lists, and a project may list
 /// vendored or generated code that lives outside version control:
-/// fantomas compiles a git-ignored `.deps/<sha>/src/Compiler/**` and its
-/// fslex output under a git-ignored `generated/`. Editing those is churn
-/// nobody can commit, and their notes (70 of fantomas's 105) drown the
-/// ones on maintained code. Asked of git once per project over stdin —
-/// the file list is far too long for a command line. No git, no
+/// a git-ignored `.deps/<sha>/src/Compiler/**` checkout, or fslex output
+/// under a git-ignored `generated/`. Editing those is churn nobody can
+/// commit, and their notes drown the ones on maintained code. Asked of
+/// git once per project over stdin — the file list is far too long for a
+/// command line. No git, no
 /// repository, or an error: nothing is ignored.
 let private gitIgnoredFiles (projectDir: string) (files: string[]) : Set<string> =
     if files.Length = 0 then
@@ -722,8 +722,8 @@ let private gitIgnoredFiles (projectDir: string) (files: string[]) : Set<string>
 /// The sources of a compilation the run may EDIT: the project's files less
 /// the vendored and generated ones above (ignored paths, git-ignored) -
 /// the same partition the sweep makes, asked here by the api pass so that
-/// a paket-files source is neither reshaped nor, when seventeen projects
-/// compile it, the reason all seventeen are read as linkers of each other.
+/// a paket-files source is neither reshaped nor, when many projects
+/// compile it, the reason they are all read as linkers of each other.
 let private editableSources (options: FSharpProjectOptions) : string[] =
     let gitIgnored =
         gitIgnoredFiles (Path.GetDirectoryName options.ProjectFileName) options.SourceFiles
@@ -737,17 +737,16 @@ let private editableSources (options: FSharpProjectOptions) : string[] =
 ///
 /// `dotnet` resolves global.json from its CURRENT directory upward, never
 /// from the project's own folder — so a build launched from wherever the
-/// user happened to stand ignored the repository's SDK pin, and a build
+/// user happened to stand would ignore the repository's SDK pin, and a build
 /// launched from a different place could verify a fix against a different
-/// SDK. Builds now run from the project's directory, as the repository's
-/// own build would.
+/// SDK. Builds run from the project's directory, as the repository's own
+/// build would.
 ///
-/// Where the pinned SDK is not installed at all — Fable pins 10.0.100 with
+/// Where the pinned SDK is not installed at all — a pin to 10.0.100 with
 /// latestPatch on a machine carrying only 10.0.302 — that build cannot run,
 /// and the pass would analyse nothing. The build then falls back to a
 /// neutral directory, outside any global.json, and says so: analysed with
-/// the SDK `dotnet` resolves there, which is what a hand-run from above the
-/// repository has always done, but now out loud rather than by accident.
+/// the SDK `dotnet` resolves there.
 let private buildDirectories =
     System.Collections.Generic.Dictionary<string, string option>()
 
@@ -840,11 +839,11 @@ let private tfmRank (tfm: string) =
 
 /// The frameworks a project lists, narrowest first. A plain
 /// `<TargetFrameworks>a;b</TargetFrameworks>` is read off the text. One
-/// under a Condition, or built from a property — the F# compiler's own
-/// FSharp.Core lists `netstandard2.0;netstandard2.1;$(FSharpCoreShippedNetTargetFramework)`
-/// behind `'$(Configuration)' != 'Proto'` — only MSBuild can evaluate, so
+/// under a Condition, or built from a property —
+/// `netstandard2.0;netstandard2.1;$(SomeShippedNetTargetFramework)` behind
+/// `'$(Configuration)' != 'Proto'` — only MSBuild can evaluate, so
 /// the text says "multi-targeted" and MSBuild says which. Read off the text
-/// alone, that project looked single-targeted, its outer build was queried
+/// alone, such a project looks single-targeted, its outer build is queried
 /// for compiler arguments, and the outer build of a multi-targeted project
 /// never runs CoreCompile: "no FscCommandLineArgs". Cached per project: the
 /// evaluation costs seconds.
@@ -852,11 +851,10 @@ let private listedFrameworks =
     System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
 
 /// A project file's text with its XML comments taken out: a framework list
-/// an author commented away is not one the project builds. welendus's
-/// WelendusLogic.fsproj carries `<!-- <TargetFrameworks>netstandard2.0;net48
-/// </TargetFrameworks> -->` above the live element, the text match took
-/// the commented one first, and the run asked MSBuild for a net48 pass that
-/// no restore had produced (NETSDK1005).
+/// an author commented away is not one the project builds. A commented
+/// `<TargetFrameworks>netstandard2.0;net48</TargetFrameworks>` above the
+/// live element would otherwise match first, and the run would ask MSBuild
+/// for a net48 pass that no restore produced (NETSDK1005).
 let internal projectTextWithoutComments (text: string) =
     Workspace.projectTextWithoutComments text
 
@@ -885,8 +883,8 @@ let internal targetFrameworksOf (projectPath: string) : string list =
             let m =
                 Text.RegularExpressions.Regex.Match(text, "<TargetFrameworks>([^<]+)</TargetFrameworks>")
 
-            // a second, conditioned element (the compiler project adds
-            // net10.0 to netstandard2.0 outside official builds) makes the
+            // a second, conditioned element (one adding net10.0 to
+            // netstandard2.0 outside official builds, say) makes the
             // plain one only part of the answer
             let conditioned =
                 Text.RegularExpressions.Regex.IsMatch(text, "<TargetFrameworks\\s+[^>]*Condition")
@@ -921,7 +919,7 @@ let internal targetFrameworksOf (projectPath: string) : string list =
 /// simply skipped, so `#if` branches behind them stay out of the parse
 /// (documented limitation of the mode).
 // compiled once: these run per project (and the whitespace collapser per
-// FINDING), and FR0015 rightly flagged the re-parsed patterns — dogfood
+// FINDING), and a re-parsed pattern is what FR0015 flags
 let private propertyGroupRegex =
     Text.RegularExpressions.Regex(
         "<PropertyGroup([^>]*)>((?s:.*?))</PropertyGroup>",
@@ -947,7 +945,7 @@ let private compileItemRegex =
 /// membership key every other path here is compared by, to the path as
 /// the project spells it. The spelled path is the one to READ: a Linux
 /// file system does not find `library.fs` where `Library.fs` is, and a
-/// reader handed the key took every project for one branching on the
+/// reader handed the key would take every project for one branching on the
 /// build configuration there. Read once per project file; items with a
 /// property or a wildcard are the evaluation's business and are left out,
 /// as `registerFileFloors` does.
@@ -976,8 +974,8 @@ let private compileItemsOf (project: string) =
 /// DEBUG`, `#if !DEBUG`, `#if RELEASE`, `#if TRACE`? The analysis sees one
 /// configuration's branch; the other is not in the parse tree at all, and
 /// a call-site migration rewrites the definition for both while reaching
-/// the call sites of one. Rare (7 of the 34 repositories swept), and the
-/// extra build below is a cheap price for knowing. Read from the parser's
+/// the call sites of one. Rare, and the extra build below is a cheap
+/// price for knowing. Read from the parser's
 /// directive trivia (Text.hasConfigurationConditional), so a `#if DEBUG`
 /// quoted in a comment or a string is not one.
 let private configurationConditionals =
@@ -1061,11 +1059,9 @@ let private defaultConfiguration (project: string) =
 /// A PropertyGroup carrying a Condition — usually `'$(TargetFramework)'
 /// == 'net8.0'`. Its constants belong to ONE framework, and --parse-only
 /// picks no framework at all, so taking them would activate `#if`
-/// branches for a compilation that is no framework in particular:
-/// SQLProvider defines NETSTANDARD21 only for net6/8/10 and
-/// netstandard2.1, and reading it unconditionally hides the branch every
-/// other target actually compiles. The README already promised these are
-/// not parsed; now they are not.
+/// branches for a compilation that is no framework in particular: a
+/// NETSTANDARD21 defined only for net6/8/10 and netstandard2.1, read
+/// unconditionally, hides the branch every other target actually compiles.
 let private conditionalPropertyGroupRegex =
     Text.RegularExpressions.Regex(
         "<PropertyGroup[^>]*\\sCondition\\s*=[^>]*>.*?</PropertyGroup>",
@@ -1138,19 +1134,18 @@ let private preparedRoots =
     System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
 
 /// A repository that ships its own .NET — global.json's `sdk.paths` naming
-/// a directory beside it (the F# compiler's `.dotnet`, Arcade repositories
-/// in general) — builds only with that .NET on DOTNET_ROOT. MSBuild finds
+/// a directory beside it (the `.dotnet` of Arcade repositories) — builds
+/// only with that .NET on DOTNET_ROOT. MSBuild finds
 /// the SDK through global.json, but the compiler it then runs is an apphost
 /// that resolves its runtime through DOTNET_ROOT alone, and exits with the
 /// host's framework-missing code (0x80008096, "fsc.exe exited with code
 /// -2147450730") when the runtime lives only in that directory. The
 /// repository's own build script sets the variable; so does this, for every
 /// process started from here — and undoes it again for the next checkout
-/// that has none. Both variables are process-wide: set once for the F#
-/// compiler's `.dotnet` and never restored, they made every later checkout
-/// of a workspace sweep build with THAT SDK, whatever its own global.json
-/// asked for, and a second private SDK was prepended in front of the first
-/// rather than in its place.
+/// that has none. Both variables are process-wide: set once and never
+/// restored, they would make every later checkout of a workspace sweep
+/// build with THAT SDK, whatever its own global.json asks for; and a second
+/// private SDK replaces the first rather than being prepended in front of it.
 let private sdkEnvironmentLock = obj ()
 
 /// DOTNET_ROOT and PATH as this process was started with, read the first
@@ -1265,7 +1260,7 @@ let private ensureRestorable (projectPath: string) =
                 let manifest = File.Exists(Path.Combine(root, ".config", "dotnet-tools.json"))
                 let bootstrapper = Path.Combine(root, ".paket", "paket.bootstrapper.exe")
                 let legacyExe = Path.Combine(root, ".paket", "paket.exe")
-                // the pre-tool layout (Chessie, FsXaml, FSharp.CloudAgent): the
+                // the pre-tool layout: the
                 // bootstrapper downloads paket.exe beside itself, and the
                 // projects' paket.targets then call that exe. Judged by that
                 // legacy targets file, not by the modern one's absence: a
@@ -1280,7 +1275,7 @@ let private ensureRestorable (projectPath: string) =
                     [
                         // the local-tool manifest is what makes `dotnet paket`
                         // exist — needed even when Paket.Restore.targets is in
-                        // place (suave: every project's restore failed without it)
+                        // place (without it every project's restore fails)
                         if manifest then
                             "dotnet", "tool restore", "dotnet tool restore"
                         if legacy then
@@ -1337,17 +1332,16 @@ let private forceCoreCompile =
 ///
 /// FS3511 is emitted at codegen, so only a compile that actually RAN
 /// reports it, and an up-to-date tree gives MSBuild no reason to run one.
-/// Forcing one costs the whole fsc compile — 28 s for FunStripe.Core's
-/// 141 files — per compilation per run, and that was the largest single
-/// cost of a sweep, paid twice over while the args query cleaned the
-/// outputs and a third build put them back. The same tree yields the same
+/// Forcing one costs the whole fsc compile — 28 s for 141 files — per
+/// compilation per run, the largest single cost of a sweep. The same tree
+/// yields the same
 /// warnings, so the harvest is cached under a hash of the sources: a hit
 /// runs the incremental build (a second or two — and still a real,
 /// harvested compile when something changed), a miss forces the compile
 /// once and records what it said. Keyed per framework, since a state
 /// machine can compile statically on one and not another; a project whose
 /// fsproj does not list its sources plainly (wildcards, imports) has no
-/// key and forces every time, as before.
+/// key and forces every time.
 let private fallbackCacheDir =
     lazy
         (let dir =
@@ -1467,8 +1461,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         // gated on what the target can resolve offers `s.Contains 'x'` under
         // net8.0, where the char overload exists, and that does not compile for
         // a netstandard2.0 target which lacks it. Analysing the narrowest
-        // surface keeps every fix valid for the wider ones. (Measured: a probe
-        // listing net8.0 first got exactly that break.)
+        // surface keeps every fix valid for the wider ones.
         //
         // ...unless the caller named one. Code behind another framework's #if
         // is invisible to the narrowest analysis — it is not in the parse tree
@@ -1522,9 +1515,9 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         // this one — fails with NETSDK1005 "doesn't have a target for
         // net10.0", or with a half-resolved reference set ("The type
         // referenced through 'System.Array' is defined in an assembly that
-        // is not referenced"). SwaggerProvider, whose Runtime project builds
-        // DesignTime through an <MSBuild> task, had both, run after run, and
-        // the verification put good fixes back on the strength of them.
+        // is not referenced"). A project that builds another through an
+        // <MSBuild> task hits both, and the verification then puts good fixes
+        // back on the strength of them.
         // `dotnet build` restores implicitly; `msbuild -t:Build` does not.
         let restoreExit, restoreOut, restoreErr =
             run $"msbuild \"{projectPath}\" -t:Restore"
@@ -1540,8 +1533,8 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
             harvestKey |> Option.bind (fun key -> readFallbackCache key frameworkName)
 
         // the FIRST of a multi-targeted project's frameworks builds them
-        // ALL: the inner builds run in parallel (35 s for both of
-        // FunStripe.Core's, against 28 s for one), and every later
+        // ALL: the inner builds run in parallel (35 s for two frameworks
+        // against 28 s for one), and every later
         // framework's own build is then incremental — a no-op when the
         // narrower pass changed nothing, exactly the compile it needs when
         // it did
@@ -1567,7 +1560,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                 // a framework this machine cannot build (a targeting pack
                 // it lacks) must not cost the narrowest one its analysis:
                 // the outer build failing, the pass falls back to building
-                // its own framework alone, as it did before the outer build
+                // its own framework alone
                 match outer with
                 | exit, _, _ when exit <> 0 && buildsEveryFramework ->
                     run $"msbuild \"{projectPath}\" -t:Build{tfmArg}{force}"
@@ -1575,7 +1568,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
 
         // FS3511 is emitted at CODEGEN, so no analyzer can see it — but this
         // build just did, and the warning carries the builder's own position
-        // ("SignalRHubs.fs(2583,16): warning FS3511: This state machine is not
+        // ("Hubs.fs(2583,16): warning FS3511: This state machine is not
         // statically compilable"). Handing those lines to the analyzers lets
         // FR0029's tail extraction fire where the fallback is REAL rather than
         // wherever a size threshold guesses at one. Nothing here when the
@@ -1640,12 +1633,10 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
             // the build above left the project up to date, and an
             // incremental skip of CoreCompile yields no args at all — so the
             // target is forced (forceCoreCompile) rather than the outputs
-            // cleaned: a `-t:Rebuild` here once cost every project a clean
+            // cleaned: a `-t:Rebuild` here would cost every project a clean
             // and a third build to put the outputs back for a script's
-            // `#r "../../src/X/bin/Debug/net9.0/X.dll"` (four of
-            // svg_path_fsharp's five debug scripts had lost their
-            // reference) or an old-style project's path reference (FsXaml's
-            // demos). BuildProjectReferences=false keeps the referenced
+            // `#r "../../src/X/bin/Debug/net9.0/X.dll"` or an old-style
+            // project's path reference. BuildProjectReferences=false keeps the referenced
             // outputs intact. Judge by the JSON, not the exit code.
             let exit, stdout, stderr =
                 run
@@ -1671,8 +1662,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                 // against a netstandard2.0 project that resolves as "The
                 // module/namespace 'System' from compilation unit
                 // 'netstandard' did not contain ... 'IAsyncDisposable'" —
-                // three errors on SwaggerProvider's DesignTime that its own
-                // build never had, refusing the project run after run. So
+                // errors its own build never has, refusing the project. So
                 // when the arguments carry no FSharp.Core, the compiler's own
                 // is added: the same assembly fsc resolves, and nothing else.
                 let bundledFSharpCore =
@@ -1783,8 +1773,7 @@ let parseOnlySafeAnalyzers =
             // MethodCallParens (FR0094) is syntactic, but not for here: on a
             // receiver the compilation cannot type, `x.Add(p)` and `x.Add p`
             // fail with DIFFERENT error sets, and the count-based regression
-            // check reads that as a break (fsharplint's docs scripts, three
-            // rollbacks for a matter of taste)
+            // check reads that as a break: a rollback for a matter of taste
             "MiscRules"
             "ObjectRules"
             "PathSeparator"
@@ -1844,11 +1833,10 @@ let private legacyEncoding () : System.Text.Encoding =
 /// code page (see legacyEncoding).
 ///
 /// Judged by the BOM alone, a Windows-1252 file with `ä` in a comment
-/// and no BOM was decoded as UTF-8: every such byte came back as U+FFFD,
-/// and ANY fix to the file then rewrote the whole of it as UTF-8, each
-/// `ä` now EF BF BD - a put-back too, since the original was held as that
-/// decoded text. And UTF-32LE's mark (FF FE 00 00) begins with UTF-16LE's
-/// (FF FE), so it is tested first; UTF-16 was the answer it got.
+/// and no BOM would decode as UTF-8: every such byte comes back as U+FFFD,
+/// and ANY fix to the file then rewrites the whole of it as UTF-8, each
+/// `ä` now EF BF BD. And UTF-32LE's mark (FF FE 00 00) begins with
+/// UTF-16LE's (FF FE), so it is tested first.
 let private sourceEncoding (bytes: byte array) : System.Text.Encoding * int =
     let startsWith (mark: byte list) =
         bytes.Length >= mark.Length
@@ -1878,8 +1866,8 @@ let private decodeSource (bytes: byte array) =
 
 /// A source file's text - the one reader of every file the run may write:
 /// `File.ReadAllText` decodes a file without a BOM as UTF-8 and replaces
-/// each invalid byte with U+FFFD, so a legacy file's text was lost the
-/// moment it was read (see sourceEncoding).
+/// each invalid byte with U+FFFD, so a legacy file's text would be lost
+/// the moment it was read (see sourceEncoding).
 let internal readSource (path: string) = decodeSource (File.ReadAllBytes path)
 
 /// The encoding a source file is written in (see sourceEncoding).
@@ -1892,9 +1880,9 @@ let internal encodingOf (path: string) : System.Text.Encoding =
 
 /// The typecheck of a multi-targeted project's NEXT framework, started
 /// while the current one is swept (see prefetchNextFramework). FCS runs
-/// two project checks concurrently on one checker at full speed — both of
-/// FunStripe.Core's frameworks in 24.8 s against 51 s one after the
-/// other, measured — so the wider framework's 27 s baseline is paid
+/// two project checks concurrently on one checker at full speed — two
+/// frameworks in 24.8 s against 51 s one after the other, measured — so
+/// the wider framework's 27 s baseline is paid
 /// behind the narrower one's sweep instead of after it.
 ///
 /// A source written while that check reads it could be parsed half-way
@@ -1920,9 +1908,10 @@ let private awaitSpeculation () =
 /// The BYTES every file had before the run first wrote it (or first
 /// snapshotted it, takeSnapshot): what a put-back writes, byte for byte,
 /// when the text it puts back is the text those bytes decode to. Holding
-/// the original as decoded text alone made a put-back only as exact as
-/// the decode-encode round trip - a byte the legacy page has no character
-/// for came back changed from a run that kept none of its fixes. Cleared
+/// the original as decoded text alone would make a put-back only as exact
+/// as the decode-encode round trip - a byte the legacy page has no
+/// character for would come back changed from a run that kept none of its
+/// fixes. Cleared
 /// per run, beside runOriginals.
 let internal originalBytes =
     System.Collections.Generic.Dictionary<string, byte array>(StringComparer.OrdinalIgnoreCase)
@@ -1960,10 +1949,8 @@ let private writeSource (path: string) (text: string) =
 /// Set for the run by executeRun. In --parse-only mode nothing resolves,
 /// so only PARSE-phase diagnostics are meaningful: a fix that spells a
 /// new identifier (`CultureInfo.InvariantCulture`) adds unresolved-
-/// reference errors to the pile, and a raw count comparison then blamed
-/// the fix for pre-existing noise (found on PethostBackup: every FR0067
-/// culture fix rolled back for inflating FS0039s that were ignored to
-/// begin with).
+/// reference errors to the pile, and a raw count comparison would blame
+/// the fix for noise that was there before it.
 let mutable internal parseOnlyRun = false
 
 /// `fsi.CommandLineArgs` and friends live in
@@ -1971,8 +1958,7 @@ let mutable internal parseOnlyRun = false
 /// useFsiAuxLib only when that assembly sits beside the compiler — this
 /// tool's own directory, which does not ship it. The SDK dotnet resolves
 /// for the script's directory does, so it is referenced from there;
-/// without it every script touching `fsi` read as "does not typecheck"
-/// (FSharp.Azure.Quantum's examples, all of them).
+/// without it every script touching `fsi` reads as "does not typecheck".
 let private fsiAuxLib =
     let cache =
         System.Collections.Concurrent.ConcurrentDictionary<string, string option>()
@@ -2006,7 +1992,7 @@ let private fsiAuxLib =
                         else
                             None)
                     |> Option.filter File.Exists
-                with _ -> // no SDK found: the script is read without fsi, as before; fsharpanalyzer: ignore-line FR0055
+                with _ -> // no SDK found: the script is read without fsi; fsharpanalyzer: ignore-line FR0055
                     None
         )
 
@@ -2029,19 +2015,17 @@ let private checkDirectoryLock = obj ()
 /// ParseAndCheckProject from the project's own directory, the way MSBuild
 /// runs fsc. The typecheck ends by resolving the assembly's identity, and
 /// for that FCS opens the strong-name key exactly as the source spells it
-/// — `[<assembly: AssemblyKeyFile("../../FsCheckKey.snk")>]` is read
+/// — `[<assembly: AssemblyKeyFile("../../Key.snk")>]` is read
 /// relative to the PROCESS directory, not the project's (implicitIncludeDir
-/// covers `#r` and `--lib`, not this). A solution run from FsCheck's root
-/// refused all four library projects with "The key file could not be
-/// opened" while `dotnet build` and a run from each project directory
-/// were fine. The directory is process-wide state, so the change lasts
+/// covers `#r` and `--lib`, not this). Checked from any other directory,
+/// such a project fails with "The key file could not be opened" while
+/// `dotnet build` succeeds. The directory is process-wide state, so the change lasts
 /// exactly one synchronous check, under a lock; nothing else reads a
 /// relative path meanwhile (the sweep's parallel file checks come later
 /// and do not finalize an assembly).
 /// How long one typecheck may take before it is given up as hung. A type
-/// provider connects to its database at design time, and SQLProvider's
-/// DuckDbTest.fsx sat in that connection for two and a half hours with no
-/// way out; the FCS call cannot be cancelled, so the wait is abandoned and
+/// provider connects to its database at design time, and can sit in that
+/// connection for hours with no way out; the FCS call cannot be cancelled, so the wait is abandoned and
 /// the compilation reported, the work left to finish on its own thread.
 /// FSREF_CHECK_MINUTES raises it for a project whose check alone takes
 /// longer.
@@ -2056,7 +2040,8 @@ let private checkTimeout =
             | _ -> TimeSpan.FromMinutes 30.0
 
     // a project whose BUILD was allowed longer (FSREF_BUILD_MINUTES) can
-    // typecheck as long: FSharpPlus's test project compiles in 23 minutes
+    // typecheck as long: an SRTP-heavy test project can compile for over
+    // twenty minutes
     max asked processTimeout
 
 /// `work`, given up after `timeout` with a TimeoutException carrying
@@ -2066,8 +2051,8 @@ let private checkTimeout =
 /// computation and then waits, with no timeout of its own, for it to
 /// notice — measured, a 6 s `Thread.Sleep` inside the async came back
 /// after 6 s against a 500 ms timeout. A type provider sitting in a
-/// database connection never observes cancellation, so the DuckDbTest.fsx
-/// wait this exists to end went on exactly as before. Started as a Task
+/// database connection never observes cancellation, so that overload
+/// would wait on it regardless. Started as a Task
 /// instead, and the wait alone is bounded; the task finishes, or does not,
 /// on its own thread. `WaitAny` rather than `Wait` so a failure is not
 /// wrapped in an AggregateException on the way out: `GetResult` rethrows
@@ -2076,17 +2061,17 @@ let private checkTimeout =
 /// Left running is not left alone: the task is started under a token that
 /// is cancelled on the way out, and not waited for. A typecheck that does
 /// observe cancellation (FCS checks the token between files) then stops
-/// and lets go of the checker it was rooting — an abandoned check kept the
-/// old checker, and everything it had cached, alive for the rest of the
-/// run. One that never observes it runs on exactly as before.
+/// and lets go of the checker it was rooting — otherwise an abandoned check
+/// keeps the old checker, and everything it had cached, alive for the rest
+/// of the run. One that never observes it runs on.
 let internal awaitWithin (timeout: TimeSpan) (describe: unit -> string) (work: Async<'T>) : 'T =
     let cts = new Threading.CancellationTokenSource()
     let task = Async.StartAsTask(work, cancellationToken = cts.Token)
 
     // the source lives as long as the work holding its token: disposed at
     // return while an abandoned check still runs, the check's next
-    // registration on the token would throw - the shape FR0075 now refuses
-    // (welendus's loan search under a `use`d source) - so the work disposes
+    // registration on the token would throw - the shape FR0075 refuses -
+    // so the work disposes
     // it on its own completion, however it ends
     task.ContinueWith(
         (fun (_: Threading.Tasks.Task) -> cts.Dispose()),
@@ -2128,7 +2113,7 @@ let internal checkProject (checker: FSharpChecker) (options: FSharpProjectOption
             let previous = Environment.CurrentDirectory
 
             // a directory the process cannot make current (a path past the
-            // OS limit) checks from wherever we are, as before
+            // OS limit) checks from wherever we are
             let switched =
                 try
                     Environment.CurrentDirectory <- dir
@@ -2161,11 +2146,11 @@ let private projectErrors (checker: FSharpChecker) (options: FSharpProjectOption
 let private errorCount (checker: FSharpChecker) (options: FSharpProjectOptions) = (projectErrors checker options).Length
 
 /// The project's errors, plus each named file checked on its own. The
-/// project check is not the whole truth: on the F# compiler, whose every
-/// implementation file has a signature, a member pulled out of a `let rec`
-/// group generalised a parameter and the signature's concrete type failed
-/// FS0034 in fsc — while ParseAndCheckProject reported nothing, and only a
-/// per-file check of that file did. A pass that touched a file checks that
+/// project check is not the whole truth: where every implementation file
+/// has a signature, a member pulled out of a `let rec` group can generalise
+/// a parameter, and the signature's concrete type then fails FS0034 in fsc
+/// — while ParseAndCheckProject reports nothing, and only a per-file check
+/// of that file does. A pass that touched a file checks that
 /// file the second way too.
 let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOptions) (files: string list) =
     let project = projectErrors checker options
@@ -2183,8 +2168,7 @@ let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOp
     // MSBuild item written `src/main.fs` keeps its forward slash there
     // while the edited path arrives through GetFullPath with a backslash.
     // Checked under the wrong spelling, an anonymous-module last file of
-    // an exe fails FS0222 whatever its text - Fable's quicktest-rust
-    // main.fs lost its one fix to that, and would have lost any other
+    // an exe fails FS0222 whatever its text, and every fix to it is lost
     let inProject =
         options.SourceFiles
         |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant(), f)
@@ -2255,8 +2239,7 @@ let private fixKey (code: string) (file: string) (f: Fix) =
 
 /// Files a verification put back for refusing another project or
 /// framework, for the rest of the run: the next framework round would
-/// otherwise apply the same fixes again and bisect again (the F#
-/// compiler's sformat.fs, twice in one run).
+/// otherwise apply the same fixes again and bisect again.
 let private putBackFiles =
     System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
@@ -2345,7 +2328,7 @@ let private linkedFiles = System.Collections.Generic.HashSet<string>()
 /// puts every active pattern it extracts right above the enclosing
 /// declaration, and keeps one suggestion per generated name, so its texts at
 /// a point never define a name twice. Taken one per pass, a match with three
-/// guards took three passes and tripped the re-fire guard (GitHub #2). Not a
+/// guards would take three passes and trip the re-fire guard. Not a
 /// general rule: two FR0071 hoists of a same-named binding to one point would
 /// shadow each other, which only a later pass, seeing the first, can refuse.
 /// FR0015 qualifies the same way: its hoists of one pass claim distinct names
@@ -2366,8 +2349,8 @@ let mutable private appliedFindings = 0
 /// or nothing within a file. A hoist is an insertion plus a deletion:
 /// dropping the insertion (say, to an overlap with another suggestion at
 /// the same point) while the deletion lands removes a binding its uses
-/// still need. Found live on Fuuga: two FR0071 hoists inserting at one
-/// point, half of the second applied, `startBlock` undefined.
+/// still need: two FR0071 hoists inserting at one point, half of the
+/// second applied, leave its binding undefined.
 let private applyEditGroups
     (dryRun: bool)
     (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
@@ -2511,9 +2494,9 @@ let private applyEditGroups
                         | None -> ()
 
                 // one line per FINDING, at its first edit, with the edit count when
-                // it has several: a line per edit printed an FR0147 open as seven
-                // lines, and the pass total then disagreed with the report's
-                // finding count for no visible reason (GitHub #6)
+                // it has several: a line per edit would print an FR0147 open as
+                // seven lines, and the pass total would disagree with the
+                // report's finding count for no visible reason
                 appliedHere
                 |> List.groupBy (fun (g, _, _) -> g)
                 |> List.map (fun (_, members) ->
@@ -2563,8 +2546,9 @@ type private ApiSuggestion =
 /// One script's contribution, cached across the compilations of a run.
 /// Discovery is per PROJECT, but the expensive part — resolving a script's
 /// references and typechecking it — depends only on the script, and a
-/// solution sweep calls the api pass once per compilation (Fuuga: 39).
-/// Re-typechecking 13 scripts 39 times over is half an hour of nothing.
+/// solution sweep calls the api pass once per compilation. Re-typechecking
+/// every script once per compilation of a large solution is half an hour
+/// of nothing.
 type private ScriptInfo =
     {
         /// Files this script pulls in, so a project can ask "does this
@@ -2593,7 +2577,7 @@ let private scriptCache =
 /// somewhere we cannot see. But the script is a separate compilation, so
 /// its calls are absent from the project's symbol tables, and the pass's
 /// own "every use resolves or the change is abandoned" guard never fires.
-/// The definition changed shape and the script stopped compiling.
+/// The definition would change shape and the script stop compiling.
 ///
 /// Note there is no build check behind this: `dotnet build` compiles the
 /// project, not the scripts beside it. A script edit is answerable to the
@@ -2657,9 +2641,9 @@ let private outputFileNameOf (options: FSharpProjectOptions) =
 /// contributes no cross-compilation match.
 /// A symbol's full name, or None when there is not one to be had.
 ///
-/// The try alone was not enough. `FullName` can RETURN null as well as
-/// throw, and a null answer used to travel on as `Some null` into a
-/// Dictionary key - which throws ArgumentNullException outside this try and
+/// The try alone is not enough. `FullName` can RETURN null as well as
+/// throw, and a null answer traveling on as `Some null` into a
+/// Dictionary key throws ArgumentNullException outside this try and
 /// takes the run down. Both shapes are the same answer to the caller: a use
 /// that cannot be named, which the caller treats as a reason to leave the
 /// sources alone rather than migrate one call site short.
@@ -2721,7 +2705,6 @@ let private readScriptUnguarded (checker: FSharpChecker) (script: string) =
                 // even `open System.IO` reports DirectorySecurity as missing and every
                 // file the script #loads is written off. Try Core, and when that does not
                 // resolve retry as Framework, keeping whichever typechecks.
-                // PethostBackup/backend/Program.fsx: 160 errors as Core, 0 as Framework.
                 let attempt assumeDotNetFramework =
                     let options, _ =
                         checker.GetProjectOptionsFromScript(
@@ -2850,8 +2833,7 @@ let private readScript (checker: FSharpChecker) (script: string) =
 /// as it matches a `#load`ing script's; and the dll on disk - built before
 /// this pass and never again until the run ends - plays no part, so the
 /// same options recheck the script against the REWRITTEN sources once the
-/// edits are in. Farmer's amortisationFaq.fsx held every public
-/// declaration of its project in place before this.
+/// edits are in.
 ///
 /// Read once per round per script: cleared with the sibling cache.
 let private referencingCheckCache =
@@ -3019,10 +3001,10 @@ let inline private (|Exists|_|) (input: string) =
 /// group with it: leaving the definition reshaped while putting the script
 /// back is precisely the breakage this exists to prevent.
 ///
-/// Both passes go through here. The api pass (FR0090/FR0091) has always
-/// rewritten `#load`ing scripts; the normal pass does too now that the
-/// FR0069/FR0093 migrations read their call sites, and one rule's safety
-/// net is no use to the other if it hangs in only one of the two places.
+/// Both passes go through here. The api pass (FR0090/FR0091) rewrites
+/// `#load`ing scripts, and so does the normal pass, whose FR0069/FR0093
+/// migrations read their call sites; one rule's safety net is no use to
+/// the other if it hangs in only one of the two places.
 ///
 /// `brokenElsewhere` is the same question for whatever else the caller
 /// edited outside the project — the api pass's sibling projects, which
@@ -3047,8 +3029,8 @@ let rec private applyEditGroupsCheckingScripts
     // edit. The check below asks whether a rewritten script still has a
     // context, and a script that never had one — it does not resolve its
     // `#r`s, or it has no `#load` at all and so is never given one — would
-    // fail that test no matter what was written, so every fix to it was
-    // applied and put back on every run, forever. Only a script this pass
+    // fail that test no matter what was written, so every fix to it would
+    // be applied and put back on every run, forever. Only a script this pass
     // actually broke may take its group down.
     let contextBefore =
         if dryRun then
@@ -3218,9 +3200,9 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
             // Walked a directory at a time, not by
             // `Directory.EnumerateFiles(_, _, AllDirectories)`: that gives
             // up the whole enumeration at the first directory it cannot
-            // open, and the `with _ -> [||]` that caught it here made ONE
-            // dead symlink (Fable's, under its Beam build output) drop every
-            // script of the repository — and with them this guard, silently.
+            // open, and a `with _ -> [||]` catching it here would let ONE
+            // dead symlink drop every script of the repository — and with
+            // them this guard, silently.
             // A directory the walk had to skip is recorded instead, and
             // answered for below.
             FileWalk.filesNoting "*.fsx" dir unwalked.Add
@@ -3260,7 +3242,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
     // a directory this walk could not read may hold a script that #loads
     // any file of this project, and its calls cannot be read: the same
     // restraint as for a script that does not typecheck, over every file,
-    // since nothing says which. An unreadable tree used to contribute "no
+    // since nothing says which. An unreadable tree must not contribute "no
     // call sites", which is the one answer this probe must never give.
     if unwalked.Count > 0 then
         let named =
@@ -3889,8 +3871,8 @@ let private runApiPass
     (scriptSites: ScriptCallSites)
     /// Call sites in the sibling projects that reference this one, which
     /// the project compilation cannot see either. Lazy: the reading costs
-    /// an MSBuild evaluation and a typecheck per referencing project (22
-    /// of them, seven minutes, on SQLProvider.Common), and is asked for
+    /// an MSBuild evaluation and a typecheck per referencing project
+    /// (minutes, for a widely referenced library), and is asked for
     /// only once a file holds a tupled definition worth reshaping.
     (siblingSites: Lazy<SiblingCallSites>)
     (codes: Set<string> option)
@@ -3977,7 +3959,7 @@ let private runApiPass
             }
 
         // a file a broken script #loads is left alone entirely: we cannot
-        // read that script's calls, and reshaping blind is how it broke
+        // read that script's calls, and reshaping blind is how scripts break
         // - and so is a vendored or generated file the sweep would not touch
         let reshapable =
             editableSources options
@@ -3994,10 +3976,9 @@ let private runApiPass
 
         // a function a STRING LITERAL names, anywhere in this project or in
         // one that reads it, has call sites no symbol table lists: a code
-        // generator's template. SQLProvider.Fable's CodeGen emits
-        // `Row.text r "Name"` from a string; FR0091 reordered `Row.text`,
-        // rewrote the fifty calls it could see, and the generated code kept
-        // the old order. Such a function keeps its shape.
+        // generator's template. A generator emitting `Row.text r "Name"`
+        // from a string keeps the old order when FR0091 reorders `Row.text`
+        // and rewrites the calls it can see. Such a function keeps its shape.
         let sourcesInPlay =
             lazy
                 (Seq.concat
@@ -4149,8 +4130,7 @@ let private runApiPass
                     $"  {s.Code} {kindColumn s.Code} {s.FunctionName}: held back this round (edits nest inside another change)"
             else
                 // scripts and sibling projects are worth naming: they are
-                // the call sites a reader assumes were out of scope, and
-                // the ones that used to break
+                // the call sites a reader assumes were out of scope
                 let inScripts =
                     s.Edits
                     |> List.filter (fun (r, _, _) -> r.FileName.EndsWith(".fsx", StringComparison.OrdinalIgnoreCase))
@@ -4316,7 +4296,7 @@ let private runApiPass
                     // yields no in-memory assembly data, and FCS binds the
                     // sibling to the dll on disk instead, built BEFORE this
                     // round's edits, so every migrated call site fails against
-                    // the old signature (CarmelNet's tests against FSharp.Data).
+                    // the old signature.
                     // A failed check is therefore confirmed by a real build of
                     // the sibling, which builds this project first; only a
                     // build that fails blames the edits
@@ -4391,7 +4371,7 @@ let private runApiPass
 /// applied.
 /// The project's OWN guard constant for dual-framework capability fixes:
 /// a DefineConstants value whose $(TargetFramework) conditions cover
-/// modern frameworks and none of the legacy ones — SQLProvider's
+/// modern frameworks and none of the legacy ones — for example
 ///
 ///     <DefineConstants Condition=" '$(TargetFramework)' == 'netstandard2.1'
 ///         Or '$(TargetFramework)' == 'net8.0' ...">NETSTANDARD21</DefineConstants>
@@ -4478,9 +4458,8 @@ let private chooseDualConstant (projectPath: string) (modern: string list) (lega
         // TFM condition in this fsproj, but its meaning is the flavor, and a
         // sibling project compiling the same shared file can define it
         // unconditionally — legacy included — turning our #if into a break.
-        // The trailing digits are required: SQLProvider's bare NETSTANDARD
-        // is a fossil of netstandard-vs-net451 days and is nowadays defined
-        // everywhere
+        // The trailing digits are required: a bare NETSTANDARD is often a
+        // leftover of netstandard-vs-net451 days, defined everywhere
         let frameworkShaped =
             System.Text.RegularExpressions.Regex @"^(?i)net(standard|coreapp)?[\d_]+$"
 
@@ -4592,11 +4571,11 @@ let private sweptFiles = System.Collections.Generic.HashSet<string * string>()
 /// A script compiles what it `#load`s into ITSELF, against the script
 /// host's reference set — .NET Core, or Framework on the retry — and the
 /// script's check then passes for the script. It says nothing about the
-/// project the file was written for: Owin.Compression's Script.fsx
-/// `#load`s CompressionModule.fs, a net48 source, and the script's sweep
-/// wrote `Convert.ToHexString` and `File.ReadAllBytesAsync` into it —
-/// both real under the script's .NET 10, neither on net48, and the net48
-/// project, checked a compilation EARLIER, never saw them. The sweep dedup
+/// project the file was written for: a script `#load`ing a net48 source
+/// could have its sweep write `Convert.ToHexString` and
+/// `File.ReadAllBytesAsync` into it — both real under the script's .NET 10,
+/// neither on net48, and the net48 project, checked a compilation EARLIER,
+/// never sees them. The sweep dedup
 /// does not cover this: it keys on conditional defines, the file carries
 /// an `#if INTERACTIVE`, and the script's defines differ. So a file a
 /// project owns is the project's to edit; the script sweeps only what no
@@ -4646,16 +4625,15 @@ let mutable internal runCompilations = 0
 /// Why each compilation of this run exited non-zero, one line each
 /// ("Tests.fsproj [net9.0]: all 25 changed file(s) put back by the
 /// all-frameworks build"). The run's exit code is the worst of them, and
-/// without this list a reader of an hour-long log had to find the one
-/// put-back paragraph that explained an exit 1 the tail never mentioned
-/// (FsToolkit: exit 1, no line saying why).
+/// without this list a reader of an hour-long log has to find the one
+/// put-back paragraph that explains an exit 1 the tail never mentions.
 let internal exitReasons = ResizeArray<string>()
 
 /// Compilations this run could not analyse because they would not build.
 /// The exit code already reflects them, but a HUMAN reads the tail of the
 /// output, and the per-project errors scroll past long before it: a
-/// SwaggerProvider clone missing its paket restore failed 7 of 10
-/// compilations and still signed off with a cheerful finding count. A
+/// clone missing its paket restore can fail most of its compilations and
+/// still sign off with a cheerful finding count. A
 /// silent gap in coverage reads exactly like clean code.
 let mutable internal runBuildFailures = 0
 
@@ -4859,8 +4837,8 @@ let private relativeToRoot (root: string) (file: string) =
 
 // Every analyzer speaks at Hint severity — that is the SDK's editor
 // channel, not a statement about how much the finding matters — so
-// mapping severity alone stamped `note` on all of them and a swallowed
-// exception rendered exactly like a redundant paren. The CATEGORY is
+// mapping severity alone would stamp `note` on all of them and render a
+// swallowed exception exactly like a redundant paren. The CATEGORY is
 // the judgement the rules actually make, so it is what the reports
 // carry: correctness earns a warning, the rest stay notes. Nothing
 // becomes an error — every finding here is advice about code that
@@ -5112,9 +5090,8 @@ let private writeSarifReport (path: string) (target: string) (findings: Reported
                                                         box "fsharp-refactor: F# refactoring analyzers and apply tool"
                                                         "version", box toolVersion.Value
                                                         "semanticVersion", box toolVersion.Value
-                                                        // the URL the package and --help both publish; this
-                                                        // one said FSharp.Refactorings, and it is the link
-                                                        // GitHub code scanning puts in front of users
+                                                        // the URL the package and --help both publish; it is
+                                                        // the link GitHub code scanning puts in front of users
                                                         "informationUri",
                                                         box "https://github.com/Thorium/fsharp-refactor"
                                                         "rules", box rulesMetadata
@@ -5458,7 +5435,7 @@ let private markSwept (options: FSharpProjectOptions) =
 /// enabled work in, since a later file sees the earlier ones' new shape. A
 /// file compiled BEFORE every change is typechecked exactly as it was, and
 /// its analysis would only repeat itself; the last pass of a run, the one
-/// that finds nothing, was a full sweep for no answer. The residual: the
+/// that finds nothing, would be a full sweep for no answer. The residual: the
 /// few rules that read a LATER file (FR0035 asking whether one still reads
 /// a binding, FR0130 a pattern in a sibling) may find new work in an earlier
 /// file only on the next run - a fix missed, never a wrong one applied.
@@ -5538,8 +5515,8 @@ let private runPass
                         ParseFileResults = parseResults
                         CheckFileResults = checkResults
                         // the typed tree is not kept (keepAssemblyContents = false): no rule of
-                        // ours reads it, and keeping it held every project's typed trees - 6.3 GB
-                        // peak on Fuuga against 0.7 without
+                        // ours reads it, and keeping it holds every project's typed trees - 6.3 GB
+                        // peak against 0.7 without
                         TypedTree = None
                         CheckProjectResults = projectResults
                         ProjectOptions = AnalyzerProjectOptions.BackgroundCompilerOptions options
@@ -5559,7 +5536,7 @@ let private runPass
                 // `return! work`, and the deep-stack worker rethrows its
                 // exception as the original type, so only a catch-all here
                 // sees it: with the two named cases alone, one rule's
-                // KeyNotFoundException ended a whole workspace sweep.
+                // KeyNotFoundException would end a whole workspace sweep.
                 let analyzerFailed (kind: string) (m: MethodInfo) (ex: exn) =
                     System.Threading.Interlocked.Increment(&runAnalyzerFailures) |> ignore
                     eprintfn $"  ({kind} {m.Name} failed on {file}: {ex.GetType().Name}: {ex.Message})"
@@ -5575,8 +5552,8 @@ let private runPass
 
                 // bound each analyzer's Async rather than blocking on it:
                 // with several files in flight, an Async.RunSynchronously
-                // here would tie up a thread-pool thread per job (our own
-                // FR0049 flags exactly this, and caught it here)
+                // here would tie up a thread-pool thread per job (FR0049
+                // flags exactly this)
                 for m in analyzers do
                     let sw = Stopwatch.StartNew()
 
@@ -5610,8 +5587,8 @@ let private runPass
                             ParseFileResults = parseResults
                             CheckFileResults = Some checkResults
                             // the typed tree is not kept (keepAssemblyContents = false): no rule of
-                            // ours reads it, and keeping it held every project's typed trees - 6.3 GB
-                            // peak on Fuuga against 0.7 without
+                            // ours reads it, and keeping it holds every project's typed trees - 6.3 GB
+                            // peak against 0.7 without
                             TypedTree = None
                             CheckProjectResults = Some projectResults
                             ProjectOptions = context.ProjectOptions
@@ -6005,9 +5982,7 @@ let private runPass
         // Text.alignmentHazard: a line to the right of every anchor is a
         // continuation before and after, and is not held). The rules that
         // shorten lines most (FR0094, FR0013) check the same layout
-        // themselves; this is the backstop for every rule, found on
-        // fparsec's CharParsers.fs where FR0094 dropped two characters and
-        // the `(flags <- ...` block's lines under them stayed put. Held at
+        // themselves; this is the backstop for every rule. Held at
         // MESSAGE level: a compound fix applies whole or not at all
         let sourceLines =
             lazy
@@ -6285,9 +6260,8 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
                     |> List.ofSeq
                 | _ ->
                     // EVERY solution in the directory, projects deduplicated —
-                    // picking the alphabetically first silently skipped
-                    // FsCDK.sln's whole library because FsCDK.Samples.sln
-                    // sorted ahead of it
+                    // picking the alphabetically first would silently skip a
+                    // library whose X.Samples.sln sorts ahead of its X.sln
                     if solutions.Length > 1 then
                         printfn $"({solutions.Length} solutions here - analysing the union of their projects)"
 
@@ -6297,8 +6271,8 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
                     |> List.map (fun p -> Target.Project(p, None))
 
             // loose scripts are code too: build.fsx and friends never appear in
-            // any fsproj, so a directory sweep that stopped at projects silently
-            // skipped them. The walker already prunes obj/bin/packages/.git;
+            // any fsproj, so a directory sweep that stopped at projects would
+            // silently skip them. The walker already prunes obj/bin/packages/.git;
             // ignorePaths (paket-files above all) applies on top
             let scripts =
                 FileWalk.files "*.fsx" dir
@@ -6355,7 +6329,7 @@ let private scriptProjectOptions (checker: FSharpChecker) (path: string) (assume
     let options, diagnostics =
         // useFsiAuxLib: scripts run under fsi get the fsi object
         // (fsi.CommandLineArgs and friends); resolving without it
-        // reported "'fsi' is not defined" on perfectly good scripts
+        // reports "'fsi' is not defined" on perfectly good scripts
         checker.GetProjectOptionsFromScript(
             path,
             sourceText,
@@ -6539,11 +6513,11 @@ let private frameworksOf (target: Target) =
 
 /// Every build of a verification, each run whatever the ones before it
 /// said, their failures as ONE list of lines. Stopping at the first
-/// failure left the rest unbuilt: a library whose Release build fails on
-/// a signing step - with this run's fixes and without them - never had
-/// its C# consumer built at all, the identical tooling failure read as
+/// failure would leave the rest unbuilt: when a library's Release build
+/// fails on a signing step - with this run's fixes and without them - its
+/// C# consumer is never built, the identical tooling failure reads as
 /// pre-existing breakage (judgeAgainstBaseline), and a `[<Struct>]` the
-/// consumer cannot compile against was kept. Built together, the
+/// consumer cannot compile against is kept. Built together, the
 /// consumer's CS error is among the lines, seen only with the fixes, and
 /// blames them.
 let internal buildEach (builds: (unit -> Result<unit, string array>) list) : Result<unit, string array> =
@@ -6563,8 +6537,8 @@ let internal buildEach (builds: (unit -> Result<unit, string array>) list) : Res
 /// error — or, when it reported none, the tail of what it did say. A build
 /// stopped at the time cap (runProcessIn's `TimeCapMark` line), one whose
 /// `dotnet` could not start, or one that crashed has no error line at
-/// all, and keeping only those left `[||]`: an empty list that the
-/// baseline comparison read as "no compiler error introduced" and so as
+/// all, and keeping only those would leave `[||]`: an empty list that the
+/// baseline comparison reads as "no compiler error introduced" and so as
 /// pre-existing breakage, fixes kept. The tail keeps the reason on record,
 /// and `stoppedAtTimeCap` finds the cap among it.
 let internal buildFailureLines (stdout: string) (stderr: string) =
@@ -6644,10 +6618,10 @@ let private buildOnce (project: string) (arguments: string) =
 /// COUNT is what decides blame when a project was already broken: a
 /// pass/fail answer cannot tell "the breakage is not ours" from "the
 /// breakage is not ONLY ours", and answering the first when the second
-/// is true puts genuinely broken fixes back. SQLProvider had a vendored
-/// paket-files source broken outside this run; restoring the snapshot
-/// left it broken, the rebuild failed again, and every fix that had
-/// broken netstandard2.0 was re-applied on the strength of it.
+/// is true puts genuinely broken fixes back: a vendored source broken
+/// outside this run stays broken when the snapshot is restored, the
+/// rebuild fails again, and every fix that had broken another framework
+/// would be re-applied on the strength of it.
 let private buildAllFrameworks (project: string) =
     // the build runs from the project's own directory (its global.json), so
     // a path given relative to the caller's directory must become absolute
@@ -6687,11 +6661,10 @@ let private consumerProjects =
 ///
 /// The verification build of an F# project compiles F#. A C# project in
 /// the same solution casting to a union's nested case class consumes the
-/// public surface through a compile no F# check ever runs: FR0016 made
-/// FSharp.Azure.Quantum's union a struct under --api-changes, the F#
-/// project built, the C# one stopped compiling — and the tool, seeing
-/// success, re-applied the change after the user had reverted it by hand.
-/// So a consumer that builds as the tree stands joins the verification
+/// public surface through a compile no F# check ever runs: when FR0016
+/// makes a union a struct under --api-changes, the F# project builds and
+/// the C# one stops compiling — and the tool, seeing success, would keep
+/// the change. So a consumer that builds as the tree stands joins the verification
 /// build, where its failure with the fixes and not without them puts them
 /// back like an F# framework's would. One that does not build as it
 /// stands — no SDK for its framework, broken before this run — can verify
@@ -6776,12 +6749,11 @@ type internal Blame =
 ///
 /// Only COMPILER errors can be ours: a source edit cannot make an assets
 /// file lose a framework (NETSDK1005) or a package fail to resolve (NU*),
-/// so those never count. SwaggerProvider's Runtime restores its DesignTime
-/// sibling from inside its own per-framework build, which leaves a
-/// one-framework assets file behind and fails on whichever framework built
-/// second — a different one after each sweep — and by count that read as
-/// "2 errors with the fixes, 1 without", putting good fixes back run after
-/// run.
+/// so those never count. A project that restores a sibling from inside its
+/// own per-framework build leaves a one-framework assets file behind and
+/// fails on whichever framework built second — a different one after each
+/// sweep — and by count that would read as "2 errors with the fixes, 1
+/// without", putting good fixes back.
 ///
 /// Among compiler errors, one seen with the fixes and not in the first
 /// baseline gets a second baseline build (`rebuild`): a build that is
@@ -6789,18 +6761,18 @@ type internal Blame =
 /// the two baselines disagree the failure is not evidence of anything.
 ///
 /// But a build stopped at the time cap is not "no compiler error
-/// introduced". A verification build that ran into the 15-minute cap came
-/// back as `Error [||]`, the difference of two empty sets was empty, and
-/// every fix was written back as "pre-existing breakage" — the build had
-/// never compiled a line of them. Either side stopped at the cap, or a
+/// introduced". A verification build that runs into the 15-minute cap
+/// comes back as `Error [||]`, the difference of two empty sets is empty,
+/// and every fix would be written back as "pre-existing breakage" — though
+/// the build never compiled a line of them. Either side stopped at the cap, or a
 /// second baseline stopped there, is NotVerified, whatever the other says.
 ///
 /// The cap ALONE, though. A build that fails on its tooling with the fixes
 /// and without them — a post-compile `Exec` target (MSB3073), packing in
 /// Release (NU5xxx), a targeting pack that is not installed (NETSDK1045,
 /// MSB3644) — did compile the code and said nothing against it: that is
-/// pre-existing breakage, fixes kept, as it always was. Reading every
-/// failure without a compiler error as the cap restored whole snapshots on
+/// pre-existing breakage, fixes kept. Reading every failure without a
+/// compiler error as the cap would restore whole snapshots on
 /// repositories that could then never keep a fix.
 let internal judgeAgainstBaseline
     (rebuild: unit -> Result<unit, string array>)
@@ -6888,11 +6860,11 @@ let internal restoreSnapshot (snapshot: Map<string, string>) =
 /// `work` — a pass, its verification, the end-of-run recount — with a
 /// typecheck given up on (checkWithin's TimeoutException) putting back
 /// the WHOLE snapshot before the exception goes on to skip the target.
-/// verifyPass put back its own pass's files, and that was all: the
-/// passes before it had been verified by the per-pass typecheck only, and
-/// the recount and the all-framework, configuration and consumer builds
-/// that were to verify them never ran - their fixes stayed on disk while
-/// the target was reported "skipped". `onTimeout` hears how many files
+/// verifyPass puts back its own pass's files and no more: the passes
+/// before it were verified by the per-pass typecheck only, and the
+/// recount and the all-framework, configuration and consumer builds that
+/// were to verify them never run - their fixes would stay on disk while
+/// the target is reported "skipped". `onTimeout` hears how many files
 /// went back, so the compilation is counted as the failure it is.
 let internal restoreOnTimeout (snapshot: Map<string, string>) (onTimeout: int -> unit) (work: unit -> 'T) : 'T =
     try
@@ -6915,9 +6887,8 @@ let private errorSiteRegex =
 /// A compilation fails to build on files an EARLIER compilation of this
 /// run rewrote: the failure is the run's own - a file several projects
 /// compile holds to every one of them, and the first project's build
-/// check spoke for itself alone (elmish's src/program.fs: interpolated
-/// under Elmish.fsproj on FSharp.Core 10, then Fable.Elmish.fsproj on 4.7
-/// would not build, and the run blamed the tree). Those files go back to
+/// check spoke for itself alone (a string interpolated under a project on
+/// FSharp.Core 10 does not build under another on 4.7). Those files go back to
 /// the text the run started from; returns each with the text it carried,
 /// so the caller can load the compilation again - and hand the text back
 /// when that fails too, since the failure was then never ours.
@@ -7017,8 +6988,7 @@ let private reapplySubset (before: string) (fixes: (int * string * Fix) list) : 
 /// them — approximate under same-line stacking. The slack is five, not
 /// two, because an error anchors at the START of its construct while the
 /// offending edit can sit lines inside it (a record's inconsistent-fields
-/// error points at the record, not the rewritten field — seen live on
-/// WebsitePlayground's build.fsx). Sweeping in a neighbor costs one
+/// error points at the record, not the rewritten field). Sweeping in a neighbor costs one
 /// suppressed innocent; missing the culprit costs the whole file.
 let private fixesNearErrors (cf: AppliedFile) (errorLines: Set<int>) : (int * string * Fix) list =
     let newlinesIn (s: string) =
@@ -7063,11 +7033,9 @@ let private verifyPassChecked
     //
     // And measured TWICE before blame: a type provider that loses its
     // database connection between two checks turns every provided type
-    // into "not defined" for that one check and is back for the next.
-    // welendus lost 493 fixes and CarenioBackup 165 to exactly that — a
-    // clean baseline, then an SQLProvider SSL error mid-run, then a pass
-    // rolled back for errors it never caused. A second check costs one
-    // project typecheck, only on the failing path.
+    // into "not defined" for that one check and is back for the next, and
+    // the pass would roll back for errors it never caused. A second check
+    // costs one project typecheck, only on the failing path.
     // the files this pass changed are checked one by one as well: see
     // projectErrorsWith
     let recount () =
@@ -7139,8 +7107,7 @@ let private verifyPassChecked
                 if (recount ()).Length <= baselineErrors then
                     // the pass IS to blame — but usually one fix is, and a
                     // whole-file rollback would take every innocent fix in
-                    // the file down with it (a batch of 36 lost 30 good
-                    // fixes to one bad one on prismatic). Pin it on the
+                    // the file down with it. Pin it on the
                     // fixes AT the error sites: re-apply everything else
                     // and recheck.
                     let errorLinesFor (path: string) =
@@ -7250,12 +7217,11 @@ let private verifyPassChecked
                         named @ orphanFiles
                 else
                     // The named files are back and the errors stay: the
-                    // culprit sits in a file the errors never named. FR0130
-                    // put [<Literal>] on `let lat` in FsToolkit's
-                    // TestData.fs and the errors landed on `let! lat` in
-                    // Result.fs — and the old answer here, every fix of the
-                    // pass rolled back and suppressed, cost that project 152
-                    // innocent fixes; the next pass re-applied nothing. So
+                    // culprit sits in a file the errors never named (FR0130
+                    // putting [<Literal>] on `let lat` in one file lands the
+                    // errors on `let! lat` in another), and rolling back and
+                    // suppressing every fix of the pass would throw away
+                    // every innocent fix with the culprit. So
                     // find the file(s) whose fixes carry the blame by
                     // bisecting the rest — a project check per step, bounded
                     // — keep the others, and give the named files' own fixes
@@ -7400,9 +7366,8 @@ let private verifyPassChecked
                 // every error sits in a file this pass never touched. That
                 // can still be our doing (an edit's inference ripple), so
                 // TEST it: restore, recount — if the errors stay, they were
-                // never ours (a vendored file broken for another reason —
-                // the SQLProvider paket-files case burned 40 minutes of
-                // apply-restore on exactly this), so the fixes go back in
+                // never ours (a vendored file broken for another reason),
+                // so the fixes go back in
                 let currentTexts =
                     changedFiles
                     |> List.map (fun cf ->
@@ -7414,8 +7379,9 @@ let private verifyPassChecked
 
                 // writeBack, not restore: suppression must happen only if the
                 // rollback STICKS. Suppressing here and then writing the
-                // fixes back left KEPT fixes marked suppressed, so a later
-                // identical-content fix in the same file was silently dropped
+                // fixes back would leave KEPT fixes marked suppressed, so a
+                // later identical-content fix in the same file would be
+                // silently dropped
                 writeBack changedFiles
 
                 if (recount ()).Length <= baselineErrors then
@@ -7456,9 +7422,9 @@ let private verifyPassChecked
 /// Verify one pass's edits against the project check, rolling back what
 /// broke it (verifyPassChecked) — and when the check itself is given up
 /// on (checkWithin's TimeoutException), roll back ALL of them first. The
-/// pass has written its files by now; the exception used to pass straight
-/// through to the per-target handler, which printed "skipped" and moved on
-/// with every unverified edit left on disk. The texts each file had before
+/// pass has written its files by now; an exception passed straight through
+/// to the per-target handler would print "skipped" and move on with every
+/// unverified edit left on disk. The texts each file had before
 /// the pass are in hand, so they go back, and the exception goes on. This
 /// pass's files only: the EARLIER passes' fixes are the caller's to put
 /// back (runTarget's underSnapshot restores the whole snapshot), so that
@@ -7489,10 +7455,10 @@ let internal verifyPass
 /// FCS keeps ONE incremental builder per project file name: setting a
 /// builder for options that name the same fsproj evicts the other
 /// ("similar" keys, in its MRU cache), and every framework's options name
-/// the same fsproj. So on one checker the frameworks threw each other's
+/// the same fsproj. So on one checker the frameworks throw each other's
 /// typecheck away at every switch — measured: the second framework's
-/// check, done in parallel and cached, cost its full 25 s again — and a
-/// check run ahead could never be found. A separate checker per framework
+/// check, done in parallel and cached, costs its full 25 s again — and a
+/// check run ahead can never be found. A separate checker per framework
 /// index keeps each builder alive; the checkers are kept for the run, so
 /// the next multi-targeted project finds its reference assemblies parsed.
 /// Memory is the price (a checker's caches, a few hundred MB), paid once
@@ -7521,9 +7487,9 @@ let mutable private frameworksInTurn: string list = []
 /// Two things make a check depend on the process rather than its own
 /// options. A TYPE PROVIDER: its design-time assembly is loaded once per
 /// process by simple name, and instantiating it from two checkers at once
-/// — the netstandard2.1 flavour racing the netstandard2.0 one — left
-/// welendus's SqlDataProvider throwing "unexpected exception from provided
-/// type" into 652 errors, on a project that checks clean alone. A
+/// — the netstandard2.1 flavour racing the netstandard2.0 one — makes it
+/// throw "unexpected exception from provided type" on a project that
+/// checks clean alone. A
 /// STRONG-NAME KEY named in source: FCS opens `AssemblyKeyFile("../k.snk")`
 /// relative to the process directory, which checkProject sets for the
 /// duration of a check, and a background check cannot have its own. Either
@@ -7663,8 +7629,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         eprintfn $"{message}"
 
         // NOT-APPLICABLE targets are not failures: a dacpac project or a
-        // wildcard-item fsproj beyond --parse-only was skipped, not broken
-        // (a solution containing one used to fail the whole run's exit)
+        // wildcard-item fsproj beyond --parse-only was skipped, not broken,
+        // and a solution containing one must not fail the whole run's exit
         if message.Contains "- skipped" || message.Contains "beyond --parse-only" then
             0
         else if message.Contains "dotnet build failed" then
@@ -7786,16 +7752,15 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // script sees — it compiles the file into itself — and whose calls
         // are in neither the project's symbol tables nor the verification
         // build. Only under --api-changes, which is the only thing that
-        // opens those migrations, so the script typecheck is paid exactly
-        // where it already was.
+        // opens those migrations, so the script typecheck is paid only
+        // where the api pass pays it anyway.
         // the project's own type providers must be the FIRST loaded into
         // this process. FCS keeps a design-time assembly by name, and a
         // script read against a .NET Framework reference set (readScript's
         // second try) can pull another flavour of the same provider in
-        // first: welendus's Program.fsx `#I`s packages/FSharp.Data/lib/net45,
-        // and from then on every project's `FSharp.Data.JsonProvider` was
-        // "not defined in 'FSharp.Data'" - 52 errors before any fix, four
-        // projects skipped, in a tree that builds. The typecheck is cached,
+        // first (a script `#I`ing packages/FSharp.Data/lib/net45), and from
+        // then on every project's `FSharp.Data.JsonProvider` is "not defined
+        // in 'FSharp.Data'" in a tree that builds. The typecheck is cached,
         // so the baseline below pays nothing twice
         if opts.ApiChanges && not opts.ParseOnly then
             match target with
@@ -7863,8 +7828,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // typechecked, and getting it wrong loses not a reference but the
         // whole compilation: a .NET Framework script resolved against .NET
         // Core's mscorlib facade reports DirectorySecurity missing from
-        // `open System.IO` and writes off every file it `#load`s — 158
-        // errors on PethostBackup/backend/Program.fsx, 0 as Framework. So
+        // `open System.IO` and writes off every file it `#load`s. So
         // typecheck what optionsFor chose and retry as Framework when that
         // did not resolve, keeping whichever set resolves better. This IS
         // the typecheck baselineErrorList would run, handed on rather than
@@ -8002,8 +7966,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // FSharp.Core ITSELF (`--compiling-fslib`) is checked by the compiler
         // it is written for, and no other: an older FCS meets intrinsics it
         // does not know ("did not contain the val
-        // 'ValLinkagePartialKey(.ctor)'" on the F# repository's own
-        // FSharp.Core). Not refused either: the syntactic rules still apply
+        // 'ValLinkagePartialKey(.ctor)'"). Not refused either: the syntactic rules still apply
         let degradedCore =
             baselineErrors > 0
             && not opts.ParseOnly
@@ -8059,8 +8022,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 // source file — that is our doing, not the caller's. Only
                 // when an earlier compilation of this run DID write
                 // something: on the first project, or after clean ones, the
-                // hint pointed at a diff that did not exist (FsCheck's
-                // key-file refusal wore it on its very first project). A
+                // hint would point at a diff that does not exist. A
                 // dry run modifies nothing, so there the errors are simply
                 // pre-existing
                 eprintfn
@@ -8143,8 +8105,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
             // divergence guard: a rule re-firing in the same file for a
             // THIRD pass while the file has GROWN since the run began is
-            // feeding on its own output (the arm-wrap escape nested ten
-            // `return! task {` layers exactly this way). Legitimate
+            // feeding on its own output (an arm-wrap escape nesting
+            // `return! task {` layer upon layer). Legitimate
             // repeat-firing — paren peeling, layer-by-layer unwinding —
             // SHRINKS the file and passes freely.
             let blockedRuleFile = System.Collections.Generic.HashSet<string * string>()
@@ -8313,9 +8275,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 ]
 
                         // a verification switch: a failure that needs the
-                        // fixes in place to be studied (the F# compiler's
-                        // FSharp.Core failing only with the compiler
-                        // project's fixes applied) is kept, not undone
+                        // fixes in place to be studied (a library failing only
+                        // with another project's fixes applied) is kept, not
+                        // undone
                         let keepOnFailure = Environment.GetEnvironmentVariable "FSREF_KEEP_ON_FAILURE" = "1"
 
                         let tail (lines: string array) =
@@ -8354,13 +8316,13 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                         // the time cap, so it compiled nothing this run
                         // wrote. The baseline comparison below cannot help —
                         // a baseline that times out too reads as "no new
-                        // error" — and was how a timed-out build kept every
-                        // fix as pre-existing breakage. The cap ALONE, though:
+                        // error" — so a timed-out build would keep every fix
+                        // as pre-existing breakage. The cap ALONE, though:
                         // a build that fails on its tooling (an `Exec` target,
                         // packing, a missing targeting pack) is judged against
                         // the baseline like any other failure, and a
                         // repository broken that way before this run keeps
-                        // its fixes as it always did.
+                        // its fixes.
                         | Error output when stoppedAtTimeCap output ->
                             notVerified output (fun () -> restoreSnapshot snapshot)
                         | Error output ->
@@ -8373,7 +8335,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                             //
                             // ...unless the framework was ALREADY broken by
                             // something this run never wrote (a vendored
-                            // paket-files source, most famously): test by
+                            // paket-files source, say): test by
                             // un-applying — if the build still fails, the
                             // breakage is not ours and the fixes go back.
                             // the project's own files AND the ones the run
@@ -8440,9 +8402,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 // ours, or a build that only fails
                                 // sometimes. One more build with the fixes
                                 // back in place tells which: a project that
-                                // restores from inside its own build
-                                // (SwaggerProvider) fails on one sample
-                                // and passes on the next
+                                // restores from inside its own build fails
+                                // on one sample and passes on the next
                                 for path, text in currentTexts do
                                     writeSource path text
 
@@ -8469,12 +8430,11 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                     notVerified again (fun () -> restoreSnapshot snapshot)
                                 | Error again ->
                                     adviseEscalated again
-                                    // ONE file's fixes can be the whole trouble — the
-                                    // F# compiler's sformat.fs is also a source of
-                                    // FSharp.Core, compiled there before printf.fs,
-                                    // where an interpolated string has no
-                                    // PrintfFormat yet — and putting all 199 changed
-                                    // files back for it throws away every other fix.
+                                    // ONE file's fixes can be the whole trouble — a
+                                    // file also compiled into FSharp.Core before
+                                    // printf.fs, where an interpolated string has no
+                                    // PrintfFormat yet — and putting every changed
+                                    // file back for it throws away every other fix.
                                     // Bisect instead: revert halves of the changed
                                     // files until the build passes, keep the rest
                                     let changed =
@@ -8490,9 +8450,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                     // bisection below writes any of them back: a
                                     // restoreSnapshot count taken after it only
                                     // sees the files the last bisection step had
-                                    // not already put back ("the 6 file(s) it
-                                    // changed were put back" on FsToolkit, where
-                                    // all 25 went back)
+                                    // not already put back
                                     let changedTotal =
                                         changed.Length
                                         + (currentTexts
@@ -8524,9 +8482,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                         | Error _ -> false
 
                                     // a signature and its implementation move as ONE:
-                                    // split across halves, both halves fail (the
-                                    // compiler repository, where every .fs has its
-                                    // .fsi) and the bisection learns nothing
+                                    // split across halves, both halves fail and
+                                    // the bisection learns nothing
                                     let units =
                                         changed
                                         |> List.groupBy (fun path ->
@@ -8817,10 +8774,9 @@ let private fsharpCorePinRegex =
 /// Every project of the run, with the lowest FSharp.Core major its restore
 /// (or, before one, its own `FSharp.Core` pin) resolves, and the files its
 /// `<Compile>` items name: a file two projects share holds to the older
-/// one's FSharp.Core (elmish's src/program.fs, in Elmish.fsproj on
-/// FSharp.Core 10 AND Fable.Elmish.fsproj on 4.7 - the interpolation
-/// FR0042 offered for the first broke the second, whose build check the
-/// run reached only afterwards). Textual on purpose: compiler arguments
+/// one's FSharp.Core (a file compiled on FSharp.Core 10 AND on 4.7 - an
+/// interpolation FR0042 offers for the first breaks the second, whose
+/// build check the run reaches only afterwards). Textual on purpose: compiler arguments
 /// arrive one compilation at a time, and the floor must be known before
 /// the first. Items with a property or a wildcard are the evaluation's
 /// business and are left out; `putBackRunEdits` catches what this misses.
@@ -9089,13 +9045,13 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                         |> List.fold max 0
                     finally
                         // both are this project's rounds' business only: a
-                        // leaked no-guard flag once dropped the capability fixes
+                        // leaked no-guard flag would drop the capability fixes
                         // of every later target in the run, single-target net8.0
                         // projects included. In a `finally`, because a
                         // typecheck given up on (checkWithin) leaves this loop
-                        // by exception: the next target's Scope.set carries
-                        // both flags over, and that is the same regression
-                        // through a different door.
+                        // by exception: the next target's Scope.set would carry
+                        // both flags over, the same leak through a different
+                        // door.
                         Scope.set
                             { Scope.scope () with
                                 DualTfmConstant = ValueNone
@@ -9677,7 +9633,7 @@ let main argv =
         0
     | Ok opts when opts.CreateConfig ->
         // a path that is not a directory is a typo, not an instruction to
-        // write somewhere else: falling back to the current directory once
+        // write somewhere else: falling back to the current directory would
         // put a config in a repository root nobody asked about
         let directory =
             if opts.Target = "" then
@@ -9704,7 +9660,7 @@ let main argv =
                 try
                     // Plain UTF-8, no byte-order mark, and the text is
                     // pure ASCII (ConfigKnobTests holds it that way). A
-                    // BOM was tried first and made things worse: a console
+                    // BOM makes things worse: a console
                     // reading the file under an OEM codepage does not
                     // honour it and prints the mark itself as garbage on
                     // top of the characters it was meant to rescue. ASCII
@@ -9751,7 +9707,7 @@ let main argv =
             // ONE checker for the whole run: FCS caches parsed reference
             // assemblies on the instance, and a twenty-project solution's
             // flavors share nearly all of them — a fresh checker per
-            // compilation was paying that parse twenty times over.
+            // compilation would pay that parse twenty times over.
             // (Analyzers may read the typed tree, hence assembly contents.)
             let checker = FSharpChecker.Create(keepAssemblyContents = false)
             let code = executeRun checker opts

@@ -193,8 +193,8 @@ let findWith
     // quotations in this file: `<@ @>`, `<@@ @@>` and `query { }` blocks.
     // A struct local captured inside one cannot have a field read — that
     // takes its address, which a quotation may not do — so a record whose
-    // fields are read in a quotation stays a class (Linq.Expression.
-    // Optimizer's `query { ... fun sl -> sl.x = j.x ... }`)
+    // fields are read in a quotation stays a class
+    // (`query { ... fun sl -> sl.x = j.x ... }`)
     let quotationRanges = AstIndex.quotationRanges parseTree
 
     let fieldsReadInQuotation (fieldNames: Set<string>) =

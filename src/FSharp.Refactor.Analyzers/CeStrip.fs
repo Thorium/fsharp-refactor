@@ -51,8 +51,8 @@ type StripKind =
     /// pass.
     | ReturnBangIdentity
     /// `let runTailN () = B in runTailN ()` — a tool-generated tail
-    /// thunk wrapping nothing but another tail thunk (or, since the wrap
-    /// now sizes correctly, a tail too small to have deserved one). The
+    /// thunk wrapping nothing but another tail thunk (or a tail too small
+    /// to deserve one). The
     /// thunk is nullary, non-rec and called exactly where it is defined,
     /// so the binding IS its body. Each strip removes one layer.
     | ThunkIdentity
@@ -369,18 +369,15 @@ let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (so
                         // that is nothing but another thunk (nested
                         // damage). A four-plus-line body is the wrap FR0029
                         // meant to make — collapsing it would hand the two
-                        // rules an eternal wrap/unwrap oscillation (seen
-                        // live on management-portal Domain.fs before this
-                        // gate)
+                        // rules an eternal wrap/unwrap oscillation
                         && (thunkBody.Range.EndLine - thunkBody.Range.StartLine + 1 < 4
                             // ... or the body holds a `use`, which a plain
                             // closure must never own: inside the CE it binds
                             // to the builder's Using (DisposeAsync where the
                             // type offers it), and a closure silently makes
-                            // it synchronous. FR0029 refuses to build this
-                            // shape now, so collapsing it CURES code that an
-                            // older version already wrote — prevention alone
-                            // cannot reach a change that is committed. No
+                            // it synchronous. FR0029 does not build this
+                            // shape, but code may already hold one, and
+                            // collapsing it is the cure. No
                             // oscillation: re-extraction takes the
                             // task-returning variant, which this rule does
                             // not collapse.

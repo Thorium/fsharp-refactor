@@ -1,4 +1,4 @@
-/// Audit fixes for the pattern/option/rec-group rules (report 09):
+/// Guards for the pattern/option/rec-group rules:
 ///   B2  FR0002/FR0010 `.IsSome`/`.IsNone` only on a receiver whose type is
 ///       settled before the lookup (positive evidence; else the module form)
 ///   B3  FR0116 sibling references inside interpolation holes and after a
@@ -68,7 +68,7 @@ let ``B2: a for variable keeps the module form`` () =
 
 [<Fact>]
 let ``B2: a let bound to a generic projection keeps the module form`` () =
-    // 0.8.2 gave `a |> Option.isSome`; `fst` returns a bare type parameter
+    // `fst` returns a bare type parameter: no settled receiver for `.IsSome`
     assertSimplification "let pick y = let a = fst y in a <> None" "a |> Option.isSome"
 
 [<Fact>]
@@ -176,8 +176,9 @@ let ``B3: a sibling called inside an interpolation hole keeps the member in the 
 
 [<Fact>]
 let ``B3: a char literal quote does not hide the self-call after it`` () =
-    // `'"'` opened a phantom string that ran to the failwith message,
-    // blanking the recursive call in between: the member left as `let`
+    // read as a string opener, `'"'` would run a phantom string to the
+    // failwith message, blanking the recursive call in between: the member
+    // would leave the group as `let`
     let source =
         "module Test\n"
         + "let rec lexToken (cs: char list) : string * char list =\n"
@@ -391,8 +392,8 @@ let ``every member that can leave goes in one pass, in dependency order`` () =
 
 [<Fact>]
 let ``the last member leaves no whitespace-only line behind`` () =
-    // ProvidedTypes.fs:10841 - the removed block began after the line's
-    // indentation, which stayed as a line of eight spaces
+    // a removed block that begins after the line's indentation leaves that
+    // indentation behind as a line of spaces
     let source =
         fsharp
             """
@@ -424,7 +425,7 @@ let ``the last member leaves no whitespace-only line behind`` () =
 
 [<Fact>]
 let ``a plain comment directly above the member travels with it`` () =
-    // left behind, `// REVIEW ...` headed whatever binding came next
+    // left behind, `// REVIEW ...` would head whatever binding came next
     let source =
         fsharp
             """
@@ -465,8 +466,8 @@ let ``a plain comment directly above the member travels with it`` () =
 [<Fact>]
 let ``a commented member and the plain last member leave as one removal`` () =
     // the comment-extended block ends at column 0 of the last member's
-    // line; as two removals the second's tail trim reached back into the
-    // first and the edits overlapped
+    // line; as two removals the second's tail trim would reach back into
+    // the first and the edits overlap
     let source =
         fsharp
             """
@@ -531,9 +532,9 @@ let ``a member referencing a sibling under #if waits for it`` () =
 
 [<Fact>]
 let ``a merged removal headed by a comment ends at column 0 before a staying member`` () =
-    // ProvidedTypes.fs: the comment-extended head merged with the plain
-    // blocks after it ended at the next `and`'s column, and that `and`
-    // was left at the margin
+    // a comment-extended head merged with the plain blocks after it must
+    // not end at the next `and`'s column, or that `and` is left at the
+    // margin
     let source =
         fsharp
             """

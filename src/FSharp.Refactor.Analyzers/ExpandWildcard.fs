@@ -95,9 +95,9 @@ let private unionCasesOf (check: FSharpCheckFileResults) (source: ISourceText) (
 
 /// The other unions the file can see — this project's files up to here and
 /// the referenced assemblies — with their case names. A hidden case written
-/// BARE resolves to whichever union declared that name last: suave's
-/// Http2.fs matched a Result, and `Error` there is ScanResult.Error from an
-/// earlier file of the project. A case another union also names is written
+/// BARE resolves to whichever union declared that name last: in a Result
+/// match, a bare `Error` is `ScanResult.Error` when an earlier file of the
+/// project declares one. A case another union also names is written
 /// qualified (`Result.Error _`), which is right in every scope.
 let private unionsInScope (check: FSharpCheckFileResults) =
     let rec unions (entities: FSharpEntity seq) : FSharpEntity list =
@@ -143,9 +143,8 @@ let private unionsInScope (check: FSharpCheckFileResults) =
             []
 
     // a [<RequireQualifiedAccess>] union's cases never resolve bare, so
-    // they cannot capture a bare name: farmer's `ScaleActionDirection.None`
-    // and `NodeOSUpgradeChannel.Unmanaged` had every Option match spelled
-    // `Option.None` and every LinkedResource one `LinkedResource.Unmanaged _`
+    // they cannot capture a bare name: a qualified-access `Direction.None`
+    // must not force every Option match to spell `Option.None`
     let requiresQualifiedAccess (e: FSharpEntity) =
         try
             e.Attributes
@@ -263,11 +262,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                                         // the wildcard's `|` must sit where the
                                         // first arm's does before a case may take
-                                        // a line of its own under it: FSharpPlus's
-                                        // Seq.fs has a `| _ -> return false }` arm
-                                        // indented four deeper than its match, and
-                                        // the parser read the continuation line
-                                        // as anything but an or-pattern
+                                        // a line of its own under it: under a
+                                        // `| _ -> return false }` arm indented four
+                                        // deeper than its match, the parser reads
+                                        // the continuation line as anything but an
+                                        // or-pattern
                                         let alignedWithFirstArm =
                                             match explicitClauses with
                                             | SynMatchClause(pat = first) :: _ ->

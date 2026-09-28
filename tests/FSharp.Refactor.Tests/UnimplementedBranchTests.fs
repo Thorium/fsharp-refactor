@@ -265,7 +265,7 @@ let ``ValueNone with a stub comment is accused`` () =
 
 [<Fact>]
 let ``null without a comment is an ordinary value`` () =
-    // from the corpus (SQLProvider): `| null -> null` passes a sentinel
+    // `| null -> null` passes a sentinel
     // through, and `| [] -> Unchecked.defaultof<'T>` IS SingleOrDefault's
     // contract — no value shape accuses itself
     assertNoSuggestion (
@@ -294,11 +294,11 @@ let ``defaultof without a comment is an ordinary value`` () =
             """
     )
 
-// --- commented-out code and option contracts (F# compiler ServiceInterfaceStubGenerator.fs) ---
+// --- commented-out code and option contracts ---
 
 [<Fact>]
 let ``a commented-out debug print is not an unfinished-work note`` () =
-    // the F# compiler's ServiceInterfaceStubGenerator.fs:
+    // a silenced print:
     //     | _ -> //debug "Unsupported case with %A and %A" t ts
     //         None
     // the "Unsupported" is a string the silenced print once carried

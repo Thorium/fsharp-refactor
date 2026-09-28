@@ -151,10 +151,8 @@ let private tailAfterFlag (flag: string) (body: SynExpr) =
 /// The asynchronous builders, where this advice does not belong.
 ///
 /// In a `task` recursion is not even available: it compiles to a
-/// resumable state machine and a recursive `return!` grows the stack,
-/// which is why FSharp.Azure.Quantum's polling loop carries the reason
-/// in a comment above it — "Iterative polling loop (task CE does not
-/// support tail-call recursion)". In an `async` the rewrite stops being
+/// resumable state machine and a recursive `return!` grows the stack.
+/// In an `async` the rewrite stops being
 /// local: the recursive function has to return `Async<_>`, so the change
 /// reaches the signature rather than the loop.
 ///

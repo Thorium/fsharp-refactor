@@ -239,7 +239,7 @@ let ``a shadowing Array module stays`` () =
 
 [<Fact>]
 let ``a multi-line mapper under the range moves with its lines into Array.init`` () =
-    // FSharp.Azure.Quantum's AmplitudeAmplification: a 2^n amplitude array
+    // a 2^n amplitude array
     // built by mapping over a 2^n array of ints
     assertRewrites
         (fsharp

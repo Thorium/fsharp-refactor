@@ -52,8 +52,8 @@ type Suggestion =
 /// Ranges where `;` separates rather than terminates.
 /// Read straight off the index rather than through `AstIndex.replay`, which
 /// drives WalkExpr and WalkSynModuleDecl only — a WalkPat override there is
-/// never called, so list PATTERNS went unprotected and their separators were
-/// stripped:
+/// never called, so list PATTERNS would go unprotected and their separators
+/// be stripped:
 ///
 ///     | MethodCall(None, name, [ SourceWithQueryData source;
 ///                                OptionalQuote q ]) -> ...

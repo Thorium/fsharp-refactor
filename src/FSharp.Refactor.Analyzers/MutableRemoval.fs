@@ -95,12 +95,11 @@ let private mayMutate (bodyText: string) (name: string) =
     Regex.IsMatch(bodyText, $@"\b{n}(\.[^\n<]*|\[[^\n]*\]\s*)?\s*<-")
     || Regex.IsMatch(bodyText, $@"&\s*{n}\b")
 
-/// A comment saying the mutability is deliberate. SageFs's LiveValueTree
-/// test wrote `// Use a non-constant capture so the compiler cannot inline
-/// it away.` above `let mutable captured = 42` — never assigned, so the
-/// rule removed the keyword, and the Release optimiser then folded the
-/// constant into the closure the test inspects (green in Debug, red in the
-/// repo's CI). The words that carry that intent: inline, fold (constant
+/// A comment saying the mutability is deliberate: `// Use a non-constant
+/// capture so the compiler cannot inline it away.` above a never-assigned
+/// `let mutable captured = 42` — without the keyword the Release optimiser
+/// folds the constant into the closure a test inspects (green in Debug,
+/// red in Release). The words that carry that intent: inline, fold (constant
 /// folding), optimi(se/ze/sation). Read from the binding's own trailing
 /// `//` comment and from a `//` comment line directly above it — nowhere
 /// else, so a `List.fold` in the code keeps nothing.

@@ -112,10 +112,10 @@ let findWith
     let index = AstIndex.ofTree parseTree
 
     // an explicit or first-class invocation in this file — `(|P|_|) x`,
-    // `List.choose (|P|_|)` — sees the option the pattern returns: the F#
-    // compiler's Spreads.fs calls its module-level (|NestedUpdate|_|) from a
-    // local pattern of the same name and matches the result against Some.
-    // The representation change would reach it, so the pattern stays
+    // `List.choose (|P|_|)` — sees the option the pattern returns, as does a
+    // local pattern of the same name that calls the module-level one and
+    // matches the result against Some. The representation change would
+    // reach it, so the pattern stays
     let invokedAsFunction (name: string) =
         index.Exprs
         |> Array.exists (fun (_, e) ->
@@ -163,8 +163,8 @@ let findWith
 
                     // a body split by `#if` has a branch the parse tree
                     // never shows: only the active one would turn
-                    // ValueSome, and the attribute constrains both
-                    // (Thoth.Json.Core.Auto's Fable build failed FS0001)
+                    // ValueSome, and the attribute constrains both (FS0001
+                    // in the other build)
                     if
                         ownLine
                         && not (spansDirective source decl.Range)

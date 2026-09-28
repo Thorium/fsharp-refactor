@@ -188,7 +188,7 @@ let ``two independent matches produce two suggestions`` () =
 
 [<Fact>]
 let ``a match spanning conditional compilation stays`` () =
-    // corpus regression: the tree only sees the active #if branch; the fix
+    // the tree only sees the active #if branch; the fix
     // would splice out the directives and break the inactive branch
     assertNoSuggestion (
         fsharp

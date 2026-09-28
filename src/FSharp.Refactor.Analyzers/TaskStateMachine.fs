@@ -18,7 +18,7 @@
 ///   c) a long non-awaiting tail after the last await: extract it into a
 ///      plain function
 ///
-/// Three of the moves now carry automatic fixes, each shaped so the moved
+/// Three of the moves carry automatic fixes, each shaped so the moved
 /// text stays verbatim wherever possible:
 ///
 ///   a) leading plain lets hoist ABOVE the builder line (dedented to its
@@ -126,10 +126,9 @@ type private Reach =
 /// Is the builder the body of a declaration whose CALLERS this file cannot
 /// see: a public (or unmarked) module-level function, a public member, an
 /// interface implementation, an object expression's member? Such a caller
-/// may rely on the Task faulting rather than the call throwing —
-/// SQLProvider's `ISqlProvider.ExecuteSprocCommandAsync` had its first
-/// `let` hoisted and an IndexOutOfRangeException escaped synchronously past
-/// the caller's `Async.Catch`. A local binding, a class-private `let`, a
+/// may rely on the Task faulting rather than the call throwing — a hoisted
+/// `let` that throws escapes synchronously past the caller's `Async.Catch`.
+/// A local binding, a class-private `let`, a
 /// private or internal function or member, and anything under a private
 /// or internal module or type has its callers in reach — PROVIDED the file
 /// keeps the value to itself: the question is whether the task VALUE
@@ -467,8 +466,8 @@ let private leadingSpaces (line: string) =
 /// hoist puts `let`s at the builder's column, and a `let` there is only
 /// legal where the builder was: a `task {` may undent below a header that
 /// spans two lines (`[<Fact>] member test.` on one, the backticked name and
-/// `()=` on the next — welendus's fixtures), but the lets hoisted above it
-/// are offside of the name line and the pass rolled them back. A header on
+/// `()=` on the next), but the lets hoisted above it
+/// are offside of the name line. A header on
 /// one line, or none at all, is where the layout is known.
 let private hoistLandsOnOwnHeader (source: ISourceText) (taskLine: int) =
     let rec retreatLine line =
@@ -570,7 +569,7 @@ let rec private terminalOf (e: SynExpr) =
 /// The tail wrap's own output: a single nullary local function immediately
 /// called (or returned). Wrapping THAT again — runTail2 around runTail,
 /// runTail3 around runTail2 — sheds nothing from the state machine and
-/// never converges; seen live three layers deep on management-portal.
+/// never converges.
 let private alreadyWrappedTail (tail: SynExpr) =
     match tail with
     | LetOrUseE lou when not lou.IsBang ->
@@ -756,7 +755,7 @@ let find
                 // a hand-tuned hot path is not restructured behind the
                 // author's back: a comment inside the enclosing binding
                 // that speaks of allocation, a hot path, perf or a fast
-                // path (suave's HttpOutput.fs) keeps every move advice-only
+                // path keeps every move advice-only
                 let enclosingRange =
                     path
                     |> List.tryPick (fun node ->
@@ -862,8 +861,8 @@ let find
                 // `match!` counts as a branch for DESCENT: it is a bang, so it
                 // can never be hoisted itself, but its arms are where the
                 // hoistable branch usually lives - `task { match! auth with
-                // ... }` is the shape most of this codebase is written in, and
-                // missing it hid every candidate beneath one
+                // ... }` is a common shape, and skipping it would hide every
+                // candidate beneath one
                 let branchResults (e: SynExpr) =
                     match e with
                     | SynExpr.Match(clauses = cs)
@@ -910,8 +909,7 @@ let find
                             // `return`, so it stops being CE code: a `use`
                             // inside it re-binds from the builder's Using to
                             // the language's, DisposeAsync silently becoming
-                            // Dispose. Measured, not assumed - a type offering
-                            // both logged "async" before and "sync" after
+                            // Dispose on a type that offers both
                             && not (containsUse e.Range)
                             && startsOwnLine source e.Range
                             // every line of the branch gains an indent, and a
@@ -1041,8 +1039,8 @@ let find
                     // code surfaces at the call instead of faulting the Task:
                     // inside this file's reach that trade is the advice
                     // itself, but a caller of a public or interface member
-                    // may be catching the fault (SQLProvider's Async.Catch
-                    // around ExecuteSprocCommandAsync), so there only a right
+                    // may be catching the fault (an `Async.Catch` around
+                    // the call), so there only a right
                     // side that cannot throw moves, and the peel stops at
                     // the first that can
                     let exposed = exposedBody index path
@@ -1263,10 +1261,9 @@ let find
                         ->
                         // a match stays ADVICE: the documented split is the
                         // if/else body, arms cut as line regions into two
-                        // tasks. The per-arm `return! task { .. }` wrap this
-                        // once carried nested a machine inside every awaiting
-                        // arm of suave's HttpOutput.fs — a shape the doc
-                        // never promised, on a hand-tuned hot path
+                        // tasks. A per-arm `return! task { .. }` wrap would
+                        // nest a machine inside every awaiting arm — a shape
+                        // the doc never promised
                         {
                             Range = rest.Range
                             Kind = AdviceKind.SplitBranches
@@ -1293,8 +1290,7 @@ let find
                     // never a line count from that await to the closing
                     // brace: a multi-line `return!` argument, the `with`
                     // and `finally` of a try, and a `while` body that
-                    // re-awaits are not non-awaiting code (suave's Proxy,
-                    // Combinators and ConnectionHealthChecker)
+                    // re-awaits are not non-awaiting code
 
                     let tail =
                         if lastBangLine > 0 then
@@ -1375,8 +1371,8 @@ let find
                                     // size the WRAP by the tail's own extent, not
                                     // tailLineCount: the last bang can sit inside
                                     // a nested CE in an earlier binding, and that
-                                    // anchor once inflated a 2-line tail into a
-                                    // wrap that then re-wrapped itself every pass
+                                    // anchor would inflate a short tail into a
+                                    // wrap that re-wraps itself every pass
                                     && tail.Range.EndLine - tail.Range.StartLine + 1 - functionDefLines tail.Range >= 4
                                     && not (alreadyWrappedTail tail)
                                     ->
@@ -1418,9 +1414,8 @@ let find
                                             // the line's first TOKEN is `value`, right of the
                                             // comment and deeper than the `let` above it, and
                                             // the parser reads it as that let's continuation
-                                            // (welendus's SignalRHubs.fs: "the block following
-                                            // this 'let' is unfinished"). The comment is the
-                                            // author's, so the tail stays
+                                            // ("the block following this 'let' is unfinished").
+                                            // The comment is the author's, so the tail stays
                                             if
                                                 afterKeyword.StartsWith "return "
                                                 && afterKeyword.Substring(7).TrimStart().StartsWith "(*"
@@ -1440,10 +1435,9 @@ let find
                                             // indented past the `let` it now follows ("the
                                             // body of the expression must be indented to the
                                             // same column"), so it comes back to the keyword's
-                                            // column. Without this the tail fell through to
-                                            // the task-returning variant and bought a second
-                                            // state machine for nothing (management-portal's
-                                            // APIs.fs)
+                                            // column. Without this the tail would fall through
+                                            // to the task-returning variant and buy a second
+                                            // state machine for nothing
                                             elif afterKeyword.TrimEnd() = "return" then
                                                 let before = tailLines |> List.take i
                                                 let payload = tailLines |> List.skip (i + 1)

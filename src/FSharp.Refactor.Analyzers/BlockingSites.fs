@@ -503,9 +503,8 @@ let private bThreadsRegex = Regex @"\bThread\s*\("
 /// Is this body choreographed around a THREAD? Code that hands work to a
 /// thread and waits on a signal continues on the same thread after the
 /// wait; `do!` resumes wherever the scheduler posts, so "make it async"
-/// is the wrong advice there, in a test (FR0142: Mibo's thread-affine
-/// adaptive graphs — four tests failed, eleven turned flaky when
-/// converted) and at a boundary alike (FR0049). Read off the text: the
+/// is the wrong advice there, in a test (FR0142: tests of thread-affine
+/// code fail or turn flaky when converted) and at a boundary alike (FR0049). Read off the text: the
 /// names are unmistakable and a false "bound" only costs a note.
 let threadBound (source: ISourceText) (body: SynExpr) =
     // `Thread.Sleep` is a pause, not choreography — and the site FR0049's
@@ -531,8 +530,8 @@ let threadBound (source: ISourceText) (body: SynExpr) =
     // The two Thread spellings need a word boundary, which a substring test
     // cannot give them: plain "Thread(" also reads ThrowIfNotOnUIThread(),
     // SwitchToMainThread( and every other name ENDING in Thread - the VS
-    // threading helpers are called that, and a whole file's fixes were
-    // withheld over it. `\bThread` matches the type and nothing built on
+    // threading helpers are called that, and a match would withhold a
+    // whole file's fixes. `\bThread` matches the type and nothing built on
     // its name (ThreadHelper, ThreadPool, ThreadStatic keep their own
     // entries above where they belong).
     || bThreadsRegex.IsMatch text

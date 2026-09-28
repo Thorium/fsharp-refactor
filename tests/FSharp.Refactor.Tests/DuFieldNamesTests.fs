@@ -290,7 +290,6 @@ let ``case without any destructuring site is left alone`` () =
 let ``FR0022 stands down where a signature declares the case`` () =
     // the .fsi declares `Box of int * int`; naming the fields in the .fs
     // alone gives "The names differ" and the project stops compiling
-    // (found on fcs-fable's TipFormatter)
     let dir =
         Path.Combine(Path.GetTempPath(), "fsref-du-" + System.Guid.NewGuid().ToString "N")
 

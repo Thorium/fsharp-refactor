@@ -178,8 +178,8 @@ let private defaultofNames (index: AstIndex.Index) : Set<string> =
 
 /// The full names of every type whose value the file boxes, locks,
 /// null-tests or hands to an `obj` parameter. Read once per file: the
-/// callers ask about each candidate type, and a scan per candidate made the
-/// rules quadratic in the file size.
+/// callers ask about each candidate type, and a scan per candidate would make
+/// the rules quadratic in the file size.
 let private hostileTypeNames
     (check: FSharpCheckFileResults)
     (index: AstIndex.Index)

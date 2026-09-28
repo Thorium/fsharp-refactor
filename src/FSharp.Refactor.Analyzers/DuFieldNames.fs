@@ -1,4 +1,4 @@
-/// Refactoring (slide 3, single-file variant): give the unnamed tuple fields
+/// Refactoring (single-file variant): give the unnamed tuple fields
 /// of a non-public union case the names the code already spells — from the
 /// strongest source that yields them:
 ///
@@ -276,7 +276,7 @@ let private walkPat record pat = walkPatsLoop record [ pat ]
 ///
 /// A `.fsi` declares the case too — `| Box of int * int` — so naming the
 /// fields in the implementation ALONE gives "The names differ" and the
-/// project stops compiling (found on fcs-fable's TipFormatter). The fix
+/// project stops compiling. The fix
 /// therefore carries the signature with it: one atomic edit set spanning
 /// both files, or no suggestion at all.
 [<RequireQualifiedAccess>]

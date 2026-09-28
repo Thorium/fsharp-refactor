@@ -342,7 +342,7 @@ let ``pipeline without conversion is not rewritten`` () =
 
 [<Fact>]
 let ``collect is not moved across a List-Array boundary`` () =
-    // review regression: List.collect needs a list-returning mapper
+    // List.collect needs a list-returning mapper
     assertNoSuggestion (
         fsharp
             """
@@ -367,7 +367,7 @@ let ``collect moves for Seq-sourced conversions`` () =
 
 [<Fact>]
 let ``sort family is not moved across an Array boundary`` () =
-    // review regression: Array sorts are unstable, Seq/List sorts are stable
+    // Array sorts are unstable, Seq/List sorts are stable
     assertNoSuggestion (
         fsharp
             """
@@ -378,13 +378,12 @@ let ``sort family is not moved across an Array boundary`` () =
 
 [<Fact>]
 let ``item is not treated as consuming`` () =
-    // review regression: Array.item and List.item throw different exception types
+    // Array.item and List.item throw different exception types
     assertNoSuggestion "module Test\nlet f xs = xs |> Seq.toList |> List.item 1"
 
 [<Fact>]
 let ``a mutating operation keeps its eager conversion`` () =
-    // SQLProvider's shape, and 19 of its tests: the sequence is built FROM
-    // the dictionary the body assigns into, so Seq.toList is what keeps
+    // the sequence is built FROM the dictionary the body assigns into, so Seq.toList is what keeps
     // enumeration and mutation apart. Dropping it throws "Collection was
     // modified" at run time - and it compiles, so no build check sees it
     assertNoSuggestion (
@@ -499,10 +498,9 @@ let ``a list literal source is already materialised`` () =
 
 [<Fact>]
 let ``writes BEFORE the pipeline do not stop a pure callback moving`` () =
-    // FsRocket's checkTrooperHits: the array is assigned into in a loop,
-    // then filtered with a lambda that reads only. Only what runs during
-    // the walk matters, and reading the whole function for `<-` refused
-    // this — the ordinary imperative shape
+    // the array is assigned into in a loop, then filtered with a lambda
+    // that reads only. Only what runs during the walk matters; reading the
+    // whole function for `<-` would refuse this ordinary imperative shape
     assertPatched
         (fsharp
             """
@@ -542,12 +540,12 @@ let ``a callback handed the collection itself keeps the conversion`` () =
             """
     )
 
-// ---- a source that is already the target kind (fsharplint) ----
+// ---- a source that is already the target kind ----
 
 [<Fact>]
 let ``an array-returning method feeding toArray is already an array`` () =
-    // fsharplint: `identifier.idText.Split('|') |> Seq.toArray |> Array.filter ..`
-    // became a lazy Seq.filter over an input that was an array all along
+    // `identifier.idText.Split('|') |> Seq.toArray |> Array.filter ..` must
+    // not become a lazy Seq.filter over an input that is an array all along
     assertNoSuggestion (
         fsharp
             """

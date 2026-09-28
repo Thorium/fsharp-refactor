@@ -5,17 +5,15 @@
 ///     let next = System.Int32.MaxValue + n    // every n but zero
 ///
 /// F# arithmetic is unchecked by default: an int overflow does not throw,
-/// it wraps, and the corrupted value flows on — this very repository's
-/// benchmark harness summed an array with `Array.sum` (wrapped, silently
-/// wrong) and LINQ's checked `Sum` (threw) side by side before this rule
-/// existed. Three shapes make overflow a plausibility, not a theory:
+/// it wraps, and the corrupted value flows on — `Array.sum` over an int
+/// array wraps silently where LINQ's checked `Sum` throws. Three shapes make overflow a plausibility, not a theory:
 ///   - a constant within a factor of two of the type's ceiling
 ///   - a multiplication by a million or more: the time-unit conversions
 ///     (seconds to microseconds, milliseconds to ticks) that leave int32
 ///     within seconds of wall-clock time
 ///   - `Int32.MaxValue + e` and `MinValue - e`, which overflow for every e
-///     but zero (`MaxValue - e` is the sentinel arithmetic Random.fs does
-///     on purpose and stays quiet)
+///     but zero (`MaxValue - e` is the sentinel arithmetic random-number
+///     code does on purpose and stays quiet)
 ///
 /// The editor offers two fixes, in this order:
 ///   1. widen the WHOLE arithmetic expression: every operand cast to int64
@@ -119,7 +117,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
         // `Int32.MaxValue + e` / `* e` and `Int32.MinValue - e` overflow for
         // every e but zero; the other directions (`MaxValue - e`) are the
-        // sentinel arithmetic Random.fs and friends do on purpose
+        // sentinel arithmetic random-number code and friends do on purpose
         let limitConstant (op: string) (side: SynExpr) (isLeft: bool) =
             match stripParens side with
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) as e when ids.Length >= 2 ->
@@ -212,8 +210,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // function argument (`int64 (seconds * 1_000_000)`), a
                         // method argument (`Math.Max(seconds * 1_000_000, 0)`)
                         // or a comparison operand is where the arithmetic ends
-                        // — widening past it fed `int64` a tuple, or narrowed
-                        // back a value the author had just widened. Yields the
+                        // — widening past it would feed `int64` a tuple, or
+                        // narrow back a value the author just widened. Yields the
                         // outermost node and the path above it
                         let rec climb (acc: SynExpr) (above: SyntaxNode list) =
                             match above with

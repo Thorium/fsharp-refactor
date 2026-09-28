@@ -186,7 +186,7 @@ let ``a STEPPED range source is handled or left alone, never mis-emitted`` () =
 
 [<Fact>]
 let ``a receiver chosen per element keeps its loop`` () =
-    // Nu's Twenty 48: `columns[tile.Position.X].Add tile` picks a list PER
+    // `columns[tile.Position.X].Add tile` picks a list PER
     // element; `columns[tile.Position.X].AddRange tiles` has no `tile`
     let tree, sourceText, checkResults =
         parseAndCheck (
@@ -203,12 +203,12 @@ let ``a receiver chosen per element keeps its loop`` () =
 
     Assert.Empty(AddRange.find tree sourceText checkResults)
 
-// ---- only the loop variable itself collapses (suave) ----
+// ---- only the loop variable itself collapses ----
 
 [<Fact>]
 let ``a call result per element keeps its loop`` () =
-    // suave: `for f in xs do acc.Add(f())` came out as
-    // `acc.AddRange((List.rev xs) |> Seq.map (fun f -> f()))` — no gain,
+    // `for f in xs do acc.Add(f())` as
+    // `acc.AddRange((List.rev xs) |> Seq.map (fun f -> f()))` is no gain,
     // and doubly parenthesised
     Assert.Empty(
         addRangeIn (

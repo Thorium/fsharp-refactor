@@ -32,8 +32,8 @@ let private crypto = "System.Security.Cryptography"
 let private shapes =
     [
         // FR0065: a legacy protocol set as a function's whole body; the
-        // "comment the whole setting out" offer once left `let f () =` over a
-        // bare comment, which does not parse (found by this suite)
+        // "comment the whole setting out" offer must not leave `let f () =`
+        // over a bare comment, which does not parse
         withFree "LegacyProtocolAlone" [ "FR0065" ] (Gen.elements [ "Ssl3"; "Tls"; "Tls11" ]) (fun proto i ->
             $"let f{i} () =\n    System.Net.ServicePointManager.SecurityProtocol <- System.Net.SecurityProtocolType.{proto}")
         // FR0065: a weak hash factory; the editor offers the SHA256 and SHA512 swaps

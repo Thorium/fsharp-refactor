@@ -477,7 +477,7 @@ let ``the non-awaiting tail wraps into a local function and typechecks`` () =
 
 [<Fact>]
 let ``a return whose value hides behind a block comment keeps its keyword`` () =
-    // welendus's SignalRHubs.fs: `return (*{...*) transferdataNow` minus the
+    // `return (*{...*) transferdataNow` minus the
     // keyword puts the line's first token right of the comment, deeper than
     // the let above it, which the parser then reads as that let's
     // continuation. The plain closure stands down; the task-returning
@@ -547,10 +547,10 @@ let ``an already extracted tail is not wrapped again`` () =
 
 [<Fact>]
 let ``a tiny tail after a binding whose bangs sit in a nested CE is not wrapped`` () =
-    // the management-portal doom-loop shape: the last bang lives inside a
-    // nested task in an earlier BINDING, so the old body-end-minus-bang-line
-    // count saw a big number while the actual tail was two lines — it
-    // wrapped them, and then re-wrapped its own wrapper every pass
+    // the last bang lives inside a nested task in an earlier BINDING, so a
+    // body-end-minus-bang-line count sees a big number while the actual
+    // tail is two lines — wrapping them would re-wrap its own wrapper every
+    // pass
     let source =
         "module Test\nlet f (cache: ResizeArray<int>) = task {\n"
         + awaits 8
@@ -652,8 +652,7 @@ let ``a tail holding a use never becomes a plain closure`` () =
 
 [<Fact>]
 let ``a tail whose branches all return hoists the return instead of extracting`` () =
-    // this was the task-returning wrapper's case. The hoist is the better
-    // answer to the same tail: one keyword moves, no function is invented,
+    // the hoist beats the task-returning wrapper on this tail: one keyword moves, no function is invented,
     // and the branches stop being separate exits through the builder
     let source =
         fsharp
@@ -690,9 +689,9 @@ let ``a tail whose branches all return hoists the return instead of extracting``
 
 [<Fact>]
 let ``a one-line branch keeps its hoisted return on the same line`` () =
-    // CompanyHub.fs had thirteen of these. The closing `}` shares the
-    // branch's line, so `return` alone with the payload underneath left the
-    // brace inside the payload's offside context and the file stopped parsing
+    // the closing `}` shares the branch's line, so `return` alone with the
+    // payload underneath would leave the brace inside the payload's offside
+    // context and the file would stop parsing
     let source =
         fsharp
             """
@@ -897,8 +896,8 @@ let ``the embedding-generator shape splits`` () =
 
 [<Fact>]
 let ``an early-return tail hoists its return ahead of the branch`` () =
-    // the branch returns rule out a plain closure, and used to earn the
-    // task-returning wrapper. Hoisting the return is cheaper: the lets stay
+    // the branch returns rule out a plain closure; hoisting the return is
+    // cheaper than the task-returning wrapper: the lets stay
     // where they are and only the branch stops being an exit per arm
     let source =
         fsharp
@@ -936,9 +935,9 @@ let ``an early-return tail hoists its return ahead of the branch`` () =
 
 [<Fact>]
 let ``awaiting match arms stay advice without a fix`` () =
-    // the documented split is the if/else body; the per-arm `return!
-    // task { .. }` wrap once nested a machine into every awaiting arm of
-    // suave's HttpOutput.fs, a shape the doc never promised
+    // the documented split is the if/else body; a per-arm `return!
+    // task { .. }` wrap would nest a machine into every awaiting arm, a
+    // shape the doc never promised
     let source =
         fsharp
             """
@@ -1120,7 +1119,7 @@ let ``an async tail with a use keeps CE syntax as well`` () =
         Assert.Contains("let runTail () = async {", patched)
         assertTypechecks "Patched source" patched
 
-// ---- a hand-tuned hot path is not restructured (suave's HttpOutput.fs) ----
+// ---- a hand-tuned hot path is not restructured ----
 
 [<Fact>]
 let ``a hot-path comment inside the binding keeps every move advice-only`` () =
@@ -1181,9 +1180,8 @@ let private tailsIn (source: string) =
 
 [<Fact>]
 let ``FR0029: exception handlers and a finally block after the last await are not a tail`` () =
-    // suave's Combinators: `with ex -> raise ex` + `finally fs.Dispose()`
-    // + an Error arm followed the last `do!` — six lines of handlers, no
-    // business logic to extract
+    // `with ex -> raise ex` + `finally fs.Dispose()` + an Error arm after
+    // the last `do!` — six lines of handlers, no business logic to extract
     let source =
         fsharp
             """
@@ -1212,8 +1210,8 @@ let ``FR0029: exception handlers and a finally block after the last await are no
 
 [<Fact>]
 let ``FR0029: a multi-line return-bang is an await, not lines that follow one`` () =
-    // suave's Proxy: `return! (...) ctx` spanning five lines inside a `with`
-    // handler counted as a non-awaiting tail from its own first line
+    // `return! (...) ctx` spanning five lines inside a `with` handler must
+    // not count as a non-awaiting tail from its own first line
     let source =
         fsharp
             """
@@ -1240,7 +1238,7 @@ let ``FR0029: a multi-line return-bang is an await, not lines that follow one`` 
 
 [<Fact>]
 let ``FR0029: a loop body that re-awaits is not a tail and the note sits on the first statement`` () =
-    // suave's ConnectionHealthChecker: the last await is inside a `while`,
+    // the last await is inside a `while`,
     // so every following line runs again before the next await
     let looping =
         "module Test\nlet f (log: string -> unit) = task {\n"
@@ -1294,8 +1292,8 @@ let ``FR0029: a loop body that re-awaits is not a tail and the note sits on the 
 
 [<Fact>]
 let ``FR0029: a tail inside the arm that holds the last await is advice only`` () =
-    // suave's ConnectionFacade: the last `let!` sits in a match arm and a
-    // 20-line record construction follows it there — counted, anchored on
+    // the last `let!` sits in a match arm and a 20-line record
+    // construction follows it there — counted, anchored on
     // the first statement, but not wrapped
     let source =
         "module Test\nlet f (ok: bool) = task {\n"
@@ -1457,9 +1455,9 @@ let ``hoistReturnOnAsync brings only the hoist, never the FS3511 advice`` () =
 let ``a use inside the branch blocks the hoist`` () =
     // hoisting makes the branch the payload of one `return`, so it stops
     // being CE code and a `use` in it re-binds from the builder's Using to
-    // the language's. A type offering both logged "async" before the hoist
-    // and "sync" after it, compiling clean either way - nothing would have
-    // caught this at build time
+    // the language's. A type offering both logs "async" before the hoist
+    // and "sync" after it, compiling clean either way - nothing catches this
+    // at build time
     let source =
         fsharp
             """
@@ -1513,10 +1511,10 @@ let ``a use ahead of the branch still hoists - it stays CE code`` () =
 
 [<Fact>]
 let ``a tail closing on a bare return extracts as a plain closure`` () =
-    // management-portal's APIs.fs: `return` alone on its line with the value
-    // beneath it. The strip only handled `return <value>` on ONE line, so this
-    // fell through to the task-returning variant and bought a second state
-    // machine for a tail that awaits nothing
+    // `return` alone on its line with the value beneath it. A strip that
+    // handles only `return <value>` on ONE line would fall through to the
+    // task-returning variant and buy a second state machine for a tail that
+    // awaits nothing
     let source =
         fsharp
             """
@@ -1598,10 +1596,10 @@ let ``the tail extraction is a quickfix or nothing, never a note`` () =
 
 [<Fact>]
 let ``a two-line member header keeps its leading lets inside the builder`` () =
-    // welendus's fixtures: `[<Fact>] member test.` on one line, the backticked
+    // test fixtures: `[<Fact>] member test.` on one line, the backticked
     // name and `()=` on the next, the builder undented below the name. Lets
-    // hoisted to the builder's column are offside of the name line - the
-    // sweep rolled them back - so the advice carries no edit here
+    // hoisted to the builder's column are offside of the name line, so the
+    // advice carries no edit here
     let source =
         fsharp
             """

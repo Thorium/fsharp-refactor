@@ -10,10 +10,10 @@
 /// and the countdown `line <- line - 1` the same way, as `retreatLine`.
 /// The condition is evaluated once per step in the same order, the value
 /// the loop leaves behind is the function's result, and the recursion is
-/// a tail call the compiler turns back into a loop. Measured in
-/// PerfClaims: level with the loop (26 against 30 ns for 37 steps); the
-/// `Seq.tryFind` spelling over a range doubled the time and allocated
-/// 104 bytes per call, so it is not what the rule writes.
+/// a tail call the compiler turns back into a loop. Measured: level with
+/// the loop (26 against 30 ns for 37 steps); the `Seq.tryFind` spelling
+/// over a range doubles the time and allocates 104 bytes per call, so it
+/// is not what the rule writes.
 ///
 /// Safety rules:
 ///   - `let mutable v = init` is immediately followed (blank lines aside)

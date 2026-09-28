@@ -157,8 +157,8 @@ let ``only the leading run folds in`` () =
 
 [<Fact>]
 let ``a long construction is laid out across lines and still compiles`` () =
-    // seven properties on one line made a 380-character line on the sample
-    // this rule was written for
+    // seven properties on one line would make a line hundreds of
+    // characters long
     let wide =
         fsharp
             """
@@ -387,7 +387,7 @@ let ``a factory whose parameter shares the property name must not silently rebin
 
 [<Fact>]
 let ``a cast value is parenthesised`` () =
-    // SQLProvider: `Connection = con :?> SqlConnection` parses as
+    // `Connection = con :?> SqlConnection` parses as
     // `(Connection = con) :?> SqlConnection` — an equality against an
     // undefined `Connection`. The cast binds looser than the named `=`.
     let source =
@@ -414,7 +414,7 @@ let ``a cast value is parenthesised`` () =
 let ``a type-annotated constructor argument stands down`` () =
     // after `m: Henkilo` the parser is reading a TYPE, and the comma that
     // would introduce `Id = 1L` ends it: `Wrap(m: Henkilo, Id = 1L)` is
-    // "Unexpected symbol ',' in expression" (Fuuga's McpToolRouting)
+    // "Unexpected symbol ',' in expression"
     let source =
         klass
         + fsharp
@@ -453,9 +453,8 @@ let ``a plain constructor argument still folds`` () =
 [<Fact>]
 let ``a construction without parentheses stands down`` () =
     // `ProcessStartInfo "dotnet"` has no argument list to splice named
-    // properties into: the splice gave `ProcessStartInfo "dotnet"(Arguments = ...)`
-    // and "This value is not a function and cannot be applied" (Fable's
-    // MSBuildCrackerResolver)
+    // properties into: the splice would give `ProcessStartInfo "dotnet"(Arguments = ...)`
+    // and "This value is not a function and cannot be applied"
     let source =
         fsharp
             """
@@ -472,9 +471,9 @@ let ``a construction without parentheses stands down`` () =
 
 [<Fact>]
 let ``a call past 100 columns takes the fantomas layout under the let`` () =
-    // the compiler's ShadowPass.fs: properties hanging under the open
-    // paren with a dangling `)` failed fantomas --check, and `null` had
-    // gained parentheses the original never had
+    // properties hanging under the open paren with a dangling `)` fail
+    // fantomas --check, and `null` must not gain parentheses the original
+    // never had
     let source =
         fsharp
             """

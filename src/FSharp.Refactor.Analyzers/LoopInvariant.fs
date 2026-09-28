@@ -78,7 +78,7 @@ let private collectionModules = set [ "List"; "Array"; "Seq" ]
 /// comparison, boolean and bitwise. Every operator that applies or
 /// mutates something is out — `|>`, `<|`, `>>`, `<<`, `!`, `:=` — since
 /// `reader |> readLine` is a call spelled as an operator: hoisted above a
-/// `while reader.Peek() >= 0` loop it read one line and the loop spun on
+/// `while reader.Peek() >= 0` loop it reads one line and the loop spins on
 /// it. The typed gate still checks each one resolves to FSharp.Core.
 let private hoistableOperators =
     set
@@ -504,8 +504,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 // loop's reads — a pipeline's head (`produce ()
                                 // |> List.map (fun x -> ..)`) and every other
                                 // argument of the collection operation included,
-                                // where a scan of the lambda's body alone let
-                                // `produce` write the mutable unseen
+                                // where a scan of the lambda's body alone would
+                                // let `produce` write the mutable unseen
                                 let scanRange = anchor
 
                                 match pureIdentsLoop [] [] [ rhs ] with
@@ -514,9 +514,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     // hoisting: an operator expression (`a + 3`).
                                     // A bare identifier, constant or literal
                                     // copy costs nothing per iteration, and
-                                    // hoisting `let ny = sinPhi` out of Mibo's
-                                    // Primitive3D inner loop only separated it
-                                    // from the `nx`/`nz` it belongs with
+                                    // hoisting `let ny = sinPhi` out of an inner
+                                    // loop only separates it from the `nx`/`nz`
+                                    // it belongs with
                                     not ops.IsEmpty
                                     // an assignment in the loop's own statement
                                     // (the anchor wraps the loop) changes the

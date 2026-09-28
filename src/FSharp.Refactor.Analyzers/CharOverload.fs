@@ -82,7 +82,7 @@ let private charLiteral (c: char) =
 let private (|SingleCharString|_|) (e: SynExpr) =
     match e with
     // all three kinds: `@"\"` is THE spelling of a backslash in path code,
-    // and the AST's text is already decoded either way (the FR0015 lesson)
+    // and the AST's text is already decoded either way (as in FR0015)
     | SynExpr.Const(SynConst.String(text,
                                     (SynStringKind.Regular | SynStringKind.Verbatim | SynStringKind.TripleQuote),
                                     _),
@@ -101,11 +101,6 @@ let private (|OrdinalComparison|_|) (e: SynExpr) =
         ValueSome()
     | _ -> ValueNone
 
-/// Does this method have an overload whose first parameter is char? On
-/// netstandard2.0/net48 e.g. String.Contains(char) does not exist and the
-/// rewrite would not compile. Fails OPEN: when the member list yields no
-/// overloads at all the scan is blind, and no-information must not
-/// suppress — only a visible overload set without a char variant does.
 /// Is the type char, possibly through the F# `char` abbreviation?
 [<TailCall>]
 let rec private isCharType (t: FSharpType) =
@@ -114,6 +109,10 @@ let rec private isCharType (t: FSharpType) =
         || (t.TypeDefinition.IsFSharpAbbreviation
             && isCharType t.TypeDefinition.AbbreviatedType))
 
+/// Does this method have an overload whose first parameter is char? On
+/// netstandard2.0/net48 e.g. String.Contains(char) does not exist and the
+/// rewrite would not compile. Fails CLOSED: a member list that yields no
+/// overloads is no proof the char overload exists.
 let private hasCharOverload (entity: FSharpEntity) (methodName: string) =
     let takesChar (m: FSharpMemberOrFunctionOrValue) =
         try
@@ -135,9 +134,8 @@ let private hasCharOverload (entity: FSharpEntity) (methodName: string) =
             []
 
     // fail CLOSED: a blind member list is no proof the char overload
-    // exists, and this rule's fixes were exactly the ones a
-    // multi-framework build check had to put back on SQLProvider. Same
-    // policy as FR0106's span-overload gate — no proof, no fix.
+    // exists, and a multi-framework build check would put such a fix
+    // back. Same policy as FR0106's span-overload gate — no proof, no fix.
     overloads |> List.exists takesChar
 
 /// Does the method identifier resolve to one of the gated BCL types, with a

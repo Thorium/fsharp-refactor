@@ -1,5 +1,5 @@
-/// Semantic audit, round B: eight rules whose fix compiled but changed
-/// what the program did. FR0118 handing the token to a cleanup call,
+/// Semantic guards B: eight rules whose fix would compile but change
+/// what the program does. FR0118 handing the token to a cleanup call,
 /// FR0075 `use` under a task still in flight in a collection, FR0012's
 /// map fusion reordering effects and its name gate skipped without a
 /// typed check, FR0015's culture-sensitive StartsWith and newline-tolerant
@@ -201,9 +201,10 @@ let private lifecycle =
 
 [<Fact>]
 let ``FR0012: a built-in hint stands down on a file whose typed check has an error`` () =
-    // one unrelated error used to skip the "left-side names are
-    // FSharp.Core's" gate, and the builder's custom operation `id` matched
-    // `id x ===> x` by shape: `lifecycleRule { id "rule" }` lost its keyword
+    // one unrelated error must not skip the "left-side names are
+    // FSharp.Core's" gate: the builder's custom operation `id` matches
+    // `id x ===> x` by shape, and `lifecycleRule { id "rule" }` would lose
+    // its keyword
     let source = lifecycle + "\nlet broken : int = \"oops\""
     let tree, sourceText, check = parseAndCheckAllowingErrors source
     Assert.True(OptionModule.hasErrors check, "the fixture is meant to carry a type error")
@@ -212,7 +213,7 @@ let ``FR0012: a built-in hint stands down on a file whose typed check has an err
 [<Fact>]
 let ``FR0012: a built-in hint stands down on the parse-only path inside a computation expression`` () =
     // the custom operation lives only in the builder's body; outside one
-    // the untyped path fires as before (AuditGuardsBTests)
+    // the untyped path still fires (AuditGuardsBTests)
     let tree, sourceText = parse lifecycle
     Assert.Empty(HintEngine.find [] tree sourceText None)
 
@@ -341,9 +342,9 @@ let private swallowedIn (source: string) =
 
 [<Fact>]
 let ``FR0055: the IO-only narrowing is not offered when a user function is on the line`` () =
-    // Fuuga: `Some (Path.GetFileName d, Checkpoint.loadMetadata p)` under a
-    // catch-all was narrowed to IOException by the `Path` on the line, and
-    // loadMetadata's JsonException escaped the command meant to skip junk
+    // `Some (Path.GetFileName d, Checkpoint.loadMetadata p)` under a
+    // catch-all, narrowed to IOException by the `Path` on the line, would
+    // let loadMetadata's JsonException escape a handler meant to skip junk
     let source =
         fsharp
             """
@@ -417,8 +418,8 @@ let private nunitScaffold =
 
 [<Fact>]
 let ``FR0142: a test whose final expression is the value it returns is not wrapped`` () =
-    // `task { ... x + 1 } :> Task` compiles (FS0020 only) and NUnit no
-    // longer compares the result with ExpectedResult
+    // `task { ... x + 1 } :> Task` compiles (FS0020 only) and leaves NUnit
+    // no result to compare with ExpectedResult
     let source =
         lines
             [

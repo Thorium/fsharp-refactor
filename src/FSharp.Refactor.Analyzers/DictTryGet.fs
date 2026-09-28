@@ -223,6 +223,8 @@ let private containerTypeName (source: ISourceText) (check: FSharpCheckFileResul
 
 let private bvaluebRegex = Regex @"\bvalue\b"
 
+let private findRegex = Regex @"\bvalue\b"
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
     let containerTypeName = containerTypeName source check
@@ -281,9 +283,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let mentionsValue =
                 // `value` becomes the found-arm's binder; the fallthrough
                 // arm binds nothing, but the inline emission splices both
-                // texts, so the inline path keeps the historical check
+                // texts, so the inline path checks the then-branch
                 bvaluebRegex.IsMatch(textOfRange source thenExpr.Range)
-                || (elseIsInline && Regex.IsMatch(textOfRange source elseExpr.Range, @"\bvalue\b"))
+                || (elseIsInline && findRegex.IsMatch(textOfRange source elseExpr.Range))
 
             if not thenUses.IsEmpty && elseUses.IsEmpty && not mentionsValue then
                 match containerTypeName containerIds with
@@ -630,8 +632,8 @@ let private reraiseRegex = Regex @"\breraise\b"
 /// may still run twice. The match and its hit arm stay because the hit
 /// path is the one a cache takes almost every time, and there TryGetValue
 /// is a lock-free read (2.1 ns, nothing allocated) where GetOrAdd with a
-/// lambda allocates the delegate on every call (7.3 ns, 64 B; measured in
-/// benchmarks/PerfClaims). A miss arm of several `let`s keeps them, as the
+/// lambda allocates the delegate on every call (7.3 ns, 64 B, measured).
+/// A miss arm of several `let`s keeps them, as the
 /// lambda's body.
 ///
 /// Safety rules:

@@ -81,10 +81,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
     let suggestions = ResizeArray<Suggestion>()
 
-    // the argument-exception sites FIRST, once: they are rare, and the
-    // previous shape scanned every expression per binding — O(bindings ×
-    // expressions) — which put this rule at the top of the slow-analyzer
-    // list for files containing no argument exception at all
+    // the argument-exception sites FIRST, once: they are rare, and a scan
+    // of every expression per binding costs O(bindings × expressions) even
+    // in files containing no argument exception at all
     let paramNameSites =
         index.Exprs
         |> Array.choose (fun (_, e) ->

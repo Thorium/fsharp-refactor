@@ -28,8 +28,8 @@
 ///     | Unknown -> None       // genuinely has no area
 ///
 /// So every placeholder needs the comment to accuse it — `null` and
-/// `Unchecked.defaultof<_>` included. They looked like values nobody
-/// produces on purpose, until the corpus produced them on purpose:
+/// `Unchecked.defaultof<_>` included. They look like values nobody
+/// produces on purpose, yet real code does:
 /// `| [] -> Unchecked.defaultof<'T>` is the entire contract of a
 /// SingleOrDefault, and `| null -> null` passes a sentinel through.
 ///
@@ -83,8 +83,7 @@ let private supportPhrases = [ "not supported"; "unsupported" ]
 
 let private temporaryMarkers = [ "yet"; "for now"; "todo"; "fixme"; "later" ]
 
-/// Commented-OUT code is not a note about the branch. The F# compiler's
-/// ServiceInterfaceStubGenerator.fs had
+/// Commented-OUT code is not a note about the branch:
 ///
 ///     | _ -> //debug "Unsupported case with %A and %A" t ts
 ///         None
@@ -120,8 +119,8 @@ let private saysUnfinished (comment: string) =
 /// Values that stand in for a result. All of them are ordinary values that
 /// only a comment turns into evidence — `null` and `Unchecked.defaultof`
 /// included: `| [] -> Unchecked.defaultof<'T>` is the entire CONTRACT of a
-/// SingleOrDefault, and `| null -> null` passes a sentinel through, both
-/// found in the corpus. No value shape accuses itself.
+/// SingleOrDefault, and `| null -> null` passes a sentinel through. No
+/// value shape accuses itself.
 let private isPlaceholder (e: SynExpr) =
     match e with
     | SynExpr.Null _ -> true
@@ -190,9 +189,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // `None`/`ValueNone` is the LEGITIMATE no-match result of a partial
     // active pattern `(|X|_|)` and of a function declared to return an
     // option — whatever a comment above it says, replacing it with a raise
-    // turns "did not match" into a crash. The F# compiler's
-    // ServiceInterfaceStubGenerator.fs lost exactly that arm of a partial
-    // pattern. Syntactic only: a declared `: 'T option`/`voption` return
+    // turns "did not match" into a crash. Syntactic only: a declared `: 'T option`/`voption` return
     // (or the active-pattern name) is the evidence; inferred option
     // returns stay eligible — that is the rule's own example shape.
     let optionByContract (path: SyntaxNode list) (matchRange: range) =

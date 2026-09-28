@@ -109,7 +109,7 @@ let ``different operands stay`` () =
 
 [<Fact>]
 let ``a call bound as a value keeps the literal that types it`` () =
-    // FSharpPlus: `let _111 = parse "true" && true` — `parse` is SRTP and
+    // `let _111 = parse "true" && true` — `parse` is SRTP and
     // the `&& true` is what makes its result a bool
     Assert.Empty(
         findIn (

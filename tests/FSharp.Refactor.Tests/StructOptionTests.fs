@@ -147,8 +147,8 @@ let ``an explicit return annotation is left alone`` () =
 
 [<Fact>]
 let ``a recursive function's match on its own call moves too`` () =
-    // the self-call's patterns sit inside the definition, where the use
-    // scan used not to look: `| Some d` against a voption is FS0001
+    // the self-call's patterns sit inside the definition, which the use
+    // scan must read too: `| Some d` against a voption is FS0001
     assertStructOption
         (fsharp
             """

@@ -1,4 +1,4 @@
-/// Audit fixes: FR0029's return hoist over a payload that continues below
+/// Guards: FR0029's return hoist over a payload that continues below
 /// its keyword line (A2) or a branch holding a string literal spanning
 /// lines (B1); FR0047's editor fix for a Dispose that still uses the field
 /// (C6); `Text.reindentBlock`'s literal guard and FR0149's handler move (C7).
@@ -49,8 +49,8 @@ let private unhandledStartsIn (source: string) =
 
 [<Fact>]
 let ``FR0029: a record payload continuing below its return keeps its field alignment`` () =
-    // stripping `return ` pulled the first payload line 7 columns left while
-    // its continuation stayed put: `Y = 2` then read as an argument of `x`
+    // stripping `return ` alone pulls the first payload line 7 columns left
+    // while its continuation stays put: `Y = 2` then reads as an argument of `x`
     let source =
         fsharp
             """

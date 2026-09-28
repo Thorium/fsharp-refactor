@@ -50,7 +50,7 @@ type PinnedEdit =
 /// The edits placed on the snapshot the light bulb was built from — the
 /// text the sidecar's diagnostics describe. The same line and column on
 /// a LATER snapshot is wherever the user's typing has since moved that
-/// text, and applying there rewrote the wrong characters.
+/// text, and applying there would rewrite the wrong characters.
 let private pin (snapshot: ITextSnapshot) (edits: Edit list) : PinnedEdit list =
     edits
     |> List.choose (fun e ->

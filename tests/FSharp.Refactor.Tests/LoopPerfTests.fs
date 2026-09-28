@@ -186,7 +186,7 @@ let ``GetType equality with typeof is noted`` () =
 
 [<Fact>]
 let ``FR0036: an exact-type guard refining a type test is intent`` () =
-    // FCS FileSystem.fs: `| :? IOException as err when retryLocked &&
+    // `| :? IOException as err when retryLocked &&
     // err.GetType() = typeof<IOException>` retries only on a PLAIN
     // IOException — the `:?` the note would offer is the test being refined
     Assert.Empty(
@@ -235,7 +235,7 @@ let ``FR0036: a guard against another type, or the comparison in the body, is st
                 """
         )
 
-    // fsi.fs: `.GetType().Name = \"OperationCanceledException\"` in a guard
+    // `.GetType().Name = \"OperationCanceledException\"` in a guard
     // has a typed spelling and stays flagged
     let byName =
         typeChecksIn (
@@ -277,8 +277,8 @@ let ``typeof against typeof is fine`` () =
 [<Fact>]
 let ``Regex built in a loop is noted`` () =
     // Constructing one parses and compiles the pattern — the whole cost.
-    // FR0015 covers static Regex CALLS in a loop; a Regex bound to a value
-    // inside one fell between the two rules.
+    // FR0015 covers static Regex CALLS in a loop; this covers a Regex bound
+    // to a value inside one.
     let _, constructions =
         loopPerfIn (
             fsharp

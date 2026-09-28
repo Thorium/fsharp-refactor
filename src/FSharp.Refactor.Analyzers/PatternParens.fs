@@ -91,8 +91,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     // a member of an object expression is a member too, and its parameters
     // are as much a method's shape as a class member's — its path carries
-    // no SynMemberDefn, so it is found by range (FSharp.CloudAgent's and
-    // Mibo's `{ new I with member _.M(x) = ... }` lost their parens)
+    // no SynMemberDefn, so it is found by range (`{ new I with member
+    // _.M(x) = ... }` keeps its parens)
     let inObjectExpression (r: range) =
         index.Exprs
         |> Array.exists (fun (_, e) ->
@@ -107,7 +107,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 | SynPat.Paren(pat = inner) when isSingleLine pat.Range ->
                     // `Case(_)` is accepted for a case that takes NO data and `Case _`
                     // is not ("Pattern discard is not allowed for union case that
-                    // takes no data" — fsharplint's SynMemberKind matches); without
+                    // takes no data"); without
                     // types the arity is unknown, so the typed FR0088 owns that shape
                     let wildcardOfCase =
                         match inner with
@@ -154,7 +154,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 None
 
                         // punctuation that closes or separates needs no space either:
-                        // `| Some tok , nstate ->` was left by a space before the comma
+                        // a space before the comma would leave `| Some tok , nstate ->`
                         let separates (c: char option) =
                             c |> Option.exists (fun c -> not (Char.IsWhiteSpace c || ",;)]}".Contains c))
 

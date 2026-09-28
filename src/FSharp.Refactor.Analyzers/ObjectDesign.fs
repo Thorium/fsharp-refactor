@@ -54,9 +54,7 @@ type UndisposedFieldSuggestion =
         Range: range
         /// The Dispose body DOES touch the field — it just never disposes
         /// it. `member this.Dispose() = cts.Cancel()` cancels the token
-        /// and leaves the handle (fantomas's LSPFantomasService, and
-        /// CloudAgent's connection factory both do exactly this): the
-        /// author clearly meant to clean up, so the message says which
+        /// and leaves the handle: the author clearly meant to clean up, so the message says which
         /// half is missing rather than claiming nothing was done.
         MentionedOnly: bool
         /// The editor's fix: `field.Dispose()` in the type's Dispose body,
@@ -116,7 +114,7 @@ let private symbolAt (check: FSharpCheckFileResults) (source: ISourceText) (id: 
     |> Option.map (fun u -> u.Symbol)
 
 /// Does the interface type name resolve to IDisposable or an interface
-/// that inherits it (fantomas's `FantomasService`)? The name alone
+/// that inherits it? The name alone
 /// suffices when it is IDisposable itself, in case resolution fails.
 let private interfaceIsDisposable (check: FSharpCheckFileResults) (source: ISourceText) (t: SynType) =
     let ident =
@@ -135,7 +133,7 @@ let private interfaceIsDisposable (check: FSharpCheckFileResults) (source: ISour
 
 /// Types whose lifetime is not the scope's to end, or whose Dispose frees
 /// nothing worth a `use` — the list CSharp.Refactor's CR0060 keeps as
-/// `noOwnership`, learned on real test suites:
+/// `noOwnership`:
 ///   - `HttpClient` is a shared lifetime (a static instance, or the
 ///     factory under DI), never a per-scope resource
 ///   - `HttpRequestMessage` and the string/form/byte contents own nothing
@@ -176,9 +174,8 @@ let noOwnershipType (check: FSharpCheckFileResults) (source: ISourceText) (ident
     | _ -> false
 
 /// A construction whose Dispose is a no-op because the object owns no
-/// unmanaged resource: a MemoryStream over a buffer the caller owns
-/// (suave's HPACK and Huffman codecs), a StringReader, a StringWriter
-/// (fsharp.formatting's HTML writers). Leaving one undisposed leaks
+/// unmanaged resource: a MemoryStream over a buffer the caller owns, a
+/// StringReader, a StringWriter. Leaving one undisposed leaks
 /// nothing. A MemoryStream over its own buffer is not excluded: `use`
 /// there is the idiom and costs nothing.
 let ownsNoResource (check: FSharpCheckFileResults) (source: ISourceText) (rhs: SynExpr) =
@@ -239,8 +236,7 @@ let private patNames (p: SynPat) : string list = patNamesLoop [] [ p ]
 
 /// Every name an instance `let` binds: the function name of `let f x =
 /// ...`, and every binder of a destructuring pattern — `let a, b = ...`
-/// (the compiler's GraphChecking `let sigToImpl, implToSig = ...`, whose
-/// members read `implToSig`).
+/// (`let sigToImpl, implToSig = ...`, whose members read `implToSig`).
 let private letBoundNames (p: SynPat) : string list =
     match p with
     | SynPat.LongIdent(longDotId = SynLongIdent(id = [ head ])) -> [ head.idText ]
@@ -260,8 +256,8 @@ let private constructedTypeName (e: SynExpr) =
     | _ -> None
 
 /// A member body that mirrors a protocol rather than computing: `()`,
-/// `Unchecked.defaultof<_>`. Such stubs (fsharp.formatting's fake `fsi`
-/// object, FCS's `_DebugKeyStoreNoop`) exist to be instances of a shape.
+/// `Unchecked.defaultof<_>`. Such stubs (a fake `fsi` object, a no-op key
+/// store) exist to be instances of a shape.
 let private isProtocolStub (body: SynExpr) =
     match stripParens body with
     | UnitConst -> true
@@ -328,8 +324,8 @@ let find
     let mentions (names: Set<string>) (r: range) =
         // the walker does not descend into a record copy-and-update's source
         // (`{ state with ... }`), so read it off the Record node itself —
-        // by TEXT, because the source can be any expression (FCS's
-        // `{ denv g with ... }` applies a constructor parameter)
+        // by TEXT, because the source can be any expression
+        // (`{ denv g with ... }` applies a constructor parameter)
         let copySource (e: SynExpr) =
             match e with
             | SynExpr.Record(copyInfo = Some(copyExpr, _))
@@ -366,9 +362,8 @@ let find
                     let typeName = typeIds |> List.map (fun i -> i.idText) |> String.concat "."
                     let declPath = SyntaxNode.SynModule decl :: path
 
-                    // IDisposable itself, or an interface inheriting it
-                    // (fantomas's FantomasService): its Dispose is the
-                    // type's Dispose
+                    // IDisposable itself, or an interface inheriting it:
+                    // its Dispose is the type's Dispose
                     let implementsDisposable =
                         members
                         |> List.exists (fun m ->
@@ -454,17 +449,14 @@ let find
                                             name = "Dispose" || name = "DisposeAsync")
                                         ->
                                         // a Dispose that delegates to DisposeAsync
-                                        // (FsAutoComplete's progress reporter)
                                         // disposes through the async body
                                         Some body.Range
                                     | _ -> None)
                             | _ -> [])
 
                     // one hop out of the interface Dispose: a body that calls
-                    // `this.Dispose()` (the F# compiler's
-                    // NativeDllResolveHandlerCoreClr) or a let-bound
-                    // `dispose ()` (its TcImports) disposes through that
-                    // member's or function's body
+                    // `this.Dispose()` or a let-bound `dispose ()` disposes
+                    // through that member's or function's body
                     let delegatedBodies =
                         let called =
                             index.Exprs
@@ -550,10 +542,10 @@ let find
                         // disposable?) once resolved, None when it cannot be.
                         // A disposable base makes an added `interface
                         // IDisposable` a duplicate — the note then talks
-                        // about the base's Dispose instead (Kasino's MonoGame
-                        // Game subclass drew "does not implement IDisposable"
-                        // while the base does); an unresolved base is not
-                        // worth the guess
+                        // about the base's Dispose instead (a MonoGame `Game`
+                        // subclass is not told "does not implement
+                        // IDisposable" while the base does); an unresolved
+                        // base is not worth the guess
                         let bases =
                             members
                             |> List.choose (fun m ->
@@ -868,7 +860,7 @@ let find
                             // instance-ness is part of its protocol
                             && attrs.IsEmpty
                             // an inline member is a compile-time template
-                            // (FCS's no-op key-store mirror); a stub body
+                            // (a no-op mirror of a shape); a stub body
                             // mirrors a protocol
                             && not isInline
                             && not (isProtocolStub bodyExpr)
@@ -913,9 +905,8 @@ type DisposeWithoutInterfaceSuggestion =
 /// Find public `member _.Dispose()` members on types that implement no
 /// IDisposable — neither directly, nor through an interface inheriting
 /// it, nor through a base type (typed: the entity's own interface list).
-/// fsharp.formatting's FsiSession wraps an FCS evaluation session, a real
-/// IDisposable, behind such a member: `use` cannot bind it, and FR0032
-/// looked at the wrong field.
+/// A wrapper holding a real IDisposable (an FCS evaluation session, say)
+/// behind such a member cannot be bound by `use`.
 let disposeWithoutInterface
     (parseTree: ParsedInput)
     (source: ISourceText)

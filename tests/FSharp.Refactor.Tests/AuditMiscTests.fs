@@ -1,9 +1,8 @@
-/// Real-repo sweep fixes, round 2: FR0130's cross-file pattern veto
-/// (A11 — FsToolkit's `let lat` vs `let! lat` in a sibling file), FR0111
-/// flattening a whole else-if ladder in one pass (B15 — Giraffe's
-/// five-deep chain), FR0023 refusing same-typed and churn-heavy reorders
-/// (svg_path's `point y x`), and FR0101 naming the loop variable after the
-/// alias it used to leave behind (Giraffe's `let mChar = item`). In the
+/// FR0130's cross-file pattern veto (A11 — `let lat` vs `let! lat` in a
+/// sibling file), FR0111 flattening a whole else-if ladder in one pass
+/// (B15 — a five-deep chain), FR0023 refusing same-typed and churn-heavy
+/// reorders (`point y x`), and FR0101 naming the loop variable after the
+/// alias that opens the body (`let mChar = item`). In the
 /// "ProjectSources" collection: the cross-file parser is process-wide
 /// state.
 [<Xunit.Collection("ProjectSources")>]
@@ -102,10 +101,10 @@ let private cliContext (options: FSharpProjectOptions) (fileName: string) : CliC
     }
 
 /// Every diagnostic of a fresh check of the project as it is on disk now.
-/// A new stamp alone is not enough: two rewrites of the same file within
-/// one check cycle left FCS answering from the first (the FR0130 sweep
-/// test flapped on a warning its second rewrite had removed), so the
-/// checker's caches are dropped as well.
+/// A new stamp alone is not enough: after two rewrites of the same file
+/// within one check cycle FCS can answer from the first, reporting a
+/// warning the second rewrite removed, so the checker's caches are
+/// dropped as well.
 let private projectDiagnostics (options: FSharpProjectOptions) =
     checker.InvalidateAll()
 
@@ -122,7 +121,7 @@ let private projectErrors (options: FSharpProjectOptions) =
 
 // ---- A11: FR0130 and a pattern binder in ANOTHER file ----
 
-/// FsToolkit's TestData.fs: public constants of a test executable, plus a
+/// Public constants of a test executable, plus a
 /// private one nobody outside the module can see.
 [<Literal>]
 let private testData =
@@ -153,7 +152,7 @@ let ``FR0130: a name another file binds as a pattern keeps its plain let`` () =
 
 [<Fact>]
 let ``FR0130: a body split by a directive is no constant`` () =
-    // Paket's runningOnMono: `false` here, a `try` under ENABLE_MONO_SUPPORT
+    // `false` here, a `try` under ENABLE_MONO_SUPPORT
     let tree, sourceText =
         parse (
             fsharp
@@ -231,7 +230,7 @@ let ``FR0130: the analyzed file is not its own sibling`` () =
     ProjectSources.configure None
     Assert.False(Analyzers.patternBoundInSibling data (analyzerOptions options) "lat")
 
-/// FsToolkit's Result.fs: `let! lat = ...` in a CE of a LATER file of the
+/// `let! lat = ...` in a CE of a LATER file of the
 /// same executable — FS3190 once `lat` is a literal.
 [<Literal>]
 let private program =
@@ -256,7 +255,7 @@ let ``FR0130: the sweep leaves lat alone and still annotates lng and the private
 
     // the withheld fix would indeed have turned `let! lat` into a match
     // against the constant: FS3190 (a warning by default, an error under
-    // FsToolkit's warnaserror — and a MatchFailureException at run time
+    // warnaserror — and a MatchFailureException at run time
     // either way)
     File.WriteAllText(data, testData.Replace("let lat", "[<Literal>]\nlet lat"))
     Assert.Contains(projectDiagnostics options, fun d -> d.ErrorNumber = 3190)
@@ -285,8 +284,8 @@ let private applyAll (source: string) (edits: (range * string) list) =
 
 [<Fact>]
 let ``FR0111: a same-line else-if ladder flattens every link in one pass`` () =
-    // Giraffe's ModelValidationTests: five links, one per pass before,
-    // and "did not converge" after the fifth
+    // five links: one per pass would need five passes and hit "did not
+    // converge"
     let source =
         fsharp
             """
@@ -452,8 +451,8 @@ let private paramOrderIn (source: string) =
 
 [<Fact>]
 let ``FR0023: two parameters of the same type are never swapped`` () =
-    // svg_path's OverlapsTests: one lambda, and forty `point x y` literals
-    // flipped into code that reads as vertical lines
+    // one lambda would flip every `point x y` call site into code that
+    // reads as vertical lines
     Assert.Empty(
         paramOrderIn (
             fsharp
@@ -530,7 +529,7 @@ let private assertIndexedLoop (source: string) (expectedPatched: string) =
 
 [<Fact>]
 let ``FR0101: an opening alias of the element names the loop variable`` () =
-    // Giraffe's FormatExpressions: `for item in path do let mChar = item`
+    // `for item in path do let mChar = item`
     assertIndexedLoop
         (fsharp
             """

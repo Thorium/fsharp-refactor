@@ -106,9 +106,9 @@ let tryParse (path: string) : (ParsedInput * ISourceText) option =
 // live outside, and which files are unreadable because a script that
 // loads them does not typecheck.
 //
-// FR0090/FR0091 answered them inside the apply tool's api pass. This is
+// FR0090/FR0091 answer them inside the apply tool's api pass. This is
 // the same answer, on the channel the analyzers can reach, so the FR0069
-// and FR0093 migrations share one probe rather than growing a second.
+// and FR0093 migrations share one probe rather than each having its own.
 // Editors install nothing and every migration keeps its file-local
 // behaviour, exactly as with `parser` above.
 

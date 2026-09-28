@@ -203,8 +203,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     // the binder must appear only as the scrutinee
                     && not (mentionedInside index lou.Body.Range scrutinee.idRange binder.idText)
                     // ...and the source text agrees: a mention in a shape the
-                    // index does not descend into (SageFs's Mcp.fs kept it in
-                    // anonymous-record fields of two arms) would dangle once
+                    // index does not descend into (an anonymous-record field
+                    // of an arm) would dangle once
                     // the binding is gone, so every later word of the match
                     // is read as well — the guards, the arm bodies, all of it
                     && not (
@@ -224,8 +224,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // the blank lines the author kept between the `let!`
                         // and its match go with the binding: left behind they
                         // open the computation with an empty line (`task {`,
-                        // then nothing — fantomas's EndToEndTests) or double
-                        // the gap above the match (fsharplint's TestApi.fs)
+                        // then nothing) or double the gap above the match
                         let matchLine = lou.Body.Range.StartLine
 
                         let rec advanceRemoveEnd removeEnd =

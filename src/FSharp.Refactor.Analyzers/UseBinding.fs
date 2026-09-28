@@ -118,8 +118,8 @@ type Suggestion =
     }
 
 /// The advisory's account of where the value went, for the message: it
-/// must say what actually happened (a value stored in a field used to be
-/// reported as "handed to 'ValueSome'").
+/// must say what actually happened (a value stored in a field, not
+/// "handed to 'ValueSome'").
 let describeEscape (s: Suggestion) =
     match s.Destination with
     | Some(Destination.Function(name, true)) -> $"it is handed to '%s{name}' in this file, which does not dispose it"
@@ -160,7 +160,7 @@ let private bclFactories =
         "System.Xml.XmlReader", set [ "Create" ]
         "System.Xml.XmlWriter", set [ "Create" ]
         // the hash and cipher factories: `MD5.Create()` is THE way to get
-        // one (the F# compiler's Hashing.fs, suave's WebSocket handshake)
+        // one
         "System.Security.Cryptography.MD5", set [ "Create" ]
         "System.Security.Cryptography.SHA1", set [ "Create" ]
         "System.Security.Cryptography.SHA256", set [ "Create" ]
@@ -213,8 +213,8 @@ let private locallyConstructed (check: FSharpCheckFileResults) (source: ISourceT
         // cheap prefilter before paying for symbol resolution: a
         // constructor-without-new is spelled with a type name and the BCL
         // factories are PascalCase, while ordinary calls (`let x = load y`)
-        // are lowercase — resolving those for every let in a sweep put
-        // this rule near the top of the slow-analyzer list
+        // are lowercase — resolving those for every let in a sweep would
+        // put this rule near the top of the slow-analyzer list
         let plausible =
             match headIdent with
             | ValueSome id -> id.idText.Length > 0 && System.Char.IsUpper id.idText.[0]
@@ -290,18 +290,17 @@ let private adoptedResourceBases =
 
 /// A wrapper built over a resource the scope did not create: its Dispose
 /// closes that resource too (leaveOpen is false by default, HttpClient
-/// disposes its handler). The F# compiler's ilnativeres.fs wraps a
-/// caller-owned `resStream` in a BinaryWriter in a function that appends
-/// to it — a `use` there closed the stream under the caller; a
-/// `LineSource(stream: Stream)` wrapping its constructor parameter in a
-/// StreamReader per call closed the shared stream after the first line.
-/// Only a value the SAME scope constructed AND keeps (`ownedHere`) is the
+/// disposes its handler). A function that wraps a caller-owned stream in
+/// a BinaryWriter to append to it would close the stream under the caller
+/// with a `use`; a type wrapping its constructor parameter in a
+/// StreamReader per call would close the shared stream after the first
+/// line. Only a value the SAME scope constructed AND keeps (`ownedHere`) is the
 /// scope's own: a parameter, a constructor parameter, a class `let` field,
 /// a module-level value, an outer binding or a property read is foreign —
-/// and so is a local that escapes the scope (Giraffe's tests build a
-/// MemoryStream, wrap it in a StreamWriter, store it in
-/// `ctx.Request.Body` and return a `task { }` that reads it: a `use` on
-/// the writer closed the request body before the task ran). Such a
+/// and so is a local that escapes the scope (a MemoryStream wrapped in a
+/// StreamWriter, stored in `ctx.Request.Body` and read by a returned
+/// `task { }`: a `use` on the writer would close the request body before
+/// the task runs). Such a
 /// wrapper is not this scope's to dispose.
 let private wrapsForeignResource
     (check: FSharpCheckFileResults)
@@ -465,8 +464,8 @@ let rec private classifyLoop
     | SyntaxNode.SynExpr(SynExpr.Paren _ | SynExpr.Typed _ | SynExpr.Upcast _ | SynExpr.InferredUpcast _) :: rest ->
         classifyLoop check source holds mention viaEquality element rest
     // `Some x`, `ValueSome x`: the case wraps the value, the next node
-    // receives it (Mibo's `billboardEffect <- ValueSome e` was reported as
-    // handed to 'ValueSome')
+    // receives it (`field <- ValueSome e` is a store, not a hand-off to
+    // 'ValueSome')
     | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a)) :: rest when
         Range.rangeContainsRange a.Range mention && isUnionCase check source f
         ->
@@ -480,8 +479,7 @@ let rec private classifyLoop
     // the operator's own node of an infix application: keep climbing
     | SyntaxNode.SynExpr(SynExpr.App(isInfix = true)) :: rest ->
         classifyLoop check source holds mention viaEquality element rest
-    // `cell := x` (suave's RateLimit keeps its cleanup timer in a
-    // module-level ref)
+    // `cell := x`: the ref cell holds it, like the target of `<-`
     | SyntaxNode.SynExpr(SynExpr.App(
         isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = op; argExpr = cell); argExpr = a)) :: _ when
         operatorName op = "op_ColonEquals" && Range.rangeContainsRange a.Range mention
@@ -507,15 +505,14 @@ let rec private classifyLoop
         ->
         storedIn target
     // `owner.Prop <- x`: a disposable owner disposes what it holds; any
-    // other holder is where the Dispose belongs (Mibo's `res.Raster <- sr`)
+    // other holder is where the Dispose belongs
     | SyntaxNode.SynExpr(SynExpr.LongIdentSet(longDotId = SynLongIdent(id = owner :: _ :: _))) :: _
     | SyntaxNode.SynExpr(SynExpr.Set(targetExpr = SynExpr.DotGet(expr = SynExpr.Ident owner))) :: _ ->
         if ObjectDesign.resolvesToDisposable check source owner then
             Adopted
         else
             Held
-    // `xs.[i] <- x`, `o.Prop.[i] <- x`: the collection holds it (suave's
-    // Tcp.fs fills its listen-socket array)
+    // `xs.[i] <- x`, `o.Prop.[i] <- x`: the collection holds it
     | SyntaxNode.SynExpr(SynExpr.Set _ | SynExpr.DotIndexedSet _ | SynExpr.NamedIndexedPropertySet _ | SynExpr.DotNamedIndexedPropertySet _) :: _ ->
         Held
     // `owner.Add(x)`: a disposable collection owns its parts; any other
@@ -688,8 +685,7 @@ let private selfActiveType check source binder =
 let private flushSensitive check source binder =
     typeIsA flushSensitiveBases (set [ "System.Data.IDbTransaction" ]) check source binder
 
-/// Types whose `Close()` IS `Dispose()` (the F# compiler's ilwrite.fs
-/// closes the MemoryStreams it writes into).
+/// Types whose `Close()` IS `Dispose()`.
 let private closeDisposesBases =
     set
         [
@@ -979,10 +975,9 @@ let rec private resultsLoop (acc: SynExpr list) (pending: SynExpr list) =
 /// binding at `binding` (whose body is `body`): inside a lambda, a local
 /// function, an object expression, a `lazy`, or a computation expression
 /// that starts after the binding (a `task { }` the function returns)?
-/// suave's ConnectionHealthChecker kept its CancellationTokenSource in a
-/// returned task's loop, and Proxy.fs its TcpListener in a `let rec loop
-/// () = task { ... }`: a `use` there disposed the value before the
-/// closure ran, and every health check died on its first cycle.
+/// A CancellationTokenSource read in a returned task's loop, or a
+/// TcpListener in a `let rec loop () = task { ... }`, would be disposed
+/// by a `use` before the closure runs.
 let private runsAfter (binding: range) (body: range) (path: SyntaxNode list) =
     path
     |> List.exists (fun node ->
@@ -1004,8 +999,8 @@ let private runsAfter (binding: range) (body: range) (path: SyntaxNode list) =
 
 /// Is a mention at `path` returned inside a tuple, a record, an upcast or
 /// a union case that is the scope's result (`isResult`)? Still the
-/// caller's (suave's `(port, cts)`, Mibo's `(node :> IDisposable, node :>
-/// aset<'B>)` and `{ Vertices = vb; ... }`).
+/// caller's (`(port, cts)`, `(node :> IDisposable, node :> aset<'B>)`,
+/// `{ Vertices = vb; ... }`).
 let private returnedThroughTo check source (isResult: range -> bool) (path: SyntaxNode list) =
     path
     |> Seq.map (fun node ->
@@ -1071,8 +1066,8 @@ let rec private shortName (e: SynExpr) =
 /// is DROPPED while the work runs — `|> ignore`, `|> Async.AwaitTask |>
 /// ignore`, a bare statement of Task type, `Async.Start` — is
 /// fire-and-forget on the receiver: the work may still be running at
-/// scope exit, where `use` would dispose it underneath (FsCheck's Runner
-/// test calls `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`). An
+/// scope exit, where `use` would dispose it underneath
+/// (`testCase.RunAsync(...) |> Async.AwaitTask |> ignore`). An
 /// awaited, bound, `.Wait()`ed or `Async.RunSynchronously`'d result is
 /// finished before the scope ends. The member's name, when so.
 let private discardedPending
@@ -1195,11 +1190,10 @@ let private syncFinishers =
 
 /// A CancellationTokenSource binder whose `.Token` (or the source itself,
 /// or a local bound to its token) goes anywhere the scope does not see
-/// finish. welendus: `let token = new CancellationTokenSource()` ...
-/// `match! Loans.requestNewLoan ... token.Token false with` —
-/// `requestNewLoan` hands the token to `Async.Start(work, token)` for a
-/// background search that outlives the scope, and a `use` disposed the
-/// source under it. The scope KEEPS the token in exactly these positions:
+/// finish. `let token = new CancellationTokenSource()` ...
+/// `match! f ... token.Token false with` hands the token to `Async.Start(work, token)` for a
+/// background search that outlives the scope, and a `use` would dispose
+/// the source under it. The scope KEEPS the token in exactly these positions:
 /// an argument of a BCL or FSharp.Core operation whose pending result
 /// (`Task.Delay(ms, ct)`, `client.GetAsync(url, ct)`) is awaited on the
 /// statement spine (`let!`, `do!`, `match!`, `return!`, `.Wait()`,
@@ -1671,8 +1665,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                         // `x.Dispose()`, `x.Close()` where Close is Dispose
                         // (streams, writers, sockets), and
-                        // `(x :> IDisposable).Dispose()` (fantomas's daemon
-                        // tests), whose upcast hides the receiver
+                        // `(x :> IDisposable).Dispose()`, whose upcast hides
+                        // the receiver
                         let manuallyDisposed =
                             binderMentions
                             |> Array.exists (fun (_, e) ->
@@ -1831,8 +1825,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // and its result dropped (`|> ignore`, `|> Async.AwaitTask
                             // |> ignore`, a bare statement, `Async.Start`): work
                             // still running at scope exit, on a receiver `use`
-                            // would dispose under it (FsCheck's Runner test:
-                            // `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`)
+                            // would dispose under it
+                            // (`testCase.RunAsync(...) |> Async.AwaitTask |> ignore`)
                             let inFlight =
                                 binderMentions
                                 |> Array.tryPick (fun (path, e) -> discardedPending check source path e)
@@ -1841,8 +1835,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // to a call the scope does not see finish: the
                             // work it cancels may outlive the scope, and
                             // `use` would dispose the source under it
-                            // (welendus: `requestNewLoan ... token.Token`,
-                            // which Async.Starts a background search)
                             let tokenHanded = tokenHandedOn check source binder name aliases mentions
 
                             // `use` inside a computation expression binds to
@@ -1906,8 +1898,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // an escape is an ownership transfer: the caller gets
                             // it back, another disposable adopts it, a holder beyond
                             // this scope keeps it. The owner is decided, whatever
-                            // else the scope did with the value on the way (Activity.fs
-                            // registers its listener and returns it) — a `use` here
+                            // else the scope did with the value on the way (registered
+                            // a listener, then returned it) — a `use` here
                             // would be wrong, and there is nothing to say
                             let transferred =
                                 escapes |> List.exists (fun e -> e = Returned || e = Adopted || e = Held)
@@ -1970,9 +1962,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 ///         task { while true do ... cts.Token ... }  // reads it long after
 ///
 /// `use` disposes at the end of the enclosing scope, and a `task`/`async`
-/// the scope RETURNS runs after that: suave's ConnectionHealthChecker
-/// disposes its CancellationTokenSource and then reads `.Token` on every
-/// interval, which throws ObjectDisposedException the first time round.
+/// the scope RETURNS runs after that: reading `.Token` of the disposed
+/// CancellationTokenSource on every interval throws
+/// ObjectDisposedException the first time round.
 /// The computation, not the scope, owns the resource.
 ///
 /// The fix moves the binding inside the computation, where the same `use`
@@ -2046,7 +2038,7 @@ let findEscapingUse
         // the tail expression of a statement chain, and the statements
         // passed on the way — `let a = ... in let b = ... in tail`
         // acc is built REVERSED and turned once at the base case: appending
-        // (`acc @ rhss`) copied the whole accumulator at every step, which is
+        // (`acc @ rhss`) would copy the whole accumulator at every step, which is
         // O(n2) down a long statement chain
         let rec tailOf (acc: SynExpr list) (e: SynExpr) =
             match e with

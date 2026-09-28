@@ -55,8 +55,7 @@ type private Piece =
     | Hole of string
     /// A hole spelled `%s{x}`: the `+` was what typed `x` as a string (an
     /// unannotated parameter), and a plain hole would let it generalise —
-    /// against a signature file that is FS0034 (the F# compiler's
-    /// `qualifiedMangledNameOfTyconRef tcref nm`). `%s` keeps the constraint.
+    /// against a signature file that is FS0034. `%s` keeps the constraint.
     | TypedHole of string
 
 /// The parameters bound WITHOUT an annotation by the bindings, lambdas and
@@ -214,7 +213,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     // an unannotated parameter the chain alone
                                     // typed as a string: a plain hole would let
                                     // it generalise (FS0034 against a signature
-                                    // file, the F# compiler), and a `%s` hole
+                                    // file), and a `%s` hole
                                     // would leave the String.Concat fast path for
                                     // the printf machinery — so the chain stays
                                     if (unannotatedParameters path).Contains id.idText then

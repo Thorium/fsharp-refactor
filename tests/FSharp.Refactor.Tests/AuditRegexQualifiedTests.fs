@@ -1,7 +1,7 @@
-/// Audit fixes for FR0147 (QualifiedNames), FR0015 (RegexUsage) and FR0105
-/// (CheckedArithmetic): every repro from the 0.8.2-to-HEAD audit, asserting
-/// that the wrong fix is withheld (or corrected) and that the safe shape
-/// each fix was designed for still gets it.
+/// Guards for FR0147 (QualifiedNames), FR0015 (RegexUsage) and FR0105
+/// (CheckedArithmetic): each hazard's repro, asserting that the wrong fix
+/// is withheld (or corrected) and that the safe shape each fix was
+/// designed for still gets it.
 module FSharp.Refactor.Tests.AuditRegexQualifiedTests
 
 open Xunit
@@ -369,7 +369,7 @@ let private assertNoWiden (source: string) =
 
 [<Fact>]
 let ``FR0105: arithmetic already widened by the author gets no widening offer`` () =
-    // `int64 (int64 seconds * 1_000_000L) |> Checked.int` flipped the
+    // `int64 (int64 seconds * 1_000_000L) |> Checked.int` flips the
     // function's result type from int64 to int
     assertNoWiden (
         fsharp

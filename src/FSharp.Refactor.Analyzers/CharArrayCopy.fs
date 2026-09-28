@@ -6,7 +6,7 @@
 ///     Array.exists Char.IsDigit (s.ToCharArray())  →  String.exists Char.IsDigit s
 ///     s.ToCharArray() |> Array.iter f      →  s |> String.iter f
 ///
-/// Measured in benchmarks/PerfClaims on a runtime-built string: the `for`
+/// Measured on a runtime-built string: the `for`
 /// 13.4 → 9.4 ns and 72 → 0 B per pass, `Array.exists` 9.2 → 4.3 ns and
 /// 72 → 0 B. (On a string the JIT knows as a frozen constant .NET 10
 /// stack-allocates the copy and the two sides measure at parity; a string
@@ -34,8 +34,8 @@
 /// same NullReferenceException - `String.exists f (FSharp.Core.Operators.nonNull s)`,
 /// `FSharp.Core.Operators.nonNull s |> String.iter f`, a non-atomic receiver in
 /// parentheses - and a sweep applies that. Qualified in full, because a
-/// `nonNull` of the project's own (an AutoOpen helper in another file, as
-/// in the type-provider SDK) would take the bare name, and a module of its
+/// `nonNull` of the project's own (an AutoOpen helper in another file)
+/// would take the bare name, and a module of its
 /// own named `Operators` would take `Operators.nonNull`: F# tries every
 /// `Operators` in scope and the nearest that defines the name wins. Below FSharp.Core 9 (no `nonNull`) or under
 /// `--checknulls` (where `nonNull` on a non-nullable `string` warns

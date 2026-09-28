@@ -15,9 +15,8 @@
 ///   - a line that OPENS inside a block comment `(* ... *)` (the literate
 ///     `(** ... *)` included) or inside a plain string literal is left
 ///     alone: a tab there is prose or content, not indentation, and the
-///     compiler never sees it as FS1161. Fantomas's
-///     docs/end-users/GettingStarted.fsx keeps a tab-indented
-///     `dotnet new tool-manifest` shell transcript inside `(** ... *)`.
+///     compiler never sees it as FS1161 (a literate script may keep a
+///     tab-indented shell transcript inside `(** ... *)`).
 module FSharp.Refactor.TabIndentation
 
 open FSharp.Compiler.Text

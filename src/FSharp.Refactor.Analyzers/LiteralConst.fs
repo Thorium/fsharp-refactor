@@ -74,8 +74,8 @@ let private patternIdents (index: AstIndex.Index) =
 
 /// The names ANOTHER file of the compilation binds as bare patterns — the
 /// host's half of the cross-file veto (Analyzers.patternBoundInSibling):
-/// `let lat = 13.067439` in TestData.fs and `let! lat = validLatR` in
-/// Result.fs of the same project is FS3190 the moment `lat` is a literal.
+/// `let lat = 13.067439` in one file and `let! lat = validLatR` in another
+/// of the same project is FS3190 the moment `lat` is a literal.
 let patternBoundNames (parseTree: ParsedInput) : Set<string> =
     patternIdents (AstIndex.ofTree parseTree) |> List.map fst |> Set.ofList
 
@@ -140,10 +140,9 @@ let findWith
                             let clashesElsewhere = not declaredPrivately && boundAsPatternElsewhere id.idText
 
                             // a body split by `#if` is a constant only in the
-                            // branch the parse tree shows: Paket's
-                            // `runningOnMono` is `false` here and a `try` under
-                            // ENABLE_MONO_SUPPORT, where the attribute would
-                            // not compile
+                            // branch the parse tree shows: `false` here may be
+                            // a `try` under another define, where the attribute
+                            // would not compile
                             let splitBody = spansDirective source decl.Range
 
                             if ownLine && not clashesElsewhere && not splitBody then

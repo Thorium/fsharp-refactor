@@ -147,10 +147,8 @@ let ``internal tupled function is curried with call sites in another file`` () =
 
 [<Fact>]
 let ``a public function is never curried — its callers may be outside the project`` () =
-    // from the corpus (SQLProvider): currying the public
-    // QueryFactory.createRelated in SQLProvider.Common broke
-    // SQLProvider.Runtime, a sibling project this scan cannot see —
-    // "every use covered" passes vacuously for uses the checker never loads
+    // currying a public function breaks any sibling project that calls it,
+    // and this scan cannot see one — "every use covered" passes vacuously for uses the checker never loads
     let found =
         findAcrossTwoFiles "module LibA\n\nlet add (a, b) = a + b\n" "module LibB\n\nlet total = LibA.add (1, 2)\n"
 

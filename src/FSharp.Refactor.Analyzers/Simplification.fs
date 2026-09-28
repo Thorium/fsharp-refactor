@@ -207,7 +207,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         =
         // shadowing gate: `Seq.length` must be FSharp.Core's, not a user
         // module that happens to be named Seq. With typed results at hand
-        // the symbol proves it; parse-only callers keep the old behavior
+        // the symbol proves it; parse-only callers trust the module name
         let genuine =
             match check with
             | Some check ->

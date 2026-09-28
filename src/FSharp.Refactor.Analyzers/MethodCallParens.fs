@@ -31,7 +31,7 @@
 ///   - the next line must not stand aligned past the argument: dropping
 ///     two characters shifts everything after them on the line, and a
 ///     block aligned under that text (`&& (flags <- ...` continued on the
-///     lines below, fparsec) would end up offside.
+///     lines below) would end up offside.
 module FSharp.Refactor.MethodCallParens
 
 open System
@@ -120,9 +120,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // the precedence table to see which side owns it
                         | SyntaxNode.SynExpr(SynExpr.Tuple _) :: _ -> true
                         // the `_.` shorthand lambda demands an ATOMIC body,
-                        // as FR0013 already knows: welendus's
                         // `configureEndpoint _.WithName("x").WithGroupName(g)`
-                        // bare became `(fun e -> e.WithName("x").WithGroupName) g`
+                        // bare reads as `(fun e -> e.WithName("x").WithGroupName) g`
                         | SyntaxNode.SynExpr(SynExpr.DotLambda _) :: _ -> true
                         | _ -> false
 

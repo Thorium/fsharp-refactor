@@ -165,8 +165,8 @@ let ``a file with no semicolons at all is skipped cheaply`` () =
 
 [<Fact>]
 let ``a list pattern separator is kept`` () =
-    // from the corpus: AstIndex.replay never calls WalkPat, so list PATTERNS
-    // were unprotected and their separators were stripped
+    // AstIndex.replay never calls WalkPat, so list PATTERNS need their own
+    // protection or their separators are stripped
     assertNoSuggestion (
         fsharp
             """
@@ -194,7 +194,7 @@ let ``a record type definition field separator is kept`` () =
 
 [<Fact>]
 let ``a list pattern nested inside a union case keeps its separator`` () =
-    // the SQLProvider shape: the list is the third argument of an active
+    // the list is the third argument of an active
     // pattern, not the clause pattern itself
     assertNoSuggestion (
         fsharp
@@ -211,17 +211,17 @@ let ``a list pattern nested inside a union case keeps its separator`` () =
 
 [<Fact>]
 let ``a list pattern separator followed by trailing space is kept`` () =
-    // the real SQLProvider line ends "source; " - trailing blank after the ;
+    // a line ending "source; " - trailing blank after the ;
     assertNoSuggestion
         "module Test\ntype T = C of int * int * int list\nlet f x =\n    match x with\n    | C(a, b, [ p; \n                q ]) -> a + b + p + q\n    | _ -> 0"
 
 
 [<Fact>]
 let ``a list pattern inside an object expression keeps its separator`` () =
-    // The SQLProvider shape. The index lifts object-expression members, which
-    // the SDK walker skips, but it used to lift only their EXPRESSIONS — so
-    // the tokenizer saw this `;` while the pattern making it a separator was
-    // missing, and the rule stripped it.
+    // The index lifts object-expression members, which the SDK walker
+    // skips; lifting only their EXPRESSIONS would leave the tokenizer seeing
+    // this `;` without the pattern making it a separator, and the rule would
+    // strip it.
     assertNoSuggestion (
         "module Test\n"
         + "type IThing =\n"

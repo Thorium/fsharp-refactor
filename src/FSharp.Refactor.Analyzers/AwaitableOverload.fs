@@ -156,8 +156,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // nodes hanging directly off its body. `let!` and `do!` are legal
         // only there — a call nested inside ANOTHER binding's right-hand
         // side sits inside the CE's range but not on its spine, and
-        // rewriting its `let` to `let!` cannot compile. That was 21 of the
-        // rollbacks in one sweep repo, all of this shape:
+        // rewriting its `let` to `let!` cannot compile:
         //     async {
         //         let pair =
         //             ...
@@ -176,9 +175,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 // control flow whose branches are statement positions of
                 // the same CE: a `let!` is as legal in a match arm, an if
                 // branch, a try body or a loop body as at the top of the
-                // block. CarmelNet's `match res with | Choice2Of2 e -> ...
-                // let err = reader.ReadToEnd()` sat two arms deep and was
-                // never seen. A `with` handler and a `finally` stay out —
+                // block, however deep (`match res with | Choice2Of2 e -> ...
+                // let err = reader.ReadToEnd()` two arms down). A `with` handler and a `finally` stay out —
                 // the bind gate below excludes them on purpose
                 | SynExpr.Match(clauses = clauses)
                 | SynExpr.MatchBang(clauses = clauses) ->
@@ -318,9 +316,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     not (methodId.idText.EndsWith "Async")
                     // `Dispose` → `DisposeAsync` never pays: the twin returns
                     // ValueTask (outside the Task/Task<T> gate the rule
-                    // documents) and there is nothing to await — fantomas's
-                    // EndToEndTests.fs had `File.Create(f).Dispose()` turned
-                    // into `do! File.Create(f).DisposeAsync()`
+                    // documents) and there is nothing to await —
+                    // `File.Create(f).Dispose()` would become
+                    // `do! File.Create(f).DisposeAsync()`
                     && methodId.idText <> "Dispose"
                     ->
                     let tupled =

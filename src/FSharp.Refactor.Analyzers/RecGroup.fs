@@ -16,7 +16,7 @@
 /// references nobody, nothing moves at all: `findHeadRecrowns` turns its
 /// `let rec` into `let` and re-crowns the next binding — see below.
 ///
-/// Safety rules (v1 keeps the surgery small):
+/// Safety rules (the surgery stays small):
 ///   - module-level groups only; the head is handled by re-crowning, the
 ///     rest by moving out
 ///   - the binding may carry no attributes, and nothing but whitespace may
@@ -88,9 +88,9 @@ let private bindingName (SynBinding(headPat = pat)) =
 
 /// The identifiers a binding is USED by. An active pattern's definition
 /// name is `|SqlColumnGet|_|`, but every use site says `SqlColumnGet` —
-/// checking the decorated name finds nothing, which read as "references
-/// no sibling" on SQLProvider's mutually recursive pattern grammar and
-/// offered extractions that could not hold together.
+/// checking the decorated name finds nothing, which would read as
+/// "references no sibling" on a mutually recursive active-pattern grammar
+/// and offer extractions that cannot hold together.
 let private referenceNames (name: string) =
     if name.Contains '|' then
         name.Split '|'
@@ -104,14 +104,13 @@ let private isIdentifierChar (c: char) =
 
 /// The text with its string literals, char literals and comments blanked:
 /// a name inside `failwith "StripToNominalTyconRef: ..."` is no reference
-/// (the F# compiler's Optimizer.fs kept `let rec` on fifteen functions
-/// whose only "self-call" was such a message). An interpolated string's
-/// holes are CODE and stay visible — `$"size is {size n}"` calls `size` —
-/// and a char literal `'"'` opens no string. A regex got both wrong: the
-/// hole vanished with the text around it, and the quote inside the char
-/// literal flipped the string phase for the rest of the block; either way
-/// a reference went unseen, and a member left the group above a sibling
-/// it still called. Anything this scanner cannot place stays visible: an
+/// (a function whose only "self-call" is such a message is not recursive).
+/// An interpolated string's holes are CODE and stay visible —
+/// `$"size is {size n}"` calls `size` — and a char literal `'"'` opens no
+/// string. A regex gets both wrong: the hole vanishes with the text around
+/// it, and the quote inside the char literal flips the string phase for
+/// the rest of the block; either way a reference goes unseen, and a member
+/// would leave the group above a sibling it still calls. Anything this scanner cannot place stays visible: an
 /// extra mention only keeps a member where it is.
 let private codeOnly (text: string) =
     let chars = text.ToCharArray()
@@ -343,8 +342,8 @@ let rec private declsOf (decls: SynModuleDecl list) : SynModuleDecl list =
 /// Does the binding build or update a record? Inside the group a record
 /// expression's type is pinned by the member's callers, all inferred
 /// together; standing alone it has only its labels, and a label shared
-/// between two records (`PendingConfirmation` in fedit's Model and
-/// PickerState) no longer determines the type.
+/// between two records (`PendingConfirmation` in both `Model` and
+/// `PickerState`) no longer determines the type.
 let private buildsRecord (index: AstIndex.Index) (bindingRange: range) =
     AstIndex.exprsWithin index bindingRange
     |> Seq.exists (fun (_, e) ->
@@ -356,8 +355,7 @@ let private buildsRecord (index: AstIndex.Index) (bindingRange: range) =
 /// not annotate? A type test, a downcast, a member access or an indexer on
 /// a bare parameter is typed by the group's callers; standing alone the
 /// parameter is a bare 'a and the compiler refuses the test ("runtime
-/// coercion from 'a involves an indeterminate type" — the TypeProviders
-/// SDK's GetFieldInit). Such a member leaves only with its header written
+/// coercion from 'a involves an indeterminate type"). Such a member leaves only with its header written
 /// out by the typed check, like a record builder.
 let private leansOnParameters
     (check: FSharpCheckFileResults option)
@@ -386,12 +384,12 @@ let private leansOnParameters
         | _ -> false
 
     // any dotted access on a bare parameter leans on the group. A record
-    // label used to be exempt (`p.Index` names the record) — but standing
-    // alone the compiler resolves the label to the LAST record in scope that
-    // carries it, which is not necessarily the one the group inferred: the
-    // F# compiler's Optimizer.fs has several records with `Info` and
-    // `settings`, and a member pulled out with bare parameters failed with
-    // "Lookup on object of indeterminate type". The annotated header names
+    // label is no exception (`p.Index` names the record): standing alone
+    // the compiler resolves the label to the LAST record in scope that
+    // carries it, which is not necessarily the one the group inferred -
+    // with several records sharing a label, a member pulled out with bare
+    // parameters fails with "Lookup on object of indeterminate type". The
+    // annotated header names
     // the group's own type and costs nothing
     let memberLeans (id: Ident) (_: Ident) = bare.Contains id.idText
 
@@ -540,9 +538,7 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                     // comment lines directly above a binding's keyword belong
                     // to it and travel with it: a `///` doc, and equally a
                     // plain `//` note - left behind, the note re-attaches to
-                    // whatever binding comes next (ProvidedTypes.fs's
-                    // `// REVIEW: write into an accumuating buffer` headed an
-                    // unrelated member once its own had moved out). A blank
+                    // whatever binding comes next. A blank
                     // line ends the run, so a section banner above one stays
                     let commentStartOf i =
                         let keywordLine = (List.item i keywordStarts).StartLine
@@ -562,7 +558,7 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                     // a binding's block runs from its leading keyword to the
                     // NEXT binding's own comments, not to its keyword: the doc
                     // comment above `and g` is g's, and moving f out with it
-                    // orphaned five docs in the F# compiler's Optimizer.fs
+                    // would orphan g's doc
                     let blockOf i =
                         let start = (List.item i keywordStarts).Start
 
@@ -596,8 +592,8 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                         // a record-building member leaves with its types
                         // written out, or not at all. So does any member of a
                         // file with a SIGNATURE: alone, a parameter the body
-                        // never constrains (`accFreeInTupInfo _opts unt acc`,
-                        // the F# compiler) generalises to 'a, and the .fsi's
+                        // never constrains (`accFreeInTupInfo _opts unt acc`)
+                        // generalises to 'a, and the .fsi's
                         // concrete type then fails FS0034 — inside the group
                         // the callers had pinned it
                         let signatureBeside =
@@ -640,9 +636,8 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                         // next binding keeps its indentation. The comment-
                         // extended block starts at column 0, so it must END
                         // at column 0 too — ending at the next keyword's
-                        // column ate the following `and`'s indent inside
-                        // nested modules (VQC.fs, FSharp.Azure.Quantum) and
-                        // left it orphaned at the margin
+                        // column would eat the following `and`'s indent inside
+                        // nested modules and leave it orphaned at the margin
                         let block =
                             if commentStartLine < keywordLine then
                                 let endPos =
@@ -732,8 +727,8 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
 
                     // the LAST block of the group ends where the group ends,
                     // so a removal starting at its keyword leaves the line's
-                    // indentation behind as a whitespace-only line
-                    // (ProvidedTypes.fs:10841). Such a block starts at the end
+                    // indentation behind as a whitespace-only line. Such a
+                    // block starts at the end
                     // of the previous non-blank line instead - or, under a
                     // directive, at its own line's start
                     let trimmedTail (r: range) =
@@ -788,9 +783,9 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                     // ONE suggestion per group per pass, carrying EVERY member
                     // that can leave: they all insert at the group's start, so
                     // as separate messages only the first would apply and the
-                    // rest be held back as un-appliable - and ProvidedTypes.fs's
-                    // groups of twenty took a pass per member, which the
-                    // divergence guard read as a fix feeding on its own
+                    // rest be held back as un-appliable - and a group of
+                    // twenty would take a pass per member, which the
+                    // divergence guard reads as a fix feeding on its own
                     // output. A member under its own `#if` still leaves alone
                     match List.concat (waves names) with
                     | [] -> ()
@@ -839,10 +834,10 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                             |> List.rev
                             // a merged block that starts at column 0 (a
                             // comment-extended head) must end at column 0
-                            // too, as the head alone did: ending at the next
-                            // keyword's column ate that `and`'s indentation
-                            // and left it at the margin (ProvidedTypes.fs,
-                            // "Unexpected keyword 'and'"), then
+                            // too, as the head alone does: ending at the next
+                            // keyword's column would eat that `and`'s
+                            // indentation and leave it at the margin
+                            // ("Unexpected keyword 'and'"), then
                             // the tail trimmed
                             |> List.map (fun r ->
                                 let atMargin =
@@ -863,7 +858,7 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                         // the insert point sits AFTER the group's existing
                         // indentation: the first inserted line must not bring
                         // its own (raw comment lines carry it; inside a nested
-                        // module that doubled up)
+                        // module it would double up)
                         let insertText =
                             (plain
                              |> List.map (fun p -> p.Extracted.TrimStart().TrimEnd())

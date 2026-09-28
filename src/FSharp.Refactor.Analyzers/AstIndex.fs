@@ -1,6 +1,6 @@
-/// One shared traversal per parse tree. Every analyzer in this package used
-/// to run its own full `walkAst`, so a keystroke in the editor paid for ~20
-/// identical traversals. All analyzers receive the same ParsedInput instance
+/// One shared traversal per parse tree. Without it every analyzer in this
+/// package would run its own full `walkAst`, so a keystroke in the editor
+/// would pay for ~20 identical traversals. All analyzers receive the same ParsedInput instance
 /// per file version, so the flattened node list is computed once and memoized
 /// with a ConditionalWeakTable — it lives and dies with the tree.
 ///
@@ -54,24 +54,24 @@ let private objExprMemberBindings (e: SynExpr) : SynBinding list =
 
 /// Both sides of the F#6 indexer assignment `expr[i] <- value`. The SDK
 /// walker does not traverse SynExpr.Set AT ALL — target and right-hand
-/// side alike — so `logits[0L, int64 pos, key] <- v` hid `pos` and `key`
-/// from every index-based rule (found the hard way: FR0101 rewrote a loop
-/// whose index was plainly used as a value inside one of these).
+/// side alike — so `logits[0L, int64 pos, key] <- v` hides `pos` and `key`
+/// from every index-based rule (FR0101 would rewrite a loop whose index is
+/// used as a value inside one of these).
 ///
 /// SynExpr.MatchBang has the same hole for its SCRUTINEE and its CLAUSES:
 /// the awaited expression, guards and arm bodies alike are invisible to
-/// the walker, so every `let!` inside a `match!` arm escaped every
-/// index-based rule (found the hard way: FR0029 saw a 17-await match!
-/// task as having ONE await), and a call in `match! f x with` was
-/// invisible to every mention-based rule (FR0033 called a member that
-/// awaited an instance let function static).
+/// the walker, so every `let!` inside a `match!` arm escapes every
+/// index-based rule (FR0029 would count a many-await match! task as
+/// having ONE await), and a call in `match! f x with` is invisible to
+/// every mention-based rule (FR0033 would call a member that awaits an
+/// instance let function static).
 let private setChildren (e: SynExpr) : SynExpr list =
     match e with
     | SynExpr.Set(targetExpr = target; rhsExpr = rhs) -> [ target; rhs ]
     // an anonymous record's copy source and field values are the same
     // hole: the walker visits `{| r with X = f v |}` and none of r, f or
-    // v (found the hard way: FR0073 collapsed a `let! r` whose only other
-    // uses were `{| message = format r |}` fields in the match arms)
+    // v (FR0073 would collapse a `let! r` whose only other uses are
+    // `{| message = format r |}` fields in the match arms)
     | SynExpr.AnonRecd(copyInfo = copy; recordFields = fields) ->
         (copy |> Option.map fst |> Option.toList)
         @ (fields |> List.map (fun (_, _, value) -> value))
@@ -296,10 +296,10 @@ let private build (tree: ParsedInput) : Index =
             let liftedTypes = ResizeArray()
 
             // Patterns and types as well as expressions. Lifting only the
-            // expressions left every pattern and type rule blind inside an
-            // object expression — which is how FR0099 came to strip a list
-            // pattern's `;` in SQLProvider: the tokenizer saw the semicolon,
-            // and the pattern that made it a separator was not in the index.
+            // expressions would leave every pattern and type rule blind inside
+            // an object expression — FR0099 would strip a list pattern's `;`:
+            // the tokenizer sees the semicolon, and the pattern that makes it
+            // a separator is not in the index.
             let liftedCollector =
                 { new SyntaxCollectorBase() with
                     override _.WalkExpr(path, expr) = liftedExprs.Add(path, expr)
@@ -485,9 +485,9 @@ let quotationRanges (tree: ParsedInput) : range list =
 /// Which `Walk*` members a collector actually overrides.
 ///
 /// Every node kind the index holds must be replayed to whoever asked for it —
-/// driving only expressions and module declarations once made a `WalkPat`
-/// override dead code that still looked like working analysis, which is how
-/// FR0099 came to protect list expressions and silently not list patterns.
+/// driving only expressions and module declarations would make a `WalkPat`
+/// override dead code that still looks like working analysis (FR0099 would
+/// protect list expressions and silently not list patterns).
 /// But replaying a kind to a collector that ignores it is thousands of
 /// virtual no-ops per file per rule, and most rules want expressions alone.
 ///
@@ -556,8 +556,7 @@ let private testMarker =
 /// test attribute or an Expecto test builder? The ONE answer every rule
 /// that treats tests differently reads (FR0055's swallowed catch-all is
 /// the observation there, FR0092's failure message is the assertion,
-/// FR0132's public fixture documents nothing): three rules once kept
-/// three copies of this, two of them narrower than the third.
+/// FR0132's public fixture documents nothing).
 let isTestFile (index: Index) (source: ISourceText) =
     index.Decls
     |> Array.exists (fun (_, d) ->

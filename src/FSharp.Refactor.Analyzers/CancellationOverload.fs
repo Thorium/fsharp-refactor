@@ -105,8 +105,8 @@ let private parameterShapes (displayContext: FSharpDisplayContext) (mfv: FSharpM
 /// Task.Run and Task.Factory.StartNew take the token as a SCHEDULING
 /// condition, not as an operation to interrupt: with an already-cancelled
 /// token the delegate never runs at all, so the side effects in its body
-/// silently never happen — suave's Tcp.fs binds the listening socket and
-/// completes a cell inside one. An I/O method's token only cancels the
+/// silently never happen — binding a listening socket, say, or completing
+/// a cell. An I/O method's token only cancels the
 /// call it was passed to; these two change whether the work starts, and
 /// that is the author's decision.
 let private schedulesDelegate (mfv: FSharpMemberOrFunctionOrValue) =
@@ -170,6 +170,147 @@ let private shadowedBefore (index: AstIndex.Index) (name: string) (paramId: rang
             && Range.rangeContainsRange bindingRange id.idRange
             && Position.posLt id.idRange.Start r.Start
         | None -> false)
+
+/// Result types that are work which may still be running after the call.
+let private pendingTypes =
+    set
+        [
+            "System.Threading.Tasks.Task"
+            "System.Threading.Tasks.Task`1"
+            "System.Threading.Tasks.ValueTask"
+            "System.Threading.Tasks.ValueTask`1"
+            "System.Collections.Generic.IAsyncEnumerable`1"
+            "Microsoft.FSharp.Control.FSharpAsync`1"
+        ]
+
+let private returnsPending (mfv: FSharpMemberOrFunctionOrValue) =
+    try
+        let t = OptionModule.stripAbbreviations mfv.ReturnParameter.Type
+
+        t.HasTypeDefinition
+        && (match t.TypeDefinition.TryFullName with
+            | Some n -> pendingTypes.Contains n
+            | None -> false)
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        false
+
+/// The last two segments of a callee (`Async.AwaitTask`, `ignore`),
+/// through parens and type applications; empty for anything else.
+[<TailCall>]
+let rec private calleeName (e: SynExpr) =
+    match e with
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.TypeApp(expr = inner) -> calleeName inner
+    | SynExpr.Ident id -> id.idText
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+        ids
+        |> List.map (fun i -> i.idText)
+        |> List.rev
+        |> List.truncate 2
+        |> List.rev
+        |> String.concat "."
+    | _ -> ""
+
+let private isPipe (op: SynExpr) =
+    match op with
+    | SynExpr.Ident id
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> id.idText = "op_PipeRight"
+    | _ -> false
+
+/// Is the work a call starts (at `r`, `path` its ancestors, nearest first)
+/// waited for, here or by the caller - `do!`/`let!`/`return!`/`match!`,
+/// returned as the binding's value, blocked on (`.Result`, `.Wait()`,
+/// `Async.RunSynchronously`), combined into something that is (`|>
+/// Async.AwaitTask`, `Task.WhenAll`, a `List.map` of such calls), or bound
+/// to a local that is? Anything else - `|> ignore`, `Async.Start`, a bare
+/// statement, a store, an argument elsewhere - may be fire-and-forget: work
+/// meant to outlive the caller, which the caller's token would cancel when
+/// the caller is done. FR0075 reads the same shapes for `use`.
+let rec private waitedFor (index: AstIndex.Index) (depth: int) (r: range) (path: SyntaxNode list) : bool =
+    let consumer (name: string) (outer: range) (rest: SyntaxNode list) =
+        match name with
+        | "Async.RunSynchronously"
+        | "Task.WaitAll"
+        | "Task.WaitAny" -> true
+        // still pending: what happens to the combined value decides
+        | "Async.AwaitTask"
+        | "Async.AwaitValueTask"
+        | "Async.Ignore"
+        | "Async.Catch"
+        | "Async.StartAsTask"
+        | "Async.StartImmediateAsTask"
+        | "Async.StartChild"
+        | "Async.Parallel"
+        | "Async.Sequential"
+        | "Task.WhenAll"
+        | "Task.WhenAny"
+        | "List.map"
+        | "Array.map"
+        | "Seq.map"
+        | "List.mapi"
+        | "Array.mapi"
+        | "Seq.mapi" -> waitedFor index depth outer rest
+        // `ignore`, `Async.Start`, and anything this rule cannot read
+        | _ -> false
+
+    match path with
+    | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr) | SynExpr.Tuple(range = pr) | SynExpr.ArrayOrList(
+        range = pr) | SynExpr.ArrayOrListComputed(range = pr)) :: rest -> waitedFor index depth pr rest
+    | SyntaxNode.SynExpr(SynExpr.DoBang _ | SynExpr.YieldOrReturnFrom _ | SynExpr.MatchBang _) :: _ -> true
+    // `.Result`, `.Wait()`, `.GetAwaiter().GetResult()`
+    | SyntaxNode.SynExpr(SynExpr.DotGet(expr = e; longDotId = SynLongIdent(id = first :: _))) :: _ when e.Range = r ->
+        first.idText = "Result" || first.idText = "Wait" || first.idText = "GetAwaiter"
+    // `e |> f`: the pipe hands e to f
+    | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op; argExpr = a)) :: SyntaxNode.SynExpr(SynExpr.App(
+        isInfix = false; argExpr = callee; range = outer)) :: rest when isPipe op && a.Range = r ->
+        consumer (calleeName callee) outer rest
+    // `xs |> f` where f's result is e: the pipe's value is e
+    | SyntaxNode.SynExpr(SynExpr.App(
+        isInfix = false; funcExpr = SynExpr.App(isInfix = true; funcExpr = op); argExpr = a; range = outer)) :: rest when
+        isPipe op && a.Range = r
+        ->
+        waitedFor index depth outer rest
+    // `f e`, `f (a, e)`
+    | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a; range = outer)) :: rest when
+        Range.rangeContainsRange a.Range r
+        ->
+        consumer (calleeName f) outer rest
+    // a lambda returning it: what happens to the lambda decides (a `List.map`)
+    | SyntaxNode.SynExpr(SynExpr.Lambda(range = lr)) :: rest -> waitedFor index depth lr rest
+    // a statement drops it; the last expression is the sequence's value
+    | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a; expr2 = b; range = sr)) :: rest ->
+        // `[| a; b |]` spells its elements as a sequence: an element, not a statement
+        let rec listElement (p: SyntaxNode list) =
+            match p with
+            | SyntaxNode.SynExpr(SynExpr.Sequential _) :: more -> listElement more
+            | SyntaxNode.SynExpr(SynExpr.ArrayOrListComputed(range = lr)) :: more -> Some(lr, more)
+            | _ -> None
+
+        match listElement rest with
+        | Some(lr, more) -> waitedFor index depth lr more
+        | None -> a.Range <> r && b.Range = r && waitedFor index depth sr rest
+    | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = c; range = ir)) :: rest when c.Range <> r ->
+        waitedFor index depth ir rest
+    | SyntaxNode.SynMatchClause _ :: SyntaxNode.SynExpr m :: rest -> waitedFor index depth m.Range rest
+    | SyntaxNode.SynBinding(SynBinding(headPat = headPat)) :: rest ->
+        match rest with
+        | SyntaxNode.SynExpr(LetOrUseE lou) :: _ when lou.IsBang -> true
+        | SyntaxNode.SynExpr(LetOrUseE lou) :: _ ->
+            // `let t = client.SendAsync m` then `do! t`: the local's uses decide
+            match headPat with
+            | SynPat.Named(ident = SynIdent(ident = local)) when depth < 3 ->
+                index.Exprs
+                |> Array.exists (fun (p, e) ->
+                    match e with
+                    | SynExpr.Ident id when
+                        id.idText = local.idText && Range.rangeContainsRange lou.Body.Range id.idRange
+                        ->
+                        waitedFor index (depth + 1) id.idRange p
+                    | _ -> false)
+            | _ -> false
+        // a member's or a module function's body: returned to the caller
+        | _ -> true
+    | _ -> false
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
@@ -243,7 +384,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | _ -> None
 
         [
-            for _, expr in index.Exprs do
+            for path, expr in index.Exprs do
                 match expr with
                 | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) ->
                     // .NET tupled call shapes only — the edit appends inside
@@ -277,7 +418,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match resolveMember methodId with
                         | Some(symbolUse, mfv) ->
                             match mfv with
-                            | mfv when mfv.IsMember && not mfv.IsProperty && not (schedulesDelegate mfv) ->
+                            | mfv when
+                                mfv.IsMember
+                                && not mfv.IsProperty
+                                && not (schedulesDelegate mfv)
+                                // work started and not waited for is the author's to detach
+                                && (not (returnsPending mfv) || waitedFor index 0 expr.Range path)
+                                ->
                                 let shapes = parameterShapes symbolUse.DisplayContext mfv
 
                                 let tokenAccepted =
@@ -328,11 +475,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         // a trailing lambda, match or if runs
                                         // to the closing parenthesis: `, ct`
                                         // appended bare joins its BODY as a
-                                        // tuple — Paket's
+                                        // tuple —
                                         // `ContinueWith(fun (_: Task) -> (), ct)`
-                                        // returned `unit * CancellationToken`
-                                        // and the pass rolled back. Such an
-                                        // argument is wrapped first
+                                        // returns `unit * CancellationToken`.
+                                        // Such an argument is wrapped first
                                         let lastElement =
                                             match inner with
                                             | SynExpr.Tuple(exprs = es) -> List.last es
@@ -522,7 +668,7 @@ let findUnobservedLoopsWith
                     None)
 
         // locals of that binding built WITH the token — `let enumerator =
-        // source.GetAsyncEnumerator ct`, `let reader = open ct` (Fuuga): a
+        // source.GetAsyncEnumerator ct`, `let reader = open ct`: a
         // loop stepping one of them observes the token through it
         let carriers (token: string) (scope: range) =
             AstIndex.exprsWithin index scope

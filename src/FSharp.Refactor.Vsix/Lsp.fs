@@ -16,7 +16,7 @@ open Newtonsoft.Json.Linq
 /// One JSON-RPC connection over a pair of streams (the sidecar's stdio).
 /// `onError` receives handler failures: the listener runs on a raw
 /// background thread where an escaped exception TERMINATES the host
-/// process (it took Visual Studio down once), so nothing thrown by a
+/// process, so nothing thrown by a
 /// handler may leave this type.
 type JsonRpc(input: Stream, output: Stream, onError: string -> unit) =
     let writeLock = obj ()

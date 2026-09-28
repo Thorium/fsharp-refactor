@@ -101,7 +101,7 @@ let ``an assembly-level AutoOpen re-applied by the open still counts`` () =
 
 [<Fact>]
 let ``uses inside the file's own AutoOpen module are shortened under an open placed at the top`` () =
-    // ClearBank.Net's tests: the uses sit in a nested [<AutoOpen>] module
+    // the uses sit in a nested [<AutoOpen>] module
     // that has an open of its own; the namespace open still goes at the top
     let source =
         fsharp

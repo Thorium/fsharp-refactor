@@ -78,7 +78,7 @@ let private projectUses (project: FSharpCheckProjectResults) =
 
 /// Every entity of the project's own assembly, nested ones included, in
 /// pre-order: one walk into a list, where a `seq { yield! }` per level
-/// allocated an enumerator per nesting and made every element pay the depth.
+/// would allocate an enumerator per nesting and make every element pay the depth.
 let private allEntities (entities: FSharpEntity seq) : FSharpEntity list =
     let rec walk (found: FSharpEntity list) (level: FSharpEntity seq) =
         level

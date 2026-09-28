@@ -1,4 +1,4 @@
-/// Three smaller notes from the CA triage:
+/// Three smaller notes, each the twin of a CA rule:
 ///
 /// 1. Visible mutable module state (FR0062, CA2211): a non-private
 ///    module-level `let mutable` is a global variable every consumer can
@@ -175,17 +175,17 @@ let find
                     for SynTypeDefn(typeInfo = SynComponentInfo(attributes = typeAttrs); typeRepr = repr) in defns do
                         match repr with
                         // a [<Flags>] enum names bits, and one bit under two
-                        // names is how such tables are written (FCS's
-                        // ilnativeres.fs mirrors winnt.h: `MemProtected = 16384u |
-                        // NoDeferSpecExc = 16384u`) — not a slip
+                        // names is how such tables are written (winnt.h's
+                        // `MemProtected = 16384u | NoDeferSpecExc = 16384u`)
+                        // — not a slip
                         | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Enum(cases = cases)) when
                             not (hasAttributeNamed "Flags" typeAttrs)
                             ->
                             let seen = System.Collections.Generic.Dictionary<string, string * int>()
 
                             // `Default = 0 | Text = 0`: a zero alias declared right
-                            // beside its twin is a deliberate synonym (FCS's public
-                            // FSharpTokenColorKind), not the copy-paste slip that
+                            // beside its twin is a deliberate synonym, not the
+                            // copy-paste slip that
                             // lands far from the value it duplicates
                             let declaredAlias
                                 (key: string)
@@ -201,8 +201,7 @@ let find
                             for i, SynEnumCase(ident = SynIdent(ident = caseId); valueExpr = valueExpr) in
                                 List.indexed cases do
                                 // every integral spelling keys the same way: `16`,
-                                // `0x10` and `16u` are one value (FCS's vendored
-                                // ilnativeres.fs aliases its flags with `u` suffixes)
+                                // `0x10` and `16u` are one value
                                 let key =
                                     match valueExpr with
                                     | SynExpr.Const(SynConst.Int32 v, _) -> Some(string v)

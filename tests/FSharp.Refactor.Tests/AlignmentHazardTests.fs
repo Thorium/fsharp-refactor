@@ -34,7 +34,7 @@ let ``fparsec's paren block aligned under the shortened line is a hazard`` () =
 
 [<Fact>]
 let ``an argument continued to the right of every anchor is no hazard`` () =
-    // ClearBank.Net's tests: the second line is a continuation of the call
+    // the second line is a continuation of the call
     // after `=`, anchored to `ClearBank` (column 26), which the edit does not
     // move; standing right of the anchor before and after, it reads the same
     let lines =
@@ -47,7 +47,7 @@ let ``an argument continued to the right of every anchor is no hazard`` () =
 
 [<Fact>]
 let ``a match arm body under the expanded wildcard is no hazard`` () =
-    // management-portal's hubs: `| _ ->` to `| Authenticated _ ->`; the body
+    // `| _ ->` expanded to `| Authenticated _ ->`; the body
     // on the next line is anchored to nothing on the arm's line
     let lines = [ "            | _ ->"; "                let! userid = ensureLogin()" ]
 

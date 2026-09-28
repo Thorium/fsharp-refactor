@@ -183,9 +183,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 /// `Async.RunSynchronously` raises it on the calling thread; both are
 /// observable, so neither is reported here.
 ///
-/// CloudAgent's message listener is the shape in the wild: an exception
-/// out of `GetNextAgent` takes the process with it, while the
-/// `IDisposable` it handed back still looks alive.
+/// A started message listener is the typical shape: an exception out of
+/// its receive call takes the process with it, while the `IDisposable` it
+/// handed back still looks alive.
 ///
 /// Handled means the failure has somewhere to go:
 ///   - the started body IS a `try ... with` — one that covers everything
@@ -211,7 +211,7 @@ type StartSuggestion =
         Starter: string
         /// The body loops: a handler wrapped around the whole computation
         /// still stops it on the first failure, so the handler usually
-        /// belongs INSIDE the loop (CloudAgent's listener polls forever).
+        /// belongs INSIDE the loop (a listener that polls forever).
         LoopsInBody: bool
         /// A `try ... with` encloses the START CALL. It reads as covering
         /// the work and catches nothing of it — the computation runs on

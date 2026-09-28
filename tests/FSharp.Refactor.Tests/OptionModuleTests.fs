@@ -186,12 +186,12 @@ let ``file with type errors produces no suggestions`` () =
 
 [<Fact>]
 let ``match with CE return bodies is not rewritten`` () =
-    // `return ...` cannot move into a lambda; found by running the analyzer on itself
+    // `return ...` cannot move into a lambda
     assertNoSuggestion "let f (x: int option) = async { match x with | Some v -> return [ v ] | None -> return [] }"
 
 [<Fact>]
 let ``match as an infix operand is parenthesized`` () =
-    // review regression: `1 + x |> Option.defaultValue 0` regroups as (1 + x) |> ...
+    // `1 + x |> Option.defaultValue 0` regroups as (1 + x) |> ...
     assertSingleSuggestion
         "let f (x: int option) = 1 + match x with | Some v -> v | None -> 0"
         "Option.defaultValue"
@@ -199,7 +199,7 @@ let ``match as an infix operand is parenthesized`` () =
 
 [<Fact>]
 let ``dotted default is treated as effectful and uses defaultWith`` () =
-    // review regression: DateTime.Now is a property getter; defaultValue would
+    // DateTime.Now is a property getter; defaultValue would
     // evaluate it even in the Some case
     assertSingleSuggestion
         "let f (x: System.DateTime option) = match x with | Some v -> v | None -> System.DateTime.Now"
@@ -224,7 +224,7 @@ let ``a branch writing a mutable local cannot become an iter lambda`` () =
 
 [<Fact>]
 let ``a match in implicit-yield position of a comprehension is control flow`` () =
-    // from Fuuga's ConfigWizard: inside [ ... ], `| None -> ()` means
+    // inside [ ... ], `| None -> ()` means
     // "yield nothing" and the Some branch yields a string — rewriting to
     // Option.iter hands a string-returning lambda to a unit-wanting
     // combinator (FS0001 unit vs string)

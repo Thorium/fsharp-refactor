@@ -42,8 +42,7 @@ let ``bool comparison with false negates`` () =
 
 [<Fact>]
 let ``comparing an obj value with a bool literal is not a redundant comparison`` () =
-    // from the corpus (SQLProvider OfflineTools): `o = true` type-checks for
-    // o : obj — the literal subsumes to obj — so bare `o` would be FS0001
+    // `o = true` type-checks for o : obj — the literal subsumes to obj — so bare `o` would be FS0001
     assertNoSuggestion (
         fsharp
             """
@@ -394,7 +393,7 @@ let ``FR0060: a dotted read in an eager filter's predicate is total unless it is
 
 [<Fact>]
 let ``fold plus zero stays a fold: sum adds checked`` () =
-    // Mibo's Tests.fs: `Array.fold (+) 0` wraps on overflow, `Array.sum`
+    // `Array.fold (+) 0` wraps on overflow, `Array.sum`
     // throws OverflowException — not the same program
     assertNoSuggestion "module Test\nlet f (xs: int list) = List.fold (+) 0 xs"
 
@@ -458,8 +457,8 @@ let ``double rev disappears`` () =
 
 [<Fact>]
 let ``a custom operation spelled like a core function is not that function`` () =
-    // FsCDK's `lifecycleRule { id "rule" }`: `id` is the builder's custom
-    // operation, and `id x ===> x` erased it (12 sites rolled back)
+    // `lifecycleRule { id "rule" }`: `id` is the builder's custom
+    // operation, and `id x ===> x` would erase it
     assertNoSuggestion (
         fsharp
             """
@@ -564,7 +563,7 @@ let ``multi-line expressions are not matched`` () =
 
 [<Fact>]
 let ``named arguments are never rewritten`` () =
-    // found by running the engine on our own code: `Foo(Flag = true)` parses
+    // `Foo(Flag = true)` parses
     // as an equality expression but is a named argument
     assertNoSuggestion (
         fsharp
@@ -587,8 +586,8 @@ let ``named argument in a multi-argument call is never rewritten`` () =
 [<Fact>]
 let ``named argument on a new construction is never rewritten`` () =
     // the argument list of `new T(...)` hangs off SynExpr.New, not App:
-    // Fuuga's `new Timers.Timer(period, AutoReset = true)` lost its
-    // AutoReset until the guard learned that ancestor
+    // without that ancestor in the guard, `new Timers.Timer(period,
+    // AutoReset = true)` would lose its AutoReset
     assertNoSuggestion
         "module Test
 let f (period: float) = new System.Timers.Timer(period, AutoReset = true)"
@@ -644,7 +643,7 @@ let ``quoted code is never rewritten`` () =
 
 [<Fact>]
 let ``metavariables inside array literals substitute correctly`` () =
-    // regression: Sequential chains inside [| ... |] were not traversed
+    // Sequential chains inside [| ... |] are traversed too
     assertSingleSuggestion
         (fsharp
             """
@@ -692,7 +691,7 @@ let ``De Morgan combines negated conjuncts`` () =
 
 [<Fact>]
 let ``De Morgan folds a third conjunct without re-bracketing the pair`` () =
-    // the second step used to bracket the first's result: `not ((a || b) || c)`
+    // the second step must not bracket the first's result: `not ((a || b) || c)`
     assertSingleSuggestion
         (fsharp
             """
@@ -707,7 +706,7 @@ let ``De Morgan combines negated disjuncts`` () =
 
 [<Fact>]
 let ``an attribute argument is not an expression to simplify`` () =
-    // from Fuuga: [<DllImport(..., SetLastError = true)>] — the property
+    // [<DllImport(..., SetLastError = true)>] — the property
     // resolves to a bool FIELD, so the typed gate alone waves it through;
     // attribute arguments are constant territory and no hint may fire there
     assertNoSuggestion (
@@ -722,7 +721,7 @@ let ``an attribute argument is not an expression to simplify`` () =
 
 [<Fact>]
 let ``an OVERLOADED method group is never moved by a hint`` () =
-    // prismatic: `Array.head (Array.sortByDescending File.GetLastWriteTime x)`
+    // `Array.head (Array.sortByDescending File.GetLastWriteTime x)`
     // collapses to maxBy, but the collapsed form checks the projection
     // before the element type is known and no overload can be picked
     Assert.Empty(
@@ -759,10 +758,8 @@ let ``a single-overload projection still collapses`` () =
 [<Fact>]
 let ``a pipelined collect rewrite keeps the pipeline so the lambda sees its type`` () =
     // rendered as `Seq.collect (fun x -> x.Items) xs` the lambda is checked
-    // before `xs`, and `x.Items` meets an indeterminate type — Fable's
-    // UnionTests, Nu's WorldModuleEntity and PethostBackup's Util all rolled
-    // back on exactly this; `xs |> Seq.collect (fun x -> x.Items)` types
-    // `xs` first
+    // before `xs`, and `x.Items` meets an indeterminate type, so the fix
+    // would not compile; `xs |> Seq.collect (fun x -> x.Items)` types `xs` first
     assertSingleSuggestion
         (fsharp
             """
@@ -774,9 +771,9 @@ let ``a pipelined collect rewrite keeps the pipeline so the lambda sees its type
 
 [<Fact>]
 let ``De Morgan leaves function applications bare beside the operator`` () =
-    // sweep find: `not ((List.isEmpty instMembers) && (List.isEmpty statMembers))`
-    // — an application is atomic enough beside `||`, the brackets only
-    // made the rewrite harder to read than the code it replaced
+    // `not ((List.isEmpty instMembers) && (List.isEmpty statMembers))`
+    // — an application is atomic enough beside `||`, and the brackets only
+    // make the rewrite harder to read than the code it replaces
     assertSingleSuggestion
         (fsharp
             """

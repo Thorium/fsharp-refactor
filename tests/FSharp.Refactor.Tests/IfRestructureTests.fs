@@ -83,9 +83,9 @@ let ``an else with more than the if keeps its shape`` () =
 
 [<Fact>]
 let ``a condition continuing on a second line keeps its alignment under elif`` () =
-    // fparsec's Emit.fs: `elif ` is two characters longer than `if `, and
-    // the condition's second line moved four columns left with the block
-    // while its first moved two - offside, and the file stopped parsing
+    // `elif ` is two characters longer than `if `: a condition's second
+    // line moved four columns left with the block while its first moves
+    // two is offside, and the file stops parsing
     let source =
         fsharp
             """
@@ -372,9 +372,9 @@ let ``an incomplete DU match gains raising arms`` () =
 
 [<Fact>]
 let ``inside a computation expression the raising arm rides the siblings' return`` () =
-    // welendus's getLoanOffer: a `match!` in a task whose arms `return` -
+    // a `match!` in a task whose arms `return` -
     // a bare `raise` arm is a unit statement there (TaskCode<_, unit>
-    // against TaskCode<_, T>) and the fix was rolled back
+    // against TaskCode<_, T>) and the fix would not compile
     let source =
         String.concat
             "\n"
@@ -576,9 +576,9 @@ let ``FR0115: None, Error and raise wildcards are error arms`` () =
 
 [<Fact>]
 let ``FR0115: a wildcard computing a value is an alternative, not an error arm`` () =
-    // FCS CheckFormatStrings: `| _ -> None, fmtPos` (a tuple carrying None
-    // is a result); fsdocs ProjectCracker: the wildcard probes further;
-    // the generated lexer: the wildcard is the next state
+    // `| _ -> None, fmtPos` (a tuple carrying None is a result), a
+    // wildcard that probes further, a lexer's wildcard that is the next
+    // state
     Assert.Empty(
         guardNotesIn (
             fsharp
@@ -809,7 +809,7 @@ let ``an and-extraction in the group defers the head re-crown`` () =
 [<Fact>]
 let ``a chain with no terminal else is left alone`` () =
     // adversarial: the trailing elif's text starts with the KEYWORD, and
-    // splicing it into a wildcard arm produced invalid code before the gate
+    // splicing it into a wildcard arm would produce invalid code
     Assert.Empty(
         chainsIn (
             fsharp
@@ -862,8 +862,7 @@ let ``a name-mentioning plain comment travels too`` () =
 [<Fact>]
 let ``a comment directly above the member travels with it`` () =
     // left behind, it would head `and f3` instead - a comment with no
-    // blank line under it belongs to the binding it sits on (ProvidedTypes.fs
-    // had `// REVIEW ...` re-attached to an unrelated member that way)
+    // blank line under it belongs to the binding it sits on
     let source =
         fsharp
             """
@@ -910,7 +909,7 @@ let ``a comment separated by a blank line stays put`` () =
 [<Fact>]
 let ``a primed sibling reference keeps the member in the group`` () =
     // \b finds no boundary after a trailing prime: `\bvisit'\b` never
-    // matches `visit' e` — the LEO adversarial catch. identifierPattern
+    // matches `visit' e`. identifierPattern
     // treats ' as an identifier character
     Assert.Empty(
         recGroupsIn (
@@ -925,8 +924,7 @@ let ``a primed sibling reference keeps the member in the group`` () =
 
 [<Fact>]
 let ``commentSafeOnly drops a message whose fix swallows a comment`` () =
-    // the WebsitePlayground isMono lesson, editor edition: light bulbs
-    // have no build check or hold-back behind them, so a message with a
+    // light bulbs have no build check or hold-back behind them, so a message with a
     // comment-eating fix must never reach the editor at all
     let source =
         fsharp
@@ -1184,9 +1182,9 @@ let ``differing bodies do not merge even when adjacent`` () =
 
 [<Fact>]
 let ``a mutual active-pattern group stays whole: bars are not the use-name`` () =
-    // the SQLProvider Patterns.fs catch: `(|Odd|_|)` is USED as `Odd`,
-    // so checking the decorated definition name found no references and
-    // offered to pull mutually recursive patterns apart
+    // `(|Odd|_|)` is USED as `Odd`, so checking the decorated definition
+    // name finds no references and would pull mutually recursive patterns
+    // apart
     let source =
         "module Test\n"
         + "let rec (|Even|_|) (n: int) =\n"
@@ -1247,10 +1245,10 @@ let ``a group with two extractable members offers one per pass`` () =
 
 [<Fact>]
 let ``an INDENTED group's commented member extracts without eating indentation`` () =
-    // the FSharp.Azure.Quantum VQC.fs catch: inside a nested module the
-    // comment-extended remove ran from column 0 to the next `and`'s
-    // column, deleting its indentation and orphaning the keyword at the
-    // margin; the insert side doubled the comment's indent
+    // inside a nested module a comment-extended remove from column 0 to the
+    // next `and`'s column would delete its indentation and orphan the
+    // keyword at the margin, and the insert side must not double the
+    // comment's indent
     let source =
         fsharp
             """
@@ -1378,8 +1376,8 @@ let ``a comment between two arms is not reproduced, so the merge is held back`` 
 let ``a comment inside the body is not hoisted as well as spliced`` () =
     // the rule only fires when the bodies are textually identical, so a
     // comment inside one IS the comment the survivor already carries.
-    // Hoisting it printed `(* why *)` three times — and it compiles, so no
-    // build check would ever have caught it
+    // Hoisting it would print `(* why *)` three times — and that compiles,
+    // so no build check catches it
     let source =
         fsharp
             """
@@ -1492,8 +1490,8 @@ let ``a backticked parameter keeps its backticks when annotated`` () =
 
 [<Fact>]
 let ``a member testing the type of a bare parameter leaves with its header written out`` () =
-    // TypeProviders SDK: `GetFieldInit bb x` matched `x` with `:? string`;
-    // inside the group x's type came from the caller, alone it is a bare 'a
+    // `GetFieldInit bb x` matches `x` with `:? string`; inside the group
+    // x's type comes from the caller, alone it is a bare 'a
     let source =
         fsharp
             """
@@ -1521,9 +1519,9 @@ let ``a member testing the type of a bare parameter leaves with its header writt
 
 [<Fact>]
 let ``a member reading a shared record label off a bare parameter leaves with its header written out`` () =
-    // the F# compiler's Optimizer.fs: several records carry `Info` and
-    // `settings`; a member pulled out with bare parameters resolved the label
-    // to the wrong record ("Lookup on object of indeterminate type")
+    // several records carry `Info` and `settings`; a member pulled out with
+    // bare parameters would resolve the label to the wrong record ("Lookup
+    // on object of indeterminate type")
     let source =
         sharedLabels
         + fsharp
@@ -1546,7 +1544,7 @@ let ``a member reading a shared record label off a bare parameter leaves with it
 
 [<Fact>]
 let ``a member of a file with a signature leaves with its header written out`` () =
-    // the F# compiler's `and accFreeInTupInfo _opts unt acc`: alone, the
+    // `and accFreeInTupInfo _opts unt acc`: alone, the
     // parameters the body never constrains generalise, and the .fsi's
     // concrete types then fail FS0034
     let signature =
@@ -1597,8 +1595,8 @@ let ``a member of a file with a signature leaves with its header written out`` (
 
 [<Fact>]
 let ``FR0111: the moved block's elif chain and else dedent with it`` () =
-    // fsharplint's AstInfo.fs, suave's Bytes.fs: the block kept its old
-    // depth and the trailing `else` landed deeper than its `elif`
+    // a block that kept its old depth would leave the trailing `else`
+    // deeper than its `elif`
     let source =
         fsharp
             """
@@ -1671,8 +1669,8 @@ let ``FR0111: an if on the else's own line is already flat and only the keyword 
 
 [<Fact>]
 let ``a member leaves without the next member's doc comment`` () =
-    // the F# compiler's Optimizer.fs: five members moved out took the ///
-    // of the member after them along, leaving orphaned docs
+    // a member moved out must not take the /// of the member after it
+    // along, leaving orphaned docs
     let source =
         fsharp
             """
@@ -1713,8 +1711,8 @@ let ``a member leaves without the next member's doc comment`` () =
 
 [<Fact>]
 let ``a member whose name appears only in a string is not recursive`` () =
-    // the F# compiler kept `let rec` on fifteen extracted functions whose
-    // only "self-call" was a failwith message naming them
+    // a failwith message naming the function is no self-call: the
+    // extracted function needs no `let rec`
     let source =
         fsharp
             """

@@ -91,9 +91,9 @@ let ``recordExtra keeps the first text only and ignores the snapshot's own files
 
 [<Fact>]
 let ``a later compilation's build failure puts back the files an earlier one rewrote`` () =
-    // elmish: src/program.fs interpolated under Elmish.fsproj, then
-    // Fable.Elmish.fsproj (FSharp.Core 4.7) would not build on it - the run
-    // used to blame the tree; the file goes back to the run's original
+    // a file shared by two projects, interpolated under the first, may not
+    // build under the second (FSharp.Core 4.7); the failure is the run's
+    // own, not the tree's, and the file goes back to the run's original
     let root = tempRoot "fsref-audit-runedit-"
 
     try
@@ -222,7 +222,7 @@ let private expectUtilLoad (suggestions: ScriptLoads.Suggestion list) =
 [<Fact>]
 let ``a FAKE 4 script with an #I-resolved #r by name still gets its missing #load`` () =
     // `#I "packages/FAKE/tools"` + `#r "FakeLib.dll"`: the dll is not beside
-    // the script, and treating that as a broken directive silenced the
+    // the script, and treating that as a broken directive would silence the
     // rule on every FAKE 4 build script
     withScript
         (fsharp
@@ -461,8 +461,8 @@ let ``only the marker says a build was stopped at the cap`` () =
 
 [<Fact>]
 let ``a build failure without an error line keeps its reason instead of an empty list`` () =
-    // the empty list was the defect: `Error [||]` read as "no compiler
-    // error introduced", so a timed-out build kept every fix
+    // an empty list is the hazard: `Error [||]` reads as "no compiler
+    // error introduced", so a timed-out build would keep every fix
     let lines = Program.buildFailureLines "" timedOut
     Assert.NotEmpty lines
     Assert.Contains(timedOut, lines)
@@ -561,8 +561,8 @@ let ``a compiler error seen only with the fixes, twice, is introduced`` () =
 let ``a tooling failure identical with and without the fixes is pre-existing breakage, not the cap`` () =
     // a post-compile Exec target that fails in this checkout whatever the
     // sources say: reading every failure without a compiler error as the
-    // cap restored the whole snapshot before the baseline was even built,
-    // and such a repository could never keep a fix
+    // cap would restore the whole snapshot before the baseline was even
+    // built, and such a repository could never keep a fix
     let exec =
         Program.buildFailureLines
             "C:\\src\\Lib.fsproj(40,5): error MSB3073: The command \"sign.cmd bin\\Lib.dll\" exited with code 1.\n"
@@ -628,7 +628,7 @@ let ``a consumer's C# error seen only with the fixes, twice, is introduced`` () 
 [<Fact>]
 let ``awaitWithin gives up at the timeout even when the work never observes cancellation`` () =
     // `Async.RunSynchronously(_, timeout)` cancels and then waits for the
-    // computation to quiesce, with no timeout of its own: a 6 s sleep came
+    // computation to quiesce, with no timeout of its own: a 6 s sleep comes
     // back after 6 s against a 500 ms timeout. A type provider blocked in a
     // connection is that sleep.
     let sw = Stopwatch.StartNew()
@@ -664,9 +664,9 @@ let ``awaitWithin rethrows the work's own exception, not an AggregateException``
 
 [<Fact>]
 let ``awaitWithin cancels the work it gives up on`` () =
-    // the abandoned typecheck used to run on to completion, rooting the
-    // old checker and everything it had cached; work that observes the
-    // token now stops as soon as the wait is over
+    // an abandoned typecheck left running to completion roots the old
+    // checker and everything it had cached; work that observes the token
+    // stops as soon as the wait is over
     use observed = new System.Threading.ManualResetEventSlim(false)
 
     Assert.Throws<TimeoutException>(fun () ->
@@ -687,8 +687,8 @@ let ``awaitWithin cancels the work it gives up on`` () =
 // ---- the consumers the F# build check cannot see ----
 
 /// A solution of a single-target F# library exposing a small PUBLIC union
-/// and a C# class library that casts to one of the union's case classes —
-/// FSharp.Azure.Quantum's shape. `[<Struct>]` (FR0016) on the union
+/// and a C# class library that casts to one of the union's case classes.
+/// `[<Struct>]` (FR0016) on the union
 /// compiles in every F# build and removes the nested case class the C#
 /// names. `consumerFramework` lets a test make the consumer unbuildable.
 let private writeConsumerSolution (root: string) (consumerFramework: string) =
@@ -826,11 +826,10 @@ let ``a held public surface closes the api-changes gate whatever the flag says``
 let ``FR0130 leaves a library's public constants alone in a plain run and annotates them under --api-changes``
     ()
     : unit =
-    // ClearBank.Net's WebhookTypes and CarmelNet's auth_server went
-    // [<Literal>] in a plain sweep — a public const inlines its value into
-    // every consumer — when the api-changes flag was still an environment
-    // variable the test project set and the library then read. The gate
-    // is Scope-scoped now; this pins it through the tool itself
+    // a public const inlines its value into every consumer, so a library's
+    // public constants must not go [<Literal>] in a plain run. The gate is
+    // Scope-scoped (a flag one project sets must not leak into another);
+    // this pins it through the tool itself
     let root = tempRoot "fsref-audit-literal-"
 
     try
@@ -916,8 +915,8 @@ let ``a tooling-only baseline and a clean rebuild blame the fixes, not the weath
 
 [<Fact>]
 let ``a framework list commented out of the project file is not one of its frameworks`` () =
-    // welendus's WelendusLogic.fsproj: `<!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks> -->`
-    // above the live element made the run ask for a net48 pass (NETSDK1005)
+    // a project file's `<!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks> -->`
+    // above the live element must not make the run ask for a net48 pass (NETSDK1005)
     let dir =
         Path.Combine(Path.GetTempPath(), "fsref-tfm-" + Guid.NewGuid().ToString("N"))
 
@@ -950,10 +949,10 @@ let ``a framework list commented out of the project file is not one of its frame
 
 [<Fact>]
 let ``the configuration probe reads a compile item by the name the project spells`` () =
-    // the item set is keyed by lowercased paths for membership; the READ
-    // went through the key too, and on a case-sensitive file system
-    // `library.fs` is not `Library.fs`: the unreadable file was taken to
-    // branch on the configuration, and every project got the Release build
+    // the item set is keyed by lowercased paths for membership; a READ
+    // through the key fails on a case-sensitive file system, where
+    // `library.fs` is not `Library.fs`, and an unreadable file is taken to
+    // branch on the configuration: every project would get the Release build
     let dir =
         Path.Combine(Path.GetTempPath(), "fsref-cfg-" + Guid.NewGuid().ToString("N"))
 
@@ -1042,7 +1041,7 @@ let ``the configuration probe reads a compile item by the name the project spell
 
 // ---- a source file that is not UTF-8 keeps its bytes ----
 
-/// Windows-1252 — the page a legacy Finnish source was saved in, no BOM.
+/// Windows-1252 — a legacy code page for Western European sources, no BOM.
 let private windows1252 () =
     Text.Encoding.RegisterProvider Text.CodePagesEncodingProvider.Instance
     Text.Encoding.GetEncoding 1252
@@ -1173,9 +1172,9 @@ let ``every verification build runs, however the first one fails`` () =
 [<Fact>]
 let ``a consumer is verified even when the other configuration fails on its tooling`` () : unit =
     // the Release build of the library fails on a signing step with the
-    // fixes and without them; the verification stopped there, never built
-    // the C# consumer, judged the identical tooling failure pre-existing
-    // and kept the [<Struct>] that the consumer cannot compile against
+    // fixes and without them; stopping there would never build the C#
+    // consumer, judge the identical tooling failure pre-existing and keep
+    // the [<Struct>] that the consumer cannot compile against
     let root = tempRoot "fsref-audit-consumer-config-"
 
     try

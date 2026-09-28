@@ -46,10 +46,7 @@ open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 
-/// The option as it is spelled in the source - `x`, or ``in 24h cooling-off
-/// FCA period`` with its backticks, which the ident text drops (welendus's
-/// SignalRHubs.fs: the match spelled the bare words and `24h` was read as
-/// a numeric literal).
+/// The option as it is spelled in the source
 let private spelled (source: ISourceText) (x: Ident) = textOfRange source x.idRange
 
 let private aZazAZaz09Regex = Regex @"^[A-Za-z_][A-Za-z0-9_']*$"
@@ -169,7 +166,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let index = AstIndex.ofTree parseTree
 
         // an argument the compiler quotes into a LINQ expression tree
-        // (SqlHydra's `where (cityFilter.IsSome && a.City = cityFilter.Value)`)
+        // (a query's `where (cityFilter.IsSome && a.City = cityFilter.Value)`)
         // is read by shape by its receiver: nothing is rewritten there
         let inExpressionTree = ExpressionTree.gate check source
 

@@ -39,8 +39,8 @@ let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 
 [<Fact>]
 let ``a body split by a directive is left alone`` () =
-    // Thoth.Json.Core.Auto: only the active branch would turn ValueSome,
-    // and the Fable-define build failed under the new attribute
+    // only the active branch would turn ValueSome, and the build under the
+    // other defines would fail under the new attribute
     assertNoSuggestion (
         fsharp
             """

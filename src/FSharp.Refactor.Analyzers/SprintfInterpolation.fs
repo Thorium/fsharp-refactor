@@ -212,8 +212,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         builder.Append(fmt.Substring cursor) |> ignore
 
                         // parentheses that only wrapped the application go
-                        // with it (farmer's `(sprintf "Should have thrown for
-                        // %d" days)` was left as `($"…")`)
+                        // with it: `(sprintf "…" days)` becomes `$"…"`, not
+                        // `($"…")`
                         let editRange =
                             match path with
                             | SyntaxNode.SynExpr(SynExpr.Paren(expr = inner; range = parenRange)) :: parent :: _ when
@@ -225,9 +225,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             | _ -> expr.Range
 
                         // an operator touching the paren would swallow the
-                        // `$`: SQLProvider's `~~(sprintf "..." x)` became
-                        // `~~$"..."`, and `~~$` is an operator name, and an
-                        // invalid one. A space keeps the two apart
+                        // `$`: `~~(sprintf "..." x)` would become `~~$"..."`,
+                        // and `~~$` is an operator name, and an invalid one.
+                        // A space keeps the two apart
                         let touchesOperator =
                             editRange.StartColumn > 0
                             && (let line = source.GetLineString(editRange.StartLine - 1)

@@ -115,21 +115,19 @@ let private fieldTypeName (check: FSharpCheckFileResults) (source: ISourceText) 
 /// record expression — anything F# would resolve ahead of the field?
 ///
 /// `{ menu with Settings.RandomCardBacks = v }` is fine while `Settings` is
-/// only a field. Nu's Kasino declares the field as `Settings:
-/// Settings.GameSettings` — named after the module holding its type, which
-/// lives in another file — and the flattened path resolved as the module's
-/// qualification of a GameSettings field: "This expression was expected to
-/// have type 'Menu' but here has type 'Settings.GameSettings'", five times,
-/// rolled back. The type names declared in this file and the field's own
-/// type cannot see that; the names in scope at the expression can. Read
-/// from the completion list at the copy source, where the context is a
-/// plain expression rather than a field list.
+/// only a field. A field declared as `Settings: Settings.GameSettings` —
+/// named after the module holding its type, which lives in another file —
+/// makes the flattened path resolve as the module's qualification of a
+/// GameSettings field: "This expression was expected to have type 'Menu'
+/// but here has type 'Settings.GameSettings'". The type names declared in
+/// this file and the field's own type cannot see that; the names in scope
+/// at the expression can. Read from the completion list at the copy
+/// source, where the context is a plain expression rather than a field
+/// list.
 ///
-/// The completion list is the expensive part — it cost this rule 735ms
-/// over a 19-file sweep, more than any other analyzer — and within one
-/// module-level declaration nothing can change which modules and types
-/// are in scope, so the answer is memoised per (name, declaration): Nu's
-/// five sites in one `update` function are one lookup.
+/// The completion list is the expensive part, and within one module-level declaration nothing can change which
+/// modules and types are in scope, so the answer is memoised per (name,
+/// declaration): several sites in one `update` function are one lookup.
 let private headIsEntityInScope
     (check: FSharpCheckFileResults)
     (source: ISourceText)
@@ -230,9 +228,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 // field that started a new line starts one
                                 // here too, at the outer field's column, and
                                 // fields that shared a line still do. Joining
-                                // everything with `; ` made a 170-column line
-                                // of suave's Stream.fs — correct, and rejected
-                                // by fantomas --check.
+                                // everything with `; ` makes over-long lines —
+                                // correct, and rejected by fantomas --check.
                                 let indent = System.String(' ', fieldStart.Column)
 
                                 let replacement =

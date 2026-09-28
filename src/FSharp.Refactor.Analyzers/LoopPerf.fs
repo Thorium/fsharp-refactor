@@ -320,8 +320,8 @@ let private collectionModules = set [ "List"; "Array"; "Seq" ]
 ///
 /// `Regex` belongs here as much as the others: constructing one parses and
 /// compiles the pattern, which is the whole cost. FR0015 covers the STATIC
-/// calls — `Regex.IsMatch(s, "...")` in a loop — but a `Regex` bound to a
-/// value inside a loop went unnoticed by either rule.
+/// calls — `Regex.IsMatch(s, "...")` in a loop — and this rule a `Regex`
+/// bound to a value inside a loop.
 let private expensiveTypes =
     set [ "ConcurrentDictionary"; "HttpClient"; "JsonSerializerOptions"; "Regex" ]
 
@@ -425,7 +425,7 @@ let loopBinders (path: SyntaxNode list) =
             for SynBinding(headPat = p) in lou.Bindings do
                 binders.AddRange(patBoundNames p)
         // so may a match arm's pattern: `| Item.AnonRecdField(_, tys, idx,
-        // _) -> tys[idx]` (FCS) binds a fresh `tys` per element
+        // _) -> tys[idx]` binds a fresh `tys` per element
         | SyntaxNode.SynMatchClause(SynMatchClause(pat = p)) -> binders.AddRange(patBoundNames p)
         | SyntaxNode.SynExpr(SynExpr.Lambda(parsedData = parsedData)) ->
             sawLambda <- true
@@ -493,8 +493,7 @@ let private literalCount (rhs: SynExpr) : int option =
 /// API change on a public module value. Without the opt-in, only a
 /// private/internal binding converts in place; a public one gets the
 /// private HashSet companion beside it instead, which leaves its type
-/// alone (fsharplint's public `testMethodAttributes` list, in a NuGet
-/// library, was converted to a Set without `--api-changes`).
+/// alone.
 ///
 /// `seenByLaterFile`: when the opt-in is not the caller's own but the
 /// host's leaf-compilation heuristic — an executable, whose public surface

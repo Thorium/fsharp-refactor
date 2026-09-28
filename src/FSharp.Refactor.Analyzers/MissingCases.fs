@@ -215,8 +215,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     // inside a computation expression the arms
                                     // are `return`/`yield` statements: a bare
                                     // `raise` arm is a unit-typed statement there
-                                    // (TaskCode<_, unit> against the siblings'
-                                    // TaskCode<_, T>, welendus's getLoanOffer),
+                                    // (TaskCode<_, unit> against the siblings' TaskCode<_, T>,
                                     // so the raise rides the siblings' keyword
                                     let keyword = armKeyword clauses
 
@@ -358,9 +357,9 @@ let findMergeableArms (parseTree: ParsedInput) (source: ISourceText) : ArmMerge 
                                 // reproducing. The pattern and the surviving body
                                 // are spliced verbatim, so a comment inside either
                                 // travels with that text; hoisting it as well
-                                // printed `1 (* why *) + 1` with the comment three
-                                // times over. It compiles, so no build check would
-                                // ever have caught it
+                                // would print `1 (* why *) + 1` with the comment
+                                // repeated. That compiles, so no build check
+                                // catches it
                                 let commentsIn (r: range) (verbatim: range list) =
                                     allComments
                                     |> List.filter (fun (cr, _) ->

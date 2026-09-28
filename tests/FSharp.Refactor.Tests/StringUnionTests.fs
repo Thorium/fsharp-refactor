@@ -1081,7 +1081,7 @@ let ``a typed %s hole in an interpolated string becomes %O`` () =
 let ``two fields of the same name in one file get distinct union names`` () =
     // both records have a `Kind` field over their own literal sets: the
     // second union carries its record's name rather than duplicating `Kind`
-    // (Fuuga's generate-honesty-data.fsx, a duplicate definition rolled back)
+    // (a duplicate definition would not compile)
     let names =
         findIn (
             fsharp
@@ -1357,8 +1357,8 @@ let ``a guarded null arm stays open and the rule stands down`` () =
 [<Fact>]
 let ``a constant is resolved by its declaration, not by its name`` () =
     // `Overrides.kind` is "dir"; the file's own `kind` is "file". Read by
-    // name, both were "file" and `weight Overrides.kind` became the File case
-    // name. Both constants name their case `Kind`, so the cases fall back to
+    // name, both would be "file" and `weight Overrides.kind` would become the
+    // File case name. Both constants name their case `Kind`, so the cases fall back to
     // the texts; the nested module's constant is not in reach by its bare
     // name where the union sits, so its ToString arm keeps the literal
     assertRewrite

@@ -52,12 +52,11 @@ let ``a missing root yields nothing rather than throwing`` () =
 
     Assert.Empty(FileWalk.files "*.fs" missing)
 
-/// The regression this walk exists for. `Directory.EnumerateFiles` with
+/// The hazard this walk exists for. `Directory.EnumerateFiles` with
 /// `SearchOption.AllDirectories` abandons the whole enumeration when it meets
 /// a directory it cannot open — and it fails part-way through, so files
-/// already found are lost too. A Fable checkout carries exactly such a
-/// directory (a dangling symlink under its Beam build output), and it took
-/// down both the corpus sweep and `fsharp-refactor "C:/git/Fable/**/*.fsproj"`.
+/// already found are lost too. A dangling symlink under a build output
+/// directory is exactly such a directory.
 [<Fact>]
 let ``an unreadable directory is skipped, not fatal`` () =
     withTree [ "Before.fs", ""; "z-after/After.fs", "" ] (fun root ->

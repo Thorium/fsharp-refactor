@@ -5,7 +5,7 @@ open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 
 let private findIn (source: string) =
-    // typed now: nothing syntactic separates a module function from a method,
+    // typed: nothing syntactic separates a module function from a method,
     // and a method cannot be composed by name
     let tree, sourceText, check = parseAndCheck source
     Composition.find tree sourceText check
@@ -139,7 +139,7 @@ let ``pipeline not starting from the parameter is not rewritten`` () =
 
 [<Fact>]
 let ``infix body is not decomposed into an invalid stage`` () =
-    // review regression: `(1 +) >> g` is not valid F#
+    // `(1 +) >> g` is not valid F#
     assertNoSuggestion (
         fsharp
             """
@@ -150,7 +150,7 @@ let ``infix body is not decomposed into an invalid stage`` () =
 
 [<Fact>]
 let ``parenthesized let-bound lambda is not rewritten`` () =
-    // review regression: the composition form falls under the value restriction
+    // the composition form falls under the value restriction
     assertNoSuggestion (
         fsharp
             """
@@ -162,8 +162,8 @@ let ``parenthesized let-bound lambda is not rewritten`` () =
 [<Fact>]
 let ``an operator stage is left as a lambda`` () =
     // prefix negation is `~-` in the tree but `-` in the source, so the
-    // composition came out as `- >> d.AddDays`: not an expression at all,
-    // and it took the rest of the file's parse with it. `(~-) >> d.AddDays`
+    // composition would come out as `- >> d.AddDays`: not an expression at
+    // all, taking the rest of the file's parse with it. `(~-) >> d.AddDays`
     // would compile but reads worse than the lambda it replaces
     assertNoSuggestion (
         fsharp
@@ -190,8 +190,8 @@ let ``an operator the author already parenthesised still composes`` () =
 [<Fact>]
 let ``a method stage is left as a lambda`` () =
     // a .NET method is not first class: the call compiles, the composition
-    // does not mean the same thing. Fable's Fable2Babel lost a file to
-    // `SwitchCase.switchCase`, a static member with optional parameters
+    // does not mean the same thing - a static member with optional
+    // parameters, for one
     assertNoSuggestion (
         fsharp
             """
@@ -204,8 +204,8 @@ let ``a method stage is left as a lambda`` () =
 
 [<Fact>]
 let ``a parenthesised negation argument is left as a lambda`` () =
-    // nu's GameTime: `GameTime.unary (fun updates -> UpdateTime (-updates))`
-    // composed to `- >> UpdateTime`, which does not parse
+    // `GameTime.unary (fun updates -> UpdateTime (-updates))` composed to
+    // `- >> UpdateTime` does not parse
     assertNoSuggestion (
         fsharp
             """
@@ -217,8 +217,7 @@ let ``a parenthesised negation argument is left as a lambda`` () =
 
 [<Fact>]
 let ``a lambda laid out over several lines is left as it is`` () =
-    // fantomas Context.fs: a readable five-line lambda became a 170-column
-    // composition
+    // a readable five-line lambda must not become a 170-column composition
     assertNoSuggestion (
         fsharp
             """
@@ -262,7 +261,7 @@ let ``a composition that stays within 100 columns still fires`` () =
 
 [<Fact>]
 let ``a lambda handed to an InlineIfLambda parameter is not composed`` () =
-    // Mibo's filterA and section: the callee inlines the lambda; a
+    // the callee inlines the lambda; a
     // composition in its place is a closure it can no longer inline
     let tree, sourceText, check =
         parseAndCheck (
@@ -292,7 +291,7 @@ let ``a lambda handed to an ordinary parameter is still composed`` () =
 
 [<Fact>]
 let ``a lambda under a constructor in a generic value keeps its generalization`` () =
-    // Hopac's ActorAndHopacModels.fs: `AT (A >> Job.result)` is an
+    // `AT (A >> Job.result)` is an
     // application, the value restriction pins 'a, and the annotation
     // fails "the respective type parameter counts differ"
     assertNoSuggestion (

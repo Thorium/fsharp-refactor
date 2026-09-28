@@ -98,8 +98,8 @@ let private sharedMutableNames (index: AstIndex.Index) : (string * range option)
 /// The shared names a TEST at `testRange` can race on. A `static let
 /// mutable` of the test's own class is not among them: xUnit, NUnit and
 /// MSTest all run one class's tests one after another whatever those
-/// tests return, so the ordering the class relies on (CarmelNet writes a
-/// payment id in one test and reads it in the next) survives the rewrite.
+/// tests return, so the ordering the class relies on (one test writing an
+/// id the next one reads) survives the rewrite.
 /// Module-level state, and another class's, is reachable from tests that
 /// may well run beside this one.
 let private sharedFor (shared: (string * range option) list) (classesRunInParallel: bool) (testRange: range) =
@@ -296,7 +296,7 @@ let private statementEdit
     =
     // a prefix in front of the expression moves its first line right; its
     // continuation lines — a pipe opening a new line at the statement's own
-    // column — must follow, or the operator lands offside (Fuuga)
+    // column — must follow, or the operator lands offside
     let prefixed (prefix: string) (text: string) =
         prefix + text.Replace("\n", "\n" + String(' ', prefix.Length))
 
@@ -368,8 +368,8 @@ let rec private spineEdits
                     // continuation line aligned with it must follow - when
                     // the expression starts on the `let` line. One starting
                     // on the line below stands relative to the `let` itself
-                    // and moves nothing (FunStripe's tests came out with
-                    // their bodies one column deeper than the block's head)
+                    // and moves nothing (moving it would leave the body one
+                    // column deeper than the block's head)
                     let kw = trivia.LeadingKeyword.Range
 
                     let awaitable =
@@ -405,8 +405,8 @@ let rec private spineEdits
 /// `ReleaseMutex` from the wrong thread throws.
 // thread choreography: a test that hands work to a thread and waits on a
 // signal continues on the SAME thread after the wait; `do!` resumes
-// wherever the test framework posts (Mibo's thread-affine adaptive graphs:
-// four tests failed, eleven turned flaky). The predicate lives in
+// wherever the test framework posts, and thread-affine code fails or turns
+// flaky. The predicate lives in
 // BlockingSites, shared with FR0049's boundary note
 let private threadBound = BlockingSites.threadBound
 
@@ -553,7 +553,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                         // a comment trailing the last expression belongs to
                         // that line; left outside the replaced range it
-                        // resurfaced after `} :> Task` (Mibo's Tests.fs)
+                        // would resurface after `} :> Task`
                         let bodyRange =
                             let lastLine = source.GetLineString(body.Range.EndLine - 1)
                             let rest = lastLine.Substring(min body.Range.EndColumn lastLine.Length)

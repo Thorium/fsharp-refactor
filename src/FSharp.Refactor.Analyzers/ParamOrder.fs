@@ -1,4 +1,4 @@
-/// Refactoring (slide 6, single-file variant): swap a private two-parameter
+/// Refactoring (single-file variant): swap a private two-parameter
 /// function to data-last order when call sites show the eta-blocking shape.
 ///
 ///     let private scale (x: float) (k: int)   let private scale (k: int) (x: float)
@@ -293,8 +293,8 @@ let private buildSuggestion
             | _ -> 0)
 
     // churn: more direct calls rewritten than lambdas collapsed is a file
-    // that reads worse afterwards (svg_path's OverlapsTests: one lambda,
-    // forty `point x y` literals flipped). Only the in-file rule weighs
+    // that reads worse afterwards (one lambda collapsed, forty `point x y`
+    // literals flipped). Only the in-file rule weighs
     // it: an `--api-changes` reorder is asked for explicitly and its
     // direct call sites are spread over the project
     if
@@ -343,9 +343,9 @@ let private buildSuggestion
 /// Inside the project the all-or-nothing rule is exhaustive, so every use
 /// compiles either way — and that is the problem: with interchangeable
 /// types NOTHING checks the swap, not the compiler and not the next reader.
-/// svg_path's `let private point x y` became `point y x` for the sake of
-/// one lambda, and forty `point 10.0 0.0` literals were flipped into code
-/// that reads as drawing vertical lines. So both variants require distinct
+/// A `let private point x y` turned into `point y x` for the sake of one
+/// lambda flips every `point 10.0 0.0` literal into code that reads as
+/// drawing vertical lines. So both variants require distinct
 /// types.
 ///
 /// Generic parameters count as interchangeable: a caller may well have

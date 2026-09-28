@@ -24,8 +24,8 @@
 ///     unions without fields, small records of those, and options or lists
 ///     of them. A metadata reader, a byte array, a socket, a function, a
 ///     generic `'a` or a compiler-tree node prints its type name or worse
-///     (ilread's `sigptrGetTy ctxt numTypars bytes sigptr`, Suave's
-///     acceptor over sockets and pools), so a function with no such
+///     (`sigptrGetTy ctxt numTypars bytes sigptr`, an acceptor over
+///     sockets and pools), so a function with no such
 ///     parameter gets no note at all. `let f = function ... | _ ->
 ///     failwith "..."` has one argument with no name: when its type
 ///     prints, the wildcard arm is named (`value`) and quoted
@@ -38,8 +38,8 @@
 ///     writes `failwith "<rule>"` as its fallthrough arm)
 ///   - the enclosing function, its type or module, or a parameter must not
 ///     smell of secrets — auth, session, crypt, token, password, secret,
-///     credential: Suave's `parseData textBlob` throws on freshly decrypted
-///     session data, and interpolating it would log the secret
+///     credential: a `parseData textBlob` throwing on freshly decrypted
+///     session data would log the secret once interpolated
 ///   - the file must not be a test file: a test's failwith is an assertion,
 ///     and the runner already names the test and its inputs
 ///
@@ -98,7 +98,7 @@ let private paramIdent (p: SynPat) =
 
 /// A function binding we could name and quote parameters from. A tuple
 /// or wildcard parameter carries no name to report and is simply left
-/// out. `let f = function ...` (Suave's `toOpcode`) has one argument with
+/// out. `let f = function ...` has one argument with
 /// no name at all; its fallthrough arm can be named on the way.
 let private describeBinding (binding: SynBinding) =
     match binding with
@@ -138,8 +138,7 @@ let private sensitiveName =
     Regex(@"(?i)auth(?!or)|session|crypt|token(?!i[sz])|passw|secret|credential|api_?key", RegexOptions.Compiled)
 
 /// Does the message name the parameter as a WORD? `x` inside "no text
-/// property" is not a mention (ParsePynb), nor is `ty` inside "open
-/// generic type" (fsi).
+/// property" is not a mention, nor is `ty` inside "open generic type".
 let private mentionsParameter (text: string) (name: string) =
     Regex.IsMatch(text, @"(?<![A-Za-z0-9_'])" + Regex.Escape name + @"(?![A-Za-z0-9_'])")
 
@@ -296,8 +295,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let all = source.GetSubTextString(0, source.Length)
 
             // every static failwith literal of the file, by text: two
-            // throws sharing a message (Suave's `failwith "Index overrun."`
-            // twice in one function) are not one reading the other back
+            // throws sharing a message (`failwith "Index overrun."` twice
+            // in one function) are not one reading the other back
             let thrownCounts =
                 index.Exprs
                 |> Array.choose (fun (_, e) ->
@@ -391,8 +390,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             let literalText = textOfRange source literalRange
 
                             // the same text elsewhere in the file is somebody
-                            // reading it back — a test's `should equal "..."`
-                            // (Fuuga), a caller matching on the message
+                            // reading it back — a test's `should equal "..."`,
+                            // a caller matching on the message
                             let quotedElsewhere =
                                 let thrown = thrownCounts |> Map.tryFind literalText |> Option.defaultValue 1
 
@@ -455,8 +454,8 @@ let private assertionForms (literal: string) : (Regex * string) list =
 /// assertion form the rewrite knows - or one it already produced: a prefix
 /// check an earlier enrichment of the same text left behind stays true
 /// under the next. An NUnit `Assert.AreEqual`, an Expecto `Expect.equal`,
-/// an Unquote `=!`, or a test-side stub throwing the same text (Fuuga's
-/// DraftAndRefineTests) is a mention the rewrite cannot loosen, and
+/// an Unquote `=!`, or a test-side stub throwing the same text is a
+/// mention the rewrite cannot loosen, and
 /// enriching the production message under it turns the test red - so it
 /// vetoes the enrichment instead.
 let everyMentionRewritable (text: string) (literal: string) : bool =

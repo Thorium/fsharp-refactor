@@ -150,10 +150,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let guarded = System.Collections.Generic.HashSet<int * int>()
 
         // the try/finally that follows the Enter — either the rest of the
-        // block, or the FIRST statement of it when more follows (FCS's
-        // `InlineDelayInit.Value` reads `value` after the finally: the
-        // Sequential then nests the TryFinally one level down, which the
-        // direct shape missed and reported as a bare Enter)
+        // block, or the FIRST statement of it when more follows (a read of
+        // `value` after the finally: the Sequential then nests the
+        // TryFinally one level down, and the Enter is still guarded)
         let (|GuardingTry|_|) (e: SynExpr) =
             match e with
             | SynExpr.TryFinally(tryExpr = body; finallyExpr = MonitorCall(exitId, exitArg); trivia = tfTrivia)
@@ -397,7 +396,7 @@ let findLeaks (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheck
         // with) a try/finally releasing the receiver, or a `use` whose
         // binding releases it on dispose
         // A `let` between the acquire and the try (`let mutable acquired = 0`
-        // before a counted multi-acquire, Fuuga) is looked through to its
+        // before a counted multi-acquire) is looked through to its
         // body; a `let`/`let!` whose right-hand side holds the try — the
         // `let! result = async { try ... finally sem.Release() }` idiom — or
         // a `use` whose binding releases on dispose, is the guard itself

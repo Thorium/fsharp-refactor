@@ -28,7 +28,7 @@ let private families = Families.All.all
 ///
 /// Taking the first few outright would run one common rule over and over
 /// and never reach the rare one: FR0007 fires five times as often as
-/// FR0071 here, and it was FR0071 that was wrong. Capping after grouping
+/// FR0071 here. Capping after grouping
 /// fixes that, but the cap still falls where the families are listed, so
 /// the last families in `Families.All` would never be reached on a
 /// program with many fixes; the list is rotated by the program's own tape
@@ -44,8 +44,8 @@ let private maxFixesPerProgram = 8
 /// over 1200 generated programs FR0007 and FR0131 accounted for 84% of
 /// them, and every one of FR0131's 618 was the SAME rewrite — `[<TailCall>]`
 /// on the same fixture function. Re-running an identical edit cannot find
-/// anything, and a common rule crowding out a rare one is how FR0071's
-/// hole survived. So: an edit whose text has already been checked is
+/// anything, and a common rule crowding out a rare one leaves the rare
+/// rule's defects unchecked. So: an edit whose text has already been checked is
 /// skipped, and past the first few a rule is sampled rather than run
 /// every time. Both are run-wide and evolve the same way on a replay, so
 /// a failing seed still reproduces.

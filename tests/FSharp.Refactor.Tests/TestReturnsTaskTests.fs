@@ -429,7 +429,7 @@ let ``GetResult on a plain task is a do-bang site`` () =
 [<Fact>]
 let ``a discarded site whose pipe opens a new line keeps the pipe in line`` () =
     // `let! _ = ` moves the first line right; the continuation must follow,
-    // or the operator lands offside (Fuuga's EvalTests)
+    // or the operator lands offside
     assertRewrite
         (scaffold
          + fsharp
@@ -602,9 +602,9 @@ let ``a continuation aligned with the bound expression follows the bang`` () =
 
 [<Fact>]
 let ``an expression starting on the line below its let keeps its indentation`` () =
-    // FunStripe's tests: the `!` moves nothing on a line below the `let`,
-    // whose lines stand relative to the `let` column, not to the `=` - the
-    // body came out one column deeper than its block's first line
+    // the `!` moves nothing on a line below the `let`, whose lines stand
+    // relative to the `let` column, not to the `=` - shifting them would put
+    // the body one column deeper than its block's first line
     assertRewrite
         (scaffold
          + fsharp
@@ -962,9 +962,9 @@ let ``NUnit's ThrowsAsync returns the exception, so the let stays a let`` () =
 
 [<Fact>]
 let ``a test choreographing threads with a signal keeps its blocking waits`` () =
-    // Mibo's adaptive-graph tests: work handed to a thread, a signal waited
-    // on, and the rest of the test expected on the SAME thread; `do!`
-    // resumed elsewhere and the graph refused the caller
+    // work handed to a thread, a signal waited on, and the rest of the test
+    // expected on the SAME thread; `do!` would resume elsewhere and a
+    // thread-affine component would refuse the caller
     Assert.Empty(
         findIn (
             scaffold
@@ -1015,8 +1015,7 @@ let ``a comment trailing a bare awaitable test survives the upcast`` () =
 
 [<Fact>]
 let ``a test assigning a module-level mutable is left alone`` () =
-    // the shape the maintainer named: a global testContext each test sets
-    // its own way. Freeing the thread lets collections that always COULD
+    // a global testContext each test sets its own way. Freeing the thread lets collections that always COULD
     // have raced actually do so
     Assert.Empty(
         findIn (
@@ -1056,7 +1055,7 @@ let ``a test merely reading a module-level mutable is left alone`` () =
 
 [<Fact>]
 let ``a class's own static mutable does not hold its tests back`` () =
-    // CarmelNet: one test writes a payment id into `static let mutable`,
+    // one test writes a payment id into `static let mutable`,
     // the next reads it. Tests of one class run one after another in xUnit,
     // NUnit and MSTest whatever they return, so both convert
     let source =
@@ -1081,7 +1080,7 @@ let ``a class's own static mutable does not hold its tests back`` () =
 [<Fact>]
 let ``a class opted into parallel tests keeps its static state shared`` () =
     // NUnit's Parallelizable(ParallelScope.All) runs one class's tests
-    // beside each other: the class-local exemption no longer holds
+    // beside each other: the class-local exemption does not hold
     let source =
         scaffold
         + fsharp
@@ -1146,7 +1145,7 @@ let ``a test assigning its OWN mutable still converts`` () =
 
 [<Fact>]
 let ``a file that installs global state by reflection converts nothing`` () =
-    // MpDataTests: a harness swaps a library's private static holders and
+    // a harness swaps a library's private static holders and
     // puts them back on Dispose. There is no assignment to find and no name
     // this file declares — the state lives in another assembly, reached
     // through a string — and the tests never mention the machinery, so the

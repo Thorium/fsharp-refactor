@@ -146,7 +146,7 @@ let ``guard applied to a different value is not extracted`` () =
 
 [<Fact>]
 let ``guard inside a member is not extracted`` () =
-    // review regression: the inserted binding would sit before the type, where
+    // the inserted binding would sit before the type, where
     // the member parameter is out of scope
     assertNoSuggestion (
         fsharp
@@ -162,7 +162,7 @@ let ``guard inside a member is not extracted`` () =
 
 [<Fact>]
 let ``repeated guards yield a single suggestion`` () =
-    // review regression: applying two identical insertions would produce a
+    // applying two identical insertions would produce a
     // duplicate definition
     let suggestions =
         findIn (
@@ -185,7 +185,7 @@ let ``repeated guards yield a single suggestion`` () =
 
 [<Fact>]
 let ``an overloaded method guard annotates the extracted input`` () =
-    // from Fuuga: Path.IsPathRooted takes string OR ReadOnlySpan<char>; the
+    // Path.IsPathRooted takes string OR ReadOnlySpan<char>; the
     // extracted pattern's `input` has no inference context, so the resolved
     // parameter type is spelled out
     match
@@ -226,7 +226,7 @@ let ``an overloaded method guard annotates the extracted input`` () =
 let ``a guard variable the body never reads becomes a wildcard`` () =
     // `| c when Char.IsDigit c -> Decimal` bound `c` only for the guard;
     // `| IsDigit c -> Decimal` would leave it unused, FS1182 — an error
-    // under warnings-as-errors (FsAutoComplete's AdjustConstant)
+    // under warnings-as-errors
     assertSingleSuggestion
         (fsharp
             """
@@ -251,7 +251,7 @@ let ``a guard variable the body never reads becomes a wildcard`` () =
 
 [<Fact>]
 let ``a declaration left of its siblings' column gets no pattern`` () =
-    // TypeProviders SDK's Codebuf: a `let` the compiler tolerates offside of
+    // a `let` the compiler tolerates offside of
     // the module body; an attribute line spliced at its column attaches to
     // nothing
     let offside =
@@ -287,8 +287,8 @@ let ``a declaration left of its siblings' column gets no pattern`` () =
 
 [<Fact>]
 let ``an offside declaration two modules deep under a namespace gets no pattern either`` () =
-    // the TypeProviders SDK's exact nesting: namespace, module, nested
-    // module whose first declaration sits one column right of the offender
+    // namespace, module, nested module whose first declaration sits one
+    // column right of the offender
     let source =
         fsharp
             """
@@ -308,9 +308,8 @@ let ``an offside declaration two modules deep under a namespace gets no pattern 
 
 [<Fact>]
 let ``an old FSharp.Core gets the option-returning pattern`` () =
-    // the TypeProviders SDK pins FSharp.Core 4.7, where `[<return: Struct>]`
-    // does not exist: the attribute attached to nothing and the pattern
-    // was refused
+    // FSharp.Core 4.7 has no `[<return: Struct>]`: the attribute would
+    // attach to nothing and the pattern be refused
     let source =
         fsharp
             """

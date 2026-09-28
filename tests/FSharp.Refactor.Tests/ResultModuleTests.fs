@@ -120,8 +120,8 @@ let ``error rewrapping a different value is not map`` () =
 
 [<Fact>]
 let ``a unit ok arm with a logging error arm keeps its match`` () =
-    // fantomas Daemon: a readable three-line match became a 190-character
-    // line carrying two closures, one of them `Result.map (fun _ -> ())`
+    // a readable three-line match would become an overlong line carrying
+    // two closures, one of them `Result.map (fun _ -> ())`
     assertNoSuggestion (
         fsharp
             """

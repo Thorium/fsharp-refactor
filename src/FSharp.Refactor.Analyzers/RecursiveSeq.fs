@@ -91,9 +91,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
 
     // seq-builder CE bodies FIRST: no seq { } means nothing to do, and
-    // most files have none. Before this early-out, the member widening
-    // made this rule the slowest in the whole sweep — every member's
-    // binding was collected and probed against every expression.
+    // most files have none. Without it every member's binding would be
+    // collected and probed against every expression, in every file.
     let seqBodies =
         index.Exprs
         |> Array.choose (fun (_, e) ->
@@ -108,8 +107,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         []
     else
 
-        // every ident occurrence by name, one pass — the self-call probe was
-        // O(bindings × expressions) as separate scans
+        // every ident occurrence by name, one pass — as separate scans the
+        // self-call probe would be O(bindings × expressions)
         let identOccurrences =
             System.Collections.Generic.Dictionary<string, ResizeArray<range * bool>>()
 

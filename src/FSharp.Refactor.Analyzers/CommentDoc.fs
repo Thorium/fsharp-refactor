@@ -36,8 +36,8 @@ type Suggestion =
 /// (Escaping would break the contains-the-original comment-loss proof.)
 ///
 /// Beyond instructions, a trailing note must READ as a summary before it
-/// becomes one. suave's `// ^ Index is out of range`, `// -- node no.`
-/// and `// unused` were promoted verbatim: a Haskell-style marker, a
+/// becomes one. `// ^ Index is out of range`, `// -- node no.` and
+/// `// unused` are not summaries: a Haskell-style marker, a
 /// single word, or a note too short to document anything is a margin
 /// annotation, and a doc line made of it is worse than none.
 let private excluded (text: string) =
@@ -57,7 +57,7 @@ let private excluded (text: string) =
     || body.Length < 12
     // a code fragment - `d >> Result.map box`, `fun x -> x` - spells an
     // equivalent for the reader beside the code, not a summary for a
-    // tooltip (Thoth.Json's boxDecoder)
+    // tooltip
     || body.Contains "|>"
     || body.Contains ">>"
     || body.Contains "->"

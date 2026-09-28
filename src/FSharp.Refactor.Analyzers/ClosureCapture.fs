@@ -76,7 +76,7 @@ let private isProcessWide (ids: string list) =
 
 /// A local `let e = Event<_>()` (or `new Event<_>()`) in a scope holding
 /// the subscription: the publisher is born in the member and cannot
-/// outlive the object (fsdocs' `docsDependenciesChanged`).
+/// outlive the object.
 let private localEventNames (path: SyntaxNode list) =
     let constructsEvent (e: SynExpr) =
         let rec named (e: SynExpr) =

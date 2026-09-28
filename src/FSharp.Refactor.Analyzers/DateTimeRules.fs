@@ -103,8 +103,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // an expression-tree translator reproduces the clock ON PURPOSE:
         // the arm that maps a member NAMED "Now" (or "Today") to the call
-        // (SQLProvider's evaluator: `when me.Member.Name = "Now" ->
-        // DateTime.Now`) is a translation table, not a clock read. The
+        // (`when me.Member.Name = "Now" -> DateTime.Now`) is a
+        // translation table, not a clock read. The
         // nearest enclosing match arm names the member in its guard or
         // its pattern.
         let clockNames = set [ "Now"; "UtcNow"; "Today" ]
@@ -141,7 +141,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         | None -> false)))
 
         // the non-Utc timestamp setters take LOCAL time —
-        // `File.SetLastWriteTime(path, DateTime.Now)` (fsdocs) is right as
+        // `File.SetLastWriteTime(path, DateTime.Now)` is right as
         // written, and UtcNow there would stamp the file hours off
         let localTimeSetters =
             set

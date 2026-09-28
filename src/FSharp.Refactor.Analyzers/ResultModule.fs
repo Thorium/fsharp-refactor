@@ -26,9 +26,7 @@
 /// when that line would pass 100 columns, when an arm is not a single
 /// simple expression (a tuple, a lambda, a pipeline, applications nested
 /// in applications), or when the map lambda would return unit —
-/// `Result.map (fun _ -> ())` is never an improvement. Fantomas's Daemon
-/// had a readable three-line match turned into a 190-character line
-/// carrying two closures.
+/// `Result.map (fun _ -> ())` is never an improvement.
 module FSharp.Refactor.ResultModule
 
 open FSharp.Compiler.CodeAnalysis
@@ -213,7 +211,7 @@ let private producedLineLength (source: ISourceText) (m: range) (replacement: st
 
 /// Would this body, as the map lambda's result, be unit? Syntactically
 /// `()`, or a call whose function the typed tree says returns unit —
-/// `log FantomasLogLevel.Error $"..."` on fantomas's Daemon. A partial
+/// `log LogLevel.Error $"..."`. A partial
 /// application reads as unit-returning too, which withholds a rewrite
 /// that would have been legal; the safe direction.
 let private returnsUnit (check: FSharpCheckFileResults) (source: ISourceText) (body: SynExpr) =

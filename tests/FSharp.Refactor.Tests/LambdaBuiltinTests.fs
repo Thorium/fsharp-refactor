@@ -57,9 +57,9 @@ let ``a method argument keeps its lambda`` () =
 
 [<Fact>]
 let ``a file that rebinds id does not get id`` () =
-    // nu's Behavior module redefines all three: `let id bhvr = returnB bhvr`.
+    // a module may redefine all three: `let id bhvr = returnB bhvr`.
     // Rewriting `fun x -> x` to `id` there calls the module's own function,
-    // not FSharp.Core's — verified to break the build and roll back
+    // not FSharp.Core's, and breaks the build
     assertNoSuggestion (
         fsharp
             """
@@ -139,11 +139,11 @@ let ``a match-bound snd shadows`` () =
             """
     )
 
-// ---- the lambda's parentheses go with it (Mibo) ----
+// ---- the lambda's parentheses go with it ----
 
 [<Fact>]
 let ``a parenthesised lambda argument drops its parentheses with the lambda`` () =
-    // Mibo: `Array.init this.Count (fun v -> v)` became `Array.init this.Count (id)`
+    // `Array.init this.Count (fun v -> v)` becomes `Array.init this.Count id`, not `(id)`
     let source = "module Test\nlet m (n: int) = Array.init n (fun v -> v)"
 
     match findIn source with
@@ -154,7 +154,7 @@ let ``a parenthesised lambda argument drops its parentheses with the lambda`` ()
 
 [<Fact>]
 let ``a parenthesised lambda inside a tuple drops its parentheses too`` () =
-    // Mibo: `ListReduceNode(list, (fun v -> v), reduction)` kept `(id)`
+    // `ListReduceNode(list, (fun v -> v), reduction)` must not keep `(id)`
     let source =
         fsharp
             """

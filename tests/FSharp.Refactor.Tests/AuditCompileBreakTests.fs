@@ -1,4 +1,4 @@
-/// Compile-breaking fixes found by the 0.8.21 audit, one test per defect:
+/// Fixes that would break the compile, one test per hazard:
 /// FR0049 returning INSIDE a parenthesised tail, FR0013 baring an argument
 /// whose application is itself the function of an indexer or a further
 /// application, FR0095 taking a record-, cons- or field-bound `id` for
@@ -26,8 +26,8 @@ let private taskifyIn (source: string) =
 
 [<Fact>]
 let ``FR0049: a parenthesised tail is returned whole, not from inside the parentheses`` () =
-    // `(r, 1)` became `(return r, 1)` — FS0792 — because the walk went
-    // through the parentheses to the tuple; `return` belongs before them
+    // `(return r, 1)` is FS0792: a walk through the parentheses to the
+    // tuple puts `return` inside; it belongs before them
     let source =
         fsharp
             """
@@ -195,7 +195,7 @@ let private qualifiedIn (sourceA: string) (sourceB: string) =
 let ``FR0147: an open that would rebind a union case the file matches on is withheld`` () =
     // `| Active ->` is Other.Status.Active today; `open Lib` below `open
     // Other` would make it Lib.Flag.Active and the match stop compiling.
-    // Only expression heads were checked for the clash, never a pattern's
+    // A pattern's head is checked for the clash as well as an expression's
     let lib =
         fsharp
             """

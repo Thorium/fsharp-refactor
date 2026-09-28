@@ -42,8 +42,7 @@
 ///     the tuple argument shape does not match, deliberately
 ///   - the file opens `System`: `AsSpan` is an extension method of
 ///     `System.MemoryExtensions`, and a file that opens only
-///     `System.Text.RegularExpressions` cannot see it (the tool's own
-///     SprintfInterpolation.fs, rolled back when the rule swept it)
+///     `System.Text.RegularExpressions` cannot see it
 module FSharp.Refactor.SubstringSpan
 
 open FSharp.Compiler.CodeAnalysis

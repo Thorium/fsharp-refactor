@@ -44,8 +44,8 @@ type TupleInListSuggestion =
 /// The field count of the union case the identifier names, None for
 /// anything else. The count matters: `Case(_)` on a case that takes NO
 /// data is accepted, but `Case _` is not ("Pattern discard is not allowed
-/// for union case that takes no data" — fsharplint's SynMemberKind
-/// matches), so a nullary case drops the wildcard altogether.
+/// for union case that takes no data"), so a nullary case drops the
+/// wildcard altogether.
 let private unionCaseFields (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =
     let r = ident.idRange
     let lineText = source.GetLineString(r.EndLine - 1)
@@ -122,9 +122,9 @@ let find
     // as an ATOMIC application of a bracket to the thing before it — the
     // same parse shape as a list — so the atomic flag is what separates
     // them (`f [1; 2]`, with a space, is a real argument and NonAtomic).
-    // The `.[ ]` spelling never reached here; the modern one it
-    // recommends did, and TorchSharp code is nothing but multi-dimensional
-    // indexing: 6 false notes in Fuuga's EvalTests alone.
+    // The `.[ ]` spelling never reaches here; the modern one it
+    // recommends does, and multi-dimensional indexing (TorchSharp code)
+    // is full of it.
     let inIndexPosition (path: SyntaxNode list) (e: SynExpr) =
         match path with
         | SyntaxNode.SynExpr(SynExpr.App(flag = ExprAtomicFlag.Atomic; argExpr = arg)) :: _ -> arg.Range = e.Range
@@ -133,7 +133,7 @@ let find
     // A literal whose EXPECTED type is a tuple collection is the one-entry
     // table it looks like: `Map.ofList [ k, v ]`, `dict [ 1, 1 ]`, a user
     // function taking `(int * int) list`, or an annotation spelling the
-    // tuple out (Mibo: 37 such notes, every one a one-entry map). The
+    // tuple out. The
     // literal's OWN type is always a tuple list, so the slot it fills —
     // the resolved parameter, or the annotation — is what is asked.
     let rec synTypeHasTuple (t: SynType) =

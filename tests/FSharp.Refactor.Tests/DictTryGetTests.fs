@@ -335,7 +335,7 @@ let ``sorted dictionary lacks TryAdd and stays`` () =
         )
     )
 
-// ---- match-on-ContainsKey form (user request) ----
+// ---- match-on-ContainsKey form ----
 
 [<Fact>]
 let ``match on ContainsKey with interpolated indexer becomes TryGetValue`` () =
@@ -1070,7 +1070,7 @@ let ``an arm taking an address is not made a closure`` () =
 [<Fact>]
 let ``an obj-valued cache resolves to the factory overload`` () =
     // a lambda coerces to obj at a method call as well, and F# still
-    // prefers the delegate conversion (probed on the compiler)
+    // prefers the delegate conversion
     assertGetOrAdd
         (fsharp
             """

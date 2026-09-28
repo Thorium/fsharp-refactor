@@ -1,4 +1,5 @@
-/// FR0134 (fix, OFF by default): migrate a contained record field from/// `DateTime` to `DateTimeOffset`, rewriting every use in one edit set.
+/// FR0134 (fix, OFF by default): migrate a contained record field from
+/// `DateTime` to `DateTimeOffset`, rewriting every use in one edit set.
 ///
 ///     type private Row = { Seen: DateTime }        Seen: DateTimeOffset
 ///     { Seen = DateTime.UtcNow }                   DateTimeOffset.UtcNow
@@ -27,9 +28,7 @@
 ///
 /// OFF by default: even inside the envelope this is a modernization with
 /// serialization-shape consequences the repository owner should opt into
-/// (`"FR0134": true`). File-private types only in this first cut — the
-/// classifier machinery extends to internal-over-ProjectSources when
-/// the envelope has proven itself.
+/// (`"FR0134": true`). File-private types only.
 module FSharp.Refactor.DateTimeOffsetMigration
 
 open FSharp.Compiler.CodeAnalysis

@@ -61,19 +61,19 @@ let private resolvesToNonDisposable (check: FSharpCheckFileResults) (source: ISo
 /// Union-case names that would CAPTURE a bare `TypeName (args)` here.
 ///
 /// In expression position a union case wins over a type name, and `new` is
-/// the only thing forcing resolution down the constructor path. Nu's
-/// OpenGL.Texture declares a `LazyTexture` class and a `Texture.LazyTexture`
-/// union case in the same module: dropping `new` turned a six-argument
-/// construction into a one-argument case application, and the tuple was then
-/// checked against the case's payload — "The type 'obj * obj * obj * obj *
-/// obj * obj' is not compatible with the type 'LazyTexture'".
+/// the only thing forcing resolution down the constructor path. With a
+/// `LazyTexture` class and a `Texture.LazyTexture` union case in the same
+/// module, dropping `new` turns a six-argument construction into a
+/// one-argument case application, and the tuple is then checked against
+/// the case's payload — "The type 'obj * obj * obj * obj * obj * obj' is
+/// not compatible with the type 'LazyTexture'".
 ///
 /// The disposability gate this sits beside asks whether `new` is needed for
-/// DISPOSAL. This asks the other question the rule never asked: whether it is
-/// needed for NAME RESOLUTION.
+/// DISPOSAL. This asks the other question: whether it is needed for NAME
+/// RESOLUTION.
 ///
-/// Collected once per file — resolving symbols per `new` expression is how
-/// FR0140 came to cost 77% of a sweep's analyzer time.
+/// Collected once per file — resolving symbols per `new` expression would
+/// dominate the analyzers' time.
 let private capturingUnionCases (check: FSharpCheckFileResults) =
     try
         check.GetAllUsesOfAllSymbolsInFile()
@@ -113,8 +113,8 @@ let private assemblySignatures (check: FSharpCheckFileResults) =
 /// the right one. The bare `ChatResponse()` searches the fragments in turn
 /// and stops at the FIRST that carries the name at all, choosing by arity
 /// only within it: with Abstractions referenced first — the natural
-/// dependency order — dropping `new` gave "The object constructor
-/// 'ChatResponse`1' takes 2 argument(s) but is here given 0" (Fuuga's Eval),
+/// dependency order — dropping `new` gives "The object constructor
+/// 'ChatResponse`1' takes 2 argument(s) but is here given 0",
 /// and with the order flipped the same code compiles. The guard cannot know
 /// the order a build will use, so a name split across fragments keeps its
 /// `new`.
@@ -227,8 +227,7 @@ let private siblingValues (entity: FSharpEntity) =
 /// function in ANOTHER module, opened here, captures the bare name just as
 /// surely. `type Parse` in one module, `let Parse (_: 'a)` in a second, both
 /// opened: `new Parse()` builds the class, `Parse()` calls the function —
-/// measured, the tag went from "ctor" to "function", compiling cleanly at
-/// every step.
+/// and both compile cleanly.
 ///
 /// Only F# modules carry values, so opening a namespace contributes nothing
 /// and costs one lookup. Collected once per file, lazily.
@@ -289,9 +288,8 @@ let private boundValueNames (index: AstIndex.Index) =
 ///     new string (output, index + 1, 12 - index)   →  "bcd"
 ///         string (output, index + 1, 12 - index)   →  "(System.Char[], 1, 3)"
 ///
-/// Both are `string`, so this typechecks and no build check can see it.
-/// management-portal's id generator was rewritten this way and every id it
-/// handed out became that literal; its uniqueness test failed. `new` is the
+/// Both are `string`, so this typechecks and no build check can see it: an
+/// id generator rewritten this way hands out that literal as every id. `new` is the
 /// only thing forcing the constructor. Written-case sensitive on purpose:
 /// `new String(...)` names the type, not the function, and still drops.
 let private conversionFunctions =
@@ -386,7 +384,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     // provider's `CsvProvider<"Data/GDP.csv", SkipRows=3>()` —
                     // needs `new`: in expression position the bare form parses
                     // `CsvProvider < "Data/GDP.csv"` as a comparison, "Invalid
-                    // module/expression/type" (FSharp.Data's tests)
+                    // module/expression/type"
                     let staticArgument (t: SynType) =
                         match t with
                         | SynType.StaticConstant _

@@ -73,8 +73,7 @@ let ``raise inside a lambda cannot become reraise`` () =
 
 [<Fact>]
 let ``raise in a handler inside a computation expression stays put`` () =
-    // from the corpus (SQLProvider Providers.SQLite): a try-with inside
-    // task { } desugars its handler into a lambda passed to builder.TryWith,
+    // a try-with inside task { } desugars its handler into a lambda passed to builder.TryWith,
     // where reraise () is error FS0413
     Assert.Empty(
         reraiseIn (
@@ -323,8 +322,8 @@ let ``a near-limit int64 multiplication is noted`` () =
 
 [<Fact>]
 let ``FR0032: a field the type disposes itself is managed, not ownerless`` () =
-    // FSharp.Data's FileWatcher: the watcher is disposed when the last
-    // subscriber leaves — a protocol, not a leak
+    // a watcher disposed when the last subscriber leaves: a protocol, not
+    // a leak
     let disposables, _, _ =
         designIn (
             fsharp
@@ -344,8 +343,7 @@ let ``FR0032: a field the type disposes itself is managed, not ownerless`` () =
 
 [<Fact>]
 let ``FR0047: a Dispose that delegates to DisposeAsync disposes through the async body`` () =
-    // FsAutoComplete's ServerProgressReport: cts is disposed in DisposeAsync,
-    // and Dispose only forwards — the field is not missed
+    // cts is disposed in DisposeAsync, and Dispose only forwards — the field is not missed
     let _, _, undisposed =
         designIn (
             fsharp
@@ -575,7 +573,7 @@ let private processSinksIn (source: string) =
 
 [<Fact>]
 let ``FR0126: a Process.Start template splits into an argument list, a shell's command line does not`` () =
-    // prismatic: `chmod +x "path"` and a cmd.exe command line
+    // `chmod +x "path"` and a cmd.exe command line
     let source =
         fsharp
             """
@@ -698,8 +696,7 @@ let ``FR0044: a handler that logs before rethrowing inside a task stays`` () =
 
 [<Fact>]
 let ``FR0047: a Dispose that only cancels the field never releases it`` () =
-    // fantomas' LSPFantomasService and CloudAgent's connection factory both
-    // cancel the token source and leave the handle
+    // cancelling the token source leaves its handle unreleased
     let _, _, undisposed =
         designIn (
             fsharp
@@ -810,8 +807,8 @@ let ``FR0047: a Dispose handing off to its base is not second-guessed`` () =
 
 [<Fact>]
 let ``FR0047: a field handed to a helper is that helper's to release`` () =
-    // the loosened rule claimed 'add cts.Dispose()' here, which would
-    // dispose it twice: `cleanup cts` releases it one hop away
+    // 'add cts.Dispose()' here would dispose it twice: `cleanup cts`
+    // releases it one hop away
     let _, _, undisposed =
         designIn (
             fsharp

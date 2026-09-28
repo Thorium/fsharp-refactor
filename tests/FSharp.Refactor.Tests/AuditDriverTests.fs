@@ -1,9 +1,9 @@
-/// Driver fixes from the 0.8.11 real-repository sweep: a relative
+/// Driver guarantees: a relative
 /// strong-name key resolved against the project directory rather than the
-/// tool's (B14, FsCheck), the innocent fixes of a pass surviving a rollback
-/// whose culprit sat in a file the errors never named (A11, FsToolkit), a
+/// tool's (B14), the innocent fixes of a pass surviving a rollback
+/// whose culprit sat in a file the errors never named (A11), a
 /// project's outputs still on disk for the script that `#r`s them after
-/// the compiler-argument query (B17, svg_path_fsharp), and an exit line
+/// the compiler-argument query (B17), and an exit line
 /// naming the compilation behind a non-zero exit (B16). In the
 /// "ProjectSources" collection: the end-to-end tests run `main`, whose
 /// per-run stores are process-wide.
@@ -169,11 +169,10 @@ let ``absolutizeArgs leaves absolute paths as they are`` () =
 
 [<Fact>]
 let ``a relative AssemblyKeyFile attribute resolves against the project directory, not the tool's`` () =
-    // FsCheck: `[<assembly: AssemblyKeyFile("../../FsCheckKey.snk")>]` in
-    // src/FsCheck/AssemblyInfo.fs, the key at the repository root. FCS
-    // opens that path as spelled, from the process directory, and a run
-    // from the root refused every library project with "The key file
-    // '../../FsCheckKey.snk' could not be opened"
+    // `[<assembly: AssemblyKeyFile("../../Key.snk")>]` in a project's
+    // AssemblyInfo.fs, the key at the repository root. FCS opens that path
+    // as spelled, from the process directory, so a run from the root
+    // refuses every such project with "The key file ... could not be opened"
     let root = tempRoot "fsref-driver-keyfile-"
 
     try
@@ -208,7 +207,7 @@ let ``a relative AssemblyKeyFile attribute resolves against the project director
             projectOptions (Path.Combine(projectDir, "Lib.fsproj")) [ assemblyInfo; library ]
 
         // the control: checked from the test host's own directory, FCS
-        // cannot open the key (the reason the tool refused FsCheck)
+        // cannot open the key
         let plain =
             checker.ParseAndCheckProject options |> Async.RunSynchronously |> errorsOf
 
@@ -239,11 +238,11 @@ let private fix (line: int) (startColumn: int) (endColumn: int) (fromText: strin
 
 [<Fact>]
 let ``a pass broken by a fix in a file the errors never name keeps every other fix`` () =
-    // FsToolkit Tests [net8.0]: FR0130 put [<Literal>] on `let lat` in
-    // TestData.fs; the errors (FS3190, a lowercase literal shadowed by a
-    // pattern) landed in Result.fs, whose own fixes were innocent. Writing
-    // Result.fs back did not clear them, and the pass rolled back and
-    // suppressed all 155 fixes; the next pass applied 0 of the 152 innocent
+    // FR0130 puts [<Literal>] on `let lat` in TestData.fs; the errors
+    // (FS3190, a lowercase literal shadowed by a pattern) land in Result.fs,
+    // whose own fixes are innocent. Writing Result.fs back does not clear
+    // them; only the culprit in TestData.fs may go back, and the innocent
+    // fixes stay
     let root = tempRoot "fsref-driver-rollback-"
 
     try
@@ -319,8 +318,8 @@ let ``a pass broken by a fix in a file the errors never name keeps every other f
         File.WriteAllText(extra, extraAfter)
         File.WriteAllText(result, resultAfter)
 
-        // FS3190 is a warning on its own; FsToolkit builds with
-        // TreatWarningsAsErrors, which is what made the pass fail
+        // FS3190 is a warning on its own; a project built with
+        // TreatWarningsAsErrors is what makes the pass fail
         let options =
             let plain =
                 projectOptions (Path.Combine(root, "Tests.fsproj")) [ testData; extra; result ]
@@ -388,7 +387,7 @@ let ``a pass broken by a fix in a file the errors never name keeps every other f
 
 [<Fact>]
 let ``a pass whose error-site fixes are the culprits still rolls back only those`` () =
-    // the positive control for the salvage that already existed: the
+    // the positive control for the plain salvage: the
     // culprit sits in the file the errors name, and the bisection above
     // is never entered
     let root = tempRoot "fsref-driver-rollback-named-"
@@ -474,11 +473,10 @@ let ``a pass whose error-site fixes are the culprits still rolls back only those
 
 [<Fact>]
 let ``a script that #r's a project's output dll still resolves it after the project was swept`` () : unit =
-    // svg_path_fsharp: `#r "../../src/SvgPath/bin/Debug/net9.0/SvgPath.dll"`
-    // in examples/debug/*.fsx. The dll was there before the sweep; the
-    // project's compiler-argument query (a Rebuild that skips the
-    // compiler) cleaned it and, for an SDK-style project, nothing built
-    // it back — so four of five scripts ran syntactic rules only
+    // a script's `#r "../src/Lib/bin/Debug/net9.0/Lib.dll"`: the project's
+    // compiler-argument query (a Rebuild that skips the compiler) cleans
+    // the dll and, for an SDK-style project, nothing builds it back — the
+    // script would then run syntactic rules only
     let root = tempRoot "fsref-driver-script-r-"
 
     try
@@ -650,9 +648,9 @@ let ``a file whose only directives are INTERACTIVE or COMPILED sweeps once acros
 let ``files the bisection blames are back on disk, not only in the report`` () =
     // A and B each drop a `value` the other still provides, so only the
     // two together break N (which the errors name, and whose own fix is
-    // innocent). The bisection blames both — but its last probe had B
-    // applied, and with nothing innocent left to re-apply nothing wrote
-    // B back: reported rolled back and suppressed, left applied on disk
+    // innocent). The bisection blames both, and its last probe has B
+    // applied: with nothing innocent left to re-apply, B must still be
+    // written back, or it is reported rolled back yet left applied on disk
     let root = tempRoot "fsref-driver-bisect-disk-"
 
     try

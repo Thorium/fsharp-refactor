@@ -116,8 +116,7 @@ let private findCandidatesIn (scope: Visibility.Scope) (parseTree: ParsedInput) 
                             // a tuple, and curried it would expect an
                             // expression argument — "This active pattern
                             // expects 1 expression argument(s) and a pattern
-                            // argument" (FsAutoComplete's
-                            // ConvertPositionalDUToNamed)
+                            // argument"
                             && not (ident.idText.StartsWith '|')
                             ->
                             candidates.Add

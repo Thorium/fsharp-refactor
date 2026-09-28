@@ -205,8 +205,7 @@ let find
                         | Some self when not abstracts.IsEmpty ->
                             // every `self.<slot>` anywhere inside a ctor-time
                             // binding: the index already walked each shape
-                            // (assignment right-hand sides, loops, try blocks),
-                            // where a hand-rolled worklist used to stop short
+                            // (assignment right-hand sides, loops, try blocks)
                             let ctorRanges = ctorExprs typeDefn |> List.map (fun e -> e.Range)
 
                             let inCtor (r: range) =

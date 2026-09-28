@@ -1,5 +1,4 @@
-/// Real-repo sweep findings of 0.8.11 (round 2 of the code audit): A3
-/// (FR0147 shortening to a shadowed name), A4 (FR0073 collapsing a binder
+/// A3 (FR0147 shortening to a shadowed name), A4 (FR0073 collapsing a binder
 /// still used in an arm), A8 (FR0043 inside `$$"""…"""`), and the cosmetic
 /// FR0072 `Option.None` spelling and FR0042 leftover parentheses.
 module FSharp.Refactor.Tests.AuditRewriteTests
@@ -29,9 +28,9 @@ let private systemEdits (suggestions: QualifiedNames.Suggestion list) =
 
 [<Fact>]
 let ``FR0147: a use inside a same-named local let keeps its prefix while the others shorten`` () =
-    // SageFs's HotReloadTests: `System.Version(1, 0, 0, 0)` under `open
-    // System` shortened to `Version(...)`, which bound to something else
-    // ("This value is not a function and cannot be applied")
+    // `System.Version(1, 0, 0, 0)` under `open System` shortened to
+    // `Version(...)` binds to something else ("This value is not a
+    // function and cannot be applied")
     let source =
         fsharp
             """
@@ -209,8 +208,8 @@ let private matchBangsIn (source: string) =
 
 [<Fact>]
 let ``FR0073: a binder mentioned in an anonymous-record field of an arm stays`` () =
-    // SageFs's Mcp.fs getStatus: two arms serialise `{| message = format
-    // resolution |}`, and the walker never descends into those fields
+    // two arms serialise `{| message = format resolution |}`, and the
+    // walker must descend into those fields to see the binder
     let source =
         fsharp
             """
@@ -293,8 +292,8 @@ let private holesIn (source: string) =
 
 [<Fact>]
 let ``FR0043: holes of a double-dollar string gain a double-percent specifier before both braces`` () =
-    // SqlHydra's SchemaTemplate.fs: `%%s{{version}}` already typed, the
-    // other two holes got `%s{` spliced between their braces
+    // `%%s{{version}}` already typed; the other two holes must not get
+    // `%s{` spliced between their braces
     let source =
         lines
             [
@@ -368,8 +367,8 @@ let private assertExpanded (source: string) (expectedReplacement: string) =
 
 [<Fact>]
 let ``FR0072: a None on a RequireQualifiedAccess union in scope leaves Option's case bare`` () =
-    // farmer's ScaleActionDirection.None had every Option match spelled
-    // `Option.None`
+    // a qualified-access union's None must not make every Option match
+    // spell `Option.None`
     assertExpanded
         (fsharp
             """
@@ -403,7 +402,7 @@ let ``FR0072: the same union without the attribute still qualifies the case`` ()
 
 [<Fact>]
 let ``FR0072: a payload case named on a RequireQualifiedAccess union stays bare too`` () =
-    // farmer's LinkedResource.Unmanaged _ beside NodeOSUpgradeChannel.Unmanaged
+    // LinkedResource.Unmanaged _ beside a qualified-access Channel.Unmanaged
     assertExpanded
         (fsharp
             """
@@ -437,7 +436,7 @@ let private assertSprintfPatched (source: string) (expectedFragment: string) =
 
 [<Fact>]
 let ``FR0042: the parentheses around a curried function's sprintf argument go with it`` () =
-    // farmer's Tests: `(sprintf "Should have thrown for %d" days)` became
+    // `(sprintf "Should have thrown for %d" days)` must not become
     // `($"Should have thrown for %d{days}")`
     assertSprintfPatched
         (fsharp
@@ -452,8 +451,8 @@ let ``FR0042: the parentheses around a curried function's sprintf argument go wi
 
 [<Fact>]
 let ``FR0042: a prefix operator touching the parentheses gets a space`` () =
-    // SQLProvider's `~~(sprintf "..." x)`: bare, `~~$"..."` lexes `~~$` as
-    // one (invalid) operator name; 2562 sites rolled back across a run
+    // `~~(sprintf "..." x)`: bare, `~~$"..."` lexes `~~$` as
+    // one (invalid) operator name
     assertSprintfPatched
         (fsharp
             """
@@ -468,7 +467,6 @@ let ``FR0042: a prefix operator touching the parentheses gets a space`` () =
 
 [<Fact>]
 let ``FR0042: a quoted format keeps its escapes and loses the parentheses`` () =
-    // Giraffe's HttpStatusCodeHandlers.fs
     assertSprintfPatched
         (fsharp
             """
@@ -542,7 +540,7 @@ let ``FR0042: a bare sprintf application is replaced as before`` () =
 [<Fact>]
 let ``FR0043: a literal percent before a typed double-dollar hole is not a second specifier`` () =
     // `%%%s{{x}}` under `$$` is one literal `%` and then a `%%s` specifier;
-    // reading the raw text as "untyped" spliced a second `%%s` in
+    // reading the raw text as "untyped" would splice a second `%%s` in
     let source =
         lines
             [
@@ -584,9 +582,9 @@ let ``FR0147: a primary-constructor parameter of the same name keeps the prefix 
 
 [<Fact>]
 let ``FR0072: an arm indented deeper than its match keeps the cases on one line`` () =
-    // FSharpPlus's Seq.fs: `| _ -> return false }` four columns deeper than
-    // the match, past 100 columns with both cases; a case on a fresh line
-    // under that `|` read as no or-pattern at all
+    // `| _ -> return false }` four columns deeper than the match, past 100
+    // columns with both cases; a case on a fresh line under that `|` reads
+    // as no or-pattern at all
     let source =
         fsharp
             """
@@ -618,8 +616,8 @@ let ``FR0072: an arm indented deeper than its match keeps the cases on one line`
 
 [<Fact>]
 let ``FR0147: a prefix whose remaining head is a union case in scope stays`` () =
-    // FAKE's UsageParser.fs under `open FParsec`: `FParsec.Error.NoErrorMessages`
-    // shortened to `Error.NoErrorMessages`, and bare `Error` is
+    // under `open FParsec`, `FParsec.Error.NoErrorMessages` shortened to
+    // `Error.NoErrorMessages` fails, since bare `Error` is
     // `ReplyStatus.Error` - an expression resolves its first name among
     // the values and cases before any module
     let lib =

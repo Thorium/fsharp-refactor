@@ -157,10 +157,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         // `_.reshape([| n |])` is legal and `_.reshape [| n |]`
                         // is not, so dropping these parens turns compiling
                         // code into "Shorthand lambda syntax is only supported
-                        // for atomic expressions". Found on toro, where six
-                        // FR0013 fixes were applied, broke the build and were
-                        // rolled back — correct, but a whole pass spent to
-                        // learn what the parse tree already said
+                        // for atomic expressions"
                         | SyntaxNode.SynExpr(SynExpr.DotLambda _) :: _ -> true
                         // a direct tuple element keeps its parens:
                         // `ValueSome(x), y` bare is the same parse, but the

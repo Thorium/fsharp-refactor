@@ -1,4 +1,4 @@
-/// Audit fixes for the exception rules (report 06-exceptions): FR0044's
+/// Guards for the exception rules: FR0044's
 /// closure and rebinding blind spots, FR0055's unbound log binder, impure
 /// guard operands and failure-carrying tuples, FR0151's interpolated
 /// read, statement-position rethrow and one-message double fix.
@@ -33,7 +33,7 @@ let private assertNoReraise (source: string) =
 
 [<Fact>]
 let ``FR0044: a match arm rebinding the exception name raises the inner one`` () =
-    // the report's repro: `reraise ()` compiles here but rethrows the OUTER
+    // `reraise ()` compiles here but rethrows the OUTER
     // exception, where `raise ex` threw the unwrapped one
     assertNoReraise (
         fsharp
@@ -186,7 +186,7 @@ let private assertGuard (source: string) (expected: string) =
 
 [<Fact>]
 let ``FR0055: an option Value operand can throw, so no guard`` () =
-    // the report's repro: `None.Value` escapes where the catch returned 0
+    // `None.Value` escapes where the catch returned 0
     assertNoGuard (
         fsharp
             """
@@ -249,7 +249,7 @@ let ``FR0055: record fields are pure operands and keep the guard`` () =
 
 [<Fact>]
 let ``FR0055: a tuple carrying Error reports the failure, not a disguised result`` () =
-    // the report's repro: `Error "step failed"` IS the failure report
+    // `Error "step failed"` IS the failure report
     let source =
         fsharp
             """
@@ -306,7 +306,7 @@ let private logOfferIn (source: string) =
 
 [<Fact>]
 let ``FR0055: the log offer on a bare Exception type test binds the exception`` () =
-    // the report's repro: the log line said `ex`, the pattern bound nothing
+    // the log line says `ex`, the pattern binds nothing
     let source =
         fsharp
             """
@@ -397,7 +397,7 @@ let private handlerOf (body: string) =
 
 [<Fact>]
 let ``FR0151: a Message read inside an interpolated string is reported but not fixed`` () =
-    // the report's repro: the replacement carries `"; "`, which a `$"..."`
+    // the replacement carries `"; "`, which a `$"..."`
     // hole may not hold (FS3373)
     let source = handlerOf "        log $\"load failed: {e.Message}\"\n        [||]"
     assertTypechecks "Test input" source
@@ -421,7 +421,7 @@ let ``FR0151: a plain Message read keeps its fix`` () =
 
 [<Fact>]
 let ``FR0151: a statement-position rethrow gets no carry-on fix`` () =
-    // the report's repro: `if strict then <Type[]>` mid-body is FS0001
+    // `if strict then <Type[]>` mid-body is FS0001
     let source =
         handlerOf (
             fsharp
@@ -547,9 +547,8 @@ let ``FR0151: the carry-on and the Message fix are two messages, carry-on first`
 
 [<Fact>]
 let ``FR0116: the message carries the insert as well as the removal`` () =
-    // the insert was lost to a list expression that discarded it (an
-    // element before a `for` is a statement): FAKE's Wix.fs had a member
-    // deleted and never put back
+    // a list expression that discards the insert (an element before a
+    // `for` is a statement) leaves a member deleted and never put back
     let source =
         fsharp
             """

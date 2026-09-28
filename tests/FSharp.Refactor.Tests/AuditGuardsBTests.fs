@@ -1,6 +1,6 @@
-/// Audit guards, round B: five stand-downs of 0.8.23 narrowed back to the
-/// condition the typed tree can prove, so every legitimate rewrite the
-/// rule used to deliver comes back. FR0012's untyped name gate stands down
+/// Guards B: five stand-downs narrowed to the condition the typed tree can
+/// prove, so every legitimate rewrite beside the hazard is still
+/// delivered. FR0012's untyped name gate stands down
 /// only inside a computation expression (where a custom operation can
 /// live); FR0075 treats a CancellationTokenSource whose token goes
 /// anywhere the scope does not see finish - a call, a constructor, a
@@ -33,8 +33,8 @@ let private hintsUntyped (source: string) =
 
 [<Fact>]
 let ``FR0012: without a typed check a built-in hint fires outside a computation expression`` () =
-    // the parse-only path used to stand every core-named hint down; a
-    // custom operation is the one shape that fooled it, and it lives only
+    // the parse-only path need not stand every core-named hint down: a
+    // custom operation is the one shape that fools it, and it lives only
     // in a builder's body
     match hintsUntyped "module Test\nlet f (x: string) = x = null" with
     | [ s ] -> Assert.Equal("isNull x", s.ReplacementText)
@@ -46,8 +46,8 @@ let ``FR0012: without a typed check a built-in hint fires outside a computation 
 
 [<Fact>]
 let ``FR0012: without a typed check a core-named hint stands down inside a computation expression`` () =
-    // FsCDK's `lifecycleRule { id "rule" }`: the builder's custom operation
-    // matched `id x ===> x` by shape
+    // `lifecycleRule { id "rule" }`: the builder's custom operation
+    // matches `id x ===> x` by shape
     Assert.Empty(
         hintsUntyped (
             fsharp
@@ -87,7 +87,7 @@ let private useBindingsIn (source: string) =
 
 [<Fact>]
 let ``FR0075: a CancellationTokenSource whose token a user function receives is advisory only`` () =
-    // welendus: `requestNewLoan` hands the token to `Async.Start` for a
+    // `rnl` hands the token to `Async.Start` for a
     // background search that outlives the scope; `use token` disposed the
     // source under it
     let source =
@@ -95,8 +95,8 @@ let ``FR0075: a CancellationTokenSource whose token a user function receives is 
             """
             module Test
             open System.Threading
-            module Loans =
-                let requestNewLoan (amount: int) (ct: CancellationToken) (flag: bool) : Async<int> =
+            module X =
+                let rnl (amount: int) (ct: CancellationToken) (flag: bool) : Async<int> =
                     async {
                         Async.Start(async { do! Async.Sleep 10 }, ct)
                         return amount
@@ -105,7 +105,7 @@ let ``FR0075: a CancellationTokenSource whose token a user function receives is 
                 async {
                     let token = new CancellationTokenSource()
                     token.CancelAfter 3300000
-                    match! Loans.requestNewLoan 100 token.Token false with
+                    match! X.rnl 100 token.Token false with
                     | 0 -> return "none"
                     | n -> return string n
                 }
@@ -117,7 +117,7 @@ let ``FR0075: a CancellationTokenSource whose token a user function receives is 
     | [ s ] ->
         Assert.Equal("token", s.Name)
         Assert.True(s.Fix.IsNone, $"Expected an advisory, got a fix: %A{s}")
-        Assert.Equal(Some(UseBinding.Destination.TokenHanded "requestNewLoan"), s.Destination)
+        Assert.Equal(Some(UseBinding.Destination.TokenHanded "rnl"), s.Destination)
     | other -> failwithf "Expected one advisory for 'token', got %A" other
 
 [<Fact>]
@@ -275,9 +275,8 @@ let private computeAndService =
 
 [<Fact>]
 let ``FR0029: a let that may throw stays inside an interface member's task`` () =
-    // SQLProvider's ExecuteSprocCommandAsync: hoisted, the
-    // IndexOutOfRangeException escaped synchronously past the caller's
-    // Async.Catch, where the faulted Task had been caught
+    // hoisted, an IndexOutOfRangeException escapes synchronously past the
+    // caller's Async.Catch, where the faulted Task would have been caught
     let source =
         lines (
             computeAndService
@@ -467,7 +466,7 @@ let ``FR0029: a confined binding whose task a public member hands out is exposed
 [<Fact>]
 let ``FR0029: a property read may throw where a record field cannot`` () =
     // `opt.Value` throws on None; a field read is a load. Both are dotted
-    // names the untyped path once waved through together
+    // names, and the untyped path cannot tell them apart
     let fixture (binding: string) =
         lines (
             computeAndService

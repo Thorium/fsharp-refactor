@@ -17,9 +17,8 @@
 /// sharpest edge rather than a footnote. `Seq.toList |> List.iter (fun k ->
 /// dict[k] <- v)` materialises before the writes begin; `Seq.iter` interleaves
 /// them, and where the sequence reads what the body writes the enumeration
-/// throws "Collection was modified". SQLProvider lost 19 tests to exactly
-/// this shape, on a sequence built from the very dictionary its body
-/// assigned into. Nothing downstream can catch it either: the rewrite
+/// throws "Collection was modified" — a sequence built from the very
+/// dictionary the body assigns into is the typical shape. Nothing downstream can catch it either: the rewrite
 /// compiles, so only a test run ever finds out. A write spelled as a method
 /// (`rs.Remove x`) and a callback that so much as names the source are
 /// refused the same way (see callbackMayWrite).
@@ -166,9 +165,8 @@ let private opAllowedForModules (opFunc: string) (sourceModule: string) (targetM
 /// its input, and for the length-preserving operations (map, rev, indexed)
 /// it is always a loss, so the move is not offered at all.
 ///
-/// Into Seq, only when the operation SHRINKS its input — and this took
-/// measuring, because the reasoning above was written for List and is just
-/// as true here. `Seq.toList |> List.map f` → `Seq.map f |> Seq.toList`
+/// Into Seq, only when the operation SHRINKS its input — measured, since
+/// the reasoning above holds here as well as for List. `Seq.toList |> List.map f` → `Seq.map f |> Seq.toList`
 /// runs 35% SLOWER (46k → 62k ns/op at n=1000) for 12% less allocation:
 /// the intermediate list does disappear, but `Seq.toList` then builds the
 /// result through an enumerator with a virtual call per element, where
@@ -265,8 +263,8 @@ let rec private sourceRoot (e: SynExpr) =
 /// — a local `let`, a parameter, a loop or match variable — is reachable
 /// only through the function's own text, which `mutatesSomething` reads in
 /// full. A module-level collection, or one captured from further out, can
-/// be written by any function the callback names (SQLProvider's shape: the
-/// sequence was built from a dictionary a helper assigned into), and
+/// be written by any function the callback names (a sequence built from a
+/// dictionary a helper assigns into), and
 /// nothing in this file can tell — so those are gated out, and only those.
 /// A list or array literal is already materialised and reads from nothing.
 let private sourceIsOwned (path: SyntaxNode list) (sourceExpr: SynExpr) =
@@ -296,10 +294,10 @@ let private sourceIsOwned (path: SyntaxNode list) (sourceExpr: SynExpr) =
 /// Could this callback write to the OWNED collection while the walk reads?
 ///
 /// Only what runs DURING the enumeration matters. A function that assigns
-/// into its array earlier and then filters it — FsRocket's checkTrooperHits
-/// writes `es[ti] <- ...` in a loop and ends with `es |> Array.toList |>
-/// List.filter (fun e -> ...)` — is the ordinary case, and reading the whole
-/// function for `<-` refused it. So the callback is what is read:
+/// into its array earlier and then filters it — `es[ti] <- ...` in a loop,
+/// then `es |> Array.toList |> List.filter (fun e -> ...)` — is the
+/// ordinary case, and reading the whole function for `<-` would refuse it.
+/// So the callback is what is read:
 ///
 ///   - its own text must not assign (`<-`), and must not call a mutating
 ///     METHOD on anything: `rs |> Seq.toList |> List.iter (fun x ->
@@ -422,9 +420,9 @@ let rec private enumerationComputesOnly
 /// Is the pipeline's source ALREADY the collection the conversion
 /// produces? Then the conversion is at most a copy, and moving the
 /// operation in front of it trades a tight Array/List pass for a lazy Seq
-/// walk: fsharplint's `identifier.idText.Split('|') |> Seq.toArray |>
-/// Array.filter ..` became `.. |> Seq.filter .. |> Seq.toArray`, a
-/// pessimisation on an input that was an array all along. The rule is
+/// walk: `s.Split('|') |> Seq.toArray |> Array.filter ..` would become
+/// `.. |> Seq.filter .. |> Seq.toArray`, a pessimisation on an input that
+/// is an array all along. The rule is
 /// syntactic, so the shapes are read off the text: an array/list literal
 /// of the target kind, a .NET method that returns an array (Split,
 /// ToArray, ToCharArray, GetFiles, GetDirectories) or a List (ToList),
@@ -619,8 +617,8 @@ let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (so
                                     else
                                         // the two stages keep the layout they had: a
                                         // one-op-per-line pipeline stays that way
-                                        // (fsharp.formatting's fantomas check rejected
-                                        // the joined line), a one-liner stays one
+                                        // (a fantomas check may reject the joined
+                                        // line), a one-liner stays one
                                         let glue =
                                             textOfRange
                                                 source

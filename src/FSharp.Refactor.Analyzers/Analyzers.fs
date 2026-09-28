@@ -67,10 +67,10 @@ module private DeepStack =
 
     /// `work` bound to the execution context of the code that QUEUES it. A
     /// worker is a long-lived thread, and a thread keeps the context of whoever
-    /// started it: every later job saw the AsyncLocal values of the first run
-    /// that created the workers - its `--codes` restriction (Scope.restrictTo)
-    /// switched rules off for every later run in the process, test or MCP
-    /// request, whatever that run asked for.
+    /// started it: unbound, every later job would see the AsyncLocal values of
+    /// the first run that created the workers - its `--codes` restriction
+    /// (Scope.restrictTo) would switch rules off for every later run in the
+    /// process, test or MCP request, whatever that run asked for.
     let private inCallersContext (work: unit -> unit) : unit -> unit =
         match ExecutionContext.Capture() with
         | null -> work
@@ -135,9 +135,9 @@ module private DeepStack =
 
     /// `run` without holding the calling thread: the analyzer's async hands
     /// `work` to a worker and awaits it. A thread-pool thread blocked on the
-    /// worker - one per queued analyzer, a thousand on a large project - left
-    /// no thread for the FCS parse a worker itself waited on (the default
-    /// hints, parsed once behind a lazy): the dogfood run deadlocked there
+    /// worker - one per queued analyzer, a thousand on a large project - leaves
+    /// no thread for the FCS parse a worker itself waits on (the default
+    /// hints, parsed once behind a lazy): a deadlock
     let runAsync (work: unit -> 'T) : Async<'T> =
         async {
             if onWorker.Value then
@@ -316,10 +316,8 @@ type private SiblingPatterns =
 /// FR0130's cross-file question: does any OTHER source file of this
 /// compilation — before or after this one — bind `name` as a bare
 /// pattern? A lowercase literal shadowed by a pattern is FS3190, an
-/// error: `let lat = 13.067439` in FsToolkit's TestData.fs took the
-/// attribute, and `let! lat = validLatR` in Result.fs of the same test
-/// project stopped compiling — the fix survived in a sibling project only
-/// because that one happened not to bind `lat`. The in-file veto in
+/// error: `[<Literal>]` on `let lat = 13.067439` in one file breaks a
+/// `let! lat = validLatR` in another file of the same project. The in-file veto in
 /// LiteralConst.find is this same check for the file itself.
 ///
 /// Under the CLI's cross-file parser the answer is exact, from each
@@ -535,10 +533,8 @@ let private fsharpCoreVersions =
 /// "Feature 'string interpolation' requires the F# library for language
 /// version 5.0 or greater". `--langversion` cannot answer that, and a
 /// legacy project usually sets no langversion at all — so the flag gate
-/// waves it through and every interpolation fix then fails to compile.
-/// PethostBackup pins FSharp.Core 4.7 out of a net45 packages folder: 28
-/// FR0031 fixes applied, failed, and took a pass of unrelated fixes down
-/// with them when the whole pass rolled back.
+/// waves it through and every interpolation fix then fails to compile,
+/// taking the pass's unrelated fixes down with it when the pass rolls back.
 ///
 /// An absent or unreadable reference answers TRUE — the same
 /// assume-the-latest stance the langversion gate takes, so a probe
@@ -546,13 +542,13 @@ let private fsharpCoreVersions =
 ///
 /// A multi-targeted project compiles the same file against EVERY
 /// framework's FSharp.Core, and a pass over a wide framework sees only its
-/// own: FsToolkit's net9.0 pass (FSharp.Core 9) offered `Result.isOk` in
-/// files its netstandard2.0 target compiles against FSharp.Core 6. The
+/// own: a net9.0 pass (FSharp.Core 9) would offer `Result.isOk` in files a
+/// netstandard2.0 target compiles against FSharp.Core 6. The
 /// apply tool hands the lowest FSharp.Core it has resolved for the project
 /// to CapabilityFix.minFSharpCoreMajor, and the gate answers for that one.
 /// A file OTHER projects of the run compile too holds to theirs as well
-/// (CapabilityFix.minFSharpCoreMajorFor): elmish's src/program.fs sits in
-/// Elmish.fsproj on FSharp.Core 10 and in Fable.Elmish.fsproj on 4.7.
+/// (CapabilityFix.minFSharpCoreMajorFor): one file can sit in a project on
+/// FSharp.Core 10 and in another on 4.7.
 let private fsharpCoreAtLeast (major: int) (fileName: string) (options: AnalyzerProjectOptions) =
     let referencePath =
         options.OtherOptions
@@ -623,8 +619,7 @@ let private referenceNames (options: AnalyzerProjectOptions) =
 /// A browser binding by assembly name. The Fable.Browser.* PACKAGES ship
 /// assemblies without the prefix - Fable.Browser.Dom's is Browser.Dom.dll,
 /// Fable.Browser.Event's Browser.Event.dll - and the compiler arguments
-/// carry the assembly, so a test for "Fable.Browser." never matched a real
-/// project (Kasino's web client).
+/// carry the assembly, so a test for "Fable.Browser." alone would miss them.
 let private isBrowserBinding (assemblyName: string) =
     assemblyName.StartsWith("Browser.", StringComparison.OrdinalIgnoreCase)
     || assemblyName.StartsWith("Fable.Browser.", StringComparison.OrdinalIgnoreCase)
@@ -649,8 +644,8 @@ let private isFableJavaScript (options: AnalyzerProjectOptions) =
               |> List.exists (fun js -> n.Equals(js, StringComparison.OrdinalIgnoreCase)))
 
 /// `task { }` needs FSharp.Core 6, and a Fable project compiles to a
-/// target where a test's blocking IS the behaviour under test — Fable's
-/// own suites assert `Async.RunSynchronously` semantics — so neither may
+/// target where a test's blocking IS the behaviour under test — a suite
+/// may assert `Async.RunSynchronously` semantics — so neither may
 /// have its tests rewritten around a Task.
 let private canReturnTask (fileName: string) (options: AnalyzerProjectOptions) =
     fsharpCoreAtLeast 6 fileName options
@@ -795,8 +790,7 @@ let private awaitableMessages (parseTree: ParsedInput) (source: ISourceText) che
     // and its kind arrived in netstandard2.1, and the twin resolves only
     // against the framework being swept. On a wider pass of a
     // multi-targeted project this rewrite lands in shared code and the
-    // narrow frameworks stop compiling — SQLProvider's Postgresql
-    // provider did exactly that.
+    // narrow frameworks stop compiling.
     //
     // Unlike FR0038 the fix is SEVERAL edits (the binding keyword and the
     // call), so it cannot pair with the project's guard the way a
@@ -806,8 +800,8 @@ let private awaitableMessages (parseTree: ParsedInput) (source: ISourceText) che
     // EITHER position means this pass sees a wider surface than the
     // project's narrowest target: a guard exists and the multi-edit swap
     // cannot pair with it, or no guard exists at all. Reading only the
-    // first left SwaggerProvider — which has no framework-shaped constant
-    // — taking `Dispose()` to `DisposeAsync()`, whose interface
+    // first would let a project with no framework-shaped constant take
+    // `Dispose()` to `DisposeAsync()`, whose interface
     // netstandard2.0 does not have: "System from netstandard did not
     // contain IAsyncDisposable".
     let widerThanNarrowest =
@@ -1241,9 +1235,8 @@ let private recGroupMessages check (parseTree: ParsedInput) (source: ISourceText
                 explanation
                 s.RemoveRange
                 // explicit yields: an element followed by a `for` in a list
-                // is a discarded statement (FS0020), and the insert was
-                // silently lost - FAKE's Wix.fs had a member deleted and
-                // never put back
+                // is a discarded statement (FS0020), and the insert would be
+                // silently lost - a member deleted and never re-inserted
                 (fix s.InsertRange "" s.InsertText
                  :: [ for r in s.Removes -> fix r (Text.textOfRange source r) "" ]))
 
@@ -1464,9 +1457,9 @@ let tupleParamsCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0009 ResultModule ----
 
 /// `Result.defaultValue`, `defaultWith`, `isOk` and `isError` arrived in
-/// FSharp.Core 9: on Giraffe's example project (FSharp.Core 6) every such
-/// rewrite was "The value, constructor, namespace or type 'defaultValue'
-/// is not defined" and rolled back. `iter` (ResultModule.Iterate) is one of
+/// FSharp.Core 9: against an older FSharp.Core every such rewrite is "The
+/// value, constructor, namespace or type 'defaultValue' is not defined".
+/// `iter` (ResultModule.Iterate) is one of
 /// the same set: FSharp.Core 6.0.0-6.0.5 have only `map`, `bind` and
 /// `mapError`, and the set landed in 6.0.6 — which shares its assembly
 /// version 6.0.0.0 with them, so the major-version gate cannot tell them
@@ -2397,7 +2390,7 @@ let private taskStateMachineMessages
     // task the compiler did NOT warn about. It invents a name for code whose
     // only sin was sitting after the last await, so on a healthy task it is
     // worth neither a fix nor a note: forty lines is a shape unwieldy enough
-    // to stand on its own, where ten was a state-machine-size argument that
+    // to stand on its own, where ten is a state-machine-size argument that
     // only FS3511 makes. A warned task drops to ten - there the cause is
     // established. Configurable per repository:
     //     { "FR0029": { "tailLines": 25 } }
@@ -2539,8 +2532,8 @@ let projectUseIndex (project: FSharpCheckProjectResults) : StringUnion.UseIndex 
     )
 
 /// The type names a compilation declares, nested ones included: one walk
-/// into a list, where a `seq { yield! }` per level allocated an enumerator
-/// per nesting and made every name pay the depth.
+/// into a list, where a `seq { yield! }` per level would allocate an
+/// enumerator per nesting and make every name pay the depth.
 let private entityNames (entities: FSharpEntity seq) : string list =
     let rec walk (found: string list) (level: FSharpEntity seq) =
         level
@@ -3256,9 +3249,9 @@ let private caseInsensitiveMessages
         // a capability fix like FR0038's: the StringComparison overloads of
         // Contains/StartsWith/EndsWith arrived in netstandard2.1, so on a
         // multi-targeted project this pairs with the project's own guard
-        // rather than breaking the frameworks that lack them. SQLProvider
-        // took `Contains("UNSIGNED", StringComparison.OrdinalIgnoreCase)`
-        // into shared code and stopped compiling for netstandard2.0.
+        // rather than breaking the frameworks that lack them: shared code
+        // calling `Contains("x", StringComparison.OrdinalIgnoreCase)` does
+        // not compile for netstandard2.0.
         let fixes =
             match s.Replacement with
             | Some _ when CapabilityFix.guardUnavailable () -> []
@@ -4178,7 +4171,7 @@ let private securityRulesMessages
                         let attributes =
                             match symbolUse.Symbol with
                             // an enum member carries its attributes as a FIELD,
-                            // not a property - reading only the latter found
+                            // not a property - reading only the latter finds
                             // nothing on a deliberately obsoleted case
                             | :? FSharpField as field ->
                                 Seq.toList field.FieldAttributes @ Seq.toList field.PropertyAttributes
@@ -5100,9 +5093,7 @@ let private structHintsMessages
             // what it declares — `{ Seen: int option }` becoming voption stops
             // the project compiling. The api pass sidesteps this by skipping
             // signature-carrying projects wholesale, but these migrations run in
-            // the NORMAL pass, so that skip never covered them: verified by
-            // running FR0069 against a signature, which applied four edits and
-            // was rolled back.
+            // the NORMAL pass, which that skip does not cover.
             //
             // The advice still stands; only the edit is withheld, the same way a
             // capability fix stands down where it has nowhere safe to live.
@@ -5536,9 +5527,7 @@ let mapIgnoreCliAnalyzer (ctx: CliContext) : Async<Message list> =
 // ---- FR0092 FailwithContext ----
 
 // The text of an exception is observable behaviour: tests assert on it
-// (FSharp.Data's `at least one global complex element is needed` broke on
-// the sweep that rewrote an `internal` function's message) and callers
-// match on it. So the fix applies only under --api-changes, where the user
+// (even on an `internal` function's message) and callers match on it. So the fix applies only under --api-changes, where the user
 // owns the callers and runs the tests; otherwise this is an advisory note.
 let private failwithContextMessages
     (fileName: string)
@@ -5560,11 +5549,10 @@ let private failwithContextMessages
             // note says where. With it, the message is enriched and the
             // assertion loosened to a prefix check IN THE SAME FIX, as
             // cross-file edits: the two halves apply together or not at
-            // all. (The test file used to loosen on its own turn, for any
-            // literal a production `failwith` spelled - and a `failwith
-            // "Error"` in a doc comment had this repository's own
-            // `Assert.Equal("Error", s.LogMethod)` loosened with nothing
-            // enriched anywhere.)
+            // all. (A test file loosened on its own turn, for any literal a
+            // production `failwith` spells, would loosen an unrelated
+            // `Assert.Equal("Error", ...)` for a `failwith "Error"` in a doc
+            // comment, with nothing enriched anywhere.)
             // the test files pinning the text, read FRESH: an earlier pass
             // may have rewritten one since the repository scan, and a stale
             // range would not match its text and hold the whole fix. One
@@ -5625,10 +5613,9 @@ let private failwithContextMessages
                          []))
 
 // The fix is an interpolated string, which needs the F# 5 syntax AND an
-// FSharp.Core that backs it: on PethostBackup's net48 project with
-// FSharp.Core 4.x it compiled to "Feature 'string interpolation' requires
-// the F# library for language version 5.0 or greater" and was rolled
-// back — the same gate FR0031 and FR0021 already consult.
+// FSharp.Core that backs it: against FSharp.Core 4.x it fails with "Feature
+// 'string interpolation' requires the F# library for language version 5.0
+// or greater" — the same gate FR0031 and FR0021 consult.
 [<EditorAnalyzer("FailwithContext", "Static failwith messages that could carry their arguments", HelpBase)>]
 let failwithContextEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0092" "FailwithContext" (fun () ->
@@ -5756,7 +5743,7 @@ let private recordFieldsMessages
 
         // an editor applies EVERY fix of a message as one action, so two
         // alternatives must be two messages — one message carrying both
-        // wrote `X = raise ...; X = false` into a record
+        // would write `X = raise ...; X = false` into a record
         if s.AllObvious then
             [ hint "FR0145" text s.Range [ fix s.Range "" s.InsertText ] ]
         elif applyPlaceholders then
@@ -6351,8 +6338,8 @@ let private intDivisionMessages
     checkResults
     : Message list =
     // a literal operand, or a dividend that is a product, may mean the
-    // truncation (Kasino centres on `float (screenW / 2)`, FsLemming maps a
-    // minimap with `float (x * mw / tw)`), so a sweep passes those by unless
+    // truncation (`float (screenW / 2)` centring on a pixel, a minimap
+    // scaled with `float (x * mw / tw)`), so a sweep passes those by unless
     // asked (`{ "FR0159": { "all": true } }`); the editor shows them too
     let all =
         offerFixes

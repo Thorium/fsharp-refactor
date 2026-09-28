@@ -245,7 +245,7 @@ let ``a reference assembly is not what a script can run against`` () =
 
 [<Fact>]
 let ``a script whose own load names a missing file is stale and gets no suggestion`` () =
-    // fsharp.formatting's Script.fsx: `#load "Library1.fs"` for a file long
+    // a template script's `#load "Library1.fs"` for a file long
     // gone; its FS0039s are not a missing #load
     withProject
         [ "Helpers.fs"; "Gone.fs"; "Braiding.fs" ]
@@ -254,9 +254,9 @@ let ``a script whose own load names a missing file is stale and gets no suggesti
 
 [<Fact>]
 let ``a script whose #r names an unbuilt dll gets no suggestion`` () =
-    // fantomas's docs scripts: `#r` to an artifacts dll never built here made
-    // every name of that project "not defined", and the rule answered with a
-    // #load of a signature file
+    // a `#r` to an artifacts dll never built makes every name of that
+    // project "not defined"; answering with a #load of a signature file
+    // would be wrong
     withProject
         [ "Helpers.fs"; "Braiding.fs" ]
         (fsharp

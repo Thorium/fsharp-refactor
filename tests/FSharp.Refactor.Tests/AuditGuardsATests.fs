@@ -1,7 +1,6 @@
-/// Audit guards A: the 0.8.23 audit closed real defects, and several of
-/// its fixes did so by standing a rule down on a far wider class than the
-/// defect. Each rule now carries the PRECISE guard the typed tree can
-/// prove and keeps every legitimate rewrite it used to deliver: FR0107
+/// Guards A: each rule carries the PRECISE guard the typed tree can prove,
+/// standing down on the hazardous shape alone and keeping every legitimate
+/// rewrite beside it: FR0107
 /// follows a same-file predicate into its body (and no mutable, partial or
 /// extension callee), FR0071 asks what the statement calls of a local
 /// mutable too (a closure captures one) over the whole anchor, and tells
@@ -592,8 +591,8 @@ let ``FR0157: a guarded null arm stays open and the rule stands down`` () =
 
 [<Fact>]
 let ``FR0157: a null beside a literal in one or-pattern stands the rule down`` () =
-    // read as a dead catch-all AND a literal arm, the clause was deleted
-    // while its literal half was edited too
+    // read as a dead catch-all AND a literal arm, the clause would be
+    // deleted while its literal half was edited too
     let source =
         fsharp
             """

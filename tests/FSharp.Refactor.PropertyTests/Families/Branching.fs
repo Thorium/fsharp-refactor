@@ -10,10 +10,9 @@
 /// share one zero-width insertion range, which the harness's overlap test
 /// would apply together. FR0080 has no shape: a leading tab in code is a
 /// compile error (FS1161), so the rule fires only on a file the compiler
-/// rejects, and a generated program must typecheck. Its one typechecking
-/// trigger — a tabbed line inside a block comment holding a string literal
-/// that spells `*)` — was a lexer discrepancy this suite found, fixed since
-/// (the rule now reads a string inside a comment as the compiler does).
+/// rejects, and a generated program must typecheck. A tabbed line inside a
+/// block comment holding a string literal that spells `*)` is no trigger:
+/// the rule reads a string inside a comment as the compiler does.
 /// The rule still runs over every program, so the damaged-program property
 /// exercises it; a tabbed comment shape keeps it quiet on a clean one.
 module FSharp.Refactor.PropertyTests.Families.Branching
@@ -131,7 +130,7 @@ let private shapes =
             $"(*\n{body}\n*)\nlet v{i} = 3")
         // FR0080 must stay quiet: the compiler reads the string literal inside
         // the comment as a string and stays in the comment, so the tabbed line
-        // is prose; the rule once read it as code (found by this suite)
+        // is prose, not code
         withFree "TabInCommentedString" [ "!FR0080" ] genSmall (fun n i ->
             $"(* \"*)\" '\"'\n\tlet tabbed = {n}\n*)\nlet v{i} = {n}")
     ]

@@ -732,7 +732,7 @@ let private constants (index: AstIndex.Index) : (string * Ident) list =
 /// The constant a symbol declared at this location binds: the binding whose
 /// head identifier sits at the declaration, never one that merely shares its
 /// name (a nested module's `let kind = "dir"` beside the file's own
-/// `let kind = "file"` resolved to the wrong text by name).
+/// `let kind = "file"` would resolve to the wrong text by name).
 let private constantAt (index: AstIndex.Index) (declaration: range) : (string * Ident) option =
     constants index
     |> List.tryFind (fun (_, id) -> Range.rangeContainsRange id.idRange declaration)
@@ -1715,12 +1715,12 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                 | SynPat.Or(lhsPat = a; rhsPat = b) ->
                     // `| null | "" ->`: a catch-all beside a literal in ONE
                     // clause. Read as [CatchAll; LiteralArm ""] the proof
-                    // deleted the clause as dead while its literal half was
-                    // edited too - two edits over one arm, and a case with
-                    // no arm left at runtime - so a catch-all half of an
+                    // would delete the clause as dead while editing its
+                    // literal half too - two edits over one arm, and a case
+                    // with no arm left at runtime - so a catch-all half of an
                     // or-pattern with a literal stays open and the rule
-                    // stands down. A plain `| null ->` clause is still the
-                    // dead catch-all below
+                    // stands down. A plain `| null ->` clause is the dead
+                    // catch-all below
                     let arms = read a @ read b
 
                     let holdsLiteral =
@@ -1998,8 +1998,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
     let reported = ResizeArray<Slot list>()
 
     // union names this file's earlier suggestions introduce: two records with a
-    // `domain` field each got a `Domain` (Fuuga's generate-honesty-data.fsx),
-    // a duplicate definition the build check rolled back
+    // `domain` field each would get a `Domain`, a duplicate definition
     let introduced = HashSet<string>()
 
     let candidates =
@@ -2564,8 +2563,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                     // `Some ex` passes on whole (a path, a message)
                     // ...and PRODUCED somewhere: a set the arms alone spell, with no
                     // call site and no producer in sight, is a function nothing calls
-                    // - or one called from where the host cannot see (prismatic's
-                    // `Logging.log level`, matched on four literals and never called)
+                    // - or one called from where the host cannot see
                     if
                         distinct.Length < 2
                         || armLiteralTexts.Count < 2

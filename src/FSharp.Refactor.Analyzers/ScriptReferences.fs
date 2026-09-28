@@ -223,8 +223,8 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
         // A net4x asset normally says the script runs on the .NET Framework
         // fsi.exe, which resolves no package references - but a script ALREADY
         // carrying a working `#r "nuget: ..."` has settled that question
-        // itself, whatever its assets target. management-portal Program.fsx
-        // references net45 and net472 dlls beside `nuget: FSharp.Data`
+        // itself, whatever its assets target: net45 and net472 dlls beside
+        // `nuget: FSharp.Data` are no reason to drop the package reference
         let packageRefsWork =
             ScriptLoads.directives tree
             |> List.exists (fun d -> d.Ident = "r" && d.Value.TrimStart().StartsWith "nuget:")
@@ -286,13 +286,12 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                                         // indices line up with segment indices.
                                         // A DRIVE-LETTER test only recognises
                                         // one: on POSIX the leading piece is
-                                        // just `@"`, which was then counted as
-                                        // segment 0 and shifted everything by
-                                        // one, so `seen = index` never met the
-                                        // missing segment and the whole fix was
-                                        // silently dropped - FR0144 never
-                                        // re-pointed a rooted path on Linux or
-                                        // macOS. Compare against the root
+                                        // just `@"`, which would count as
+                                        // segment 0 and shift everything by
+                                        // one, so `seen = index` would never
+                                        // meet the missing segment and the fix
+                                        // would be silently dropped for every
+                                        // rooted path. Compare against the root
                                         // itself, which is "C:" there and ""
                                         // here.
                                         let isRoot =
@@ -348,10 +347,9 @@ let find (script: string) (tree: ParsedInput) (source: ISourceText) (compilerOpt
                     | _ ->
                         // no sibling works, so there is nothing on disk to
                         // re-point to: the package was never restored here at
-                        // all. Paket's `storage: none` — the default now —
-                        // leaves it in the nuget cache and writes no
-                        // `packages/` copy, and the script's paths date from
-                        // when it did. A package reference resolves it without
+                        // all. Paket's `storage: none` leaves it in the nuget
+                        // cache and writes no `packages/` copy for the
+                        // script's paths to find. A package reference resolves it without
                         // one. `#r` only: `#I` names a search directory and a
                         // package reference is not one
                         // a net4x asset says the script runs on the .NET

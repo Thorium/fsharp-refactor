@@ -698,7 +698,7 @@ let ``a loop that also assigns an outer mutable is still a list expression`` () 
 [<Fact>]
 let ``a drain wrapped in an application's own parentheses keeps a pair`` () =
     // `Some(List.ofSeq acc)`: dropping the parentheses would glue the name
-    // to the function - `Someacc` (the tool's own StructOption.fs)
+    // to the function - `Someacc`
     assertRewrite
         (fsharp
             """

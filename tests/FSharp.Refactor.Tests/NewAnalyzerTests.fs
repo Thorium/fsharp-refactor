@@ -47,7 +47,7 @@ let ``FR0015: a literal-pattern Regex.Replace becomes String.Replace`` () =
 
 [<Fact>]
 let ``FR0015: Regex.Replace keeps the engine wherever the swap would differ`` () =
-    // each of these was MEASURED against String.Replace before being excluded:
+    // each of these gives a different answer under String.Replace:
     //   "$&!"   Regex -> "xxabcd!yy"   String -> "xx$&!yy"
     //   "a$$b"  Regex -> "xxa$byy"     String -> "xxa$$byy"
     //   ""      Regex inserts between every char; String THROWS
@@ -560,8 +560,7 @@ let ``regex constructed in a for loop is hoisted and the binding becomes an alia
 
 [<Fact>]
 let ``regex constructed in a List.map lambda is hoisted with the Split chain intact`` () =
-    // FSharp.Analyzers.SDK's expandMultiProperties (commit 6dd6679), where
-    // the author hoisted by hand: only the construction moves, the `let
+    // as a hand hoist does it: only the construction moves, the `let
     // regex =` and the `.Split(v)` after it stay as they were
     assertRegexConstructionHoist
         (fsharp
@@ -1070,8 +1069,8 @@ let ``ignoring a non-async value is fine`` () =
 let ``Async.Ignore usage is not flagged`` () =
     Assert.Empty(discardedAsyncIn "let f (comp: Async<int>) = async { do! comp |> Async.Ignore }")
 
-// --- verbatim patterns. `@"..."` is how F# writes regexes, and the rule
-// --- used to look only at plain string literals, quietly missing most of them.
+// --- verbatim patterns. `@"..."` is how F# writes regexes, so the rule
+// --- reads verbatim literals as well as plain ones.
 
 [<Fact>]
 let ``a verbatim literal pattern simplifies like a plain one`` () =
@@ -1228,7 +1227,7 @@ let ``a shape-changing fix beside a signature file fires only on private declara
 
 [<Fact>]
 let ``FR0017: an interface member returning Async discarded with ignore is flagged`` () =
-    // FSharp.CloudAgent's `messageStream.AbandonMessage token |> ignore`
+    // `messageStream.AbandonMessage token |> ignore`
     let source =
         fsharp
             """
@@ -1346,7 +1345,7 @@ let private unhandledStartsIn (source: string) =
 
 [<Fact>]
 let ``FR0149: a started computation with no handler is flagged`` () =
-    // CloudAgent's listener: one throw from the loop body ends it silently
+    // a listener loop: one throw from the loop body ends it silently
     match
         unhandledStartsIn (
             fsharp
@@ -1463,7 +1462,7 @@ let ``FR0149: StartImmediate is the same shape and the token form is read`` () =
 
 [<Fact>]
 let ``FR0149: a looping body says where the handler goes`` () =
-    // CloudAgent's listener polls forever: a handler around the whole
+    // a listener that polls forever: a handler around the whole
     // computation still ends it on the first failure
     match
         unhandledStartsIn (
@@ -1504,7 +1503,7 @@ let ``FR0149: a straight-line body has no such choice`` () =
 
 [<Fact>]
 let ``FR0149: a try around the start is called out as not covering it`` () =
-    // measured in fsi: `try async { failwith "y" } |> Async.Start with _ -> ()`
+    // `try async { failwith "y" } |> Async.Start with _ -> ()`
     // terminates the process — the handler is on this thread, the work is not
     match
         unhandledStartsIn (
@@ -1588,7 +1587,7 @@ let ``FR0149: a try wrapping only the start moves its handler inside`` () =
 
 [<Fact>]
 let ``FR0149: several handler clauses travel verbatim`` () =
-    // the Async.Catch spelling could not carry a typed clause or a guard;
+    // an Async.Catch spelling cannot carry a typed clause or a guard;
     // moving the try keeps every clause as written
     let source =
         fsharp

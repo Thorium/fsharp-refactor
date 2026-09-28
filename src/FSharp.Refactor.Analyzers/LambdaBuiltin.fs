@@ -83,11 +83,9 @@ let private argumentToMethod (path: SyntaxNode list) =
 
 /// Names in scope at a position that the file itself binds. `id`, `fst` and
 /// `snd` are only the builtins while nothing nearer shadows them, and `let
-/// id bhvr = returnB bhvr` in a module (nu's Behavior does exactly this for
-/// all three) makes `id` mean something else for the rest of it — so `fun x
-/// -> x` becoming `id` would call the wrong function. Verified: FR0095
-/// rewrote a lambda inside such a module, broke the build and was rolled
-/// back.
+/// id bhvr = returnB bhvr` in a module makes `id` mean something else for
+/// the rest of it — so `fun x -> x` becoming `id` would call the wrong
+/// function.
 ///
 /// Scope is read off the tree, because this rule carries no typed results
 /// and is worth keeping usable under --parse-only: the enclosing `let`s,
@@ -125,7 +123,7 @@ let private shadowedAt (path: SyntaxNode list) (at: range) =
 
 /// The lambda's own parentheses, when it has them and dropping them is
 /// safe: a bare identifier needs none, and `Array.init this.Count (id)`,
-/// `ListReduceNode(list, (id), reduction)` — nine sites on Mibo — read as
+/// `ListReduceNode(list, (id), reduction)` read as
 /// a leftover. `f (id)` and `f id` are the same application; the one
 /// place the parentheses still do work is when they touch a neighbouring
 /// token (`List.map(fun x -> x)` would fuse into `List.mapid`), so a

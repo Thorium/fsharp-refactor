@@ -1,9 +1,9 @@
-/// Infrastructure audit fixes: the leaf-compilation scope gate against a
+/// Infrastructure guarantees: the leaf-compilation scope gate against a
 /// LATER file of the same executable (FR0035 in-place conversion, FR0011
 /// struct return), one switch per code where an analyzer emits several
 /// (FR0017/FR0149, FR0075/FR0150, FR0127/FR0153), the FR0105 scale-factor
 /// note surviving every int32 spelling, and FR0092's test-source detection
-/// no longer reading `Contest` as a test.
+/// not reading `Contest` as a test.
 /// In the "ProjectSources" collection: some tests set the process-wide
 /// analysis scope (Scope.set), which must not run beside another test's.
 [<Xunit.Collection("ProjectSources")>]
@@ -406,7 +406,7 @@ let ``FR0105: an int32 literal with the l suffix gets its note`` () =
 let ``FR0105: a negative suffixed scale factor gets its note`` () =
     // the int32 minimum itself is a NEAR-LIMIT constant (that arm is
     // asked first), so the scale-factor figure is only ever computed for a
-    // magnitude below 2^30 - and now in int64, whatever the sign
+    // magnitude below 2^30 - and in int64, whatever the sign
     match checkedNotes "let x (n: int) = n * -1000000l\n" with
     | [ m ] ->
         Assert.Equal("FR0105", m.Code)

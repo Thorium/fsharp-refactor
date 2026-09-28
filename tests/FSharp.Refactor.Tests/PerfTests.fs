@@ -175,8 +175,8 @@ let ``a Substring fed to Parse becomes AsSpan`` () =
 
 [<Fact>]
 let ``FR0106: a file that does not open System cannot see AsSpan and keeps its Substring`` () =
-    // the tool's own SprintfInterpolation.fs opened only
-    // System.Text.RegularExpressions: the swept `.AsSpan` did not resolve
+    // with only System.Text.RegularExpressions open, a swept `.AsSpan`
+    // does not resolve
     let source =
         fsharp
             """
@@ -842,7 +842,7 @@ let ``FR0167: on FSharp.Core 9 an order-code check walks nonNull s and still thr
 
 [<Fact>]
 let ``FR0167: a project's own nonNull does not take the rewrite's`` () =
-    // the type-provider SDK's shape: an AutoOpen helper named nonNull, here
+    // an AutoOpen helper named nonNull, here
     // one that reads null as empty. Another file of the project sees it
     // under the bare name, which one file's scan cannot rule out; a module
     // of the project's own named Operators takes `Operators.nonNull` (F#
@@ -1367,7 +1367,7 @@ let ``FR0170: what visibly writes the dictionary before a read keeps the loop`` 
     | [ s ] -> Assert.Equal(27, s.Range.StartLine)
     | other -> failwithf "Expected the loop with the unknown callback alone, got %A" other
 
-    // the premise: an overwrite mid-enumeration no longer throws, and the
+    // the premise: an overwrite mid-enumeration does not throw, and the
     // pair's value is the one from before it
     let d = System.Collections.Generic.Dictionary<string, int>(dict [ "a", 1 ])
 

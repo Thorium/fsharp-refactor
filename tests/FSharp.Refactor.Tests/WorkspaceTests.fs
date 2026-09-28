@@ -189,11 +189,11 @@ let ``referencers include the projects two hops away and every language`` () =
 
 [<Fact>]
 let ``a build-order-only reference makes no referencer, nor do the projects behind it`` () =
-    // this repository's shape: Analyzers builds its Ionide twin first with
+    // Analyzers builds its Ionide twin first with
     // ReferenceOutputAssembly="false" and packs the dll, and the test
     // projects reference Analyzers. None compiles against the twin, so an
-    // api pass over the twin has no consumer to read (it used to load all
-    // three, only to report each "cannot be read"). A reference whose
+    // api pass over the twin has no consumer to read (rather than loading
+    // all three only to report each "cannot be read"). A reference whose
     // element has a body of other metadata still counts
     withTree
         [
@@ -350,8 +350,8 @@ let ``a bare project with no solution above it has no workspace`` () =
 
 [<Fact>]
 let ``a reference through an MSBuild property still names its project by file name`` () =
-    // dotnet/fsharp: `$(FSharpSourcesRoot)\FSharp.Core\FSharp.Core.fsproj`,
-    // twenty-eight times. Unresolvable as a path, but the file name says
+    // `$(FSharpSourcesRoot)\FSharp.Core\FSharp.Core.fsproj`: unresolvable
+    // as a path, but the file name says
     // which project it is, and a referencer passed over is a call site missed
     withTree
         [
@@ -396,7 +396,7 @@ let ``a reference through an MSBuild property still names its project by file na
 
 [<Fact>]
 let ``a project compiling another's source directly is reported with the shared files`` () =
-    // SQLProvider's provider projects each compile the Common sources
+    // provider projects each compile the Common sources
     // through `<Compile Include="..\Common\X.fs">`; they reference nothing
     // and hold their own call sites
     withTree

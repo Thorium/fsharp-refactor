@@ -24,7 +24,7 @@
 /// `xs.Length` / `List.length xs` on a list is the same walk — O(n) per
 /// call, with nothing to show for it — so a loop-invariant list's length
 /// read inside a loop body gets the same note (`while i < xs.Length`,
-/// Mibo's `count / (points.Length - 1)` per segment). A loop HEADER
+/// `count / (points.Length - 1)` per segment). A loop HEADER
 /// (`for i in 0 .. xs.Length - 1`) evaluates once and is fine.
 module FSharp.Refactor.ListIndexing
 
@@ -75,8 +75,8 @@ let private isConstIndex (e: SynExpr) =
     | SynExpr.Const _ -> true
     | _ -> false
 
-/// The walk a small bound keeps constant: `xs[i % 13]` (Kasino's rank
-/// table) never walks past the modulus, and a loop `for i in 0 .. 3` over
+/// The walk a small bound keeps constant: `xs[i % 13]` (a rank table)
+/// never walks past the modulus, and a loop `for i in 0 .. 3` over
 /// the index never walks past its literal end. A bounded walk is a
 /// constant cost, not the quadratic the rule hunts.
 [<Literal>]

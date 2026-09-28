@@ -1,4 +1,4 @@
-/// Round-2 real-repo sweep gates: FR0006 spells a nullness-annotated guard
+/// Rule gates: FR0006 spells a nullness-annotated guard
 /// parameter without `| null` (A9); FR0009 and FR0131 honour the LOWEST
 /// FSharp.Core across a project's target frameworks and FR0009 leaves a
 /// function that IS the FSharp.Core namesake alone (A10); FR0005 strips
@@ -57,10 +57,10 @@ let private withMinCore (value: string) (body: unit -> 'T) =
 
 // ---- A9: FR0006 drops the F# 9 nullness annotation ----
 
-/// FsToolkit's tests/List.fs shape: the guard's parameter is
-/// `String.IsNullOrEmpty`'s, which a nullness-aware check formats as
-/// `string | null` — under the sibling net8.0 target's LangVersion 8 that
-/// parses as an or-pattern (FS0018) and the whole pass was put back.
+/// The guard's parameter is `String.IsNullOrEmpty`'s, which a
+/// nullness-aware check formats as `string | null` — under a sibling
+/// target's LangVersion 8 that parses as an or-pattern (FS0018) and fails
+/// the whole pass.
 [<Literal>]
 let private nullableGuardSource =
     "module Test\nopen System\nlet tryTweetOption x =\n    match x with\n    | x when String.IsNullOrEmpty x -> None\n    | _ -> Some x"
@@ -93,7 +93,7 @@ let ``FR0006 spells a nullness-annotated parameter as the plain type`` () =
         let patched = applyEdit nullableGuardSource s.ClauseRange s.ClauseText
         let patched = applyEdit patched s.InsertRange s.InsertText
         assertTypechecks "Patched source" patched
-        // ... and under the nullness-aware compilation it came from
+        // ... and under the nullness-aware compilation too
         let _, _, patchedCheck = parseAndCheckWith [ "--checknulls" ] patched
         Assert.Empty(errorsOf patchedCheck)
     | other -> failwithf "Expected one suggestion, got %A" other
@@ -157,7 +157,7 @@ let private projectWithAssets (cores: (string * string) list) =
 
 [<Fact>]
 let ``minFSharpCoreMajor reads the lowest FSharp.Core across the restore's targets`` () =
-    // FsToolkit: netstandard2.0 on FSharp.Core 6, net9.0 on 9 — the file
+    // netstandard2.0 on FSharp.Core 6, net9.0 on 9 — the file
     // compiles against both, so 6 is the floor
     let project =
         projectWithAssets [ "netstandard2.0", "6.0.4"; "net9.0", "9.0.300"; "net9.0/win-x64", "9.0.300" ]
@@ -222,7 +222,7 @@ let private scriptContext (source: string) : CliContext =
 let private fixTexts (messages: Message list) =
     messages |> List.collect (fun m -> m.Fixes |> List.map (fun f -> f.ToText))
 
-/// FsToolkit's src Result.fs shapes, outside their defining module: an
+/// Result-helper shapes, outside their defining module: an
 /// `isOk` match (FSharp.Core 9's `Result.isOk`) beside a `map` match
 /// (FSharp.Core 4.1's `Result.map`).
 [<Literal>]
@@ -316,7 +316,7 @@ let private resultSuggestions (source: string) =
 
 [<Fact>]
 let ``FR0009 does not rewrite a Result module's own isOk into Result.isOk`` () =
-    // FsToolkit src/Result.fs: `module Result = let inline isOk ...`
+    // `module Result = let inline isOk ...`
     Assert.Empty(
         resultSuggestions (
             fsharp
@@ -409,7 +409,7 @@ let private returnBangStrips (source: string) =
 
 [<Fact>]
 let ``FR0005 withholds the return! strip inside a builder with its own Source conversion`` () =
-    // FsToolkit IcedTasks tests: cancellableTaskResult's return! turns the
+    // a builder like cancellableTaskResult: its return! turns the
     // async's Choice into a Result; `return Choice1Of2 data` is a type error
     Assert.Empty(
         returnBangStrips (
@@ -551,7 +551,7 @@ let private mutableSuggestions (source: string) =
 
 [<Fact>]
 let ``FR0007 keeps a mutable whose comment above says it defeats inlining`` () =
-    // SageFs LiveValueTreeTests.fs: immutable, the Release optimiser folds
+    // immutable, the Release optimiser folds
     // the constant into the closure and the test's assertion fails
     Assert.Empty(
         mutableSuggestions (

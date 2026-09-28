@@ -120,9 +120,9 @@ let rec private located (entity: FSharpEntity) : (string * string list) option =
 /// The namespace a symbol belongs to and the full spelling that reaches it
 /// from that namespace: `System.Threading.Tasks`, [System; Threading;
 /// Tasks; Task; FromResult]. A qualified name in source shortens only when
-/// it IS this spelling — a name-by-name prefix match mistook toro's
+/// it IS this spelling — a name-by-name prefix match would mistake
 /// `Toro.noGrad` (the module Toro of namespace Toro, already open) for a
-/// namespace-qualified value and left a bare `noGrad`.
+/// namespace-qualified value and leave a bare `noGrad`.
 let private symbolPath (symbol: FSharpSymbol) =
     let ofEntity (e: FSharpEntity) = located e
 
@@ -160,15 +160,15 @@ let private symbolPath (symbol: FSharpSymbol) =
 
 /// The referenced assemblies of the project a file belongs to, held for the
 /// project currently being swept: they cannot change while one project is
-/// analysed, so asking FCS again for every file is 129 redundant round-trips
-/// out of 130.
+/// analysed, so asking FCS again is a redundant round-trip for every file
+/// after the first.
 ///
 /// It does NOT make a sweep faster, and the reason is worth keeping: a
 /// stopwatch around the call reports ~28 ms per file, but that is a thread
 /// BLOCKING on FCS's internal locks, not work being done — 20 threads against
 /// a service that serialises them (a sweep gets 1.68x on 20 cores). Remove the
-/// calls and the same wait reappears elsewhere; measured before and after,
-/// three runs each, the rule's time did not move. Kept anyway because the
+/// calls and the same wait reappears elsewhere; the rule's time does not
+/// move. Kept anyway because the
 /// redundancy is real and the single-file IDE path has no contention to hide
 /// it. Do not read a per-thread stopwatch here as a measure of work.
 ///
@@ -212,9 +212,9 @@ let private keptLong (ns: string) =
 /// The top-level names a namespace exports, per namespace and reference set.
 /// Worth caching — a sweep asks the same question in every file — but NOT the
 /// rule's bottleneck, whatever its cost looks like: enumerating every
-/// referenced assembly's entities and bucketing all 502 scopes of this
-/// project's reference set measures 143 ms once, against ~7 s of FR0147 in the
-/// same sweep. The time is in the per-file work, so measure there before
+/// referenced assembly's entities and bucketing a reference set of 502
+/// scopes measures 143 ms once, against ~7 s of FR0147's per-file work
+/// over the same project. The time is in the per-file work, so measure there before
 /// rewriting anything here.
 let private exportedNamesCache =
     System.Collections.Concurrent.ConcurrentDictionary<string, Map<string, bool>>()
@@ -333,9 +333,9 @@ let find
                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> yield ids
                     | SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when ids.Length >= 2 ->
                         yield ids
-                    // an assignment target is a spelling too: fsharp.formatting's
-                    // `System.Diagnostics.Trace.AutoFlush <- true` kept its prefix
-                    // while the reads beside it lost theirs
+                    // an assignment target is a spelling too:
+                    // `System.Diagnostics.Trace.AutoFlush <- true` loses its
+                    // prefix with the reads beside it
                     | SynExpr.LongIdentSet(SynLongIdent(id = ids), _, _) when ids.Length >= 2 -> yield ids
                     | _ -> ()
                 for _, t in index.Types do
@@ -503,16 +503,15 @@ let find
 
         // in an EXPRESSION the first identifier resolves among the values,
         // union cases and active patterns in scope before any module or
-        // type of that name: FAKE's UsageParser.fs spelled
-        // `FParsec.Error.NoErrorMessages` under `open FParsec`, and bare
-        // `Error` is FParsec's `ReplyStatus.Error` case - "The type
+        // type of that name: `FParsec.Error.NoErrorMessages` under
+        // `open FParsec` keeps its prefix, since bare `Error` is FParsec's `ReplyStatus.Error` case - "The type
         // 'ReplyStatus' does not define ... 'NoErrorMessages'". Asked of
         // the typed scope once per name and TOP-LEVEL DECLARATION: what a
         // declaration's lines see of module-level values, cases and
         // patterns is one environment (an `open` inside a nested module
         // is the exception, and a nested module is a declaration of its
         // own), and a local of the name is `shadowedLocally`'s business
-        // - a declaration list per spelling line cost a large file
+        // - a declaration list per spelling line would cost a large file
         // hundreds of scope walks. Locals are left out of the answer for
         // the same reason: FCS lists them at the queried position only
         let declarationStarts =
@@ -637,11 +636,11 @@ let find
         // opens), else after the last open, else after the header line
         // the `#if` region a line sits in: the line number of the innermost
         // open `#if` (or `#else`, a different condition) above it, 0 when
-        // none. An open and the uses it serves must share a region: the F#
-        // compiler's TypedTreeOps.ExprOps.fs had its last open inside
-        // `#if !NO_TYPEPROVIDERS`, the inserted `open FSComp` followed it
-        // there while the uses were unconditional, and the Proto build no
-        // longer compiled. Uses that are all under one condition get their
+        // none. An open and the uses it serves must share a region: an
+        // open inserted after a last open that sits inside
+        // `#if !NO_TYPEPROVIDERS` would land under that condition while the
+        // uses are unconditional, and the build without the define would
+        // not compile. Uses that are all under one condition get their
         // open under the same one — a namespace needed only there must not
         // become a dependency of every build
         let conditionalRegion (line: int) =
@@ -742,8 +741,8 @@ let find
         // the entities name lookups see: the referenced assemblies' (cached
         // for the run — enumerating them is the expensive step, and a sweep
         // asks the same question in every file) and this project's own, up
-        // to this file (FsAutoComplete's Utils.Utils.Expect beside
-        // Expecto.Expect: that clash lived in the project itself)
+        // to this file (a project module `Utils.Expect` beside
+        // Expecto.Expect clashes within the project itself)
         let assemblies = referencedAssemblies check
 
         let assemblyKey =
@@ -784,7 +783,7 @@ let find
         // a union type in an opened namespace or module brings its case
         // names: a bare `Version(1, 0, 0, 0)` under `open Expecto` is the
         // nullary case Expecto.Tests.CLIArguments.Version, not the System
-        // type (SageFs's HotReloadTests, where `open System` was in place)
+        // type, even with `open System` in place
         let casesOf (e: FSharpEntity) =
             try
                 if e.IsFSharpUnion && not (requiresQualifiedAccess e) then
@@ -842,8 +841,7 @@ let find
                         // a namespace BENEATH X is a name `open X` brings too:
                         // `open System.Diagnostics` makes `Metrics.Meter` reach
                         // System.Diagnostics.Metrics.Meter, and a module named
-                        // Metrics elsewhere (the F# compiler's
-                        // FSharp.Compiler.Diagnostics.Metrics) loses to it
+                        // Metrics elsewhere loses to it
                         match e.Namespace with
                         | Some n when n.StartsWith(openedName + ".") ->
                             let rest = n.Substring(openedName.Length + 1)
@@ -882,9 +880,9 @@ let find
             broughtBy openedName projectEntities.Value
             |> Map.fold (fun acc name isModule -> Map.add name isModule acc) fromAssemblies
 
-        // a MODULE spelled exactly like the namespace — Nu's
+        // a MODULE spelled exactly like the namespace — a
         // `[<RequireQualifiedAccess>] module OpenGL` beside `namespace
-        // Nu.OpenGL` — is what `open Nu.OpenGL` would resolve to, and a
+        // Lib.OpenGL` — is what `open Lib.OpenGL` would resolve to, and a
         // qualified-access module refuses the open outright; the namespace
         // then stays spelled out
         // by display name: a module beside a namespace of its name compiles
@@ -1025,10 +1023,10 @@ let find
         // the methods the file calls with a parenthesised tuple — `x.M (a, b)`
         // — by name. F# hands that tuple over as TWO arguments the moment a
         // two-parameter overload of M is in scope, and an open can bring one:
-        // SQLProvider's `seen.Contains (entity, ct)` was the tuple argument
-        // of `List<T>.Contains` until `open System.Linq` arrived, then became
-        // `entity` against `Enumerable.Contains(value, comparer)` and stopped
-        // compiling sixty lines from the edit. The same happens under any
+        // `seen.Contains (entity, ct)` is the tuple argument of
+        // `List<T>.Contains` until `open System.Linq` arrives, then becomes
+        // `entity` against `Enumerable.Contains(value, comparer)` and stops
+        // compiling, far from the edit. The same happens under any
         // namespace that exports an extension member of the name: the check
         // is on the mechanism, not on System.Linq
         //
@@ -1036,8 +1034,8 @@ let find
         // ("x", StringComparison.Ordinal)` already resolves to the
         // two-parameter instance overload, and an instance member wins over
         // any extension of the name - so that call is safe under `open
-        // System`, whose MemoryExtensions.EndsWith kept every file spelling
-        // `System.` sixteen times from its open. A call the typed tree
+        // System`, whose MemoryExtensions.EndsWith must not block the open.
+        // A call the typed tree
         // resolves to a non-extension method taking as many parameters as
         // the tuple has elements drops out; one that resolves to fewer (the
         // tuple IS the one argument), to an extension, or to nothing stays
@@ -1104,8 +1102,8 @@ let find
 
             // an `[<AutoOpen>]` module of the namespace opens with it, and an
             // F#-style extension (`type List<'T> with member xs.Contains(a,
-            // b)`) lives in exactly such a module - reproduced: the identical
-            // FS0001 through an AutoOpen module
+            // b)`) lives in exactly such a module - the same FS0001 arrives
+            // through an AutoOpen module
             let rec withAutoOpened (e: FSharpEntity) : FSharpEntity list =
                 let nested =
                     try
@@ -1165,7 +1163,7 @@ let find
         // — `String.concat` keeps meaning the F# String module under `open
         // System`, `List.map` the List module under `open
         // System.Collections.Generic` — but a MODULE of that name from the
-        // namespace would shadow it (Expecto.Expect over Utils.Utils.Expect)
+        // namespace would shadow it (Expecto.Expect over a project's own Expect)
         // ... and if so, where the name resolves today: the namespace, or
         // "" for a symbol with none
         let resolvesOutsideTo (ns: string) (id: Ident) : string option =
@@ -1202,10 +1200,10 @@ let find
 
         // FSharp.Core is open in every file before any `open` of its own, and
         // a later open shadows it — except that a type ABBREVIATION does not
-        // win against FSharp.Core's real type of the same name: the F#
-        // compiler's `Tagged.Map<_, _>` (an abbreviation of the
-        // three-parameter Map) shortened to `Map<_, _>` under `open Tagged`
-        // reached FSharp.Core's Map, which has no FromList
+        // win against FSharp.Core's real type of the same name: a
+        // `Tagged.Map<_, _>` (an abbreviation of a three-parameter Map)
+        // shortened to `Map<_, _>` under `open Tagged` reaches FSharp.Core's
+        // Map, which has no FromList
         let fsharpCoreNames =
             lazy
                 ([
@@ -1418,9 +1416,9 @@ let find
 
                 // nowhere to put the open: the shortenings alone would break
                 // the file, so the namespace is only noted
-                // inside `namespace Nu`, `open OpenGL` resolves to `Nu.OpenGL` first —
-                // Nu keeps an empty [<RequireQualifiedAccess>] module there to say
-                // so — and only then to the global namespace; a relative shadow
+                // inside `namespace Lib`, `open OpenGL` resolves to `Lib.OpenGL` first —
+                // an empty [<RequireQualifiedAccess>] module there says so —
+                // and only then to the global namespace; a relative shadow
                 // of any kind leaves the spelling as it is
                 let relativeShadow =
                     blocks.[block].Own
@@ -1431,7 +1429,7 @@ let find
                 // an `open` resolves against every namespace already open as
                 // well - `Microsoft.FSharp` always, and each open of the block -
                 // and opens EVERY match: `open Core` for a user namespace `Core`
-                // also opened Microsoft.FSharp.Core, re-opened its Operators
+                // also opens Microsoft.FSharp.Core, re-opens its Operators
                 // over a user's earlier-opened `tan`, and the compiler rejects
                 // the partial path outright (FS0893, an error). `open IO` after
                 // `open System` is the same. Checked for every open of the block,
@@ -1444,11 +1442,10 @@ let find
                         && (moduleNamed (root + "." + ns)
                             || not (Map.isEmpty (scopeNames (root + "." + ns)))))
 
-                // a name an ENCLOSING namespace already provides — the F#
-                // compiler's every file sits under `FSharp.Compiler`, whose
-                // own `SR` module is in scope unqualified; `open FSComp` to
-                // spell `FSComp.SR.x` as `SR.x` made `SR` mean two modules,
-                // one convention in ten files and another in the rest
+                // a name an ENCLOSING namespace already provides — a file
+                // under `namespace Lib` sees `Lib.SR` unqualified; `open
+                // FSComp` to spell `FSComp.SR.x` as `SR.x` would make `SR`
+                // mean two modules
                 let enclosingShadow =
                     blocks.[block].Own
                     |> Seq.tryPick (fun own ->

@@ -20,7 +20,7 @@
 ///
 /// A LIST is what comes out: `List.ofSeq acc` becomes `acc`, and
 /// `Array.ofSeq acc`, `for x in acc`, an upcast to seq and every function
-/// taking a `seq<_>` keep working on it. Measured in PerfClaims (.NET 10,
+/// taking a `seq<_>` keep working on it. Measured (.NET 10,
 /// 1000 ints, two thirds kept): the list expression collects through
 /// FSharp.Core's ListCollector, no growth-doubling copies and no final
 /// `List.ofSeq` copy, 20% faster on 30% less allocation than the loop. A
@@ -80,7 +80,7 @@
 /// is immutable), a `&xs`, or a read of `xs` inside its own loops stands
 /// the rule down, and an annotation (`let mutable xs: T list = []`) is
 /// kept on the result, since it typed the elements. `[]`, `List.empty`
-/// and `List.Empty` start it. Measured in PerfClaims (1000 ints, two
+/// and `List.Empty` start it. Measured (1000 ints, two
 /// thirds kept): 250x faster on 0.3% of the allocation for the append,
 /// 1.5x on half for the cons-and-reverse. FR0050 leaves this shape to
 /// this rule (a fold would keep the copy), and FR0051 notes it wherever
@@ -1074,7 +1074,7 @@ let private suggestionFor
                         // done being built, and the result is immutable
                         | None, _ -> None)
 
-                // What the drains ask for decides the shape, and PerfClaims decides
+                // What the drains ask for decides the shape, and its measured cost
                 // whether the shape is worth writing (.NET 10, 1000 ints):
                 //   - a `List.ofSeq` drain: the list expression beats the fill
                 //     plus the copy (20% faster, 30% less allocation) - the one

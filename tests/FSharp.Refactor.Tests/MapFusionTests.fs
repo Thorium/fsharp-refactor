@@ -28,7 +28,7 @@ let ``consecutive Array maps over fst fuse into a composition`` () =
 
 [<Fact>]
 let ``the parenthesized juxtaposed spelling fuses the same way`` () =
-    // the shape from the field: xs |> Array.map(fst) |> Array.map(fun x -> ...)
+    // the common shape: xs |> Array.map(fst) |> Array.map(fun x -> ...)
     assertPatched
         (fsharp
             """

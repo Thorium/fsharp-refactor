@@ -12,7 +12,7 @@ let private genLoopIn (source: string) =
 
 [<Fact>]
 let ``state carried forward through a flag loop is noted`` () =
-    // the VisionInference shape: cache feeds the next round
+    // a cache feeds the next round
     let source =
         fsharp
             """
@@ -157,9 +157,8 @@ let ``a flag raised last has no tail to claim`` () =
 
 [<Fact>]
 let ``a loop inside a task CE is left alone - no tail calls there`` () =
-    // FSharp.Azure.Quantum's polling loop carries this reason in a comment
-    // above it: a task compiles to a state machine and recursive return!
-    // grows the stack, so the advice would be wrong
+    // a task compiles to a state machine and recursive return! grows the
+    // stack, so the advice would be wrong
     let source =
         fsharp
             """

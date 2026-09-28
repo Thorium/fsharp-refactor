@@ -111,7 +111,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         | _ -> false
 
     // a CALL as the kept operand may owe its bool type to the literal
-    // beside it: FSharpPlus's `let _111 = parse "true" && true`, where
+    // beside it: `let b = parse "true" && true`, where
     // `parse` is an SRTP function whose return type the `&& true` pins -
     // dropped, the binding no longer typechecks. Outside a bool-pinning
     // context such an operand keeps its literal

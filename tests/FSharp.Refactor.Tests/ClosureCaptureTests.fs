@@ -65,7 +65,7 @@ let ``stateless handler is fine`` () =
 
 [<Fact>]
 let ``a handler on an event created in the same member is not a leak`` () =
-    // fsdocs' `let docsDependenciesChanged = Event<string>()` followed by
+    // `let docsDependenciesChanged = Event<string>()` followed by
     // `docsDependenciesChanged.Publish.Add(fun ...)` in one member: the
     // publisher is born there and cannot outlive the object
     Assert.Empty(
@@ -100,7 +100,7 @@ let ``a handler on an event created in the same member is not a leak`` () =
 
 [<Fact>]
 let ``a process-wide publisher is told apart from one handed in`` () =
-    // fsi: `AppDomain.CurrentDomain.ProcessExit |> Event.add (fun _ -> ...)`
+    // `AppDomain.CurrentDomain.ProcessExit |> Event.add (fun _ -> ...)`
     // and `AppDomain.CurrentDomain.UnhandledException.Add(fun args -> ...)`
     // pin the object until the process exits
     let publisherOf (source: string) =
@@ -249,7 +249,7 @@ let ``a method-group subscription pins this too`` () =
 
 [<Fact>]
 let ``a handler on the object's own event is a cycle inside one lifetime`` () =
-    // FSharp.Data's `x.Disposing.Add(fun _ -> ... x ...)`: the publisher IS
+    // `x.Disposing.Add(fun _ -> ... x ...)`: the publisher IS
     // the captured object, so nothing outlives anything
     Assert.Empty(
         capturesIn (

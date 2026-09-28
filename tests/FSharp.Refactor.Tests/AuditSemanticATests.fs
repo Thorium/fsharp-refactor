@@ -1,10 +1,10 @@
-/// Semantic audit A: rewrites that COMPILED and silently changed behaviour.
+/// Semantic guards A: rewrites that would COMPILE and silently change behaviour.
 /// FR0071 hoisting a call spelled as an operator or a mutable a callee
 /// writes, FR0050 turning a wrapping integer loop into a checked `sum`,
 /// FR0107 running a user predicate fewer times under `exists`, FR0004
 /// dropping the eager copy in front of a lambda that mutates the source,
 /// FR0003 evaluating a stage's argument once instead of per element, and
-/// FR0044 rethrowing a wrapper where the payload was raised. Each rule now
+/// FR0044 rethrowing a wrapper where the payload was raised. Each rule
 /// stands down on the shape; the intended shapes still rewrite.
 module FSharp.Refactor.Tests.AuditSemanticATests
 
@@ -30,8 +30,8 @@ let private invariantsIn (source: string) =
 
 [<Fact>]
 let ``FR0071: a pipe into a function is a call and stays in the loop`` () =
-    // `reader |> readLine` hoisted above `while reader.Peek() >= 0` read
-    // one line, and the loop spun on it
+    // `reader |> readLine` hoisted above `while reader.Peek() >= 0` would
+    // read one line, and the loop spin on it
     let source =
         fsharp
             """

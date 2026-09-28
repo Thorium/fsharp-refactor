@@ -41,9 +41,8 @@ let private listing (pattern: string) (directory: string) =
 /// entire walk the moment it meets a directory it cannot open — a junction, a
 /// dead symlink, a permission this process lacks — and it fails part-way
 /// through iteration, so the caller loses the results already produced along
-/// with the ones still to come. Repositories do contain such directories (a
-/// Fable checkout has one under its Beam build output), and pointing this tool
-/// at a repository is the ordinary way to use it. Here an unreadable directory
+/// with the ones still to come. Repositories do contain such directories,
+/// and pointing this tool at a repository is the ordinary way to use it. Here an unreadable directory
 /// is skipped, not fatal.
 /// Iterative rather than recursive, and deliberately so: a `seq` that
 /// re-enters itself per directory allocates an enumerator per level and makes

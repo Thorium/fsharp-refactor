@@ -281,11 +281,11 @@ let ``a cross-record inner copy stays`` () =
 
 [<Fact>]
 let ``a field named after the module holding its type keeps the nested form`` () =
-    // Nu's Kasino: `Settings: Settings.GameSettings` — the field shares its
-    // name with the MODULE its type lives in. `{ menu with Settings.X = v }`
+    // `Settings: Settings.GameSettings` — the field shares its name with
+    // the MODULE its type lives in. `{ menu with Settings.X = v }`
     // resolves Settings as the module and the record as GameSettings: "This
     // expression was expected to have type 'Menu' but here has type
-    // 'Settings.GameSettings'", rolled back five times over
+    // 'Settings.GameSettings'"
     Assert.Empty(
         nestedIn
             "module Test
@@ -410,8 +410,8 @@ let ``a disposable handed to a returned wrapper is adopted`` () =
 
 [<Fact>]
 let ``a handler chained into an HttpClient is adopted, named arguments and all`` () =
-    // HttpClient disposes its handler; the chain is the ClearBank/Carmel
-    // pattern that used to draw two notes per client
+    // HttpClient disposes its handler: the chain is one owner, not two
+    // notes per client
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -672,9 +672,8 @@ let ``an inherited interface stubs in its own section`` () =
 
 [<Fact>]
 let ``members implemented in the main block satisfy inherited interfaces`` () =
-    // from the corpus (SQLProvider Stubs): the IDbConnection stub implements
-    // Dispose in the main block, which satisfies IDisposable — an extra
-    // `interface IDisposable with` stub would double-implement it (FS0767).
+    // an IDbConnection stub implementing Dispose in the main block
+    // satisfies IDisposable — an extra `interface IDisposable with` stub would double-implement it (FS0767).
     // The unrelated error keeps the file in FR0077's runs-on-broken-code path.
     Assert.Empty(
         missingIn (
@@ -864,9 +863,8 @@ let ``plain text concatenation is not a path`` () =
 
 [<Fact>]
 let ``a name bound one hop away to a url makes the join a url`` () =
-    // every FAKE build script of a certain vintage: `gitHome + "/" +
-    // gitName + ".git"` with `gitHome = "https://github.com/" + gitOwner`
-    // fifty lines up (FsXaml, Chessie, FSharp.CloudAgent, ComposableQuery)
+    // the classic FAKE build script shape: `gitHome + "/" + gitName +
+    // ".git"` with `gitHome = "https://github.com/" + gitOwner` further up
     Assert.Empty(
         pathsIn (
             fsharp
@@ -909,7 +907,7 @@ let ``a name bound one hop away to a url makes the join a url`` () =
 
 [<Fact>]
 let ``a join compared or searched for is a key, not a path to build`` () =
-    // fsharplint's docs generator: `"content/" + n.file = page`
+    // `"content/" + n.file = page`
     Assert.Empty(
         pathsIn (
             fsharp
@@ -942,7 +940,7 @@ let ``a join compared or searched for is a key, not a path to build`` () =
 
 [<Fact>]
 let ``a call operand is path evidence only through the file system API it invokes`` () =
-    // the compiler's TypedTree: `getNameOfScopeRef scoref + "/" +
+    // `getNameOfScopeRef scoref + "/" +
     // textOfPath (List.map fst path)` builds a mangled compilation path;
     // "path" in a function's name is not a directory
     Assert.Empty(
@@ -1225,7 +1223,7 @@ let ``a tuple filling an unannotated list literal is noted`` () =
 
 [<Fact>]
 let ``FR0089: an annotation spelling the tuple out says the tuple is meant`` () =
-    // Mibo: `let expectedInitial: Map<int, int> = Map.ofList [ 2, 25 ]` and
+    // `let expectedInitial: Map<int, int> = Map.ofList [ 2, 25 ]` and
     // plain `(int * int) list` annotations — the slot asks for tuples
     let _, _, byBinding = cleanupsIn "module Test\nlet xs: (int * int) list = [ 1, 2 ]"
     let _, _, byExpr = cleanupsIn "module Test\nlet xs = ([ 1, 2 ] : (int * int) list)"
@@ -1234,7 +1232,7 @@ let ``FR0089: an annotation spelling the tuple out says the tuple is meant`` () 
 
 [<Fact>]
 let ``FR0089: a one-entry map is the tuple list Map.ofList asks for`` () =
-    // Mibo: `Map.ofList [ k, v ]`, `[ 1, 1 ] |> Map.ofSeq`, `dict [ 1, 1 ]`,
+    // `Map.ofList [ k, v ]`, `[ 1, 1 ] |> Map.ofSeq`, `dict [ 1, 1 ]`,
     // `Assert.Equal<Map<int, int>>(Map.ofList [ 0, 0 ], m)`
     let _, _, tuples =
         cleanupsIn (
@@ -1337,7 +1335,7 @@ let ``an expression tuple list is deliberate`` () =
 
     Assert.Empty tuples
 
-// ---- release-review regressions ----
+// ---- regressions ----
 
 [<Fact>]
 let ``escaped percents keep the interpolation`` () =
@@ -1562,8 +1560,8 @@ let ``wildcard parameters carry nothing to report`` () =
 [<Fact>]
 let ``a parameter whose type prints nothing useful is not quoted`` () =
     // a byte array prints "System.Byte[]", a generic 'a whatever it is
-    // bound to, a stream its type name (ilread's sigptr readers, Suave's
-    // acceptor): with no parameter worth quoting there is no note
+    // bound to, a stream its type name: with no parameter worth quoting
+    // there is no note
     Assert.Empty(
         failwithContextIn (
             fsharp
@@ -1653,9 +1651,9 @@ let ``a fieldless union, an enum, an option and a small record print usefully`` 
 
 [<Fact>]
 let ``an invariant message explains itself without arguments`` () =
-    // "unreachable - linear let" (the compiler), "varargs NYI" (ilread),
-    // "not possible" (fantomas), "invalid case." (Suave): the branch was
-    // never meant to run, and no argument says why it did
+    // "unreachable - linear let", "varargs NYI", "not possible", "invalid
+    // case.": the branch was never meant to run, and no argument says why
+    // it did
     for message in
         [
             "unreachable - linear let"
@@ -1685,9 +1683,9 @@ let ``a message that is the function's own name is fslex's fallthrough`` () =
 
 [<Fact>]
 let ``secrets in scope are not for the log`` () =
-    // Suave's Authentication.parseData throws on freshly decrypted session
-    // data; interpolating the blob would log it. The function, a
-    // parameter, or an enclosing module or type can carry the smell
+    // a parser throwing on freshly decrypted session data: interpolating
+    // the blob would log it. The function, a parameter, or an enclosing
+    // module or type can carry the smell
     Assert.Empty(
         failwithContextIn (
             fsharp
@@ -1786,7 +1784,7 @@ let ``a test file's failwith is an assertion the runner already describes`` () =
 
 [<Fact>]
 let ``a message thrown twice is not a message read back`` () =
-    // Hpack's `failwith "Index overrun."` twice in one function: two throws
+    // `failwith "Index overrun."` twice in one function: two throws
     // sharing a text are not one reading the other, both get the note
     let twoThrows =
         failwithContextIn (
@@ -1818,8 +1816,8 @@ let ``a message thrown twice is not a message read back`` () =
 
 [<Fact>]
 let ``a parameter is mentioned as a word, not as letters`` () =
-    // ParsePynb's `x` is not mentioned by "no text property"; fsi's `ty`
-    // is not mentioned by "open generic type"
+    // `x` is not mentioned by "no text property", nor `ty` by "open
+    // generic type"
     assertFailwithContext
         (fsharp
             """
@@ -1836,8 +1834,8 @@ let ``a parameter is mentioned as a word, not as letters`` () =
 
 [<Fact>]
 let ``a tuple parameter is left out, the named ones stay`` () =
-    // Suave's `writeResource name (conn: Connection, _)`: the tuple carries
-    // no name to quote, and used to disqualify the whole function
+    // `writeResource name (conn: Connection, _)`: the tuple carries no
+    // name to quote, and does not disqualify the whole function
     assertFailwithContext
         (fsharp
             """
@@ -1854,7 +1852,7 @@ let ``a tuple parameter is left out, the named ones stay`` () =
 
 [<Fact>]
 let ``a function's wildcard arm is named so its argument can be quoted`` () =
-    // Suave's `toOpcode = function ... | _ -> failwith "Invalid opcode."`:
+    // `toOpcode = function ... | _ -> failwith "Invalid opcode."`:
     // the one argument has no name, so the arm that throws gets one
     let source =
         fsharp
@@ -1965,7 +1963,7 @@ let ``the direct Seq map spelling is the lazy nothing-runs bug too`` () =
 let ``modern indexer syntax is not a single-tuple list`` () =
     // `grid[0, 1, 2]` is INDEXING. Since F# 6 it parses as an atomic
     // application of a bracket literal — the same shape as `[ 0, 1, 2 ]` —
-    // and TorchSharp code is nothing but this (6 false notes in Fuuga)
+    // and TorchSharp code is full of it
     let _, _, tuples =
         cleanupsIn (
             fsharp
@@ -2024,10 +2022,10 @@ let ``a spaced list ARGUMENT is still a literal, not an index`` () =
 [<Fact>]
 let ``new stays where a union case would capture the construction`` () =
     // in expression position a UNION CASE wins over a type name, so `new` is
-    // the only thing forcing the constructor path. Nu's OpenGL.Texture
-    // declares a LazyTexture class beside a Texture.LazyTexture case:
-    // dropping `new` made a six-argument construction into a one-argument
-    // case application, and the tuple was checked against the case payload
+    // the only thing forcing the constructor path. With a LazyTexture class
+    // beside a Texture.LazyTexture case, dropping `new` turns a six-argument
+    // construction into a one-argument case application, and the tuple is
+    // checked against the case payload
     let source =
         fsharp
             """
@@ -2057,7 +2055,7 @@ let ``new is dropped where one assembly holds the name at both arities`` () =
     // compiles, as `TaskCompletionSource()` and `Lazy<int>(...)` do. The hazard
     // is a name SPLIT across fragments: Microsoft.Extensions.AI.Abstractions
     // holds `ChatResponse`, Microsoft.Extensions.AI holds `ChatResponse<'T>`,
-    // and Fuuga's Eval failed with "takes 2 argument(s) but is here given 0".
+    // and the bare name fails with "takes 2 argument(s) but is here given 0".
     // A single compilation cannot stage that; the guard counts fragments, so
     // this fixture must NOT be declined
     let source =
@@ -2087,7 +2085,7 @@ let private holeFreeIn (source: string) =
 [<Fact>]
 let ``a hole-free interpolation annotated as FormattableString keeps its dollar`` () =
     // the `$` is what makes the conversion to FormattableString available; a
-    // plain string never converts (Fable's StringTests)
+    // plain string never converts
     Assert.Empty(
         holeFreeIn (
             fsharp
@@ -2121,7 +2119,7 @@ let ``a hole-free interpolation bound plainly still loses its dollar`` () =
 [<Fact>]
 let ``a hole-free interpolation passed to an F# function keeps its dollar`` () =
     // Ionide's `Log.setMessageI $"..."` takes a FormattableString and its
-    // spelling does not say so (FsAutoComplete's AdaptiveServerState)
+    // spelling does not say so
     Assert.Empty(
         holeFreeIn (
             fsharp
@@ -2135,7 +2133,7 @@ let ``a hole-free interpolation passed to an F# function keeps its dollar`` () =
 
 [<Fact>]
 let ``FR0092 leaves a message the file reads back elsewhere`` () =
-    // the test below asserts on the exact text (Fuuga): amending it breaks
+    // the test below asserts on the exact text: amending it breaks
     // the assertion
     Assert.Empty(
         failwithContextIn (
@@ -2234,7 +2232,7 @@ let ``FR0077 also offers stubs returning the empty value of each member's type``
 
 [<Fact>]
 let ``FR0081: a dot-segment prefix is relative-path notation, not a join`` () =
-    // Fable's `"./" + path` — Path.Combine cannot spell a `./` prefix
+    // `"./" + path` — Path.Combine cannot spell a `./` prefix
     Assert.Empty(pathsIn "module Test\nlet relative (path: string) = \"./\" + path")
 
 [<Fact>]
@@ -2243,7 +2241,7 @@ let ``FR0081: appending parent segments is not a join either`` () =
 
 [<Fact>]
 let ``FR0081: a document pointer joined in a JSON module is not a filesystem path`` () =
-    // FSharp.Data's JsonRuntime: `doc.Path() + "/" + name` is a JSON pointer
+    // `doc.Path() + "/" + name` is a JSON pointer
     Assert.Empty(
         pathsIn (
             fsharp
@@ -2339,9 +2337,9 @@ let ``FR0147: a namespace spelled three times becomes an open after the existing
 let ``FR0147: an open whose extension member would split a tupled call is declined`` () =
     // F#'s method-call syntax hands `x.M (a, b)` over as TWO arguments once
     // a two-parameter overload of M is in scope, and an open can bring one:
-    // SQLProvider's `seen.Contains (entity, ct)` was the tuple argument of
-    // List<T>.Contains until `open System.Linq` arrived, then stopped
-    // compiling sixty lines from the edit. Three spellings would normally
+    // `seen.Contains (entity, ct)` is the tuple argument of
+    // List<T>.Contains until `open System.Linq` arrives, then stops
+    // compiling far from the edit. Three spellings would normally
     // earn the open; here they earn a note that names the mechanism
     let source =
         fsharp
@@ -2433,8 +2431,7 @@ let ``FR0147: the tupled-call guard holds for any namespace with the extension, 
 let ``FR0147: a tupled call that already resolves to an instance overload of that arity is no clash`` () =
     // `s.EndsWith("x", StringComparison.Ordinal)` is String's own
     // two-parameter overload; System's MemoryExtensions.EndsWith cannot
-    // take it over, so `open System` goes in. Files of this repository
-    // spelling `System.` sixteen times were held to a note by that name
+    // take it over, so `open System` goes in rather than a note
     let source =
         fsharp
             """
@@ -2543,7 +2540,7 @@ let ``FR0147: a namespace whose open would clash with a name the file defines is
 
 [<Fact>]
 let ``FR0147: a clash note names the clashing identifier and where it comes from`` () =
-    // "would clash with a name this file already uses" left the reader to
+    // "would clash with a name this file already uses" leaves the reader to
     // find the name; the note says which and whence
     let fromAnotherOpen =
         fsharp
@@ -2561,8 +2558,7 @@ let ``FR0147: a clash note names the clashing identifier and where it comes from
         Assert.Equal(Some "'Timer' (open System.Timers) already comes from another open of this file", s.Reason)
     | other -> failwithf "Expected one clash note, got %A" other
 
-    // the compiler's CheckExpressions: `FSComp.SR.x` 384 times, and `SR`
-    // already in scope from `Internal.Utilities` — the note names SR and
+    // `FSComp.SR.x` many times, and `SR` already in scope from `Internal.Utilities` — the note names SR and
     // the open that brings it
     let lib =
         fsharp
@@ -3012,7 +3008,7 @@ let ``a disposable handed to one of two same-named functions is not followed`` (
 [<Fact>]
 let ``FR0147: a short name another open already brings is a clash, even for a namespace that is open`` () =
     // System.Timers has a Timer too: the author qualified System.Threading's
-    // on purpose (prismatic's FSharp.Data.HttpMethod beside System.Net.Http's)
+    // on purpose (as with FSharp.Data.HttpMethod beside System.Net.Http's)
     let freshOpen =
         fsharp
             """
@@ -3049,7 +3045,7 @@ let private qualifiedInSecond (lib: string) (user: string) =
 
 [<Fact>]
 let ``FR0147: a module named like its namespace is not the namespace`` () =
-    // toro: `namespace rec Toro` holds a `module Toro`; `Toro.noGrad` names
+    // `namespace rec Toro` holds a `module Toro`; `Toro.noGrad` names
     // the module, and under `open Toro` a bare `noGrad` reaches nothing
     let lib =
         fsharp
@@ -3073,8 +3069,8 @@ let ``FR0147: a module named like its namespace is not the namespace`` () =
 
 [<Fact>]
 let ``FR0147: a same-project module of the introduced name is a clash`` () =
-    // FsAutoComplete: Utils.Utils.Expect beside Expecto.Expect — the
-    // qualified Expecto.Expect was the author's way of reaching the other
+    // Utils.Utils.Expect beside Expecto.Expect — the qualified
+    // Expecto.Expect is the author's way of reaching the other
     let lib =
         fsharp
             """
@@ -3128,7 +3124,7 @@ let ``FR0147: a same-project namespace still gets its open`` () =
 
 [<Fact>]
 let ``FR0147: the open goes under the module line, not under the doc comment above it`` () =
-    // Logari: a doc comment precedes `module Logari`, and the module's range
+    // a doc comment precedes the module line, and the module's range
     // starts at the comment
     let source =
         fsharp
@@ -3164,7 +3160,7 @@ let ``FR0147: the open goes under the module line, not under the doc comment abo
 
 [<Fact>]
 let ``FR0147: an open further down the file covers nothing above it`` () =
-    // Fuuga's Eval.fs opens System.Text.RegularExpressions at line 1811; the
+    // an open of System.Text.RegularExpressions far down the file: the
     // uses above it are not "already open", and the new open cannot land
     // beside that one either
     let source =
@@ -3221,7 +3217,7 @@ let ``FR0147: each top-level namespace block gets its own open`` () =
 
 [<Fact>]
 let ``FR0147: a namespace shadowed by a module of its name is never opened`` () =
-    // Nu: `[<RequireQualifiedAccess>] module OpenGL` in namespace Nu beside
+    // `[<RequireQualifiedAccess>] module OpenGL` in namespace Nu beside
     // `namespace Nu.OpenGL` — `open Nu.OpenGL` resolves to the module and
     // is refused, so the qualified spelling stays
     let lib =
@@ -3253,7 +3249,7 @@ let ``FR0147: a namespace shadowed by a module of its name is never opened`` () 
 
 [<Fact>]
 let ``FR0147: an active pattern another open brings shadows the constructor of that name`` () =
-    // FsAutoComplete: `(|Ident|_|)` from an opened module over
+    // `(|Ident|_|)` from an opened module over
     // FSharp.Compiler.Syntax.Ident — the shortened `Ident(...)` applies the
     // pattern ("This value is not a function")
     let lib =
@@ -3282,7 +3278,7 @@ let ``FR0147: an active pattern another open brings shadows the constructor of t
 
 [<Fact>]
 let ``FR0147: an open inside a nested module does not count for the file`` () =
-    // Fuuga's ConfigTests: nested test modules with their own opens; a
+    // nested test modules with their own opens; a
     // qualified System.IO in a later nested module still needs the open
     let source =
         fsharp
@@ -3326,9 +3322,9 @@ let ``FR0147: an open inside a nested module does not count for the file`` () =
 [<Fact>]
 let ``FR0085: a same-named function brought by open keeps new`` () =
     // `type Parse` in one module, `let Parse (_: 'a)` in a second, both opened:
-    // `new Parse()` builds the class and `Parse()` calls the function. Measured
-    // on a running probe - the tag went from "ctor" to "function" - and it
-    // compiles either way, so nothing downstream would have caught it
+    // `new Parse()` builds the class and `Parse()` calls the function: the
+    // tag goes from "ctor" to "function", and it compiles either way, so
+    // nothing downstream catches it
     let clashing =
         fsharp
             """
@@ -3399,9 +3395,9 @@ let ``FR0085: a same-named function declared beside the type keeps new`` () =
 
 [<Fact>]
 let ``FR0085: new string keeps its new - the bare name is the conversion function`` () =
-    // management-portal's id generator. `string (chars, i, n)` is FSharp.Core's
+    // `string (chars, i, n)` is FSharp.Core's
     // `string` applied to a TUPLE - it yields "(System.Char[], 1, 3)", typechecks
-    // as string either way, and every generated id became that literal
+    // as string either way, and every id built so becomes that literal
     let lowercase =
         fsharp
             """
@@ -3425,7 +3421,7 @@ let ``FR0085: new string keeps its new - the bare name is the conversion functio
 
 [<Fact>]
 let ``FR0085: a function bound with the type's name keeps new`` () =
-    // TypeProviders SDK: `let SharedRow(elems) = new SharedRow(elems, hash)`;
+    // `let SharedRow(elems) = new SharedRow(elems, hash)`;
     // without `new` the bare name is the function, called with the wrong arguments
     let shadowed =
         fsharp
@@ -3454,8 +3450,7 @@ let ``FR0085: a function bound with the type's name keeps new`` () =
 
 [<Fact>]
 let ``a disposable handed to a disposable owner's property or Add is adopted`` () =
-    // prismatic: HttpRequestMessage disposes its Content, MultipartContent
-    // its parts — the most frequent FR0075 notes there were these
+    // HttpRequestMessage disposes its Content, MultipartContent its parts
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -3490,7 +3485,7 @@ let ``a disposable handed to a disposable owner's property or Add is adopted`` (
 let ``FR0075: HttpClient, a request message and its contents, a SemaphoreSlim are nobody's leak`` () =
     // CR0060's noOwnership list: a client is a shared lifetime; a request
     // and its StringContent own nothing unmanaged and a handler mock reads
-    // them back after the send (a `use` there broke the test); a
+    // them back after the send (a `use` there breaks the test); a
     // SemaphoreSlim's wait handle is only allocated on contended use
     Assert.Empty(
         useBindingsIn (
@@ -3538,10 +3533,10 @@ let ``FR0075: HttpClient, a request message and its contents, a SemaphoreSlim ar
 
 [<Fact>]
 let ``FR0147: a union case an F#-compiled assembly's namespace brings is a clash`` () =
-    // FsAutoComplete: `type SymbolKind = | Ident | ...` in namespace
-    // FsAutoComplete (FsAutoComplete.Core.dll) beside FCS's Ident class —
-    // an F# assembly nests its types under namespace entities, which a
-    // top-level scan never saw. FSharp.Core is such an assembly: its
+    // `type SymbolKind = | Ident | ...` in an F# library's namespace beside
+    // FCS's Ident class — an F# assembly nests its types under namespace
+    // entities, which a top-level scan never sees. FSharp.Core is such an
+    // assembly: its
     // Microsoft.FSharp.Control brings `Async`
     let lib =
         fsharp
@@ -3570,7 +3565,7 @@ let ``FR0147: a union case an F#-compiled assembly's namespace brings is a clash
 
 [<Fact>]
 let ``FR0140: a lambda argument is parenthesised before the named properties`` () =
-    // TypeProviders SDK: `TypeProviderConfig(fun _ -> false)` — appended
+    // `TypeProviderConfig(fun _ -> false)` — appended
     // properties would land inside the lambda as a tuple
     let source =
         fsharp
@@ -3597,7 +3592,7 @@ let ``FR0140: a lambda argument is parenthesised before the named properties`` (
 
 [<Fact>]
 let ``FR0147: a shortening that lands on an FSharp.Core name is withheld`` () =
-    // the F# compiler's zmap.fs: `Tagged.Map<_, _>.FromList` under an
+    // `Tagged.Map<_, _>.FromList` under an
     // `open Internal.Utilities.Collections.Tagged` — shortened to
     // `Map<_, _>` it reaches FSharp.Core's Map, which has no FromList
     // (`Tagged.Map<_, _>` is an ABBREVIATION of the three-parameter type; a
@@ -3637,9 +3632,9 @@ let ``FR0147: a shortening that lands on an FSharp.Core name is withheld`` () =
 
 [<Fact>]
 let ``FR0147: a child namespace of an opened namespace is a name in scope`` () =
-    // the F# compiler's DiagnosticsLogger.fs: `FSharp.Compiler.Diagnostics.Metrics.Meter`
-    // (a module value) shortened to `Metrics.Meter` under `open System.Diagnostics`
-    // reached System.Diagnostics.Metrics.Meter, the type
+    // `FSharp.Compiler.Diagnostics.Metrics.Meter` (a module value) shortened
+    // to `Metrics.Meter` under `open System.Diagnostics` reaches
+    // System.Diagnostics.Metrics.Meter, the type
     let lib =
         fsharp
             """
@@ -3673,7 +3668,7 @@ let ``FR0147: a child namespace of an opened namespace is a name in scope`` () =
 
 [<Fact>]
 let ``FR0088: a nullary case drops its wildcard altogether, a case with data keeps one`` () =
-    // fsharplint's SynMemberKind matches: `Constructor(_)` is accepted for a
+    // `Constructor(_)` is accepted for a
     // case that takes no data, `Constructor _` is not
     let _, wilds, _ =
         cleanupsIn (
@@ -3697,7 +3692,7 @@ let ``FR0088: a nullary case drops its wildcard altogether, a case with data kee
 
 [<Fact>]
 let ``FR0147: an open that would capture a bare union-case construction is withheld`` () =
-    // fsharplint's TestHintParser: `Byte('x'B)` is its own Constant case
+    // `Byte('x'B)` is its own Constant case
     // until `open System` makes it the System.Byte constructor
     let lib =
         fsharp
@@ -3731,8 +3726,8 @@ let ``FR0147: an open that would capture a bare union-case construction is withh
 
 [<Fact>]
 let ``FR0075: a disposable a local function's task uses after the scope is advice, not a use`` () =
-    // suave's ConnectionHealthChecker: the CancellationTokenSource lived on
-    // in a returned task's loop, and `use` disposed it before the loop ran
+    // the CancellationTokenSource lives on in a returned task's loop, and
+    // `use` would dispose it before the loop runs
     let source =
         fsharp
             """
@@ -3771,8 +3766,8 @@ let ``FR0075: a disposable used only inside its own scope's task still gets use`
 
 [<Fact>]
 let ``FR0075: a stream wrapper over a caller's stream is not the scope's to dispose`` () =
-    // the F# compiler's ilnativeres.fs: `use resWriter = new BinaryWriter(resStream)`
-    // closed the caller's stream at the end of an append
+    // `use resWriter = new BinaryWriter(resStream)` would close the
+    // caller's stream at the end of an append
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -3803,12 +3798,12 @@ let ``FR0075: a reader over a path still gets use`` () =
     | other -> failwithf "Expected one use finding, got %A" other
 
 
-// ---- FR0080 TabIndentation: block comments and strings (fantomas GettingStarted.fsx) ----
+// ---- FR0080 TabIndentation: block comments and strings ----
 
 [<Fact>]
 let ``FR0080 a tab inside a literate block comment is prose, not indentation`` () =
-    // fantomas's docs/docs/end-users/GettingStarted.fsx keeps a tab-indented
-    // shell transcript inside `(** ... *)`; the compiler never sees FS1161 there
+    // a literate script keeps a tab-indented shell transcript inside
+    // `(** ... *)`; the compiler never sees FS1161 there
     let source =
         "(**\n# Getting started\n\tdotnet new tool-manifest\n\tdotnet tool install fantomas\n*)\nlet f x =\n\tx + 1"
 
@@ -3855,8 +3850,7 @@ let ``FR0080 tabs after the block comment closes are still indentation`` () =
 [<Fact>]
 let ``FR0080 a string literal inside a block comment is lexed as the compiler lexes it`` () =
     // the compiler reads `"*)"` inside a comment as a string, so the comment
-    // runs on to the real `*)`; the tabbed line between is prose. Found by the
-    // property suite, whose tab shape fired only through this discrepancy.
+    // runs on to the real `*)`; the tabbed line between is prose.
     Assert.Empty(tabsIn "(* \"*)\" '\"'\n\tlet tabbed = 1\n*)\nlet v = 1")
 
     // and the mirror: code after such a comment is code, tabs and all
@@ -3869,8 +3863,8 @@ let ``FR0080 a string literal inside a block comment is lexed as the compiler le
 
 [<Fact>]
 let ``a blank line between the let! and its match goes with the binding`` () =
-    // fantomas EndToEndTests: `backgroundTask {` opened with an empty line
-    // where the `let!` had been
+    // left behind, the blank line would open the block where the `let!`
+    // had been
     assertMatchBang
         (fsharp
             """
@@ -3899,7 +3893,7 @@ let ``a blank line between the let! and its match goes with the binding`` () =
 
 [<Fact>]
 let ``a let! between two blank lines leaves a single one`` () =
-    // fsharplint TestApi.fs: two consecutive blank lines above the match!
+    // two consecutive blank lines would be left above the match!
     assertMatchBang
         (fsharp
             """
@@ -3933,9 +3927,8 @@ let ``a let! between two blank lines leaves a single one`` () =
 
 [<Fact>]
 let ``FR0074: a multi-line inner record keeps one field per line`` () =
-    // suave's Stream.fs: the flattened fields were joined into one
-    // 170-column line; each field that started a line still does, at the
-    // outer field's column
+    // the flattened fields must not be joined into one overlong line; each
+    // field that started a line still does, at the outer field's column
     assertFlattened
         (fsharp
             """
@@ -3976,7 +3969,7 @@ let ``FR0074: fields aligned after the copy source stay aligned`` () =
 
 [<Fact>]
 let ``FR0147: uses under one #if get their open under the same condition`` () =
-    // the F# compiler's TypedTreeOps.ExprOps.fs: a namespace needed only
+    // a namespace needed only
     // under a condition must not become a dependency of every build
     let source =
         fsharp
@@ -4033,8 +4026,8 @@ let ``FR0147: an open under #if is no anchor for unconditional uses`` () =
 
 [<Fact>]
 let ``FR0147: an assignment target is a spelling too`` () =
-    // fsharp.formatting's `System.Diagnostics.Trace.AutoFlush <- true` kept
-    // its prefix while the reads beside it lost theirs
+    // `System.Diagnostics.Trace.AutoFlush <- true` must not keep its prefix
+    // while the reads beside it lose theirs
     let source =
         fsharp
             """
@@ -4052,8 +4045,8 @@ let ``FR0147: an assignment target is a spelling too`` () =
 
 [<Fact>]
 let ``FR0147: a name an enclosing namespace provides is not introduced`` () =
-    // the F# compiler: every file under FSharp.Compiler sees its SR module;
-    // `open FSComp` to spell `SR.x` made SR mean two modules
+    // every file under a namespace sees that namespace's SR module; an
+    // open to spell `SR.x` would make SR mean two modules
     let lib =
         fsharp
             """
@@ -4082,9 +4075,8 @@ let ``FR0147: a name an enclosing namespace provides is not introduced`` () =
 
 [<Fact>]
 let ``FR0075: a disposable returned inside a tuple is the caller's`` () =
-    // suave's Proxy.fs test upstream returns `(port, cts)` after a loop
-    // closure captured the cts; ilwritepdb returns its MemoryStream in a
-    // 5-tuple after handing it to WriteContentTo
+    // `(port, cts)` returned after a loop closure captured the cts; a
+    // MemoryStream returned in a 5-tuple after it was handed to a writer
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4102,7 +4094,7 @@ let ``FR0075: a disposable returned inside a tuple is the caller's`` () =
 
 [<Fact>]
 let ``FR0075: a disposable returned through upcasts inside a tuple is the caller's`` () =
-    // Mibo's ASet.mapUse: `(node :> IDisposable, node :> aset<'B>)`
+    // `(node :> IDisposable, node :> aset<'B>)`
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4119,8 +4111,7 @@ let ``FR0075: a disposable returned through upcasts inside a tuple is the caller
 
 [<Fact>]
 let ``FR0075: a disposable stored into a returned record is the caller's`` () =
-    // Mibo's Primitive3D.upload: the VertexBuffer goes into a PrimitiveMesh
-    // record whose Dispose disposes it
+    // a buffer goes into a mesh record whose Dispose disposes it
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4138,8 +4129,7 @@ let ``FR0075: a disposable stored into a returned record is the caller's`` () =
 
 [<Fact>]
 let ``FR0075: a disposable returned from a computation expression in a tuple is the caller's`` () =
-    // the F# compiler's CompilerImports: `return tcGlobals, frameworkTcImports`
-    // 140 lines after `new TcImports(...)`
+    // `return tcGlobals, frameworkTcImports` long after `new TcImports(...)`
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4159,7 +4149,7 @@ let ``FR0075: a disposable returned from a computation expression in a tuple is 
 
 [<Fact>]
 let ``FR0075: a disposable rebound under its own name through an upcast and returned is the caller's`` () =
-    // ilread.fs: `let ilModuleReader = ilModuleReader :> ILModuleReader`
+    // `let ilModuleReader = ilModuleReader :> ILModuleReader`
     // before caching and returning it
     Assert.Empty(
         useBindingsIn (
@@ -4179,7 +4169,7 @@ let ``FR0075: a disposable rebound under its own name through an upcast and retu
 
 [<Fact>]
 let ``FR0075: a disposable handed on and then returned is the caller's`` () =
-    // Activity.fs: `ActivitySource.AddActivityListener(l); l` — the return
+    // `ActivitySource.AddActivityListener(l); l` — the return
     // decides the owner whatever else the scope did with the value
     Assert.Empty(
         useBindingsIn (
@@ -4198,7 +4188,7 @@ let ``FR0075: a disposable handed on and then returned is the caller's`` () =
 
 [<Fact>]
 let ``FR0075: a disposable returned from a match arm after a copy is the caller's`` () =
-    // FsXaml's Utilities: `resStream.CopyTo ms; ms.Position <- 0L; ms`
+    // `resStream.CopyTo ms; ms.Position <- 0L; ms`
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4236,8 +4226,8 @@ let ``FR0075: a disposable returned inside a union case is the caller's`` () =
 
 [<Fact>]
 let ``FR0075: a disposable stored into a field of the enclosing type belongs to the type`` () =
-    // Mibo's ForwardPipeline/Renderer2D: `billboardEffect <- ValueSome e`,
-    // Runtime.fs: `audioServiceOpt <- ValueSome audio` — FR0032/FR0047 judge
+    // `billboardEffect <- ValueSome e`, `audioServiceOpt <- ValueSome
+    // audio` — FR0032/FR0047 judge
     // the type's Dispose; this scope is not the owner
     Assert.Empty(
         useBindingsIn (
@@ -4257,7 +4247,7 @@ let ``FR0075: a disposable stored into a field of the enclosing type belongs to 
 
 [<Fact>]
 let ``FR0075: a disposable stored into a property belongs to the holder`` () =
-    // Mibo's ShadowPass: `res.Raster <- sr` on a resources object
+    // `res.Raster <- sr` on a resources object
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4276,8 +4266,8 @@ let ``FR0075: a disposable stored into a property belongs to the holder`` () =
 
 [<Fact>]
 let ``FR0075: a disposable stored into a collection belongs to the collection's holder`` () =
-    // suave's Tcp.fs fills a socket array (`listenSockets.[i] <- s`) it stops
-    // one by one later; Mibo's RenderTargetPool adds to an `inUse` list
+    // a socket array filled (`listenSockets.[i] <- s`) and stopped one by
+    // one later; a pool adding to an `inUse` list
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4313,7 +4303,7 @@ let ``FR0075: a disposable stored into a collection belongs to the collection's 
 
 [<Fact>]
 let ``FR0075: a disposable stored into a module-level ref cell belongs to the module`` () =
-    // suave's RateLimit: `cleanupTimer := Some timer`
+    // `cleanupTimer := Some timer`
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4333,7 +4323,7 @@ let ``FR0075: a disposable stored into a module-level ref cell belongs to the mo
 
 [<Fact>]
 let ``FR0075: a part added to a use-bound multipart content is adopted`` () =
-    // suave's Bug256 regression test: `formdata.Add(upload, "file", "pix.gif")`
+    // `formdata.Add(upload, "file", "pix.gif")`
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4354,7 +4344,7 @@ let ``FR0075: a part added to a use-bound multipart content is adopted`` () =
 
 [<Fact>]
 let ``FR0075: disposing through an IDisposable upcast is disposal`` () =
-    // fantomas's DaemonTests: `(daemon :> IDisposable).Dispose()`
+    // `(daemon :> IDisposable).Dispose()`
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4373,7 +4363,7 @@ let ``FR0075: disposing through an IDisposable upcast is disposal`` () =
 
 [<Fact>]
 let ``FR0075: closing a stream or writer is disposal`` () =
-    // ilwrite.fs: `ms.Close()` before `ms.ToArray()`, `stream.Close()` after
+    // `ms.Close()` before `ms.ToArray()`, `stream.Close()` after
     // a closure reopened it
     Assert.Empty(
         useBindingsIn (
@@ -4426,7 +4416,6 @@ let ``FR0075: Close on a type where it is not Dispose is no disposal`` () =
 
 [<Fact>]
 let ``FR0075: a MemoryStream over a caller's buffer, a StringReader or a StringWriter own no resource`` () =
-    // suave's Hpack/Huffman codecs, fsharp.formatting's Transformations:
     // Dispose on these is a no-op, there is nothing to leak
     Assert.Empty(
         useBindingsIn (
@@ -4498,10 +4487,10 @@ let ``FR0075: a MemoryStream over its own buffer still gets use`` () =
 
 [<Fact>]
 let ``FR0075: a stream wrapper over a member's stream parameter is not the scope's to dispose`` () =
-    // ilnativeres.fs: `static member ReadResFile(stream: Stream)` wraps it in
-    // a BinaryReader, AppendVersionToResourceStream(resStream, ...) in a
-    // BinaryWriter; ilwrite.fs wraps writeBinaryAux's tupled `stream`
-    // parameter inside a tuple-bound nested let
+    // `static member ReadResFile(stream: Stream)` wraps it in a
+    // BinaryReader, AppendVersionToResourceStream(resStream, ...) in a
+    // BinaryWriter; writeBinaryAux wraps its tupled `stream` parameter
+    // inside a tuple-bound nested let
     Assert.Empty(
         useBindingsIn (
             fsharp
@@ -4537,8 +4526,7 @@ let ``FR0075: a stream wrapper over a member's stream parameter is not the scope
 
 [<Fact>]
 let ``FR0075: a hash algorithm from its Create factory is locally constructed`` () =
-    // the F# compiler's Hashing.fs and suave's WebSocket.sha1: `MD5.Create()`
-    // and `SHA1.Create()` never disposed
+    // `MD5.Create()` and `SHA1.Create()` never disposed
     match
         useBindingsIn (
             fsharp
@@ -4557,7 +4545,7 @@ let ``FR0075: a hash algorithm from its Create factory is locally constructed`` 
 
 [<Fact>]
 let ``FR0075: a construction hidden behind an upcast is still a construction`` () =
-    // YaafFSharpScripting: `new StringWriter(sb) :> TextWriter` (a no-op
+    // `new StringWriter(sb) :> TextWriter` (a no-op
     // disposable, but the shape hides every construction)
     match
         useBindingsIn (
@@ -4577,7 +4565,7 @@ let ``FR0075: a construction hidden behind an upcast is still a construction`` (
 
 [<Fact>]
 let ``FR0075: a plain-valued member call as the scope's result is read before use disposes it`` () =
-    // Hashing.fs: `md5.ComputeHash bytes` is the result — a byte[], computed
+    // `md5.ComputeHash bytes` is the result — a byte[], computed
     // before the scope exits; only a task, sequence or object still tied to
     // the disposable outlives it
     match
@@ -4662,7 +4650,7 @@ let private escapingUsesIn (source: string) =
 
 [<Fact>]
 let ``FR0150: a use captured by a returned task is flagged and moved inside`` () =
-    // suave's ConnectionHealthChecker: the token source is disposed when
+    // the token source is disposed when
     // the starter returns, and the loop reads .Token on every interval
     let source =
         fsharp
@@ -5006,7 +4994,7 @@ let ``FR0092: a mention the loosening cannot rewrite vetoes the enrichment`` () 
         FailwithContext.everyMentionRewritable """Assert.AreEqual("model inference failed", ex.Message)""" literal
     )
 
-    // a test-side stub throwing the same text (Fuuga) is not an assertion at all
+    // a test-side stub throwing the same text is not an assertion at all
     Assert.False(
         FailwithContext.everyMentionRewritable
             (fsharp
@@ -5033,10 +5021,9 @@ let ``FR0092: a mention the loosening cannot rewrite vetoes the enrichment`` () 
 
 [<Fact>]
 let ``FR0092: an assertion on anything but a Message is neither loosened nor covered`` () =
-    // this repository's own QualityRulesTests: `Assert.Equal("Error",
-    // s.LogMethod)` spelled the text of a `failwith "Error"` in a doc
-    // comment, and the test-side pass turned it into StartsWith with nothing
-    // enriched. A mention about something other than an exception's text is
+    // `Assert.Equal("Error", s.LogMethod)` spells the text of a `failwith
+    // "Error"` in a doc comment; turning it into StartsWith would enrich
+    // nothing. A mention about something other than an exception's text is
     // not an assertion the enrichment can keep true - it vetoes instead
     let literal = "\"Error\""
 
@@ -5068,7 +5055,7 @@ let ``FR0092: an assertion on anything but a Message is neither loosened nor cov
 let ``FR0147: an F#-style extension in the namespace's AutoOpen module is seen by the tupled-call guard`` () =
     // `open Ext` opens the AutoOpen module with it, and the optional
     // extension there splits `seen.Contains (e, ct)` exactly as a C#-style
-    // one does (reproduced: the identical FS0001)
+    // one does (the identical FS0001)
     let extensions =
         fsharp
             """

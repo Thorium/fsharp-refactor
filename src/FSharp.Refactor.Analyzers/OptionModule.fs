@@ -139,13 +139,13 @@ let private defaultCall (cfg: WrapperConfig) (source: ISourceText) (defaultBody:
 /// comprehension or computation expression? There `| None -> ()` means
 /// "yield nothing" and a non-unit branch yields — the match is control
 /// flow, not a value. Rewriting it into a combinator breaks the
-/// comprehension: found on Fuuga, where
+/// comprehension:
 ///
 ///     [ if a then "A"
 ///       match g with Some g -> sprintf "G(%s)" g.Name | None -> () ]
 ///
-/// became `Option.iter (fun g -> sprintf ...)` — Option.iter wants a
-/// unit-returning function and got a string one. Walking the path
+/// would become `Option.iter (fun g -> sprintf ...)` — Option.iter wants a
+/// unit-returning function, not a string one. Walking the path
 /// outward: a binding, lambda, application argument or explicit yield
 /// puts the expression back in VALUE position; reaching the
 /// comprehension first means implicit yield. Shared with ResultModule.
@@ -305,7 +305,7 @@ let capturesMutableLocal (index: AstIndex.Index) (bodyRange: range) : bool =
     // it: the let's range runs from the binding to the end of the block it
     // opens. One inside the body is the body's own, and one in another
     // function - `let mutable limit` elsewhere in the file - is a different
-    // name, which used to downgrade this body's fix all the same
+    // name, and must not downgrade this body's fix
     let mutableNames =
         mutableLets
         |> Array.choose (fun (letRange, name) ->
@@ -535,7 +535,7 @@ let rec stripAbbreviations (t: FSharpType) =
     // the INSTANCE's abbreviated type keeps the type arguments:
     // `('Key * 'T) list` is `List<'Key * 'T>`, whereas the definition's
     // AbbreviatedType is the bare `List<'T>` of `type 'T list = List<'T>`,
-    // which lost FR0089 every tuple it was looking for
+    // which loses the tuple element type
     if t.IsAbbreviation then
         stripAbbreviations t.AbbreviatedType
     elif t.HasTypeDefinition && t.TypeDefinition.IsFSharpAbbreviation then
@@ -1467,9 +1467,8 @@ let isByRefLike (t: FSharpType) =
 /// Every use in the file of a byref or byref-like value, with where that
 /// value was declared — collected ONCE per typed file, because the rules
 /// that ask (FR0142 for every test body, FR0049, FR0029, FR0018, FR0010,
-/// FR0034) asked per identifier of every candidate stretch, and on
-/// FunStripe's 1800-line test file that was thousands of symbol lookups:
-/// testReturnsTask went from 3 s to 13 s on the file. A name FCS cannot
+/// FR0034) would otherwise ask per identifier of every candidate stretch,
+/// thousands of symbol lookups on a large test file. A name FCS cannot
 /// type is recorded at the use with no declaration, which every caller
 /// reads as byref-like: the rewrite stands down rather than guess.
 ///

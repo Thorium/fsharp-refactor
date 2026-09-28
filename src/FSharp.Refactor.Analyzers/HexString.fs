@@ -61,8 +61,7 @@ let private toHexStringAvailable (check: FSharpCheckFileResults) =
 /// `BitConverter.ToString(h).Replace("-", "").Substring(0, 16)` replaces
 /// only as far as the `Replace`, so the space-applied form would leave
 /// `Convert.ToHexString h.Substring(0, 16)` — handing the substring OF
-/// THE BYTES to ToHexString instead of taking it from the hex. Found live
-/// on prismatic, where it cost a whole rollback pass. An indexer or slice
+/// THE BYTES to ToHexString instead of taking it from the hex. An indexer or slice
 /// (`.Replace("-", "")[..7]`, `.[0]`) continues the same way:
 /// `ToHexString hash[..7]` hex-encodes the first eight BYTES. Parenthesise
 /// there, and only there.

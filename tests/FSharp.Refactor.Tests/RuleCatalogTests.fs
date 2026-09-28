@@ -64,9 +64,9 @@ let ``an unknown category does not parse`` () =
 
 [<Fact>]
 let ``the README's kind summary matches the rules it lists`` () =
-    // the summary table states a count per kind, and adding a rule used to
-    // move the real count and leave the summary behind. The rules themselves
-    // now live in Rules.md, so the count is held against the CATALOG rather
+    // the summary table states a count per kind, and adding a rule moves the
+    // real count and can leave the summary behind. The rules themselves
+    // live in Rules.md, so the count is held against the CATALOG rather
     // than against a second copy of the list in prose
     let readme =
         Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "README.md") |> File.ReadAllText

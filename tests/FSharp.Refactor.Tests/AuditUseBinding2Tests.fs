@@ -1,9 +1,8 @@
-/// FR0075 (UseBinding) escape shapes from the 0.8.11 real-repo sweep (A6,
-/// A7): a wrapper over a LOCAL stream that itself escapes the scope
-/// (Giraffe's tests store the MemoryStream under a StreamWriter in
-/// `ctx.Request.Body` and return a `task { }` that reads it), and a
-/// Task/Async-returning member of the disposable whose result is dropped
-/// while the work runs (FsCheck's `testCase.RunAsync(...) |> Async.AwaitTask
+/// FR0075 (UseBinding) escape shapes (A6, A7): a wrapper over a LOCAL
+/// stream that itself escapes the scope (a MemoryStream stored under a
+/// StreamWriter in `ctx.Request.Body`, read by a returned `task { }`), and
+/// a Task/Async-returning member of the disposable whose result is dropped
+/// while the work runs (`testCase.RunAsync(...) |> Async.AwaitTask
 /// |> ignore`). Each shape refuses the `let` -> `use` fix; the safe shape
 /// beside it still gets one, and the patched source typechecks.
 module FSharp.Refactor.Tests.AuditUseBinding2Tests
@@ -62,8 +61,7 @@ let send (s: Stream) = s.Length
 
 [<Fact>]
 let ``a writer over a local stream stored in a request body read by the returned task refuses the fix`` () =
-    // the Giraffe shape (HttpHandlerTests.fs / ModelBindingTests.fs): the
-    // writer's Dispose closes the stream, which the task reads after the
+    // the writer's Dispose closes the stream, which the task reads after the
     // function has returned
     expectNoFixFor
         "writer"
@@ -82,7 +80,7 @@ let ``a writer over a local stream stored in a request body read by the returned
 
 [<Fact>]
 let ``a writer over a local stream aliased into a local the returned task reads refuses the fix`` () =
-    // the fsi repro's shape: `let body : Stream = stream` stands in for the
+    // `let body : Stream = stream` stands in for the
     // request body
     expectNoFixFor
         "writer"
@@ -163,7 +161,7 @@ let ``a writer over a local stream that is returned, handed on or captured refus
 
 [<Fact>]
 let ``a writer over a local stream stored in a request body inside the task body refuses the fix too`` () =
-    // Giraffe's JsonTests/XmlTests shape: correct in practice (the reads
+    // correct in practice (the reads
     // happen inside the block), but the stream still escapes into the
     // request — withheld rather than guessed
     expectNoFixFor
@@ -242,7 +240,7 @@ type Runner() =
 
 [<Fact>]
 let ``a task from the binder dropped through Async.AwaitTask and ignore refuses the fix`` () =
-    // FsCheck's Runner.fs: `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`
+    // `testCase.RunAsync(...) |> Async.AwaitTask |> ignore`
     let s =
         expectAdvisory
             "tc"

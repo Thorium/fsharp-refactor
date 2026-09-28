@@ -142,7 +142,7 @@ let private shapes =
         withFree "SemaphoreLeakAsync" [ "FR0123" ] genSmall (fun n i ->
             $"let f{i} (sem: SemaphoreSlim) (t: Task<int>) =\n    task {{\n        do! sem.WaitAsync()\n        let! v = t\n        sem.Release() |> ignore\n        return v + {n}\n    }}")
         // FR0123 must stay quiet: the release sits in a finally the next
-        // `let!` holds, or a `let` before the try (Fuuga's shapes)
+        // `let!` holds, or a `let` before the try
         withFree "SemaphoreGuarded" [ "!FR0123" ] genSmall (fun n i ->
             $"let f{i} (sem: SemaphoreSlim) (t: Task<int>) (xs: List<int>) =\n    task {{\n        do! sem.WaitAsync()\n        let! v =\n            task {{\n                try return! t\n                finally sem.Release() |> ignore\n            }}\n        sem.Wait()\n        let mutable acquired = 0\n        try\n            xs.Add {n}\n            acquired <- 1\n        finally\n            sem.Release() |> ignore\n        return v + acquired\n    }}")
         // FR0063: a failwith inside finally

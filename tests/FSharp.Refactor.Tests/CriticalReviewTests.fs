@@ -1,6 +1,5 @@
-/// Regression tests from the 2026-08-26 critical review: replacement
-/// logic errors and false-positive identifications, one test per
-/// confirmed finding.
+/// Regression tests for replacement logic errors and false-positive
+/// identifications.
 module FSharp.Refactor.Tests.CriticalReviewTests
 
 open Xunit
@@ -9,8 +8,8 @@ open FSharp.Refactor.Tests.Parsing
 
 [<Fact>]
 let ``FR0026: a field assigned in another member is not an auto-property`` () : unit =
-    // the assignment is a LongIdentSet, not an Ident expression — the fix
-    // used to delete the field and leave Reset() referencing nothing
+    // the assignment is a LongIdentSet, not an Ident expression — deleting
+    // the field would leave Reset() referencing nothing
     let tree, sourceText =
         parse (
             fsharp
@@ -99,12 +98,10 @@ let ``FR0025: a shadowed isNull is never rewritten`` () : unit =
 
 [<Fact>]
 let ``FR0012: a method call substituted as an argument keeps its parentheses`` () : unit =
-    // corpus find (FSharp.Data/build/build.fs): the hint produced
-    // `not (isNull Environment.GetEnvironmentVariable("CI"))`, which is
-    // error FS0597 — a high-precedence application still needs parens in
+    // `not (isNull Environment.GetEnvironmentVariable("CI"))` is error
+    // FS0597 — a high-precedence application still needs parens in
     // argument position
     // parse-only: outside a computation expression the untyped path fires
-    // as it always did
     let tree, sourceText =
         parse (
             fsharp
@@ -181,8 +178,7 @@ let ``FR0012: a multi-argument call keeps its argument list`` () : unit =
 
 [<Fact>]
 let ``FR0081: escape-sequence building is not a path join`` () : unit =
-    // corpus find (FsAutoComplete InteractiveDirectives.fs): backslash
-    // literals used to fire with no path evidence at all
+    // backslash literals alone are no path evidence
     let tree, sourceText =
         parse (
             fsharp
@@ -227,7 +223,7 @@ let ``FR0081: a real path join still fires`` () : unit =
 
 [<Fact>]
 let ``FR0081: a web route is not a filesystem path`` () : unit =
-    // corpus find: "/img/userimages/" + fileId is a URL, and Path.Combine
+    // "/img/userimages/" + fileId is a URL, and Path.Combine
     // would turn it into backslashes. `fileId` matching "file" is too weak
     // to call a leading-slash literal a filesystem path
     let tree, sourceText =
@@ -256,8 +252,8 @@ let ``FR0081: a rooted literal is still strong enough`` () : unit =
 
 [<Fact>]
 let ``FR0016: Struct goes below the doc comment, not above it`` () : unit =
-    // corpus find: a declaration's range starts at its XML doc, so
-    // inserting at the range start put the attribute above the /// lines
+    // a declaration's range starts at its XML doc, so inserting at the
+    // range start would put the attribute above the /// lines
     let source =
         fsharp
             """
@@ -368,7 +364,6 @@ let ``same-named fields of one type take the attribute only from F# 9`` () : uni
 let ``FR0008: an active pattern's tuple input is not curried`` () : unit =
     // `(|Both|One|) (xs, names)` takes ONE input, matched as `Both pairs` on
     // a tuple; curried it would expect an expression argument
-    // (FsAutoComplete's ConvertPositionalDUToNamed)
     let source =
         fsharp
             """
@@ -386,7 +381,7 @@ let ``FR0008: an active pattern's tuple input is not curried`` () : unit =
 
 [<Fact>]
 let ``FR0011: an active pattern the file also calls as a function keeps its option`` () : unit =
-    // the F# compiler's Spreads.fs: a local (|NestedUpdate|_|) calls the
+    // a local (|NestedUpdate|_|) calls the
     // module-level one and matches its result against Some — a struct
     // return would reach that call
     let source =

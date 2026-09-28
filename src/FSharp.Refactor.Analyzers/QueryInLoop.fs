@@ -91,10 +91,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // ...and the same when the chunking was BOUND first, which is how it
         // is usually written:
-        //     let chunkedLoanIds = Array.chunkBySize 200 loanIdsAll
-        //     for loanIds in chunkedLoanIds do
+        //     let chunkedIds = Array.chunkBySize 200 loanIdsAll
+        //     for myIds in chunkedIds do
         // The outer loop's enumeration expression is then a bare identifier
-        // whose range holds no call at all (management-portal DomainShared.fs).
+        // whose range holds no call at all.
         // Matching by NAME can suppress a note through shadowing, which is the
         // safe direction for advice that has no fix.
         let chunkedNames =
@@ -192,8 +192,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     // sequence runs the inner query once per element, in a
                     // query block or out of it
                     // the outer source is queryable when it is a queryable
-                    // value, or a `query { }` of its own — SQLProvider's tests
-                    // nest sub-queries three deep, all one statement
+                    // value, or a `query { }` of its own — sub-queries nested
+                    // however deep are one statement
                     let outerIsQueryable (e: SynExpr) =
                         match stripParens e with
                         | SourcePathLastIdent outerId -> resolvesToQueryable check source outerId
@@ -212,8 +212,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                     // a query under a loop that pages with skip/take, or filters
                     // by the outer element's batch (`chunk.Contains order.Id`),
-                    // runs one statement per batch on purpose — SQLProvider's
-                    // pagination and batching tests, not N+1
+                    // runs one statement per batch on purpose — pagination and
+                    // batching, not N+1
                     let paginated =
                         let outerVariables =
                             path

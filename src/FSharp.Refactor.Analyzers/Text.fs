@@ -15,8 +15,7 @@ open System.Text.RegularExpressions
 /// The type a use of `value` has as an expression: what it returns when
 /// it is a function or member, the value's own type otherwise. FCS raises
 /// on `ReturnParameter` for a plain value rather than answering, so the
-/// fallback is the whole type - the same probe eight rules once spelled
-/// out by hand.
+/// fallback is the whole type.
 let resultTypeOf (value: FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue) =
     try
         value.ReturnParameter.Type
@@ -174,8 +173,7 @@ let rec isAtomic (e: SynExpr) =
     // NOT a high-precedence application. `f(x)` and `X.Y(x)` carry
     // ExprAtomicFlag.Atomic, but F# still rejects them unparenthesised in
     // argument position: `isNull Environment.GetEnvironmentVariable("CI")`
-    // is error FS0597, "this argument expression needs parentheses". A
-    // corpus run over FSharp.Data caught FR0012 emitting exactly that.
+    // is error FS0597, "this argument expression needs parentheses".
     // Parenthesising is always semantically safe, so treat them as needing
     // it rather than trying to tell argument position from pipe source.
     | _ -> false
@@ -372,8 +370,8 @@ let rec patBoundNamesLoop (acc: string list) (pending: SynPat list) =
             | SynPat.As(lhsPat = l; rhsPat = r)
             | SynPat.Or(lhsPat = l; rhsPat = r) -> acc, l :: r :: rest
             // `a :: rest` is its own node, not a LongIdent application - without
-            // it the whole cons pattern bound nothing and its sub-patterns were
-            // never reached
+            // it the whole cons pattern would bind nothing and its sub-patterns
+            // would never be reached
             | SynPat.ListCons(lhsPat = l; rhsPat = r) -> acc, l :: r :: rest
             // `{ Field = p }` binds through its field patterns
             | SynPat.Record(fieldPats = fields) ->
@@ -386,8 +384,8 @@ let rec patBoundNamesLoop (acc: string list) (pending: SynPat list) =
             | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> acc, ps @ rest
             // union-case fields named rather than positional -
             // `SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))` binds
-            // `ids` exactly as a positional pattern would. Missing this made
-            // every such binder invisible to callers that ask what a match arm
+            // `ids` exactly as a positional pattern would. Missing this would
+            // make every such binder invisible to callers that ask what a match arm
             // rebinds per iteration (LoopPerf.loopBinders, and so FR0102)
             | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs(pats = ps)) ->
                 acc, (ps |> List.map (fun (fieldPat: NamePatPairField) -> fieldPat.Pattern)) @ rest
@@ -580,10 +578,10 @@ let private bracketClosers =
 ///
 /// The question a call-site migration asks of it: does any string in the
 /// project spell the function it is about to reshape? A code generator
-/// writes calls from templates — SQLProvider.Fable's CodeGen emits
-/// `Row.text r "Name"` from a string — and no symbol table lists those
-/// calls, so FR0091 reordered `Row.text`'s parameters, rewrote the fifty
-/// calls it could see, and left the generator producing the old order.
+/// writes calls from templates — `Row.text r "Name"` emitted from a
+/// string — and no symbol table lists those calls, so a parameter reorder
+/// (FR0091) would rewrite the calls it can see and leave the generator
+/// producing the old order.
 /// Keyed by path and stamped with the file's write time: a pass that edits
 /// the file, or a resident host that lives through the user's edits, must
 /// read the literals as they are now, and a file that went away must not
@@ -857,19 +855,16 @@ let offsideAnchors (lineText: string) : int list =
 /// change how a line continuing it reads (see `continuationIndents`)? Those
 /// lines do not move; the anchors after the edit do (see `offsideAnchors`),
 /// and the hazard is a line whose standing against one of them - on it, to
-/// its right, to its left - is not the same after the shift. fparsec's
-/// CharParsers.fs:
+/// its right, to its left - is not the same after the shift:
 ///
 ///     && stream.SkipCaseFolded("inf") && (flags <- flags ||| NLF.IsInfinity
 ///                                         stream.SkipCaseFolded("inity") |> ignore
 ///
-/// dropping the parens around `"inf"` moved `flags` two columns left, the
-/// line under it stayed, and the block re-parsed as an application. The
-/// earlier form of this check called ANY line indented past the edit's end
-/// aligned - which is every arm body under a `| _ ->` it would have
-/// expanded, every argument continued on the next line, and it silently
-/// withheld whole files of FR0072 and FR0147 fixes (ClearBank.Net's tests,
-/// management-portal's hubs). A line to the right of every anchor before
+/// dropping the parens around `"inf"` moves `flags` two columns left, the
+/// line under it stays, and the block re-parses as an application. Calling
+/// ANY line indented past the edit's end aligned would be far too eager -
+/// that is every arm body under a `| _ ->`, every argument continued on
+/// the next line - and would silently withhold whole files of fixes. A line to the right of every anchor before
 /// and after the shift is a continuation either way, and reads the same.
 /// `lineAt` is 1-based, like a range's lines.
 let alignmentHazard (lineAt: int -> string) (lineCount: int) (line: int) (endColumn: int) (delta: int) =
@@ -948,8 +943,8 @@ let opensNamespace (source: ISourceText) (ns: string) =
 /// A regex matching `name` as a WHOLE F# identifier. `\b<name>\b` is wrong
 /// for this language: identifiers may end in primes (`visit'`), and after
 /// a `'` the \b anchor finds no boundary — `\bvisit'\b` never matches
-/// `visit' exp` at all, which let a recursive reference slip past a
-/// membership check (caught adversarially on Linq.Expression.Optimizer).
+/// `visit' exp` at all, which would let a recursive reference slip past a
+/// membership check.
 let identifierPattern (name: string) =
     @"(?<![\w'])" + Regex.Escape name + @"(?![\w'])"
 
@@ -1009,8 +1004,7 @@ let commentsWithText (parseTree: ParsedInput) (source: ISourceText) =
 /// NAMES, and attributes like `[<Literal>]`, are part of the contract. A rule
 /// that reshapes a declaration in the .fs alone therefore stops the project
 /// compiling — "The names differ", "The literal constant values and/or
-/// attributes differ". Both were found on Fable's fcs-fable, which carries
-/// 176 signature files.
+/// attributes differ".
 ///
 /// Fixing such a rewrite properly means editing the .fsi in step, which is
 /// the same reason the api pass skips projects carrying signatures. Until a
@@ -1027,14 +1021,13 @@ let hasSignatureFile (fileName: string) =
 /// The scope gate lets a PRIVATE declaration change shape even beside a
 /// signature, on the reasoning that a signature declares every internal
 /// and public name but never a private one. That reasoning is wrong: F#
-/// signature files may write `val private`, and Deedle's vendored
-/// FSharp.Data does —
+/// signature files may write `val private` —
 ///
 ///     val private ( |SubtypePrimitives|_| ) : ... -> (...) option
 ///
-/// so FR0011 gave the implementation a `voption` return the signature
-/// still declared as `option`, and the project stopped compiling. The
-/// build check put it back; an editor's light bulb has no such check.
+/// so giving the implementation a `voption` return (FR0011) while the
+/// signature still declares `option` stops the project compiling. The
+/// CLI's build check catches that; an editor's light bulb has no such check.
 ///
 /// Deliberately TEXTUAL, and deliberately over-eager. Parsing the .fsi
 /// needs the host's cross-file parser, which editors do not install — and
@@ -1079,11 +1072,11 @@ let rec private patNamesLoop (acc: string list) (pending: SynPat list) =
             | SynPat.LongIdent(longDotId = SynLongIdent(id = [ head ]); argPats = SynArgPats.Pats ps) ->
                 head.idText :: acc, ps @ rest
             | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> acc, ps @ rest
-            // the four forms patBoundNames knows and this loop did not: a
-            // `{ Id = id }` record pattern, a `(id, _) :: _` cons, an
-            // optional `?id` and the named fields of `Case(Field = p)`. A
-            // scope check that missed them (FR0095's shadowedAt) took a
-            // match arm's `id` for FSharp.Core's
+            // the four forms patBoundNames knows too: a `{ Id = id }` record
+            // pattern, a `(id, _) :: _` cons, an optional `?id` and the named
+            // fields of `Case(Field = p)`. A scope check that missed them
+            // (FR0095's shadowedAt) would take a match arm's `id` for
+            // FSharp.Core's
             | SynPat.Record(fieldPats = fields) ->
                 acc, (fields |> List.map (fun (f: NamePatPairField) -> f.Pattern)) @ rest
             | SynPat.ListCons(lhsPat = lhs; rhsPat = rhs) -> acc, lhs :: rhs :: rest
@@ -1120,9 +1113,9 @@ let conditionAt (source: ISourceText) (line: int) : string option =
 /// A line a rule moves or generates from `originLine` to `targetLine` keeps
 /// the `#if` it came from: the condition to wrap it in when the target sits
 /// under a different one (or none). A rule that lifts a line to module
-/// level must not free it from its condition, nor bind it to another — the
-/// F# compiler's `open FSComp` landed inside `#if !NO_TYPEPROVIDERS` and
-/// the Proto build stopped compiling.
+/// level must not free it from its condition, nor bind it to another: an
+/// `open` moved under a different `#if` is missing from the build where
+/// that condition does not hold, and the code needing it stops compiling.
 let conditionToKeep (source: ISourceText) (originLine: int) (targetLine: int) : string option =
     match conditionAt source originLine with
     | Some c when conditionAt source targetLine <> Some c -> Some c
@@ -1243,9 +1236,8 @@ let private lineBreakInsideLiteral (text: string) =
 
     found
 
-/// Three rules grew their own copy of this before it was extracted
-/// (FR0034's match layout, FR0044's try removal, FR0142's task wrap); they
-/// can migrate to it.
+/// FR0034's match layout, FR0044's try removal and FR0142's task wrap
+/// carry their own copy of this; they can migrate to it.
 let reindentBlock (target: int) (firstColumn: int) (text: string) : string option =
     let lines = text.Replace("\r\n", "\n").Split '\n'
 

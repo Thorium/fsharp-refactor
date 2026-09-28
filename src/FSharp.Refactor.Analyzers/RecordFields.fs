@@ -6,11 +6,11 @@
 ///     { Name = "x"; Retries = 3 }      →      { Name = "x"; Retries = 3; Tags = []; Timeout = None }
 ///
 /// The compiler names the gap exactly — `No assignment given for field
-/// 'UseKvCache' of type 'Fuuga.OnnxExport.OnnxExportConfig'` — and the
+/// 'Timeout' of type 'App.Config'` — and the
 /// record's own field labels resolve to the type even while the
 /// expression is incomplete, so the missing fields and their types are
 /// read off the typed tree. A record that gained a field after its
-/// constructions were written is exactly this shape (Fuuga's examples).
+/// constructions were written is exactly this shape.
 ///
 /// The default follows the field's type: `None` / `ValueNone` for an
 /// option, `[]`, `[||]`, `Map.empty`, `Set.empty`, `Seq.empty` for a

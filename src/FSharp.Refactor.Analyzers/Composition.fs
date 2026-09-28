@@ -99,9 +99,9 @@ let private stageText (source: ISourceText) (stage: SynExpr) =
 
 /// A BARE operator cannot be spliced in where a function reference goes.
 /// Prefix negation is `~-` in the tree but just `-` in the source, so
-/// `fun i -> d.AddDays -i` came out as `- >> d.AddDays` — not a wrong
-/// composition but not an expression at all, and it took the rest of the
-/// file's parse down with it (found on FSharp.Finance.Personal). The
+/// `fun i -> d.AddDays -i` would come out as `- >> d.AddDays` — not a wrong
+/// composition but not an expression at all, taking the rest of the
+/// file's parse down with it. The
 /// parenthesised `(~-) >> d.AddDays` would compile, but a composition
 /// spelled out of operators is not the readability this rule exists to buy,
 /// so the lambda simply stays.
@@ -128,13 +128,13 @@ let private mentionsParam (param: string) (text: string) =
 /// CALL, but `transformGuard >> SwitchCase.switchCase` needs the method as a
 /// value — and where it is overloaded, or declared with optional parameters
 /// (`static member switchCase(?test, ?body, ?loc)`), that is a different
-/// thing entirely. On Fable's Fable2Babel the composition typed as `unit`
-/// where an `Expression` was wanted and the file stopped compiling. The same
-/// lesson FR0012 learned from `Path.GetFileName`, which carries two overloads
-/// and cannot be passed by name either.
+/// thing entirely: the composition can type as `unit` where an `Expression`
+/// is wanted, and the file stops compiling. FR0012 stands down on
+/// `Path.GetFileName` for the same reason: it carries two overloads and
+/// cannot be passed by name either.
 ///
 /// Nothing syntactic separates `SwitchCase.switchCase` from `List.map`, so
-/// this needs the typed tree — which is why the rule no longer runs under
+/// this needs the typed tree — which is why the rule does not run under
 /// --parse-only.
 let private isMemberStage (check: FSharpCheckFileResults) (source: ISourceText) (stage: SynExpr) =
     let rec headIdent (e: SynExpr) =
@@ -166,8 +166,8 @@ let private isMemberStage (check: FSharpCheckFileResults) (source: ISourceText) 
 /// may evaluate once at construction where the lambda evaluated it on
 /// every call — and its head a plain function reference?
 ///
-/// `fun x -> x |> addN (compute ()) |> string` became `addN (compute ())
-/// >> string`: `compute ()` ran per element before, once after. So a stage
+/// `fun x -> x |> addN (compute ()) |> string` as `addN (compute ())
+/// >> string` would run `compute ()` once instead of per element. So a stage
 /// argument may be a literal, a lambda literal, a tuple of atoms, or an
 /// identifier that resolves (typed) to something whose value cannot differ
 /// between reads — an immutable value or function, a union case, a field.
@@ -242,8 +242,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         // a lambda handed to an [<InlineIfLambda>] parameter is inlined at
         // the call; a composition in its place is a closure the callee can
-        // no longer inline (Mibo's filterA and section, in a library built
-        // around zero allocations)
+        // no longer inline
         let rec headOf (e: SynExpr) =
             match e with
             | SynExpr.App(funcExpr = f) -> headOf f
@@ -279,7 +278,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | _ -> false
 
         // The lambda sits in the right-hand side of a GENERIC VALUE, with no
-        // enclosing lambda of its own between them: Hopac's
+        // enclosing lambda of its own between them:
         // `let self : AT<'a, Actor<'a>> = AT (fun aCh -> Job.result (A aCh))`.
         // A constructor over a lambda is a generalizable expression; the
         // constructor over `A >> Job.result` is an application, the value
@@ -350,8 +349,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 List.length stages >= 2
                                 // a lambda the author laid out over several
                                 // lines was laid out that way to be read;
-                                // folded into one composition it came out as
-                                // a 170-column line on fantomas's Context.fs
+                                // folded into one composition it can come out
+                                // as a 170-column line
                                 && isSingleLine expr.Range
                                 && not (calleeTakesInlineLambda path)
                                 && not (pinsGenericValue path)

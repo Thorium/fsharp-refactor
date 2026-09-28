@@ -6,11 +6,10 @@
 /// it once per compilation and resets it after — a test project turns
 /// `ApiChanges` on for itself alone, a framework pass carries its dual
 /// constant, a `--codes` list names what was typed — so a decision made
-/// for one compilation can never leak into the next, which is what the
-/// FSREF_* environment variables this replaces once let happen (a leaked
-/// no-guard flag dropped the capability fixes of every later target).
+/// for one compilation can never leak into the next (a leaked no-guard
+/// flag would drop the capability fixes of every later target).
 ///
-/// Process-wide, like the flags were: one compilation is analysed at a
+/// Process-wide: one compilation is analysed at a
 /// time, and the sweep's parallel file checks all belong to it.
 module FSharp.Refactor.Scope
 
@@ -37,10 +36,9 @@ type AnalysisScope =
         /// A project of another language (C#, VB) in the workspace
         /// references this one and cannot be built here, so no check of
         /// this run can see what it links to: the public surface keeps
-        /// its shape whatever `ApiChanges` says. FSharp.Azure.Quantum's C#
-        /// project cast to a union's nested case class; the union went
-        /// `[<Struct>]` under --api-changes, the F# project's build
-        /// passed, and the C# one stopped compiling. The apply tool
+        /// its shape whatever `ApiChanges` says: a C# project that casts
+        /// to a union's nested case class stops compiling when the union
+        /// goes `[<Struct>]`, while the F# build still passes. The apply tool
         /// builds such a consumer as part of its verification where it
         /// can, and sets this — saying why — where it cannot.
         PublicSurfaceHeld: bool
@@ -85,9 +83,9 @@ let forced (code: string) (analyzerName: string) =
 
 /// The codes the run is restricted to - `--codes`, narrowed by
 /// `--categories` - or None for every rule. A rule outside it is off, so
-/// its analyzer never runs: filtering only the messages once cost a
-/// `--categories correctness` run minutes per pass in FR0147, an idiom
-/// rule whose every message was then thrown away.
+/// its analyzer never runs: filtering only the messages would pay a slow
+/// rule's full cost (minutes per pass, for FR0147) and throw every message
+/// away.
 ///
 /// An AsyncLocal, unlike the rest of the scope: it SWITCHES RULES OFF,
 /// and a process-wide switch would take them from whatever else runs

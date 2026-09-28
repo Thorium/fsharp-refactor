@@ -48,8 +48,8 @@ let private urlSmell =
         RegexOptions.Compiled
     )
 
-/// Positive path evidence, required for forward-slash joins ('\' is
-/// path-ish on its own): path-flavored identifiers, the classic directory
+/// Positive path evidence, required for joins with either separator:
+/// path-flavored identifiers, the classic directory
 /// sources (__SOURCE_DIRECTORY__, Environment.CurrentDirectory, assembly
 /// locations, AppContext.BaseDirectory), a rooted or extension-bearing
 /// literal — or a literal that actually EXISTS on this machine, the
@@ -129,8 +129,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // an identifier's right-hand side, one hop: the nearest enclosing
     // `let x = ...` on the path, else a module-level `let x = ...` of this
     // file — `gitHome + "/" + gitName + ".git"` is a URL because `gitHome`
-    // was bound to `"https://github.com/" + gitOwner` fifty lines up
-    // (every FAKE build script of a certain vintage)
+    // is bound to `"https://github.com/" + gitOwner` further up
     let definitionOf (path: SyntaxNode list) (name: string) =
         let ofBindings (bindings: SynBinding list) =
             bindings
@@ -157,8 +156,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 | SynModuleDecl.Let(bindings = bindings) -> ofBindings bindings
                 | _ -> None)
 
-    // a chain compared or searched for — `"content/" + n.file = page`
-    // (fsharplint's docs generator) — is a key, not a path to build
+    // a chain compared or searched for — `"content/" + n.file = page` —
+    // is a key, not a path to build
     let isCompared (path: SyntaxNode list) =
         let comparison (op: SynExpr) =
             match op with
@@ -274,15 +273,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                         | _ -> true)
 
                 // BOTH separators need positive evidence. A lone backslash
-                // used to read as path-ish on its own, but a corpus run over
-                // FsAutoComplete showed where that goes wrong: escape-sequence
+                // is not path-ish on its own: escape-sequence
                 // building (`result <- result + "\\" + string c`) is full of
                 // backslash literals and has nothing to do with paths.
                 // Evidence is path-flavored names, a rooted or
                 // extension-bearing literal, or a literal existing on disk.
-                // evidence that this is a FILESYSTEM path, not just something
-                // path-shaped: a rooted or extension-bearing literal, or one
-                // that actually exists on this machine
+                //
+                // Strong evidence that this is a FILESYSTEM path, not just
+                // something path-shaped: a rooted or extension-bearing
+                // literal, or one that actually exists on this machine
                 let hasStrongEvidence =
                     literalTexts
                     |> List.exists (fun t -> rootedLiteral.IsMatch t || extensionLiteral.IsMatch t || existsOnDisk t)

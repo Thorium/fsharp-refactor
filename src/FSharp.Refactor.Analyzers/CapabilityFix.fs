@@ -3,8 +3,7 @@
 ///
 /// On a single-target project the fix is applied plainly. But a
 /// multi-targeted project compiles the same line for net48 and net10
-/// alike, and a plain `AsSpan` breaks the legacy half — the SQLProvider
-/// lesson, three times over. When the apply tool signals such a run AND
+/// alike, and a plain `AsSpan` breaks the legacy half. When the apply tool signals such a run AND
 /// the file already speaks conditional compilation, the fix emits both
 /// worlds instead:
 ///
@@ -28,7 +27,7 @@ open FSharp.Compiler.Text
 /// The guard constant for dual emission — the PROJECT'S OWN, never an
 /// invented one. The apply tool reads the fsproj's DefineConstants and
 /// recognizes a constant whose $(TargetFramework) conditions cover the
-/// modern frameworks and none of the legacy ones (SQLProvider's
+/// modern frameworks and none of the legacy ones (a
 /// NETSTANDARD21, say); that name arrives here for framework passes
 /// where dual emission applies. A project defining no such constant gets
 /// no #if from us — the fix stays plain and the all-frameworks build
@@ -44,8 +43,6 @@ let dualGuardConstant () : string voption =
 /// A capability fix there can only be applied plainly, into code the
 /// narrow framework also compiles, and the all-frameworks build then
 /// reverts it — taking every innocent fix in those files with it.
-/// SwaggerProvider paid 62 applied fixes and 7 files reverted for a
-/// handful of char overloads.
 ///
 /// Nothing can be emitted safely in that position, so nothing is: the
 /// rule keeps its advice and drops the fix.
@@ -114,9 +111,9 @@ let private assetsMinFSharpCoreMajor (projectFile: string) : int voption =
 /// The LOWEST FSharp.Core major among the project's target frameworks. A
 /// multi-targeted project compiles every file against each framework's
 /// FSharp.Core, so a rewrite that needs FSharp.Core 9 (`Result.isOk`,
-/// `[<TailCall>]`) has to hold for the narrowest one — FsToolkit's net9.0
-/// pass offered both on files its netstandard2.0 target compiles against
-/// FSharp.Core 6, and the all-frameworks build put two files back. The
+/// `[<TailCall>]`) has to hold for the narrowest one — a net9.0 pass would
+/// otherwise offer both on files a netstandard2.0 target compiles against
+/// FSharp.Core 6. The
 /// compilation's own reference only speaks for its own framework; the
 /// restore's `obj/project.assets.json` beside the project lists every
 /// target's, so the answer is the same in the apply tool and in an editor.
@@ -136,10 +133,10 @@ let minFSharpCoreMajor (projectFile: string) : int voption =
 
 /// FSharp.Core floors by SOURCE FILE, registered by the apply tool for
 /// the projects of a run: a file several projects compile holds to the
-/// oldest FSharp.Core among them. elmish's src/program.fs is compiled by
-/// Elmish.fsproj on FSharp.Core 10 and by Fable.Elmish.fsproj on 4.7 -
-/// the interpolation FR0042 offered under the first broke the second,
-/// whose build check the run reached only afterwards. Keys are full
+/// oldest FSharp.Core among them: a file one project compiles on
+/// FSharp.Core 10 and another on 4.7 cannot take the interpolation FR0042
+/// offers under the first, and the second's build check may run only
+/// afterwards. Keys are full
 /// paths; an editor registers nothing and a gate falls back to the
 /// project's own.
 let private fileFloors =
@@ -168,8 +165,7 @@ let minFSharpCoreMajorFor (projectFile: string) (file: string) : int voption =
 /// fix introduce more of it.
 let usesConditionals (source: ISourceText) =
     // ISourceText is an indexer, not a sequence, so the range is the thing
-    // being searched. Seq.exists short-circuits exactly as the hand-rolled
-    // flag loop did
+    // being searched. Seq.exists short-circuits at the first hit
     seq { 0 .. source.GetLineCount() - 1 }
     |> Seq.exists (fun i -> source.GetLineString(i).TrimStart().StartsWith "#if")
 

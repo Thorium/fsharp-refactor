@@ -71,9 +71,9 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
 
     /// The edits that flatten the chain hanging off `expr`'s else — as
     /// (range, replacement) pairs, disjoint and in source order. A WHOLE
-    /// nested chain goes in one walk: Giraffe's five-deep `else if` ladder
-    /// took one link per pass and ran the sweep out of passes, because a
-    /// deeper link only qualifies once the link above it reads `elif`.
+    /// nested chain goes in one walk: one link per pass would run a deep
+    /// `else if` ladder out of sweep passes, because a deeper link only
+    /// qualifies once the link above it reads `elif`.
     /// `elseColumn` is where this link's `else` must sit for `elif` to be
     /// legal there: the head if's column, and for a nested link the column
     /// its `if` will occupy once the links above it are flat.
@@ -97,9 +97,9 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
                 // the nested if's block — its then-body, elif chain and
                 // else — sat one level deeper than the `else` that owned
                 // it; under `elif` that level is gone, so every line of
-                // the block moves left by the difference (fsharplint's
-                // AstInfo.fs, suave's Bytes.fs kept the old depth and a
-                // trailing `else` deeper than its `elif`). An `if` on the
+                // the block moves left by the difference (kept at the old
+                // depth, a trailing `else` would sit deeper than its
+                // `elif`). An `if` on the
                 // `else`'s own line is already laid out for the flat form.
                 let dedent =
                     if ifKw.StartLine > elseKw.StartLine then
@@ -136,10 +136,10 @@ let findElseIf (parseTree: ParsedInput) (source: ISourceText) : Suggestion list 
                     // condition's text lands two columns right of where the
                     // block shift alone would put it. A condition continuing
                     // on further lines keeps its alignment only when those
-                    // lines move two less than the block (fparsec's Emit.fs:
+                    // lines move two less than the block (otherwise
                     // `if (if rangesAreConnected then checkRight` with its
-                    // `else ...)` on the next line went offside, and the
-                    // file stopped parsing)
+                    // `else ...)` on the next line goes offside, and the
+                    // file stops parsing)
                     let conditionLines = innerCond.Range.EndLine - ifKw.StartLine
 
                     let shiftOf i =
@@ -258,8 +258,8 @@ let findEqualityChains
                         | _ -> None
                     // an else-less trailing if means the chain has NO terminal
                     // else: its text starts with `elif`, which would splice a
-                    // keyword into the wildcard arm — caught adversarially, the
-                    // apply-side rollback contained it, an editor would not have
+                    // keyword into the wildcard arm, and an editor has no
+                    // rollback to contain it
                     | SynExpr.IfThenElse(elseExpr = None) -> None
                     | finalElse when isSingleLine finalElse.Range -> Some(List.rev acc, finalElse)
                     | _ -> None
@@ -428,8 +428,8 @@ type GuardOrderNote = { Range: range; Variable: string }
 /// The wildcard arm is an ERROR arm: it raises, fails, or returns a
 /// None/Error-shaped failure. Only then is the guarded arm ahead of it
 /// the base case the note talks about — a wildcard computing a value
-/// (`| _ -> None, fmtPos` in FCS's CheckFormatStrings, a fallback probe
-/// in fsdocs' ProjectCracker, a lexer state's next state) is an
+/// (`| _ -> None, fmtPos`, a fallback probe, a lexer state's next
+/// state) is an
 /// ordinary alternative, and there is nothing to invert.
 let private isFailureArm (arm: SynExpr) =
     let failing =

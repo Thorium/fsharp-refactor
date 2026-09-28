@@ -530,7 +530,7 @@ let private tryParseOffer
 
         // the success binder: a name the file does not spell, so it never
         // shadows one in scope - `v` in `if v = "" then None else try Some
-        // (DateTime.Parse v) with _ -> None` made two `v`s one line apart
+        // (DateTime.Parse v) with _ -> None` would make two `v`s one line apart
         let binder =
             let fileText = source.GetSubTextString(0, source.Length)
 
@@ -556,8 +556,8 @@ let private tryParseOffer
             // a try after `else`/`then`/`->`/`=` on its line, with nothing
             // after it, moves to lines of its own under that line, indented
             // one step: a `match` wedged onto the `else` line, its arms
-            // aligned far right under it, compiled but read badly (GitHub
-            // #6). Anything else keeps the match where the try was
+            // aligned far right under it, compiles but reads badly.
+            // Anything else keeps the match where the try was
             let breakAfter =
                 let trimmed = before.TrimEnd()
 
@@ -795,8 +795,8 @@ let isTestFile (index: AstIndex.Index) (source: ISourceText) = AstIndex.isTestFi
 
 /// Find empty and default-substituting catch-all handlers.
 /// A comment on the handler is the author acknowledging the swallow —
-/// `with _ -> () // content length is not important` (Owin.Compression),
-/// `with _ -> () // best-effort icon` (Kasino) — a decision, not an
+/// `with _ -> () // content length is not important`,
+/// `with _ -> () // best-effort icon` — a decision, not an
 /// accident, and not worth a note.
 let private acknowledged (source: ISourceText) (clause: SynMatchClause) (result: SynExpr) =
     let commented (line: int) =
@@ -840,7 +840,7 @@ let private isValueSlot (e: SynExpr) =
 
 /// A fallback that hands back a value in place of the failure: a default
 /// literal, a variable (`with _ -> path` returns the input as if the work
-/// had succeeded — fsi), or a tuple or record carrying a default in one of
+/// had succeeded), or a tuple or record carrying a default in one of
 /// its slots (`with _ -> (istate, Completed None)`).
 let rec private isValueFallback (e: SynExpr) =
     match stripParens e with
@@ -934,7 +934,7 @@ let private probeOf (tryBody: SynExpr) =
 
 /// An earlier arm of the same `with` that re-raises cancellation: the
 /// catch-all after it is no longer blind to the one exception the rule
-/// worries about most (the compiler's NameResolution).
+/// worries about most.
 let private cancellationRethrown (earlier: SynMatchClause list) =
     let isCancellation (p: SynPat) =
         let named (ids: Ident list) =
@@ -964,7 +964,7 @@ let private cancellationRethrown (earlier: SynMatchClause list) =
 
 /// The statement after the try, when the try is the first half of a
 /// sequence: `try Environment.Exit n with _ -> ()` followed by `failwith`
-/// converts the swallow into a failure (DiagnosticsLogger's exiter).
+/// converts the swallow into a failure.
 let private continuationRaises (path: SyntaxNode list) (tryRange: range) =
     let raises (e: SynExpr) =
         let rec first (e: SynExpr) =
@@ -1095,21 +1095,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 | None -> []
 
                             // 3. a narrower catch for file IO — for a body that IS the IO call: a
-                            // multi-line body mentioning a Path beside native calls (Kasino's
-                            // SDL icon) throws more than IOException.
+                            // multi-line body mentioning a Path beside native calls throws
+                            // more than IOException.
                             //
                             // And the typed tree has to agree that every CALL on the line is
-                            // System.IO's (or FSharp.Core's): the text smell alone offered the
-                            // narrowing for `Some (Path.GetFileName d, Checkpoint.loadMetadata p)`
-                            // (Fuuga), where the user function parses JSON and threw a
-                            // JsonException the narrowed handler let escape - and for probes
-                            // over assembly loading and FileInfo (SQLProvider) and font lookup
-                            // (Kasino) that were put back by hand. A user function, a method of
-                            // any other type, a constructor: no narrowing; without a typed
-                            // check, none either. Asked only once the text smells of IO: it
-                            // walks the file's expressions and resolves the body's names,
-                            // which for every swallow of a large file made this rule the
-                            // slowest one (the CI perf gate caught it at 2.2 s)
+                            // System.IO's (or FSharp.Core's): the text smell alone would
+                            // narrow `Some (Path.GetFileName d, Checkpoint.loadMetadata p)`,
+                            // where a user function that parses JSON throws a JsonException
+                            // the narrowed handler lets escape - and likewise probes over
+                            // assembly loading, FileInfo or font lookup. A user function, a
+                            // method of any other type, a constructor: no narrowing; without
+                            // a typed check, none either. Asked only once the text smells of
+                            // IO: it walks the file's expressions and resolves the body's
+                            // names, which for every swallow of a large file would make this
+                            // rule the slowest one
                             let callsOnlyIo () =
                                 match check with
                                 | None -> false
@@ -1168,8 +1167,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // receiver is reachable from THIS catch: a parameter
                             // of the enclosing function, a module-level value, a
                             // class `let`, or a local `let` whose scope holds the
-                            // site (Fuuga: a `logger` from one function was written
-                            // into six functions that have none)
+                            // site (a `logger` of one function is out of reach in
+                            // the functions that have none)
                             let receiverInScope (idiom: LogIdiom) =
                                 match idiom with
                                 | Mel receiver ->

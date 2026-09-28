@@ -211,7 +211,7 @@ let ``reassignment after the loop keeps the mutable`` () =
 
 [<Fact>]
 let ``counting a non-generic IEnumerable stays a loop`` () =
-    // from the corpus (SQLProvider SeqValues): `for` accepts the non-generic
+    // `for` accepts the non-generic
     // IEnumerable, Seq.sumBy needs seq<'T> — the rewrite would be FS0001
     let folds, _ =
         accumulationIn (
@@ -474,8 +474,8 @@ let ``dash-stripped BitConverter chain becomes ToHexString`` () =
 
 [<Fact>]
 let ``a trailing member access keeps the call parenthesised`` () =
-    // prismatic: the space form left `ToHexString hash.Substring(0, 16)`,
-    // handing the substring OF THE BYTES to ToHexString
+    // the space form `ToHexString hash.Substring(0, 16)` would hand the
+    // substring OF THE BYTES to ToHexString
     let source =
         fsharp
             """
@@ -571,8 +571,7 @@ let ``deliberately ignoring a specific exception is fine`` () =
 
 [<Fact>]
 let ``a catch-all after a rethrown cancellation is not blind`` () =
-    // the compiler's NameResolution: `:? OperationCanceledException ->
-    // reraise ()` first, then `_ -> None`
+    // `:? OperationCanceledException -> reraise ()` first, then `_ -> None`
     Assert.Empty(
         swallowedIn (
             fsharp
@@ -590,7 +589,7 @@ let ``a catch-all after a rethrown cancellation is not blind`` () =
 
 [<Fact>]
 let ``a catch-all followed by an unconditional failure converts the swallow into a failure`` () =
-    // DiagnosticsLogger's exiter: `try Environment.Exit n with _ -> ()`
+    // an exiter: `try Environment.Exit n with _ -> ()`
     // and then a failwith — the exception is replaced, not lost
     Assert.Empty(
         swallowedIn (
@@ -610,7 +609,7 @@ let ``a catch-all followed by an unconditional failure converts the swallow into
 
 [<Fact>]
 let ``a one-call teardown body is the best-effort release idiom`` () =
-    // Suave's `try acceptSocket.Shutdown ... with _ -> ()`, `try
+    // `try acceptSocket.Shutdown ... with _ -> ()`, `try
     // s.Dispose(); s <- null with _ -> ()`, `try File.Delete p with _ -> ()`
     let teardownOf (source: string) =
         match swallowedIn source with
@@ -680,7 +679,7 @@ let ``a one-call teardown body is the best-effort release idiom`` () =
 
 [<Fact>]
 let ``a fallback that is a variable, a sentinel or a tuple carrying a default disguises the failure`` () =
-    // fsi: `with _ -> path`, `with _ -> (istate, Completed None)`; fsdocs:
+    // `with _ -> path`, `with _ -> (istate, Completed None)`,
     // `with _ -> DateTime.MaxValue`, `with _ -> Int32.MaxValue`
     let fallbackOf (source: string) =
         match swallowedIn source with
@@ -762,7 +761,7 @@ let ``a fallback that is a variable, a sentinel or a tuple carrying a default di
 
 [<Fact>]
 let ``a guard that never looks at the exception still swallows every one`` () =
-    // fsdocs: `with _ when watch -> ()`
+    // `with _ when watch -> ()`
     match
         swallowedIn (
             fsharp
@@ -792,7 +791,7 @@ let ``a guard that never looks at the exception still swallows every one`` () =
 
 [<Fact>]
 let ``a try around a probe that answers for a missing path should go`` () =
-    // fsdocs: `try File.Exists p with _ -> false`, `try File.GetLastWriteTime
+    // `try File.Exists p with _ -> false`, `try File.GetLastWriteTime
     // p with _ -> DateTime.MaxValue`
     let probeOf (source: string) =
         match swallowedIn source with
@@ -1058,8 +1057,8 @@ let ``a custom operation documents the DSL keyword not the signature`` () =
 
 [<Fact>]
 let ``sync-over-async inside an object expression member is found`` () =
-    // corpus regression: Dispose bodies in `{ new IDisposable with ... }`
-    // hid GetResult calls from the walker
+    // the walker must see GetResult calls inside Dispose bodies of
+    // `{ new IDisposable with ... }`
     match
         blockingIn (
             fsharp
@@ -1488,7 +1487,7 @@ let ``a seq source materializes before String concat`` () =
 
 [<Fact>]
 let ``a pure let prefix folds into the exists lambda`` () =
-    // the opensSystem shape from our own code review: a let-bound
+    // a let-bound
     // projection before the flag test is still an exists question
     assertFlagRewrite
         (fsharp
@@ -1604,8 +1603,7 @@ let ``a ValueTask GetResult binding inside async is not rewritten`` () =
 
 [<Fact>]
 let ``a GetResult binding in a finally block keeps its hands off`` () =
-    // let!/do! are illegal inside finally — the pre-existing Sleep fix
-    // shared this hole
+    // let!/do! are illegal inside finally, for the Sleep fix too
     let source =
         fsharp
             """
@@ -1943,7 +1941,7 @@ let ``FR0118: a loop that observes the token, sits in async, or has the token fi
 
 [<Fact>]
 let ``FR0118: a synchronous drain and a loop stepping a local built with the token stay quiet`` () =
-    // Fuuga's Server.fs: `while reader.TryRead(&tok)` empties what a channel
+    // `while reader.TryRead(&tok)` empties what a channel
     // already holds, and an async enumerator created with the token observes
     // it at every MoveNextAsync
     let source =
@@ -2046,8 +2044,8 @@ let ``a call already passing the token is left alone`` () =
 
 [<Fact>]
 let ``a trailing lambda argument is wrapped before the token is appended`` () =
-    // Paket's PackageResolver.fs: `ContinueWith(fun (_: Task) -> (), ct)`
-    // made the lambda return `unit * CancellationToken`
+    // `ContinueWith(fun (_: Task) -> (), ct)` would make the lambda
+    // return `unit * CancellationToken`
     let source =
         fsharp
             """
@@ -2164,9 +2162,8 @@ let ``a blocking read inside task becomes its async twin`` () =
 
 [<Fact>]
 let ``a call nested in another binding's RHS is not a let-bang site`` () =
-    // the prismatic shape: the call sits inside the CE's RANGE but not on
-    // its statement spine, so `let!` there cannot compile — 21 rollbacks in
-    // one sweep repo were all this
+    // the call sits inside the CE's RANGE but not on its statement spine,
+    // so `let!` there cannot compile
     let source =
         fsharp
             """
@@ -2568,8 +2565,8 @@ let ``an internal drain without api-changes stays a note`` () =
 [<Fact>]
 let ``a fold whose body looks up a member on the accumulator hands the tuple over first`` () =
     // `xs |> List.fold (fun node x -> node.Append x) init` checks the lambda
-    // before `init`, so `node.Append` meets an indeterminate type (Fable's
-    // fable-library List.fs); `(init, xs) ||> List.fold ...` is checked
+    // before `init`, so `node.Append` meets an indeterminate type;
+    // `(init, xs) ||> List.fold ...` is checked
     // tuple-first and both types are known inside the lambda
     let source =
         fsharp
@@ -2590,7 +2587,7 @@ let ``a fold whose body looks up a member on the accumulator hands the tuple ove
 
 [<Fact>]
 let ``a blocking call in a match arm of an async body, after use bindings, still gets its twin`` () =
-    // CarmelNet's shape: `async { let! res = ... |> Async.Catch; match res with ... }`
+    // `async { let! res = ... |> Async.Catch; match res with ... }`
     // with the blocking ReadToEnd two `use` bindings deep in an arm
     let source =
         fsharp
@@ -2744,7 +2741,7 @@ let ``FR0057: the editor scaffold appends empty param tags after the last one`` 
 
 [<Fact>]
 let ``FR0058: a recursive yield! in tail position is a loop, not a nested enumerator`` () =
-    // FSharp.Data's CSV reader: `yield! readLines (n + 1)` as the body's
+    // `yield! readLines (n + 1)` as the body's
     // last step compiles to a jump
     Assert.Empty(
         recursiveSeqIn (
@@ -2793,7 +2790,7 @@ let ``FR0058: a recursive yield! under a for is still noted`` () =
 
 [<Fact>]
 let ``FR0058: a self-call yielding a plain value nests nothing`` () =
-    // FSharp.Data's innerText': the recursion returns a string, not a sequence
+    // the recursion returns a string, not a sequence
     Assert.Empty(
         recursiveSeqIn (
             fsharp
@@ -2815,7 +2812,7 @@ let ``FR0058: a self-call yielding a plain value nests nothing`` () =
 
 [<Fact>]
 let ``FR0049: a blocking call inside a lambda within the computation is marked as such`` () =
-    // FSharp.Data's CsvFile: `Func<_>(fun () -> ... |> Async.RunSynchronously)`
+    // `Func<_>(fun () -> ... |> Async.RunSynchronously)`
     // built inside async { } — the builder's bind cannot reach it
     match
         blockingIn (
@@ -2837,7 +2834,7 @@ let ``FR0049: a blocking call inside a lambda within the computation is marked a
 
 [<Fact>]
 let ``FR0020: an abstract member reached through an assignment's right-hand side is a ctor-time call`` () =
-    // Fable's ObjectExprBase: `do x.Value <- this.dup x.contents`
+    // `do x.Value <- this.dup x.contents`
     let _, ctorCalls, _ =
         objectRulesIn (
             fsharp
@@ -3623,7 +3620,7 @@ let ``FR0049: an Assert.Throws inside a nested lambda stays advice`` () =
 
 [<Fact>]
 let ``FR0049: a bounded Wait and a Result after WaitForExit outside a CE are the sync idiom`` () =
-    // prismatic's scripts: stdout is read asynchronously, WaitForExit blocks,
+    // stdout is read asynchronously, WaitForExit blocks,
     // then .Result drains a task that already completed
     Assert.Empty(
         blockingIn (
@@ -3647,7 +3644,7 @@ let ``FR0049: a bounded Wait and a Result after WaitForExit outside a CE are the
 
 [<Fact>]
 let ``FR0055: the IO-only catch is offered for a body that is the IO call, not a block that mentions a path`` () =
-    // Kasino: a multi-line block computing a path, then calling native SDL —
+    // a multi-line block computing a path, then calling native code —
     // narrowing to IOException would let the native failures through
     let block =
         fsharp
@@ -3680,8 +3677,8 @@ let ``FR0055: the IO-only catch is offered for a body that is the IO call, not a
 
 [<Fact>]
 let ``FR0055: the log line lands above a fallback that already sits on its own line`` () =
-    // prismatic: `with _ ->` then `false` on the next line gained a blank
-    // line and an over-indented pair
+    // `with _ ->` then `false` on the next line must gain no blank line
+    // and no over-indented pair
     let source =
         fsharp
             """
@@ -3764,8 +3761,8 @@ let ``FR0055: a comment on the handler is the author's acknowledgement`` () =
 
 [<Fact>]
 let ``FR0055: the log line is offered only where its receiver is in scope`` () =
-    // Fuuga: a `logger` parameter of one function was written into catches
-    // of six functions that have none
+    // a `logger` parameter of one function must not be written into the
+    // catches of functions that have none
     let source =
         fsharp
             """
@@ -3787,7 +3784,7 @@ let ``FR0055: the log line is offered only where its receiver is in scope`` () =
 
 [<Fact>]
 let ``FR0055: a multi-line body that reads a file and then parses it gets no IO-only catch`` () =
-    // FSharp.Azure.Quantum's loadMolFile: the parse after the read throws
+    // the parse after the read throws
     // its own exceptions
     let source =
         fsharp
@@ -3805,12 +3802,12 @@ let ``FR0055: a multi-line body that reads a file and then parses it gets no IO-
     | [ s ] -> Assert.Empty(s.Offers |> List.filter (fun o -> o.Label.Contains "IO exceptions"))
     | other -> failwithf "Expected one finding, got %A" other
 
-// ---- FR0050 shape guards (Mibo, the compiler) ----
+// ---- FR0050 shape guards ----
 
 [<Fact>]
 let ``FR0050: a fold followed by nothing but the accumulator collapses into the expression`` () =
-    // `let flags = .. |> Array.fold ..` was left with a bare `flags` line
-    // after it on Mibo and the compiler: binding and use are the expression
+    // `let flags = .. |> Array.fold ..` must not be left with a bare `flags`
+    // line after it: binding and use are the expression
     let source =
         fsharp
             """
@@ -3840,7 +3837,7 @@ let ``FR0050: a fold followed by nothing but the accumulator collapses into the 
 
 [<Fact>]
 let ``FR0050: an annotated mutable keeps its annotation on the folded binding`` () =
-    // Mibo's `let mutable sum: IAdaptiveValue<int> = ..` lost its annotation
+    // `let mutable sum: IAdaptiveValue<int> = ..` must not lose its annotation
     let source =
         fsharp
             """
@@ -3884,7 +3881,7 @@ let ``FR0050: a fold that would land past column 100 is withheld`` () =
 
     Assert.Empty folds
 
-// ---- FR0118 scheduling calls (suave's Tcp.fs) ----
+// ---- FR0118 scheduling calls ----
 
 [<Fact>]
 let ``FR0118: Task.Run never gains the token`` () =
@@ -3933,12 +3930,12 @@ let ``FR0118: an explicit None on Task.Run is the author's choice`` () =
     )
 
 
-// ---- FR0119 AwaitableOverload: Dispose has no awaitable twin (fantomas EndToEndTests.fs) ----
+// ---- FR0119 AwaitableOverload: Dispose has no awaitable twin ----
 
 [<Fact>]
 let ``FR0119 a Dispose statement inside task is never offered DisposeAsync`` () =
-    // fantomas's EndToEndTests.fs: `File.Create(path).Dispose()` became
-    // `do! File.Create(path).DisposeAsync()` — a ValueTask twin with no
+    // `File.Create(path).Dispose()` as
+    // `do! File.Create(path).DisposeAsync()` is a ValueTask twin with no
     // work to await; Dispose stays Dispose
     let source =
         fsharp
@@ -3975,7 +3972,7 @@ let ``FR0119 a stream flush inside task still becomes do-bang FlushAsync`` () =
 
 [<Fact>]
 let ``FR0049: a Result read under its own completion probe never waits`` () =
-    // suave's ValueTask fast path: the read happens only when the task is
+    // the ValueTask fast path: the read happens only when the task is
     // already complete, the else branch awaits it
     let fastPath =
         fsharp
@@ -4137,9 +4134,8 @@ let ``FR0049: a Result read behind a probe in the same condition, or on a WhenAn
 
 [<Fact>]
 let ``FR0049: the antecedent of a ContinueWith continuation is complete by definition`` () =
-    // suave's ConnectionFacade and fantomas' LSPFantomasService: the lambda
-    // form; suave's AsyncExtensions and FCS's AsyncMemoize: a named function
-    // never a blocking note: only the AggregateException advice
+    // the lambda form and a named function alike: never a blocking note,
+    // only the AggregateException advice
     let onlyAntecedentAdvice (source: string) =
         Assert.All(blockingIn source, (fun s -> Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind)))
 
@@ -4180,7 +4176,7 @@ let ``FR0049: the antecedent of a ContinueWith continuation is complete by defin
 
 [<Fact>]
 let ``FR0049: a wait in the finally block of an async is named as such and gets no fix`` () =
-    // FCS's DiagnosticsLogger and BuildGraph: `do!` cannot appear in a
+    // `do!` cannot appear in a
     // finally block, so the bind the plain message asks for cannot compile
     let source =
         fsharp
@@ -4205,8 +4201,8 @@ let ``FR0049: a wait in the finally block of an async is named as such and gets 
 
 [<Fact>]
 let ``FR0049: the console's blocking point is not a boundary note`` () =
-    // suave's Http2Demo main, fantomas' DaemonCommand runner (exit code
-    // after the wait), and a script's top-level statements
+    // an entry point's main, a command runner (exit code after the wait),
+    // and a script's top-level statements
     Assert.Empty(
         blockingIn (
             fsharp
@@ -4296,7 +4292,7 @@ let ``FR0049: the console's blocking point is not a boundary note`` () =
 
 [<Fact>]
 let ``FR0049: WaitAll with a timeout or a token outside a CE is the bounded idiom`` () =
-    // Mibo's benchmark: `while not (Task.WaitAll(tasks, 1)) do pump ()`
+    // `while not (Task.WaitAll(tasks, 1)) do pump ()`
     Assert.Empty(
         blockingIn (
             fsharp
@@ -4403,7 +4399,7 @@ let ``FR0049: a task complete from birth is drained without a wait`` () =
 
 [<Fact>]
 let ``FR0049: a Result read after the receiver's own Wait drains what was waited for`` () =
-    // suave's Testing.send: `send.Wait(timeout, token)` is the bounded wait
+    // `send.Wait(timeout, token)` is the bounded wait
     // two lines above the `send.Result` that only reads the outcome
     Assert.Empty(
         blockingIn (
@@ -4438,7 +4434,7 @@ let ``FR0049: a Result read after the receiver's own Wait drains what was waited
 
 [<Fact>]
 let ``FR0049: a synchronisation primitive's wait inside a task is named and left to the author`` () =
-    // Mibo's tests: `doneSignal.Wait()` before `do! worker` in task { }
+    // `doneSignal.Wait()` before `do! worker` in task { }
     let source =
         fsharp
             """
@@ -4741,9 +4737,9 @@ let ``FR0049: a thread-choreographed body still gets the Task.Run rewrite`` () =
 
 [<Fact>]
 let ``FR0049: a name merely ENDING in Thread is not thread choreography`` () =
-    // the veto read "Thread(" as a substring, so ThrowIfNotOnUIThread() -
+    // read as a substring, "Thread(" would count ThrowIfNotOnUIThread() -
     // and every other VS threading helper, they are all spelled that way -
-    // counted as choreography and withheld the fixes for a whole file
+    // as choreography and withhold the fixes for a whole file
     let source =
         fsharp
             """
@@ -5025,7 +5021,7 @@ let ``FR0118 a loop inside a with handler gets no cancellation check`` () =
 
 [<Fact>]
 let ``FR0053 a trailing slice or indexer keeps the call parenthesised`` () =
-    // the space form left `ToHexString hash[..7]`: the slice OF THE BYTES
+    // the space form `ToHexString hash[..7]` would take the slice OF THE BYTES
     for tail in [ "[..7]"; ".[..7]"; "[0]"; ".[0]" ] do
         let source =
             $"module Test\nlet f (bytes: byte[]) = System.BitConverter.ToString(bytes).Replace(\"-\", \"\"){tail}"
@@ -5036,3 +5032,47 @@ let ``FR0053 a trailing slice or indexer keeps the call parenthesised`` () =
             let patched = applyEdit source s.Range s.ReplacementText
             assertTypechecks "Patched source" patched
         | other -> failwithf "Expected exactly one hex suggestion for %s, got %A" tail other
+
+[<Fact>]
+let ``FR0118: work started and not waited for keeps its own lifetime; awaited, blocked, combined or held and awaited gets the token``
+    ()
+    =
+    let source =
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            type Bus() =
+                member _.SendAsync(m: string) : Task = Task.CompletedTask
+                member _.SendAsync(m: string, ct: CancellationToken) : Task = Task.CompletedTask
+            let detached (bus: Bus) (ct: CancellationToken) = task {
+                bus.SendAsync("fire") |> ignore
+                bus.SendAsync("start") |> Async.AwaitTask |> Async.Start
+                let pending = bus.SendAsync("held")
+                ignore pending
+                do! Task.Yield()
+            }
+            let waited (bus: Bus) (ct: CancellationToken) = task {
+                do! bus.SendAsync("awaited")
+                do! Task.WhenAll [| bus.SendAsync("a"); bus.SendAsync("b") |]
+                let t = bus.SendAsync("local")
+                do! t
+            }
+            let blocked (bus: Bus) (ct: CancellationToken) =
+                bus.SendAsync("sync") |> Async.AwaitTask |> Async.RunSynchronously
+            let returned (bus: Bus) (ct: CancellationToken) = bus.SendAsync("returned")
+            """
+
+    let lines = source.Replace("\r\n", "\n").Split('\n')
+
+    let fired =
+        cancellationIn source
+        |> List.filter (fun s -> s.MethodName = "SendAsync")
+        |> List.map (fun s ->
+            let line = lines.[s.Range.StartLine - 1]
+            // the argument the edit lands after: the last literal before its column
+            let at = line.LastIndexOf("SendAsync(\"", s.Range.StartColumn)
+            line.Substring(at + 11, line.IndexOf('"', at + 11) - at - 11))
+        |> List.sort
+
+    Assert.Equal<string list>([ "a"; "awaited"; "b"; "local"; "returned"; "sync" ], fired)

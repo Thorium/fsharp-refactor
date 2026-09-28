@@ -81,7 +81,7 @@ let ``a returned tail thunk collapses with the return reseated on its terminal``
 
 [<Fact>]
 let ``numbered wrappers collapse one layer per pass`` () =
-    // the live three-deep damage: each layer is its own suggestion, the
+    // three-deep wrapping: each layer is its own suggestion, the
     // applier takes the innermost, and the next pass takes the next
     let source =
         fsharp
@@ -257,7 +257,7 @@ let ``atomic returned value stays unparenthesized`` () =
 
 [<Fact>]
 let ``tuple return inside a tuple context keeps its grouping`` () =
-    // review regression: `(1, 2, "tag")` would silently flatten the pair
+    // `(1, 2, "tag")` would silently flatten the pair
     assertSingleSuggestion
         (fsharp
             """
@@ -268,7 +268,7 @@ let ``tuple return inside a tuple context keeps its grouping`` () =
 
 [<Fact>]
 let ``runner strip as an operand keeps precedence`` () =
-    // review regression: bare `a + b * 2` would compute a + (b*2)
+    // bare `a + b * 2` would compute a + (b*2)
     assertSingleSuggestion
         (fsharp
             """
@@ -392,8 +392,8 @@ let ``task wrapping an expression that could throw is not rewritten`` () =
 
 [<Fact>]
 let ``a plain closure owning a use collapses back — the CURE for older damage`` () =
-    // FR0029 refuses to build this shape now, but prevention cannot reach a
-    // change an older version already committed: this rule undoes it
+    // FR0029 refuses to build this shape, but code may already hold it:
+    // this rule undoes it
     let source =
         fsharp
             """

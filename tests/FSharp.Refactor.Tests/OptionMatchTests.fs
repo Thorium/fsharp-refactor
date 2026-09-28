@@ -22,8 +22,8 @@ let ``IsSome with bare Value becomes a match`` () =
 
 [<Fact>]
 let ``a backticked option keeps its backticks and gets a plain binder`` () =
-    // welendus's SignalRHubs.fs: the match spelled the ident's bare words
-    // and `24h` was read as a numeric literal
+    // spelling the ident's bare words in the match would read `24h` as a
+    // numeric literal
     assertOptionMatch
         "let f (``in 24h period``: int option) = if ``in 24h period``.IsSome then ``in 24h period``.Value else 0"
         "match ``in 24h period`` with | Some v -> v | None -> 0"

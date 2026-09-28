@@ -5,12 +5,11 @@
 /// attribute on a type or a value, a literal's value, a binding's name. A
 /// rule that changes one of those on the implementation side alone leaves
 /// "the names differ" or "the attributes differ", and the project stops
-/// compiling — fcs-fable, which carries 176 signature files, found this for
-/// FR0022, FR0069, FR0093 and FR0130 in one sweep. FR0022 answered by
-/// editing the signature's union case alongside the implementation's, one
-/// atomic edit set spanning both files; this module is that answer shared,
-/// so FR0130 (`[<Literal>]`), FR0133 (a rename) and FR0016 (`[<Struct>]`)
-/// carry their signature with them too.
+/// compiling. The answer is to edit the signature alongside the
+/// implementation, one atomic edit set spanning both files, as FR0022 does
+/// for a union case; this module shares that, so FR0130 (`[<Literal>]`),
+/// FR0133 (a rename) and FR0016 (`[<Struct>]`) carry their signature with
+/// them too.
 ///
 /// The signature is parsed through the host-installed cross-file parser:
 /// the CLI installs one, editors do not, and where it is missing a fix that

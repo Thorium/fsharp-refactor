@@ -3,9 +3,9 @@
 /// The other generators draw from a list of hand-written shapes, one per
 /// rule, with only the leaves free — a number, a module name, a loop
 /// header. That finds a rule that stopped firing; it cannot find a rule
-/// that fires on a shape nobody thought to write down. FR0071's array
-/// hole was exactly that: its shape was `let c = a + 3`, so no generated
-/// program ever bound an array inside a loop.
+/// that fires on a shape nobody thought to write down: a loop-invariant
+/// shape of `let c = a + 3` never binds an array inside a loop, so a
+/// hoist that shares one buffer across iterations goes unexercised.
 ///
 /// So this generator draws the STRUCTURE instead, from a grammar over
 /// ints, arrays, lists, strings, a `ResizeArray`, a mutable list
@@ -21,7 +21,7 @@
 /// written over `SqlCommand` cannot fire on a program that never says
 /// `SqlCommand`, however many programs are drawn. Widening the grammar
 /// along one axis brings a whole cluster of rules into reach at once —
-/// adding `try`/`with` alone reached FR0024, FR0055 and FR0168.
+/// `try`/`with` alone brings FR0024, FR0055 and FR0168 into reach.
 ///
 /// Three invariants make a generated program usable as a test:
 ///   - CLOSED: a name is only ever read where it is in scope, so every
@@ -46,8 +46,8 @@ open FsCheck.FSharp
 /// How many elements a generated array or list may hold. The count is
 /// free because it changes the SHAPE of the tree: a one-element literal
 /// is `ArrayOrListComputed` over the element, two or more is one over a
-/// `Sequential`, and a rule walking the first and not the second (as
-/// FR0071 did) behaves differently on the two. Every index is drawn
+/// `Sequential`, and a rule walking the first and not the second
+/// behaves differently on the two. Every index is drawn
 /// below its own collection's length, so no generated program throws.
 [<Literal>]
 let private maxElements = 3
@@ -211,8 +211,8 @@ let rec private condition (t: Tape) (s: Scope) (depth: int) : string =
 ///
 /// Without this the trace sees only what a `sink` happened to report, and
 /// a rewrite that leaves an array or a mutable holding something else —
-/// the shape of the FR0071 hole, where the hoisted buffer accumulated
-/// across iterations instead of starting fresh — runs to the end
+/// a hoisted buffer that accumulates across iterations instead of
+/// starting fresh, say — runs to the end
 /// unnoticed. Reading everything back makes every value the program
 /// computes part of what the property compares.
 let private observe (indent: string) (bound: Scope) =
@@ -399,7 +399,6 @@ let rec private block
 
         // a comment now and then: it rides on the statement below, and a
         // rewrite that loses it or re-attaches it elsewhere is a defect
-        // these rules have had before
         if t.Next 8 = 0 then
             out.Add $"{indent}// {words.[t.Next words.Length]} {words.[t.Next words.Length]}"
 

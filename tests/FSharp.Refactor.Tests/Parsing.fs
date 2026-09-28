@@ -122,9 +122,9 @@ let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFile
 /// The .NET Framework 4.8 reference assemblies a legacy compilation reads,
 /// from the Microsoft.NETFramework.ReferenceAssemblies.net48 package (see the
 /// test project). `assumeDotNetFramework = true` alone resolves them from
-/// Program Files, which only Windows has: on Linux the script got no usable
-/// mscorlib, `string` itself did not resolve, and a legacy test could only
-/// pass for the wrong reason.
+/// Program Files, which only Windows has: on Linux the script would get no
+/// usable mscorlib, `string` itself would not resolve, and a legacy test
+/// could only pass for the wrong reason.
 let private net48References =
     lazy
         (let directory =

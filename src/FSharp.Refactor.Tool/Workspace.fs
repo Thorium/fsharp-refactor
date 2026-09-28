@@ -70,7 +70,7 @@ let projectsInSolution (solutionPath: string) : string list =
 /// other property cannot be resolved without MSBuild - but it still names
 /// a project, and a referencer passed over is a call site missed. So such
 /// a reference keeps the file name it ends in (`$(FSharpSourcesRoot)\
-/// FSharp.Core\FSharp.Core.fsproj`, twenty-eight times in dotnet/fsharp)
+/// FSharp.Core\FSharp.Core.fsproj`)
 /// and matches by that, and one with no recognisable file name at all
 /// (`$(Ref)`) is taken to reference ANY project of the workspace: the
 /// cost of reading a sibling that turns out not to call is a typecheck,
@@ -85,11 +85,10 @@ type ProjectReference =
 
 /// A project file's text with its XML comments taken out, for every read
 /// that matches the text rather than evaluating it: an element an author
-/// commented away is not one MSBuild sees. welendus's WelendusLogic.fsproj
-/// carries `<!-- <TargetFrameworks>netstandard2.0;net48</TargetFrameworks>
-/// -->` above the live element; the text match took the commented one
-/// first and the run asked for a net48 pass no restore had produced
-/// (NETSDK1005). A commented-out ProjectReference would likewise have made
+/// commented away is not one MSBuild sees. A commented
+/// `<TargetFrameworks>netstandard2.0;net48</TargetFrameworks>` above the
+/// live element would otherwise match first, and the run would ask for a
+/// net48 pass no restore produced (NETSDK1005). A commented-out ProjectReference would likewise have made
 /// a referencer of a project that no longer links.
 let projectTextWithoutComments (text: string) =
     Regex.Replace(text, @"<!--.*?-->", "", RegexOptions.Singleline)
@@ -143,10 +142,8 @@ let private referencesAssemblyDirectly (text: string) (assemblyName: string) =
 /// `ReferenceOutputAssembly` false, as an attribute or a child element. Its
 /// project compiles nothing against the target through it - no `-r:`, so no
 /// call site - and unless it references the target's dll directly as well,
-/// it is no referencer of it. FSharp.Refactor.Analyzers builds its
-/// Ionide twin first this way, and every api pass over the twin used to load
-/// the Analyzers project and both test projects behind it only to report
-/// them "cannot be read".
+/// it is no referencer of it. Counting it would load that project, and every
+/// project behind it, only to report them "cannot be read".
 let private buildOrderOnly (element: string) =
     Regex.IsMatch(element, "ReferenceOutputAssembly\\s*=\\s*\"\\s*false\\s*\"", RegexOptions.IgnoreCase)
     || Regex.IsMatch(
@@ -216,7 +213,7 @@ let projectReferenceShapesOf (projectPath: string) : ProjectReference list =
     // a build-order-only reference counts after all when the project also
     // references the target's dll directly (a `<Reference>` with a HintPath
     // into its bin): that project compiles against it. One whose target
-    // cannot be named stays, as it always did
+    // cannot be named stays
     |> Seq.filter (fun (shape, buildOrder) ->
         not buildOrder
         || (match shape with
@@ -243,8 +240,7 @@ let private namesProject (reference: ProjectReference) (project: string) =
     | Unresolvable -> true
 
 /// The source files of `project` that another project of the workspace
-/// compiles DIRECTLY, through a `<Compile Include="..\Common\X.fs">` link
-/// (SQLProvider's provider projects each compile the Common sources):
+/// compiles DIRECTLY, through a `<Compile Include="..\Common\X.fs">` link:
 /// (linking project, the shared files). Such a project is not a
 /// referencer - it holds its own copy of every declaration in the file,
 /// and its own call sites of them, which a pass over `project` cannot

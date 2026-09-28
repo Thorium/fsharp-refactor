@@ -97,9 +97,9 @@ let ``a structural parent on the same line still gets fixed`` () =
 
 [<Fact>]
 let ``a line aligned past the argument keeps the parens`` () =
-    // fparsec's CharParsers.fs: two characters shorter, the `(flags <- ...`
-    // block's continuation line stood right of `flags` and the block
-    // re-parsed as an application
+    // two characters shorter, the `(flags <- ...` block's continuation
+    // line would stand right of `flags` and the block re-parse as an
+    // application
     assertNoSuggestion (
         fsharp
             """
@@ -187,7 +187,7 @@ let ``FR0013 does not also claim method calls`` () =
 
 [<Fact>]
 let ``a call feeding the dynamic operator keeps its parens`` () =
-    // from the corpus: `hub.Clients.OthersInGroup(roomId)?visitorJoin(user)`.
+    // `hub.Clients.OthersInGroup(roomId)?visitorJoin(user)`.
     // Bare, `roomId` binds to the `?` and the file stops parsing.
     assertNoSuggestion (
         fsharp
@@ -229,7 +229,7 @@ let ``a parenthesised unit argument keeps its parens`` () =
 
 [<Fact>]
 let ``a call in a shorthand lambda keeps its parens`` () =
-    // welendus's `configureEndpoint _.WithName("x").WithGroupName(g)`: the
+    // `configureEndpoint _.WithName("x").WithGroupName(g)`: the
     // `_.` body must stay atomic, or the bare argument applies the lambda
     assertNoSuggestion (
         fsharp

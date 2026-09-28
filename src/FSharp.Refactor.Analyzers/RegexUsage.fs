@@ -32,9 +32,8 @@
 ///    the hint is emitted without a fix.
 ///
 /// 3. A Regex CONSTRUCTED with a literal pattern inside such a loop is the
-///    same cost spelled differently — FSharp.Analyzers.SDK's
-///    `expandMultiProperties` built `Regex(";([a-z,A-Z,0-9,_,-]*)=")` inside
-///    a `List.map` lambda and its author hoisted it by hand. The fix moves
+///    same cost spelled differently — `Regex(";([a-z,A-Z,0-9,_,-]*)=")`
+///    built inside a `List.map` lambda, say. The fix moves
 ///    the construction, source text and all, to a module binding above the
 ///    enclosing declaration and leaves whatever followed it in place:
 ///
@@ -191,8 +190,7 @@ let private argsOf (arg: SynExpr) =
     | single -> [ single ]
 
 /// Any string literal, however it was written. `@"\d+"` is the ordinary way
-/// to write a regex in F# — restricting this to plain literals quietly missed
-/// most real patterns. Both consumers cope: the hoisted binding re-emits the
+/// to write a regex in F#, so verbatim literals count too. Both consumers cope: the hoisted binding re-emits the
 /// pattern's ORIGINAL source text, `@` and all, and the string-operation
 /// rewrite already refuses anything carrying a quote, a control character or
 /// a backslash, which is every case where the two spellings would differ.
@@ -287,8 +285,8 @@ let private nameFromPattern (pattern: string) =
 /// gives `postcodeRegex`, `collapseSpaces` gives `collapseSpacesRegex` - or
 /// nothing when the binding has no plain name. A predicate's `is`/`has` goes:
 /// the regex is the postcode's, not the question's. Names spelled from the
-/// pattern (`aZ12dAZddAZ2Regex` for a UK postcode, `sRegex` for `s+`) said
-/// nothing a reader could use (GitHub #6).
+/// pattern (`aZ12dAZddAZ2Regex` for a UK postcode, `sRegex` for `s+`) say
+/// nothing a reader can use.
 let private nameFromBinding (decl: SynModuleDecl) =
     let head =
         match decl with
@@ -343,16 +341,14 @@ let private spelled (fileText: string) (name: string) =
 /// taken once it is in), else the pattern's.
 ///
 /// `claimed`: the names earlier sites of this pass took. Every regex of one
-/// function derives the same name, so without it the second and third were
-/// dropped as collisions and came back a pass later under the pattern's
-/// letters; they take the function's name numbered instead (`parseRegex2`),
+/// function derives the same name, so without it the second and third would
+/// collide; they take the function's name numbered instead (`parseRegex2`),
 /// as CSharp.Refactor's CR0109 does, before the pattern's is tried. The
 /// chosen name is claimed here, against the declaration that took it.
 ///
 /// A sibling's claim numbers before the whole name: `isPostcode`'s two
-/// regexes are `postcodeRegex` and `postcodeRegex2`, where the whole-name
-/// fallback gave `isPostcodeRegex` to the second - a name that reads as the
-/// function's one regex. A name the file already spells, or another
+/// regexes are `postcodeRegex` and `postcodeRegex2`, not `isPostcodeRegex`
+/// for the second - a name that reads as the function's one regex. A name the file already spells, or another
 /// declaration took, still falls back to the whole name first.
 let private hoistName
     (claimed: Dictionary<string, range>)

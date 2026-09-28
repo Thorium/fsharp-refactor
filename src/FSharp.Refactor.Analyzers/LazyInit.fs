@@ -86,7 +86,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     // the condition IS the emptiness test and nothing more. A compound one
     // (`isNull holder || not holder.IsValueCreated || isNull holder.Value`,
-    // management-portal's reconnecting context holders) re-creates the
+    // a reconnecting holder) re-creates the
     // value on other grounds too, and `lazy` is not the tool for it
     let emptinessTest (name: string) (cond: SynExpr) =
         let text = (textOfRange source (stripParens cond).Range).Trim()

@@ -58,8 +58,8 @@ type Suggestion =
 /// The types worth reporting, and where their diagnosis actually lives. A
 /// table on purpose; the full names are a list because SqlException lives
 /// in two namespaces (System.Data.SqlClient and Microsoft.Data.SqlClient).
-/// The last three rows are CSharp.Refactor's CR0070 additions, back-ported:
-/// note-only, and reading the member anywhere in the handler counts.
+/// The last three rows mirror CSharp.Refactor's CR0070: note-only, and
+/// reading the member anywhere in the handler counts.
 let private carriers =
     Map.ofList
         [
@@ -203,8 +203,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // Every `<name>.<member>` read inside a range. BOTH spellings: with a
         // plain identifier receiver F# parses `e.Message` as a LongIdent of
         // [e; Message], and only a non-trivial receiver produces a DotGet.
-        // Matching just the latter finds nothing, which is exactly what the
-        // first version of this rule did.
+        // Matching just the latter finds nothing.
         let readsIn (name: string) (body: range) =
             AstIndex.exprsWithin index body
             |> Array.choose (fun (_, inner) ->

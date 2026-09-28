@@ -54,8 +54,7 @@ type SourceGate =
     /// Any enumerable: on .NET a string enumerates its characters.
     | Any
     /// A Fable project: a STRING source stays indexed, since Fable's Rust
-    /// target has no string enumerator (SQLProvider.Fable's Query.fs said
-    /// so in a comment and the rule rewrote the loop anyway). The typed
+    /// target has no string enumerator. The typed
     /// tree tells a string from a collection; without one every source
     /// may be a string and the rule stands down.
     | NoStrings of FSharpCheckFileResults option
@@ -273,7 +272,7 @@ let private findIn
                     // sprite = &sprites[index]` wants an inref into the array, and a
                     // `for sprite in sprites` element is a copy, so every
                     // `&sprite.Field` after it reads "ByRefKinds.InOut does not match
-                    // ByRefKinds.In" (Nu's Renderer2d)
+                    // ByRefKinds.In"
                     let addressTaken =
                         AstIndex.exprsWithin index body.Range
                         |> Array.exists (fun (_, e) ->
@@ -310,8 +309,8 @@ let private findIn
 
                         // names bound by anything on the path to the loop — a
                         // parameter, an outer loop, a let, a lambda, a match arm.
-                        // Mibo's Spatial2DTests had `for x in 0 .. 4 do` around the
-                        // loop, and the `x` chosen then shadowed it.
+                        // An `x` chosen under an outer `for x in 0 .. 4 do` would
+                        // shadow it.
                         let enclosingNames =
                             path
                             |> List.collect (fun node ->
@@ -332,8 +331,7 @@ let private findIn
                         // `let mChar = path.[i]` as the body's first statement and
                         // the index's ONLY use is the element already named: the
                         // loop variable takes that name and the alias line goes
-                        // (Giraffe's FormatExpressions kept `for item in path do
-                        // let mChar = item`). The binder must be a plain name — no
+                        // (not `for item in path do let mChar = item`). The binder must be a plain name — no
                         // type, no mutable, no attribute — that nothing around the
                         // loop already binds, and the rest of the body must start
                         // on its own line at the let's column with only whitespace

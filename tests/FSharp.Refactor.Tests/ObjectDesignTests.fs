@@ -293,7 +293,7 @@ let ``two-term concat is left alone`` () =
 
 [<Fact>]
 let ``copy-and-update of constructor state counts as instance use`` () =
-    // regression: `{ state with ... }` only mentions `state` in the record
+    // `{ state with ... }` only mentions `state` in the record
     // copy source, which the AST walker does not visit as its own node
     let _, statics, _ =
         designIn (
@@ -541,7 +541,7 @@ let ``FR0032: a type inheriting a disposable base is noted without the interface
 [<Fact>]
 let ``FR0032: a disposable built with the object itself is the framework's to dispose`` () =
     // MonoGame: `new GraphicsDeviceManager(this)` registers with the Game,
-    // which disposes it; Kasino drew a note for exactly that
+    // which disposes it
     let source =
         fsharp
             """
@@ -566,7 +566,7 @@ let ``FR0032: a disposable built with the object itself is the framework's to di
 
 [<Fact>]
 let ``FR0031: an unannotated parameter typed only by the chain keeps its + chain`` () =
-    // the F# compiler's `qualifiedMangledNameOfTyconRef tcref nm`: a plain
+    // `qualifiedMangledNameOfTyconRef tcref nm`: a plain
     // hole lets `nm` generalise (FS0034 against its signature file), and a
     // `%s` hole would leave the String.Concat fast path — the chain stays
     let signature =
@@ -596,7 +596,7 @@ let ``FR0031: an unannotated parameter typed only by the chain keeps its + chain
 
 [<Fact>]
 let ``FR0047: an interface Dispose delegating to the type's own Dispose member is followed`` () =
-    // the F# compiler's NativeDllResolveHandlerCoreClr: `member _.Dispose()`
+    // `member _.Dispose()`
     // disposes the field, `interface IDisposable` calls `this.Dispose()`
     let _, _, undisposed =
         designIn (
@@ -616,7 +616,7 @@ let ``FR0047: an interface Dispose delegating to the type's own Dispose member i
 
 [<Fact>]
 let ``FR0047: an interface Dispose delegating to a let-bound function is followed`` () =
-    // TcImports: `let dispose () = ... (disposal :> IDisposable).Dispose()`
+    // `let dispose () = ... (disposal :> IDisposable).Dispose()`
     // and `interface IDisposable with member _.Dispose() = dispose ()`
     let _, _, undisposed =
         designIn (
@@ -655,10 +655,9 @@ let ``FR0047: a delegate that disposes nothing still leaves the field noted`` ()
 
 [<Fact>]
 let ``FR0032: an interface that inherits IDisposable makes the type disposable`` () =
-    // fantomas's LSPFantomasService implements FantomasService, which
-    // inherits IDisposable: the type IS disposable, so FR0032 stays quiet.
-    // Its Dispose only cancels the cts, though, which FR0047 now says
-    // (the real service leaks the handle exactly this way)
+    // the type implements an interface that inherits IDisposable: it IS
+    // disposable, so FR0032 stays quiet. Its Dispose only cancels the cts,
+    // though, which FR0047 says: that leaks the handle
     let disposables, _, undisposed =
         designIn (
             fsharp
@@ -689,7 +688,7 @@ let ``FR0032: an interface that inherits IDisposable makes the type disposable``
 
 [<Fact>]
 let ``FR0032: a StringReader field owns nothing`` () =
-    // fsharp.formatting's FsiSession: `let inStream = new StringReader("")`
+    // `let inStream = new StringReader("")`
     let disposables, _, _ =
         designIn (
             fsharp
@@ -736,11 +735,11 @@ let ``FR0032: an HttpClient field is a shared lifetime, not a resource of the ty
         )
 
     Assert.Single disposables |> ignore
-// ---- FR0033 audit guards ----
+// ---- FR0033 guards ----
 
 [<Fact>]
 let ``FR0033: an instance let bound by a tuple pattern is instance state`` () =
-    // FCS GraphChecking: `let sigToImpl, implToSig = buildBiDirectionalMaps
+    // `let sigToImpl, implToSig = buildBiDirectionalMaps
     // goodPairs`, read by the members — every binder of the pattern counts
     let _, statics, _ =
         designIn (
@@ -761,7 +760,7 @@ let ``FR0033: an instance let bound by a tuple pattern is instance state`` () =
 
 [<Fact>]
 let ``FR0033: a constructor parameter applied in a record copy source counts`` () =
-    // FCS Symbols: `FSharpDisplayContext(fun g -> { denv g with ... })` —
+    // `FSharpDisplayContext(fun g -> { denv g with ... })` —
     // the copy source is an application of the ctor parameter, not a name
     let _, statics, _ =
         designIn (
@@ -778,7 +777,7 @@ let ``FR0033: a constructor parameter applied in a record copy source counts`` (
 
 [<Fact>]
 let ``FR0033: an instance let function called from a match! scrutinee counts`` () =
-    // FCS TransparentCompiler: `match! ComputeItemKeyStore(...) with` inside
+    // `match! ComputeItemKeyStore(...) with` inside
     // an async member body reads the instance let function
     let _, statics, _ =
         designIn (
@@ -877,7 +876,7 @@ let ``FR0033: a private type or member is confined and noted without opt-in`` ()
 
 [<Fact>]
 let ``FR0033: a member a sibling signature declares stays instance`` () =
-    // FCS prim-parsing: `IParseState.RaiseError` is spelled out in the
+    // `IParseState.RaiseError` is spelled out in the
     // .fsi; the signature owns the shape, so only a private member could
     // change
     let signature =
@@ -906,8 +905,8 @@ let ``FR0033: a member a sibling signature declares stays instance`` () =
 
 [<Fact>]
 let ``FR0033: protocol stubs and inline templates are not computations`` () =
-    // fsharp.formatting's fake fsi event loop: `Run() = ()`; FCS's
-    // `_DebugKeyStoreNoop`: `member inline _.WriteRange(_m) = ()`
+    // a fake event loop's `Run() = ()`; a no-op
+    // `member inline _.WriteRange(_m) = ()`
     let _, statics, _ =
         designIn (
             fsharp
@@ -927,7 +926,7 @@ let ``FR0033: protocol stubs and inline templates are not computations`` () =
 
 [<Fact>]
 let ``FR0033: a type whose instances are boxed to obj is consumed by reflection`` () =
-    // fsharp.formatting's `CreateNoOpFsiObject() = box (NoOpFsiObject())`
+    // `CreateNoOpFsiObject() = box (NoOpFsiObject())`
     // hands the instance to reflection, where a static member is invisible
     let _, statics, _ =
         designIn (

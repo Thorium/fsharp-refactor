@@ -139,14 +139,14 @@ let ``destructuring tuple pattern elements are not rewritten`` () =
 
 [<Fact>]
 let ``definition without a space before the tuple keeps its name`` () =
-    // review regression: `adda b` merged the name and first parameter
+    // `adda b` would merge the name and first parameter
     assertSingleSuggestion
         "let private add(a, b) = a + b\nlet total = add(1, 2)"
         "let private add a b = a + b\nlet total = add 1 2"
 
 [<Fact>]
 let ``call with a projection continuation is not rewritten`` () =
-    // review regression: `key 1 2.Length` loses the atomic grouping
+    // `key 1 2.Length` loses the atomic grouping
     assertNoSuggestion (
         fsharp
             """

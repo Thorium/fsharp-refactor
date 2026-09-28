@@ -378,8 +378,8 @@ let find
                                     | SynExpr.Paren(expr = inner) ->
                                         // a parenthesised tail is ONE value:
                                         // `return ` goes before the opening
-                                        // parenthesis. Descending into it put
-                                        // the keyword inside — `(r, 1)` became
+                                        // parenthesis. Descending into it would
+                                        // put the keyword inside — `(r, 1)` as
                                         // `(return r, 1)`, FS0792 — so the
                                         // parentheses stay and the tail is
                                         // returned whole; a blocking drain

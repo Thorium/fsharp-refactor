@@ -1,5 +1,5 @@
 /// The Tools > FSharp.Refactor menu: the commands the VS Code extension
-/// puts in its palette, which Visual Studio had none of.
+/// puts in its palette.
 ///
 /// Everything else in this extension is MEF — taggers, light bulbs, the
 /// FsAutoComplete sidecar — and needs no shell package at all. A menu
@@ -364,10 +364,10 @@ module internal Commands =
 
                         // no positional target: the tool writes into its CURRENT
                         // directory, which runTool sets to `dir`. Quoting the
-                        // directory instead broke on its trailing separator -
+                        // directory instead would break on its trailing separator -
                         // a `\` before the closing quote escapes the quote under
                         // the .NET host's argument splitting, and the tool
-                        // then saw `C:\git\Foo"`, not a directory
+                        // would see `C:\git\Foo"`, not a directory
                         let! _ = runTool "--create-config" dir |> Async.StartAsTask
 
                         do! ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync()
@@ -463,8 +463,8 @@ type FSharpRefactorPackage() =
         let baseInit = base.InitializeAsync(cancellationToken, _progress)
 
         task {
-            // The loader used to run silently, which made "the menu is not
-            // there" undiagnosable: a package that loads cleanly and a package
+            // A silent loader makes "the menu is not there" undiagnosable:
+            // a package that loads cleanly and a package
             // that registers nothing look identical from outside. Everything
             // here traces to %TEMP%\FSharpRefactor.Vsix.log beside the rest.
             FsacClient.clientTrace "package: InitializeAsync entered"

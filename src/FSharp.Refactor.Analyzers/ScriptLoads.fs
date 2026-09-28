@@ -12,8 +12,7 @@
 /// That project's fsproj lists its compile items in order; the one that
 /// defines the missing name and is not loaded is the fix, inserted before
 /// the first loaded file that follows it in the project. A script written
-/// before a file was added to the project is exactly this shape
-/// (FSharp.Azure.Quantum's TopologicalMeasurementTest.fsx).
+/// before a file was added to the project is exactly this shape.
 ///
 /// A missing NAMESPACE (`open Lib.Core` → `The namespace 'Core' is not
 /// defined`) is looked for in the loaded project's ProjectReferences: the
@@ -220,9 +219,8 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
 
         // a script whose OWN #load or #r names a file that is not there is
         // stale or unbuilt, and every "not defined" it reports stems from
-        // that: fantomas's docs scripts `#r` an artifacts dll that was never
-        // built, and fsharp.formatting's Script.fsx loads a Library1.fs that
-        // no longer exists — the FS0039s are not a missing #load
+        // that: a `#r` of a dll that was never built, or a `#load` of a file
+        // that no longer exists — the FS0039s are not a missing #load
         //
         // A `#r` by NAME — no path separator, no source extension:
         // `#r "System.Xml.Linq"`, FAKE 4's `#I "packages/FAKE/tools"` and
@@ -300,8 +298,7 @@ let find (script: string) (tree: ParsedInput) (diagnostics: FSharpDiagnostic[]) 
                                 items
                                 |> List.tryFind (fun item ->
                                     // a signature file cannot be loaded on its own
-                                    // (FS0240: no corresponding implementation);
-                                    // fantomas's docs got `#load "EditorConfig.fsi"`
+                                    // (FS0240: no corresponding implementation)
                                     not (item.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
                                     && not (loadedSet.Contains(normalize item))
                                     && declares name item)

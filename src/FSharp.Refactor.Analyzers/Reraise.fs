@@ -190,7 +190,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 // inside a computation expression `reraise ()` is FS0413,
                 // and a handler that only rethrows guards nothing: the
                 // try/with goes, and the exception propagates with its
-                // trace intact (suave's Combinators.fs, twice)
+                // trace intact
                 | SynExpr.TryWith(
                     tryExpr = body
                     withCases = [ SynMatchClause(

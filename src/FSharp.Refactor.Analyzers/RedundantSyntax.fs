@@ -107,8 +107,8 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
     // Is a FormattableString (or IFormattable) EXPECTED here? An interpolated
     // string converts to one when the context asks for it — a type
     // annotation, or a method parameter — and a plain string never does:
-    // `let s3: FormattableString = $"""I have no holes"""` lost its `$` and
-    // stopped compiling (Fable's StringTests). A method argument is
+    // `let s3: FormattableString = $"""I have no holes"""` stops compiling
+    // without its `$`. A method argument is
     // treated as expecting one whenever the callee looks like a method,
     // since only the typed tree could say otherwise and this rule is
     // syntactic.
@@ -133,9 +133,8 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
         // the typed tree the answer is read off its signature — printfn's
         // format parameter is not one, and the `$` goes. Without it, or
         // when the callee does not resolve, ANY application keeps the `$`:
-        // Ionide's `Log.setMessageI $"..."` is an F# function whose
-        // parameter is a FormattableString, and nothing in its spelling
-        // says so (FsAutoComplete's AdaptiveServerState)
+        // `Log.setMessageI $"..."` can be an F# function whose parameter
+        // is a FormattableString, and nothing in its spelling says so
         let calleeTakesFormattable (callee: SynExpr) =
             match check, calleeIdent callee with
             | Some(check: FSharpCheckFileResults), Some id ->

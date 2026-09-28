@@ -57,8 +57,7 @@ type BlockKind =
     /// `.Result` read on the antecedent inside its own `ContinueWith`
     /// continuation: complete by definition, so nothing blocks — but a
     /// FAULTED antecedent throws its exception wrapped in an
-    /// AggregateException there (the compiler's AsyncMemoize stored the
-    /// wrapper and rethrew it to every awaiter). The continuation is a
+    /// AggregateException there. The continuation is a
     /// bind: the plain shape becomes `task { let! r = t; return ... }`,
     /// which gets the exception itself; only where a task builder exists
     /// (FSharp.Core 6+, not Fable) — before that ContinueWith IS the bind
@@ -104,7 +103,7 @@ let private ceBuilders = set [ "async"; "task"; "backgroundTask" ]
 /// Does the identifier's enclosing entity satisfy the predicate?
 /// Task and ValueTask both block on .Result/.Wait — the BCL's async I/O
 /// returns ValueTask everywhere post-core, so a Task-only prefix test
-/// missed most modern blocking sites.
+/// would miss most modern blocking sites.
 let private taskFamily (entity: string) =
     entity.StartsWith "System.Threading.Tasks.Task"
     || entity.StartsWith "System.Threading.Tasks.ValueTask"
@@ -508,8 +507,7 @@ let findWith
         // statement positions of the same CE). `let!` and `do!` are legal
         // only there — a call nested inside ANOTHER binding's right-hand
         // side sits inside the CE's range but not on its spine, and
-        // rewriting its `let` to `let!` cannot compile (FR0119: 21 of the
-        // rollbacks in one sweep repo, all of this shape):
+        // rewriting its `let` to `let!` cannot compile:
         //     task {
         //         let pair =
         //             let x = t.Result        // NOT on the spine
@@ -890,8 +888,7 @@ let findWith
         // a wait in a function choreographed around a thread (a signal,
         // a Thread, Interlocked): "wrap it in task { }" is the advice
         // FR0142 refuses for the same body, and the note must not give
-        // it either — Mibo's thread-affine tests earned 40 boundary notes
-        // the moment FR0142 correctly left them alone
+        // it either
         let threadBoundScope (path: SyntaxNode list) =
             path
             |> List.rev
@@ -1002,7 +999,7 @@ let findWith
                 // not a deadlock: `t.Wait(timeout)` is a bounded wait, and a
                 // `.Result` read after `proc.WaitForExit()` in the same body
                 // drains a task that already completed (the Process stdout
-                // pattern; prismatic's scripts, forty times over)
+                // pattern)
                 let boundedWait =
                     match expr with
                     | SynExpr.App(isInfix = false; funcExpr = CallIdent id; argExpr = arg) when id.idText = "Wait" ->

@@ -158,7 +158,7 @@ let ``None comparison without check results is not rewritten`` () =
 
 [<Fact>]
 let ``elif branch is never simplified`` () =
-    // review regression: replacing the elif node with its condition would
+    // replacing the elif node with its condition would
     // glue the condition onto the preceding branch
     Assert.Empty(
         findParsed (

@@ -367,9 +367,8 @@ let find
                                     // lambda BEFORE `init`, so a member lookup on the
                                     // accumulator meets an indeterminate type — "Lookup on
                                     // object of indeterminate type based on information
-                                    // prior to this program point" (Fable's fable-library
-                                    // List.fs, `node <- node.AppendConsNoTail x`). The
-                                    // double-pipe form hands the tuple over first, so both
+                                    // prior to this program point" (`node <- node.
+                                    // AppendConsNoTail x`). The double-pipe form hands the tuple over first, so both
                                     // types are known inside the lambda; the mutable loop
                                     // it replaces knew them from `let mutable acc = init`
                                     if body.Contains $"{acc.idText}." then
@@ -380,7 +379,7 @@ let find
                             // `let mutable sum: IAdaptiveValue<int> = ..`
                             // carries its annotation as the binding's
                             // return info; the folded binding keeps it
-                            // (Mibo lost one and inferred something else)
+                            // (without it the fold can infer another type)
                             let annotation =
                                 match retInfo with
                                 | Some(SynBindingReturnInfo(typeName = t)) when isSingleLine t.Range ->
@@ -390,8 +389,7 @@ let find
                             // when the loop is followed by nothing but the
                             // accumulator itself — `let flags = .. |>
                             // Array.fold ..` with a bare `flags` line after
-                            // it, the shape left on Mibo and the compiler —
-                            // the fold expression IS the result: binding
+                            // it — the fold expression IS the result: binding
                             // and trailing use collapse into it. An
                             // annotated binding keeps its `let`, since the
                             // annotation may be what makes it typecheck
@@ -481,8 +479,7 @@ let find
                         // the appended operand must not be a NUMERIC literal:
                         // `i <- i + 1` is the most common statement in any
                         // loop, and resolving symbols for every counter
-                        // increment put this rule at the top of the
-                        // slow-analyzer list. A string accumulator never has
+                        // increment would dominate the rule's cost. A string accumulator never has
                         // a numeric literal on the right.
                         | SynExpr.App(
                             funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = lhs); argExpr = appended) when

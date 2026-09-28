@@ -82,7 +82,7 @@ let ``negative constant keeps its parens`` () =
 
 [<Fact>]
 let ``projection continuation keeps its parens`` () =
-    // review-class regression: `string s.Length` would bind differently
+    // `string s.Length` would bind differently
     assertNoSuggestion "module Test\nlet f (s: string) = string(s).Length"
 
 [<Fact>]
@@ -112,7 +112,7 @@ let ``curried continuation still parses after removal`` () =
 
 [<Fact>]
 let ``static method call keeps its parens`` () =
-    // real-world corpus regression: File.ReadAllText(path)-style .NET calls
+    // File.ReadAllText(path)-style .NET calls
     // are method calls, and the style guide parenthesizes those
     assertNoSuggestion (
         fsharp

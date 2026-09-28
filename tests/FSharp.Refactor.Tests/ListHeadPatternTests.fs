@@ -573,7 +573,7 @@ let ``FR0172 harness: the typecheck sees an incomplete match as FS0025`` () =
 [<Fact>]
 let ``FR0172: an earlier catch-all is no proof — it matches arrays and strings too`` () =
     // the arm is dead code either way (FS0025), but `| itmsHead :: _ ->`
-    // over an ARRAY does not compile, and a sweep would have written it
+    // over an ARRAY does not compile, and a sweep would write it
     for scrutinee, ty, zero in [ "xs", "int[]", "0"; "s", "string", "' '"; "xs", "int list", "0" ] do
         let source =
             $"module Test\nlet f ({scrutinee}: {ty}) =\n    match {scrutinee} with\n    | _ -> {zero}\n    | itms -> itms.[0]"

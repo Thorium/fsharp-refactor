@@ -16,9 +16,9 @@ type BufferSession(buffer: ITextBuffer, filePath: string) =
     let rootDir =
         // FSAC discovers the workspace itself (AutomaticWorkspaceInit)
         // from the root it is given. The TOPMOST solution above the file
-        // wins — rooted at the nearest project, FSAC saw one project and
-        // none of its siblings, and a file's references into them stayed
-        // unresolved. Failing a solution, the nearest project; failing
+        // wins — rooted at the nearest project, FSAC would see one project
+        // and none of its siblings, and a file's references into them would
+        // stay unresolved. Failing a solution, the nearest project; failing
         // that, the file's own directory. A configured root overrides all
         // of it.
         match FsacClient.configuredRoot () with
@@ -72,8 +72,8 @@ type BufferSession(buffer: ITextBuffer, filePath: string) =
     do
         // OFF the UI thread: this constructor runs inside tagger creation,
         // and the first session spawns a process and waits for its LSP
-        // initialize — synchronously that froze Visual Studio for the
-        // whole handshake (the responsiveness banner fired at 8s, live)
+        // initialize — synchronously that would freeze Visual Studio for
+        // the whole handshake
         System.Threading.Tasks.Task.Run(fun () ->
             try
                 match FsacClient.ensure rootDir with
@@ -95,7 +95,7 @@ type BufferSession(buffer: ITextBuffer, filePath: string) =
                         (fun _ ->
                             // a timer thread: an exception here has no
                             // handler above it and ends Visual Studio —
-                            // writing to the pipe of an exited sidecar did
+                            // writing to the pipe of an exited sidecar does
                             // exactly that. The client guards its own sends;
                             // this is the last line of defence
                             try
@@ -155,9 +155,8 @@ let private isGeneratedFile (path: string) =
     with _ ->
         false
 
-/// The CLI has refused these for a while; the editor was still offering
-/// fixes on them, which is how a vendored paket-files source came to be
-/// rewritten in SQLProvider.
+/// The CLI refuses these, and the editor must not offer fixes on them
+/// either: a vendored paket-files source is not the author's to rewrite.
 let private isAnalysable (path: string) =
     isFSharpSource path && not (isIgnoredPath path) && not (isGeneratedFile path)
 

@@ -1,9 +1,8 @@
 /// Running a generated program, so a property can compare what it DID
 /// before and after a fix. Parsing and typechecking say a rewrite is
-/// well-formed; only running it says the rewrite kept the meaning — the
-/// gap that let FR0071 hoist an array literal out of a loop, where every
-/// iteration then shared one buffer, through a suite that only ever
-/// checked the result still compiled.
+/// well-formed; only running it says the rewrite kept the meaning. An
+/// array literal hoisted out of a loop, where every iteration then shares
+/// one buffer, still compiles.
 ///
 /// One F# Interactive session for the whole run: creating it costs about
 /// a second, each program after that about 50 ms. A program is evaluated

@@ -95,9 +95,9 @@ let ``chunkBySize batching suppresses the note`` () =
 
 [<Fact>]
 let ``chunkBySize bound to a let before the loop suppresses the note`` () =
-    // management-portal DomainShared.fs writes it this way, and the guard
-    // scanned only the loop header - where the enumeration expression is a
-    // bare identifier holding no call at all. Chunking IS the accepted
+    // the usual way to write it; the guard reads the binding, since the
+    // loop header's enumeration expression is a bare identifier holding no
+    // call at all. Chunking IS the accepted
     // mitigation for N+1; flagging it reports the cure as the disease
     Assert.Empty(
         queriesIn (
@@ -192,7 +192,7 @@ let ``chunkBySize in the callback pipeline still suppresses`` () =
 
 [<Fact>]
 let ``FR0028: a nested for inside a query expression is a join, not an N+1`` () =
-    // SQLProvider's navigation tests: `for order in customer.Orders do`
+    // `for order in customer.Orders do`
     // under `query { }` becomes one SQL statement
     Assert.Empty(
         queriesIn (
@@ -261,7 +261,7 @@ let ``FR0028: a nested for over a sub-query inside a query expression is one sta
 
 [<Fact>]
 let ``a paging or batched query under a loop is one statement per batch, not N+1`` () =
-    // SQLProvider's pagination and batching tests: skip/take driven by the
+    // pagination and batching: skip/take driven by the
     // loop, or a where on the outer element's batch
     let scaffold =
         fsharp

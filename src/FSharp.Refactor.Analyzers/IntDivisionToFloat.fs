@@ -122,7 +122,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | _ -> false
 
         // `a * b / c`: a value scaled by a ratio, whole by intent as often
-        // as not (FsLemming's minimap maps every coordinate this way)
+        // as not (a minimap mapping every coordinate)
         let isProduct (e: SynExpr) =
             match stripParens e with
             | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op)) ->

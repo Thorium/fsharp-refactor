@@ -8,12 +8,10 @@
 /// also pre-sizes the backing array.
 ///
 /// A PROJECTED body (`acc.Add(x * 2)`, `acc.Add(f())`) stays a loop. The
-/// `AddRange(xs |> Seq.map (fun x -> ..))` spelling it used to get has no
-/// gain to offer: Seq.map allocates an enumerator and a closure, and
-/// AddRange over a non-ICollection source enumerates item by item exactly
-/// as the loop did — suave's `for f in xs do acc.Add(f())` came out as
-/// `acc.AddRange((List.rev xs) |> Seq.map (fun f -> f()))`, longer, slower
-/// and doubly parenthesised.
+/// `AddRange(xs |> Seq.map (fun x -> ..))` spelling has no gain to offer:
+/// Seq.map allocates an enumerator and a closure, and AddRange over a
+/// non-ICollection source enumerates item by item exactly as the loop
+/// did — the result is longer and slower.
 ///
 /// Safety rules:
 ///   - the loop body is exactly `acc.Add x` / `acc.Add(x)` of the loop
@@ -135,8 +133,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         // the RECEIVER must be the same list on every
                         // iteration: `columns[tile.Position.X].Add tile` picks
                         // a list PER element, and `columns[tile.Position.X]
-                        // .AddRange tiles` leaves `tile` undefined (Nu's
-                        // Twenty 48 Gameplay)
+                        // .AddRange tiles` leaves `tile` undefined
                         && (let receiver = textOfRange source receiverRange
 
                             patNames pat
@@ -182,7 +179,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // a projected body stays a loop: the Seq.map
                             // spelling measured no faster than the loop over
                             // a range (3-8x slower) and no faster elsewhere
-                            // (suave's `acc.Add(f())` shape)
                             | _ -> None
 
                         match replacement with

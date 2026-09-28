@@ -262,7 +262,7 @@ let ``ordinary exceptions raise freely`` () =
 
 [<Fact>]
 let ``FR0064: a match raising three or more distinct exceptions is a dispatch table`` () =
-    // FCS `SimulateException`: fault injection raises OutOfMemory,
+    // `SimulateException`-style fault injection raises OutOfMemory,
     // AccessViolation, IndexOutOfRange... one per arm, by request
     let _, reserved =
         exceptionsIn (
@@ -284,8 +284,8 @@ let ``FR0064: a match raising three or more distinct exceptions is a dispatch ta
 
 [<Fact>]
 let ``FR0064: two arms raising the same reserved type are no table`` () =
-    // illib's Array.replace stays true: one IndexOutOfRange where an
-    // ArgumentOutOfRange was meant
+    // an `Array.replace` still gets the note: one IndexOutOfRange where an
+    // ArgumentOutOfRange is meant
     let _, reserved =
         exceptionsIn (
             fsharp
@@ -545,7 +545,7 @@ let ``distinct enum values are fine`` () =
 
 [<Fact>]
 let ``FR0068: a Flags enum names bits, and a bit under two names is a table`` () =
-    // FCS ilnativeres.fs mirrors winnt.h's section characteristics
+    // a table mirroring winnt.h's section characteristics
     let _, _, enums =
         miscIn (
             fsharp
@@ -565,7 +565,7 @@ let ``FR0068: a Flags enum names bits, and a bit under two names is a table`` ()
 
 [<Fact>]
 let ``FR0068: a zero Default alias declared beside its twin is a synonym`` () =
-    // FCS ServiceLexing: `Default = 0 | Text = 0` on a public enum
+    // `Default = 0 | Text = 0` on a public enum
     let _, _, enums =
         miscIn (
             fsharp
@@ -1653,7 +1653,7 @@ let private wallClocksIn (source: string) =
 
 [<Fact>]
 let ``a non-Utc timestamp setter takes local time`` () =
-    // fsdocs: `File.SetLastWriteTime(path, DateTime.Now)` is right as
+    // `File.SetLastWriteTime(path, DateTime.Now)` is right as
     // written — the non-Utc setters take LOCAL time, and UtcNow there would
     // stamp the file hours off
     Assert.Empty(
@@ -1694,7 +1694,7 @@ let ``a non-Utc timestamp setter takes local time`` () =
 
 [<Fact>]
 let ``Now read as an instant through a member call is still a local clock read`` () =
-    // the compiler's `DateTime.Now.Ticks.ToString()` as a version number
+    // `DateTime.Now.Ticks.ToString()` as a version number
     // goes backwards at the DST fall-back; UtcNow serves as well, so the
     // rewrite is offered
     match
@@ -1714,7 +1714,7 @@ let ``Now read as an instant through a member call is still a local clock read``
         Assert.True s.FixRange.IsSome
     | other -> failwithf "Expected one wall-clock note, got %A" other
 
-    // fsdocs' `DateTime.Now.ToString("yyMMddhh")` renders the local
+    // `DateTime.Now.ToString("yyMMddhh")` renders the local
     // calendar: the note, but not the rewrite
     match
         wallClocksIn (
@@ -1922,9 +1922,9 @@ let ``a bare Enter without try is the leak note`` () =
 
 [<Fact>]
 let ``FR0123: a statement after the finally still leaves the Enter guarded`` () =
-    // FCS illib's InlineDelayInit.Value: `Monitor.Enter(this)`, a blank
-    // line, try/finally, then `value` — the trailing read nests the
-    // try/finally one Sequential deeper, and the leak note fired
+    // `Monitor.Enter(this)`, a blank line, try/finally, then `value` — the
+    // trailing read nests the try/finally one Sequential deeper, which must
+    // not raise the leak note
     let source =
         fsharp
             """
@@ -3028,8 +3028,8 @@ let private commentDocIn (source: string) =
 
 [<Fact>]
 let ``a trailing comment spelling code is not a summary`` () =
-    // Thoth.Json: `// d >> Result.map box` beside `let inline boxDecoder`
-    // notes an equivalent spelling, and became public API doc
+    // `// d >> Result.map box` beside `let inline boxDecoder` notes an
+    // equivalent spelling, and would become public API doc
     Assert.Empty(
         commentDocIn (
             fsharp
@@ -3168,7 +3168,7 @@ let ``a snake-case local renames inside its function`` () =
 
 [<Fact>]
 let ``an acronym is a word already`` () =
-    Assert.Empty(nameQuotingIn "module M\nlet private calcAPRUnitRateForLoan (x: int) = x")
+    Assert.Empty(nameQuotingIn "module M\nlet private calcAPRUnitRate (x: int) = x")
 
 [<Fact>]
 let ``four words are readable as they are`` () =
@@ -3461,7 +3461,7 @@ let ``a user-defined DateTime type never migrates`` () =
     | [ (_, None) ] -> ()
     | other -> failwithf "Expected no migration for the user type, got %A" other
 
-// ---- audit gates: cross-file confinement and classifier soundness ----
+// ---- gates: cross-file confinement and classifier soundness ----
 
 [<Fact>]
 let ``a public field is never confined, even under api-changes`` () =
@@ -3763,7 +3763,7 @@ let ``the culture fix wraps a juxtaposed argument`` () =
 [<Fact>]
 let ``the WebSocket handshake's SHA-1 is the protocol, not a choice`` () =
     // RFC 6455: Sec-WebSocket-Accept is SHA-1 of the key and this GUID, and
-    // nothing else will do (Suave's WebSocket.fs spells the GUID)
+    // nothing else will do
     let tree, sourceText =
         parse (
             fsharp
@@ -3798,7 +3798,7 @@ let ``the WebSocket handshake's SHA-1 is the protocol, not a choice`` () =
 
 [<Fact>]
 let ``SHA-1 in a match arm whose sibling constructs SHA-256 is a format option`` () =
-    // the compiler's --checksumalgorithm (ilwritepdb, ilwrite): the strong
+    // a --checksumalgorithm-style option: the strong
     // algorithm is on offer in the next arm, SHA-1 is what the caller asked
     let tree, sourceText =
         parse (
@@ -4213,7 +4213,7 @@ let ``a return-bang around a single-return task is a no-op machine`` () =
 
 [<Fact>]
 let ``nested no-op machines unwind layer by layer`` () =
-    // the management-portal damage shape: each pass strips one layer
+    // each pass strips one layer
     let source =
         fsharp
             """
@@ -4237,7 +4237,7 @@ let ``nested no-op machines unwind layer by layer`` () =
 [<Fact>]
 let ``a single return-bang arm is never wrapped`` () =
     // wrapping `| A -> return! X` moves nothing out of the machine and
-    // once re-wrapped itself every pass
+    // would re-wrap itself every pass
     let source =
         fsharp
             """
@@ -4282,8 +4282,7 @@ let ``a single return-bang arm is never wrapped`` () =
 [<Fact>]
 let ``FR0013 leaves parens alone inside a shorthand lambda`` () =
     // `_.` demands an ATOMIC body: `_.reshape([| n |])` compiles and
-    // `_.reshape [| n |]` does not. Found on toro, where six of these were
-    // applied, broke the build and were rolled back
+    // `_.reshape [| n |]` does not
     let source =
         fsharp
             """
@@ -4300,7 +4299,7 @@ let ``FR0013 leaves parens alone inside a shorthand lambda`` () =
 let ``FR0130 withholds where a signature declares the value and cannot be read`` () =
     // `[<Literal>]` is part of what a signature must agree on, so annotating
     // only the implementation gives "The literal constant values and/or
-    // attributes differ" (found on Fable's fcs-fable, 176 signature files).
+    // attributes differ".
     // With the cross-file parser installed the signature is edited in step
     // (SignatureCoEditTests); without one, as in an editor, the fix for a
     // non-private value is withheld rather than offered half-done
@@ -4331,7 +4330,6 @@ let ``FR0130 withholds where a signature declares the value and cannot be read``
 let ``FR0070 keeps a record a class when its fields are read inside a quotation`` () =
     // a struct local captured in a quotation lambda cannot have a field
     // read — that takes its address, which quotations forbid
-    // (Linq.Expression.Optimizer's query tests)
     let source =
         fsharp
             """
@@ -4470,7 +4468,7 @@ let ``FR0070: a record the file boxes, locks or null-tests stays a class`` () =
 
 [<Fact>]
 let ``FR0121: a same-day comparison against a Date is not a calendar cut`` () =
-    // FSharp.Data's TimeOnly probe: TryParse fills in today's date, and the
+    // a TimeOnly probe: TryParse fills in today's date, and the
     // check `dt.Date <> DateTime.Today` asks whether a real date was given
     Assert.Empty(
         wallClocksIn (
@@ -4501,7 +4499,7 @@ let ``FR0121: Today used as a value is still a calendar cut`` () =
 
 [<Fact>]
 let ``FR0123: a guarded Enter whose body binds in a computation is not called a leak`` () =
-    // SQLProvider's providers: Enter, try ... finally Exit around a task
+    // Enter, try ... finally Exit around a task
     // body — the shape cannot leak, only the lock rewrite is withheld
     match
         monitorLocksIn (
@@ -4527,12 +4525,11 @@ let ``FR0123: a guarded Enter whose body binds in a computation is not called a 
         Assert.Equal(None, s.Fix)
     | other -> failwithf "Expected one guarded lock note, got %A" other
 
-// ---- widenings from the C:\git sweep ----
+// ---- widenings ----
 
 [<Fact>]
 let ``FR0068: enum aliases spelled with unsigned suffixes are duplicates too`` () =
-    // a PLAIN enum (the [<Flags>] table this shape came from is now
-    // exempt): `16384u` keys the same as `16384`, so the second name for
+    // a PLAIN enum (a [<Flags>] table is exempt): `16384u` keys the same as `16384`, so the second name for
     // the value is still the duplicate
     let _, _, enums =
         miscIn (
@@ -5009,7 +5006,7 @@ let ``FR0127: a connection string mentioning test anywhere is a fixture, not a l
             fsharp
                 """
                 module Test
-                let cs = "Data Source=db.example.net;Initial Catalog=welendus_test_database;User Id=app;Password=W3lf0rd!Prod"
+                let cs = "Data Source=db.example.net;Initial Catalog=app_test_database;User Id=app;Password=W3lf0rd!Prod"
                 let cs2 = "Server=.;Database=x;User Id=sa;Password=TestW3lf0rd!"
                 """
         )
@@ -5047,7 +5044,7 @@ let ``FR0124: Logary fields set by other stages are not missing, and setFieldVal
 
 [<Fact>]
 let ``FR0121: a translator arm that maps a member named Now to the clock is not a clock read`` () =
-    // SQLProvider's expression-tree evaluator reproduces DateTime.Now on
+    // an expression-tree evaluator reproduces DateTime.Now on
     // purpose: `when me.Member.Name = "Now" -> DateTime.Now` is a table
     let source =
         fsharp
@@ -5067,8 +5064,8 @@ let ``FR0121: a translator arm that maps a member named Now to the clock is not 
 
 [<Fact>]
 let ``FR0072: a hidden case another union in scope also names is written qualified`` () =
-    // suave's Http2.fs matched a Result; `Error` there is ScanResult.Error
-    // from an earlier file of the project, and a bare `Error _` typed wrong
+    // a match on a Result where `Error` is ScanResult.Error from an earlier
+    // file of the project: a bare `Error _` types wrong
     let lib =
         fsharp
             """
@@ -5107,12 +5104,12 @@ let ``FR0072: a hidden case nobody else names stays bare`` () =
             """)
         "Error _"
 
-// ---- FR0035 visibility gate on the in-place Set conversion (fsharplint) ----
+// ---- FR0035 visibility gate on the in-place Set conversion ----
 
 [<Fact>]
 let ``FR0035: a PUBLIC startup list keeps its type and gets the HashSet companion`` () =
-    // fsharplint's public `testMethodAttributes` list, in a NuGet library,
-    // was converted to a Set<string> — an API change without --api-changes
+    // a public list in a NuGet library converted to a Set<string> is an
+    // API change without --api-changes
     let source =
         fsharp
             """
@@ -5364,7 +5361,7 @@ let ``FR0035: sensor thresholds holding a NaN never become a Set`` () =
         assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one contains suggestion, got %A" other
 
-// ---- FR0132 comment and file guards (suave, test fixtures) ----
+// ---- FR0132 comment and file guards (test fixtures, markers) ----
 
 [<Fact>]
 let ``FR0132: a test file's fixtures keep their trailing notes`` () =
@@ -5390,7 +5387,7 @@ let ``FR0132: a test attribute marks the file without a framework open`` () =
 
 [<Fact>]
 let ``FR0132: a punctuation marker is an annotation, not a summary`` () =
-    // suave: `// ^ Index is out of range`, `// -- node no.`
+    // `// ^ Index is out of range`, `// -- node no.`
     Assert.Empty(
         commentDocIn (
             fsharp
@@ -5416,12 +5413,12 @@ let ``FR0132: a single word or a short note stays in the margin`` () =
     Assert.Empty(commentDocIn "module M\nlet legacy (x: int) = x // unused")
     Assert.Empty(commentDocIn "module M\nlet legacy (x: int) = x // old api")
 
-// ---- FR0071 only work is hoisted (Mibo's Primitive3D) ----
+// ---- FR0071 only work is hoisted ----
 
 [<Fact>]
 let ``FR0071: a bare identifier copy does no work and stays in the loop`` () =
-    // `let ny = sinPhi` was hoisted out of the inner loop, separated from
-    // the `nx`/`nz` it belongs with
+    // hoisting `let ny = sinPhi` out of the inner loop would separate it
+    // from the `nx`/`nz` it belongs with
     Assert.Empty(
         invariantsIn (
             fsharp
@@ -5452,12 +5449,12 @@ let ``FR0071: a constant copy stays in the loop`` () =
     )
 
 
-// ---- FR0131 RecTailCall: byref parameters (F# compiler TaggedCollections.fs) ----
+// ---- FR0131 RecTailCall: byref parameters ----
 
 [<Fact>]
 let ``FR0131 a byref parameter passed along by address is never attributed`` () =
-    // the F# compiler's TaggedCollections.fs `tryGetValue ... (v: byref<'Value>)`
-    // recurses with `&v`: the compiler's own tail-call checker refuses byref
+    // `tryGetValue ... (v: byref<'Value>)` recursing with `&v`: the
+    // compiler's own tail-call checker refuses byref
     // arguments, so [<TailCall>] there manufactures the FS3569 it guards against
     let source =
         fsharp
@@ -5510,7 +5507,7 @@ let ``FR0131 the byref-free accumulator loop still gains TailCall`` () =
 
 [<Fact>]
 let ``FR0123: the lock lambda closes at the end of its last line`` () =
-    // the compiler's illib.fs: a `)` on a line of its own is not the layout
+    // a `)` on a line of its own is not the layout
     // fantomas --check accepts; it belongs after the body's last line
     let source =
         fsharp
@@ -5690,7 +5687,7 @@ let ``FR0123: a try/finally releasing the receiver after or around the acquire i
                     }
             """
 
-    // a `let` before the try, and a `let!` whose body holds the try (Fuuga)
+    // a `let` before the try, and a `let!` whose body holds the try
     Assert.Empty(leaksIn source)
 
 [<Fact>]
@@ -5764,8 +5761,8 @@ let ``FR0072: two short hidden cases share the wildcard's line`` () =
 
 [<Fact>]
 let ``FR0072: hidden cases past 100 columns take a line each under the bar`` () =
-    // one joined line ran well past 100 columns on a qualified union; each
-    // case now sits under the clause's `|`, the last one carrying the `->`
+    // one joined line would run well past 100 columns on a qualified union;
+    // each case sits under the clause's `|`, the last one carrying the `->`
     assertExpanded
         (fsharp
             """
@@ -5916,7 +5913,7 @@ let ``FR0151: WebException is reported without a fix`` () =
 
 [<Fact>]
 let ``FR0151: AggregateException and FileNotFoundException handlers reading only Message are noted`` () =
-    // CR0070's rows, back-ported: a Task.Wait wraps the failures in
+    // the same rows as CR0070: a Task.Wait wraps the failures in
     // InnerExceptions, and a FileNotFoundException's path is in FileName
     let aggregate =
         fsharp
@@ -6088,8 +6085,7 @@ let ``FR0151: a rethrowing GetTypes handler is offered the types that loaded`` (
 
 [<Fact>]
 let ``FR0151: a handler guarding on Response is already informed`` () =
-    // the idiomatic shape across the corpus: ClearBank.Common.fs, CarmelNet,
-    // welendus and management-portal all write the guard this way
+    // the idiomatic way to write the guard
     let source =
         fsharp
             """

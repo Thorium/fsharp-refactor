@@ -497,7 +497,7 @@ let ``FR0164: a removal from a dictionary or set, an edit to another collection,
 
     Assert.Empty(enumerationMutationsIn source)
 
-// ---- the review's regressions ----
+// ---- regressions ----
 
 [<Fact>]
 let ``FR0160: a named argument stands the fix down, and a curried failwithf is one note`` () =
@@ -974,8 +974,8 @@ let ``FR0169: a nested function's and a member's seq parameter are read in their
 
 [<Fact>]
 let ``FR0169: an inferred seq parameter and a lazily built local are walked twice too; cheap sources are not`` () =
-    // SQLProvider's `itms`: a Seq.collect chain tested for emptiness and then
-    // read - the second walk repeats the reflection
+    // a lazy Seq chain tested for emptiness and then read - the second
+    // walk repeats the whole pipeline
     let source =
         fsharp
             """

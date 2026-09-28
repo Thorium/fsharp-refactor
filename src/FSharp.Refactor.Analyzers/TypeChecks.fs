@@ -80,9 +80,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
     // `| :? T as x when x.GetType() = typeof<T>` — the guard narrows a
     // type test to EXACTLY T, excluding subtypes on purpose: the `:?` the
-    // note would offer is the very test it refines (FCS FileSystem.fs
-    // retries a locked file only on a plain IOException, never on
-    // FileNotFound or PathTooLong). Any clause with a `when` counts: the
+    // note would offer is the very test it refines (a retry on a plain
+    // IOException only, never on FileNotFound or PathTooLong). Any clause with a `when` counts: the
     // guard may sit deeper than the top-level comparison.
     let exactTypeGuards =
         let clausesOf (e: SynExpr) =

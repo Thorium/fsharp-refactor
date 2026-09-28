@@ -173,9 +173,9 @@ let private isSettableProperty (check: FSharpCheckFileResults) (source: ISourceT
 /// `ChatResponse(assistantMsg: ChatMessage)` cannot take named properties
 /// appended to it: after the `:` the parser is reading a TYPE, and the comma
 /// that would introduce the first property ends it — "Unexpected symbol ','
-/// in expression", then the rest of the file fails to parse. Verified
-/// directly: `Resp(m: Msg, Model = "a")` does not compile, while
-/// `Resp(m, Model = "a")` does. Found on Fuuga's McpToolRouting.
+/// in expression", then the rest of the file fails to parse:
+/// `Resp(m: Msg, Model = "a")` does not compile, while
+/// `Resp(m, Model = "a")` does.
 let private hasAnnotatedArgument (e: SynExpr) =
     let rec annotated (arg: SynExpr) =
         match arg with
@@ -192,9 +192,9 @@ let private hasAnnotatedArgument (e: SynExpr) =
 /// Is the construction's argument list PARENTHESISED — `T(a)`, `T()`,
 /// `new T(a, b)`? Named properties splice in before a closing paren, and
 /// `ProcessStartInfo "dotnet"` — juxtaposed, no parens — has none: the
-/// splice produced `ProcessStartInfo "dotnet"(Arguments = ...)`, "This value
-/// is not a function and cannot be applied", and every later use of the
-/// value lost its type (Fable's MSBuildCrackerResolver). Such a call is left
+/// splice would produce `ProcessStartInfo "dotnet"(Arguments = ...)`, "This
+/// value is not a function and cannot be applied", and every later use of
+/// the value would lose its type. Such a call is left
 /// alone rather than re-shaped into a parenthesised one.
 let private hasParenthesisedArguments (e: SynExpr) =
     let parenthesised (arg: SynExpr) =
@@ -208,9 +208,9 @@ let private hasParenthesisedArguments (e: SynExpr) =
     | SynExpr.New(expr = arg) -> parenthesised arg
     | _ -> false
 
-/// Wrap once the one-line form would run past this column. Seven
-/// properties spliced onto one line made a 380-character line on the
-/// sample this rule was written for — correct, compiling, and unreadable.
+/// Wrap once the one-line form would run past this column. Many
+/// properties spliced onto one line make a line that is correct,
+/// compiling, and unreadable.
 [<Literal>]
 let private WrapColumn = 100
 
@@ -226,7 +226,7 @@ let private WrapColumn = 100
 ///
 /// The hanging form (`let psi = ProcessStartInfo(` with the properties
 /// under the open paren, the `)` dangling) is what `fantomas --check`
-/// rejected on the compiler's ShadowPass.fs.
+/// rejects.
 type private Layout =
     | OneLine of string
     | Wrapped of string
@@ -238,8 +238,8 @@ let private withNamedArgs (ctorText: string) (startColumn: int) (letColumn: int)
     let trimmed = ctorText.TrimEnd()
 
     /// Index of the `(` matching the final `)`, or -1. Text matching is not
-    /// enough here: `T( )` does not end with "()" and the naive branch
-    /// emitted `T( , Age = 42)`, which does not compile.
+    /// enough here: `T( )` does not end with "()", and a text match would
+    /// emit `T( , Age = 42)`, which does not compile.
     let openIndex =
         if not (trimmed.EndsWith ')') then
             -1
@@ -295,7 +295,7 @@ let private withNamedArgs (ctorText: string) (startColumn: int) (letColumn: int)
 /// A named property's value: parenthesised unless atomic. `=` in a named
 /// property binds tighter than a cast, so `Connection = con :?> SqlConnection`
 /// parses as `(Connection = con) :?> SqlConnection` — an equality against an
-/// undefined `Connection`, which is exactly the error SQLProvider reported.
+/// undefined `Connection`.
 /// `null` and literals — `-1` included — are atoms here and never gain the
 /// parentheses the original did not have.
 let private valueText (source: ISourceText) (rhs: SynExpr) =
@@ -341,8 +341,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                    isSingleLine rhs.Range && not (mentions index name.idText rhs.Range))
                             // the typed lookups go LAST: each costs an FCS symbol
                             // resolution, and only a binding actually followed by
-                            // property sets can reach them. From the `when` clause
-                            // `isConstruction` charged that price for every
+                            // property sets can reach them. In the `when` clause
+                            // `isConstruction` would charge that price for every
                             // single-line `let x = f a` in the file.
                             && isConstruction check source ctor
                             && sets |> List.forall (fun (p, _) -> isSettableProperty check source p)
@@ -354,8 +354,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // a greedy last argument — `T(fun _ -> false)` — would
                             // swallow the named properties appended after it
                             // (`fun _ -> false, Hosted = true` is a lambda returning
-                            // a tuple: the TypeProviders SDK's
-                            // TypeProviderConfig); it gets its own parentheses
+                            // a tuple); it gets its own parentheses
                             let ctorText =
                                 let lastArgument =
                                     match ctor with

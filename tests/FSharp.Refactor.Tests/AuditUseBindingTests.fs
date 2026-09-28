@@ -1,4 +1,4 @@
-/// FR0075 (UseBinding) escape shapes from the 0.8.2-to-HEAD audit (A1, B4):
+/// FR0075 (UseBinding) escape shapes (A1, B4):
 /// a value derived through the binder and bound to a local, a method group
 /// handed on, a self-active object, a wrapper over a foreign resource, and
 /// a `let` inside a computation expression whose builder has no `Using`.

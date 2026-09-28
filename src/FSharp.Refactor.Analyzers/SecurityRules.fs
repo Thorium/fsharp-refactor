@@ -415,7 +415,7 @@ let find
 
     // RFC 6455 mandates SHA-1 for the WebSocket handshake: Sec-WebSocket-
     // Accept is SHA-1 of the key and this GUID, and nothing else will do.
-    // A file spelling the GUID is a WebSocket server (Suave), and its SHA1
+    // A file spelling the GUID is a WebSocket server, and its SHA1
     // is the protocol, not a choice
     let webSocketHandshake =
         lazy
@@ -427,8 +427,8 @@ let find
                  | _ -> false))
 
     // SHA1 constructed in one arm of a match whose sibling arm constructs
-    // SHA256 or stronger: a format option the caller chose — the F#
-    // compiler's --checksumalgorithm — with the strong algorithm already
+    // SHA256 or stronger: a format option the caller chose — a
+    // `--checksumalgorithm` switch, say — with the strong algorithm already
     // on offer
     let strongerSibling (path: SyntaxNode list) =
         let strongHash (names: Ident list) =

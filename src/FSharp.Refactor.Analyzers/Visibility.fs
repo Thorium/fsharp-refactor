@@ -74,9 +74,6 @@ let isPrivate (path: SyntaxNode list) (accessibilities: SynAccess option list) =
 /// `[<Struct>]` on the type, an active pattern's return type, a union case's
 /// field names — for everything it declares, and it declares every internal
 /// declaration as well as every public one. Only private escapes it.
-/// FR0022, FR0069, FR0093 and FR0130 each found this separately on
-/// fcs-fable, which carries 176 signature files; the gate they share now
-/// asks once, so FR0011, FR0016 and FR0134 need not find it a fifth time.
 let private signatureBound (path: SyntaxNode list) =
     path
     |> List.tryPick (fun node ->
@@ -190,10 +187,10 @@ let isInScope (allowApiChanges: bool) (path: SyntaxNode list) (accessibilities: 
 /// the only way to be sure beside a signature file.
 ///
 /// "Private is the one visibility a signature file never mentions" is what
-/// the plain gate assumes, and it is not true: `val private` is legal, and
-/// Deedle's vendored FSharp.Data writes it. A private active pattern
-/// declared in the .fsi took FR0011's `[<return: Struct>]` on the
-/// implementation alone and stopped the project compiling. Rules that can
+/// the plain gate assumes, and it is not true: `val private` is legal. A
+/// private active pattern declared in the .fsi that takes FR0011's
+/// `[<return: Struct>]` on the implementation alone stops the project
+/// compiling. Rules that can
 /// name what they are about should use this one; the plain gate remains
 /// for the rules whose subject has no single name to look for.
 let isInScopeNamed
@@ -252,9 +249,7 @@ let isInScopeWithSignatureEdits
 /// effectively-internal declarations. A PUBLIC function's callers can sit
 /// in a sibling project of the same repository, or in another repository
 /// entirely; the scan cannot see them, so "every use covered" would pass
-/// vacuously and the edit would break them (found the hard way: currying
-/// SQLProvider.Common's public QueryFactory.createRelated broke
-/// SQLProvider.Runtime).
+/// vacuously and the edit would break them.
 ///
 /// Exported is the public remainder, and it is not a scan the analyzer
 /// may open on its own: the host opens it only after READING every
@@ -296,7 +291,7 @@ let scopeMatches (scope: Scope) (path: SyntaxNode list) (accessibility: SynAcces
 /// tables, and the per-project verification build does not compile the
 /// caller either (a solution's projects are processed in turn, not in
 /// dependency order), so a definition reshaped behind such a caller's back
-/// broke it with nothing to say so. The host that can read those
+/// would break it with nothing to say so. The host that can read those
 /// compilations says here what it read; a rule reshapes a declaration only
 /// as far as the reading reaches, and withholds the rest.
 type Outside =
@@ -323,8 +318,8 @@ type Outside =
     }
 
 /// The host that has read nothing beyond the compilation itself, which is
-/// every editor host and a script target: internal declarations reshape
-/// as before, public ones never.
+/// every editor host and a script target: internal declarations reshape,
+/// public ones never.
 let unknownOutside =
     {
         Uses = (fun _ -> [||])

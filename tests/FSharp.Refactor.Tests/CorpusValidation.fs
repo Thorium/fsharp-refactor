@@ -4,8 +4,8 @@
 ///   FSREF_CORPUS_ROOTS = C:\git\RepoA;C:\git\RepoB
 ///       runs every parse-only fix rule over each .fs file under the
 ///       roots, applies every suggested edit individually, and verifies
-///       the patched file still parses — the guard that caught fixes
-///       splicing #if/#else/#endif blocks apart
+///       the patched file still parses — the guard against fixes that
+///       splice #if/#else/#endif blocks apart
 ///
 ///   FSREF_APPLY_ARGS = --project|C:\path\X.fsproj|--codes|FR0002
 ///       runs the full apply tool (arguments separated by `|`) through the

@@ -242,8 +242,8 @@ let ``a function called inside an #if region keeps its shape: the other branch's
 
 [<Fact>]
 let ``a function a string literal names keeps its shape: a template's calls are not in any symbol table`` () : unit =
-    // SQLProvider.Fable's CodeGen writes `Row.text r "Name"` from a string;
-    // FR0091 reordered Row.text and the generator kept emitting the old order
+    // a code generator writing `Row.text r "Name"` from a string: reordering
+    // Row.text leaves the generator emitting the old order
     withSolution false (fun solution ->
         let root = Path.GetDirectoryName solution
         let library = Path.Combine(root, "src", "Lib", "Library.fs")
@@ -314,10 +314,10 @@ let ``a project whose own sources branch on the configuration gets the other con
 
 [<Fact>]
 let ``a script leaves the #loaded sources of a project to that project`` () : unit =
-    // Owin.Compression: Script.fsx `#load`s the net48 CompressionModule.fs,
-    // and the script's sweep - typechecked as .NET Core - wrote
-    // Convert.ToHexString into it. The sweep dedup did not help: the file
-    // carries an `#if`, so it is keyed on defines, and a script's differ
+    // a script `#load`s a net48 source file; the script's sweep -
+    // typechecked as .NET Core - would write Convert.ToHexString into it.
+    // The sweep dedup does not cover it: the file carries an `#if`, so it
+    // is keyed on defines, and a script's differ
     withSolution false (fun solution ->
         let root = Path.GetDirectoryName solution
         let library = Path.Combine(root, "src", "Lib", "Library.fs")
@@ -380,8 +380,8 @@ let ``a C# project referencing the library keeps its public functions as they ar
         Assert.Contains("Consumer.csproj references this project and cannot be read", output))
 
 /// A solution where a second project compiles the library's source
-/// DIRECTLY (a `<Compile Include="../Lib/Library.fs">` link, SQLProvider's
-/// provider projects' shape) beside a file of its own that calls the
+/// DIRECTLY (a `<Compile Include="../Lib/Library.fs">` link) beside a file
+/// of its own that calls the
 /// shared function; `broken` gives that own file a type error.
 let private writeLinkedSolution (root: string) (broken: bool) =
     let write (relative: string) (content: string) =
@@ -532,7 +532,7 @@ let private runsScript (script: string) =
 
 [<Fact>]
 let ``a script that #r's the built assembly is rewritten together with the public function`` () : unit =
-    // farmer's amortisationFaq.fsx: read against the sources through the
+    // read against the sources through the
     // redirected reference, the script's calls match like a sibling's
     withScriptSolution false (fun project ->
         let root =

@@ -229,7 +229,7 @@ let ``a single indexed access outside any loop is fine`` () =
 
 [<Fact>]
 let ``FR0102: a receiver bound by a match arm's pattern inside the loop is per-element`` () =
-    // FCS SemanticClassification: `| Item.AnonRecdField(_, tys, idx, _) ->
+    // `| Item.AnonRecdField(_, tys, idx, _) ->
     // tys[idx]` inside a per-element callback binds a fresh `tys` each time
     let source =
         fsharp
@@ -250,7 +250,7 @@ let ``FR0102: a receiver bound by a match arm's pattern inside the loop is per-e
 
 [<Fact>]
 let ``FR0102: a list's length read per iteration walks the list every time`` () =
-    // Mibo Terrain: `count / (points.Length - 1)` per segment
+    // `count / (points.Length - 1)` per segment
     let source =
         fsharp
             """
@@ -506,10 +506,9 @@ let ``a match pattern rebinding the index keeps the loop`` () =
 
 [<Fact>]
 let ``an index used as a value inside an F#6 indexer-set is seen`` () =
-    // from Fuuga's EvalTests: the SDK walker skips BOTH sides of
-    // `logits[...] <- v` (SynExpr.Set), so `int64 pos` was invisible and
-    // the loop got rewritten with `pos` still referenced. The AstIndex
-    // graft now lifts Set's children.
+    // the SDK walker skips BOTH sides of `logits[...] <- v` (SynExpr.Set),
+    // so without the AstIndex graft lifting Set's children `int64 pos` is
+    // invisible and the loop is rewritten with `pos` still referenced.
     Assert.Empty(
         indexedLoopsIn (
             fsharp
@@ -626,7 +625,7 @@ let ``chained member access off the index - F#6 spelling`` () =
 
 [<Fact>]
 let ``an indexed loop that takes the element's address keeps its index`` () =
-    // Nu's Renderer2d: `let sprite = &sprites[index]` wants an inref into
+    // `let sprite = &sprites[index]` wants an inref into
     // the array; a `for sprite in sprites` element is a copy, and every
     // `&sprite.Field` after it mismatches ByRefKinds.In
     let tree, sourceText =
@@ -648,7 +647,7 @@ let ``an indexed loop that takes the element's address keeps its index`` () =
 
 [<Fact>]
 let ``FR0102: an index bounded by a small modulus or a small literal loop is a constant walk`` () =
-    // Kasino: `Cards.allRanks[i % 13]` in a card builder, and short fixed loops
+    // `Cards.allRanks[i % 13]` in a card builder, and short fixed loops
     Assert.Empty(
         listIndexingIn (
             fsharp
@@ -681,8 +680,8 @@ let ``FR0102: a large modulus still walks the list`` () =
 
 [<Fact>]
 let ``FR0101: the element is item, never a name bound around the loop`` () =
-    // Mibo's Spatial2DTests: `for x in 0 .. 4 do` around the loop, and the
-    // `x` the rewrite chose shadowed it; the outer loop variable is not
+    // `for x in 0 .. 4 do` around the loop: an element named `x` would
+    // shadow it; the outer loop variable is not
     // mentioned inside the loop, so only the scope walk can see it
     assertIndexedLoop
         (fsharp

@@ -74,7 +74,7 @@ let ``a framework region is no configuration conditional`` () =
 
 [<Fact>]
 let ``a directive quoted in a comment or a string is text`` () =
-    // the regex this replaced read both as `#if DEBUG`
+    // a regex over lines would read both as `#if DEBUG`
     withFile "module M\n(*\n#if DEBUG\n*)\nlet s = \"\"\"\n#if DEBUG\n\"\"\"\nlet f x = x" (fun path ->
         Assert.Equal(Some [], Text.directiveRegionsOf path)
         Assert.False(Text.hasConfigurationConditional path))

@@ -1,14 +1,13 @@
-/// Real-repo sweep findings A1, A2, A5: shape-changing rules inside an
-/// argument the compiler quotes into a LINQ expression tree (SqlHydra),
-/// FR0012's `isNull` landing on a file's own `isNull` (Earcut), and the
-/// comparison flip on a unit-of-measure float (svg_path).
+/// A1, A2, A5: shape-changing rules inside an argument the compiler
+/// quotes into a LINQ expression tree, FR0012's `isNull` landing on a
+/// file's own `isNull`, and the comparison flip on a unit-of-measure float.
 module FSharp.Refactor.Tests.AuditExprTreeTests
 
 open Xunit
 open FSharp.Refactor
 open FSharp.Refactor.Tests.Parsing
 
-// ---- A1: SqlHydra-shaped builder whose custom operations take
+// ---- A1: a query builder whose custom operations take
 // `[<ProjectionParameter>] Expression<Func<'T, bool>>` ----
 
 let private builderStub =
@@ -67,8 +66,8 @@ let ``the builder stub itself typechecks`` () =
 
 [<Fact>]
 let ``FR0010 leaves a None comparison inside a where projection alone`` () =
-    // SqlHydra Npgsql/QueryUnitTests.fs(113,19): `where (a.addressline2 <> None)`
-    // became `where (a.addressline2 |> Option.isSome)` and the visitor threw
+    // `where (a.addressline2 <> None)` as
+    // `where (a.addressline2 |> Option.isSome)` makes the visitor throw
     let src =
         builderStub
         + "let q = select { for a in table<Address> do where (a.AddressLine2 <> None) }"
@@ -77,7 +76,7 @@ let ``FR0010 leaves a None comparison inside a where projection alone`` () =
 
 [<Fact>]
 let ``FR0010 leaves a None comparison inside a having projection alone`` () =
-    // SqlHydra Npgsql/QueryUnitTests.fs(1976,20): `having (maxBy a.addressline2 = None)`
+    // `having (maxBy a.addressline2 = None)`
     let src =
         builderStub
         + "let q = select { for a in table<Address> do having (maxBy a.AddressLine2 = None) }"
@@ -119,7 +118,7 @@ let ``FR0010 still rewrites the same comparison inside query`` () =
 
     match simplifications src with
     // the query variable's type is not settled at the comparison, so the
-    // module spelling keeps inference going — as it did before
+    // module spelling keeps inference going
     | [ s ] -> Assert.Equal("a.AddressLine2 |> Option.isSome", s.ReplacementText)
     | other -> failwithf "expected one suggestion, got %A" other
 
@@ -134,7 +133,7 @@ let ``FR0010 still rewrites the same comparison inside a quotation`` () =
 [<Fact>]
 let ``FR0010 parse-only cannot see the callee and keeps its old behaviour`` () =
     // the gate needs the typed callee; without check results an emptiness
-    // rewrite inside `where` is what it always was
+    // rewrite inside `where` is still offered
     let src =
         builderStub
         + "let q = select { for a in table<Address> do where (a.City |> Seq.length > 0) }"
@@ -152,7 +151,7 @@ let ``FR0010 leaves an emptiness rewrite inside a where projection alone when ty
 
 [<Fact>]
 let ``FR0012 leaves a null comparison inside a where projection alone`` () =
-    // SqlHydra SqlServer/QueryNullableUnitTests.fs(62,19): `where (a.AddressLine2 <> null)`
+    // `where (a.AddressLine2 <> null)`
     let src =
         builderStub
         + "let q = select { for a in table<NullableEntity> do where (a.Line2 <> null) }"
@@ -161,7 +160,6 @@ let ``FR0012 leaves a null comparison inside a where projection alone`` () =
 
 [<Fact>]
 let ``FR0012 leaves a De Morgan shape inside a where projection alone`` () =
-    // SqlHydra SqlServer/QueryNullableUnitTests.fs(51,19)
     let src =
         builderStub
         + "let q = select { for o in table<NullableEntity> do where (not o.QuestionAnswered.Value || not o.QuestionAnswered.HasValue) }"
@@ -212,9 +210,8 @@ let ``FR0012 still rewrites a lambda handed to an Enumerable method`` () =
 
 [<Fact>]
 let ``FR0034 leaves an IsSome-and-Value chain inside a where projection alone`` () =
-    // SqlHydra SqlServer/QueryUnitTests.fs(41,17):
-    // `where (cityFilter.IsSome && a.City = cityFilter.Value)` became
-    // `Option.exists`, an NMethodCall the visitor rejects
+    // `where (cityFilter.IsSome && a.City = cityFilter.Value)` as
+    // `Option.exists` is an NMethodCall the visitor rejects
     let src =
         builderStub
         + "let q (cityFilter: string option) = select { for a in table<Address> do where (cityFilter.IsSome && a.City = cityFilter.Value) }"
@@ -237,8 +234,8 @@ let ``FR0034 still rewrites the IsSome-and-Value chain outside`` () =
 
 [<Fact>]
 let ``FR0012 withholds isNull when the file defines its own isNull`` () =
-    // Earcut.fs:59 `let inline internal isNull (node: Node)` — the rewrite
-    // `isNull holes` resolved to it and did not compile
+    // `let inline internal isNull (node: Node)` — the rewrite
+    // `isNull holes` would resolve to it and not compile
     let src =
         "module Test\n"
         + "type Node(i: int) =\n    member _.I = i\n"
@@ -339,7 +336,7 @@ let private measure = "module Test\n[<Measure>] type length\n"
 
 [<Fact>]
 let ``FR0012 keeps the negated ordering on an annotated measure float`` () =
-    // svg_path Transform.fs:49 `if not (tolerance >= 0.0<length>)` is the
+    // `if not (tolerance >= 0.0<length>)` is the
     // NaN-rejecting guard; `tolerance < 0.0<length>` lets NaN through
     let src =
         measure
@@ -349,7 +346,7 @@ let ``FR0012 keeps the negated ordering on an annotated measure float`` () =
 
 [<Fact>]
 let ``FR0012 keeps the negated ordering on an inferred measure float`` () =
-    // the parameter is unannotated in svg_path; its type is inferred from
+    // the parameter is unannotated; its type is inferred from
     // the literal it is compared with
     let src =
         measure + "let f tolerance = if not (tolerance >= 0.0<length>) then 1 else 2"

@@ -50,8 +50,8 @@ let private versiondRegex = Regex @"Version=(\d+)\."
 
 /// [<TailCall>] ships in FSharp.Core 8.0 — in EVERY FSharp.Core the file
 /// compiles against: a multi-targeted project's wide pass is asked about
-/// the narrowest target's too (FsToolkit's List.fs, offered five under
-/// net9.0 and put back by its netstandard2.0 build on FSharp.Core 6).
+/// the narrowest target's too (a netstandard2.0 build on FSharp.Core 6
+/// has no such attribute).
 let private coreHasAttribute (check: FSharpCheckFileResults) (fileName: string) =
     let projectMinAllows =
         match CapabilityFix.minFSharpCoreMajorFor check.ProjectContext.ProjectOptions.ProjectFileName fileName with
@@ -79,8 +79,8 @@ let rec private spine (args: SynExpr list) (e: SynExpr) =
 /// prefix, postfix, qualified). The compiler's own tail-call checker
 /// refuses a recursive call that passes a byref along, so [<TailCall>] on
 /// such a function manufactures the very FS3569 it is meant to guard
-/// against — the F# compiler's TaggedCollections.fs `tryGetValue ... (v:
-/// byref<'Value>)` was attributed that way. Read from the source text so
+/// against — `tryGetValue ... (v: byref<'Value>)` is such a function.
+/// Read from the source text so
 /// no type-syntax shape slips past.
 let private byrefPattern = Regex(@"\b(byref|inref|outref)\b")
 

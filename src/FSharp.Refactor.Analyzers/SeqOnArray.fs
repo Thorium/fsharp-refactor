@@ -118,7 +118,7 @@ let private vectorisableElements = set [ "System.Int32"; "System.Int64" ]
 
 /// On a REFERENCE array `contains` gets no rule at all: Seq.contains
 /// measures 938ns against Array.contains at 1024ns, so the "obvious"
-/// conversion is a small LOSS. (On .NET 8 it was a win — which is exactly
+/// conversion is a small LOSS. (On .NET 8 it is a win — which is exactly
 /// why the benchmarks target the runtime the customer actually runs.)
 ///
 /// Is this `Seq.f` the REAL FSharp.Core Seq module? A file may define its
