@@ -63,6 +63,58 @@
       Visible="false" />
   </ItemGroup>
 
+  <!-- The symbol package: NuGet puts a pdb into the .snupkg only beside build
+       output it packs itself, and IncludeBuildOutput=false packs none, so the
+       .snupkg comes out empty. After pack both analyzers' pdbs are added to it
+       at their dlls' path in the .nupkg, where the symbol server matches them. -->
+  <UsingTask TaskName="AddPdbToSymbolPackage" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Archive ParameterType="System.String" Required="true" />
+      <Pdb ParameterType="System.String" Required="true" />
+      <EntryName ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.IO.Compression" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        using (var zip = ZipFile.Open(Archive, ZipArchiveMode.Update))
+        {
+            var existing = zip.GetEntry(EntryName);
+            if (existing != null) existing.Delete();
+            zip.CreateEntryFromFile(Pdb, EntryName);
+
+            var types = zip.GetEntry("[Content_Types].xml");
+            if (types != null)
+            {
+                string xml;
+                using (var reader = new StreamReader(types.Open())) xml = reader.ReadToEnd();
+                if (xml.IndexOf("Extension=\"pdb\"", System.StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    xml = xml.Replace("</Types>", "<Default Extension=\"pdb\" ContentType=\"application/octet\" /></Types>");
+                    types.Delete();
+                    var rewritten = zip.CreateEntry("[Content_Types].xml");
+                    using (var writer = new StreamWriter(rewritten.Open())) writer.Write(xml);
+                }
+            }
+        }
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="AnalyzerSymbolsIntoSymbolPackage" AfterTargets="Pack" Condition="'$(IncludeSymbols)' == 'true' and '$(SymbolPackageFormat)' == 'snupkg'">
+    <PropertyGroup>
+      <_SymbolPackagePath>$([MSBuild]::EnsureTrailingSlash('$(PackageOutputPath)'))$(PackageId).$(PackageVersion).snupkg</_SymbolPackagePath>
+    </PropertyGroup>
+    <AddPdbToSymbolPackage
+      Archive="$(_SymbolPackagePath)"
+      Pdb="$(MSBuildProjectDirectory)\bin\$(Configuration)\net8.0\FSharp.Refactor.Analyzers.pdb"
+      EntryName="analyzers/dotnet/fs/FSharp.Refactor.Analyzers.pdb" />
+    <AddPdbToSymbolPackage
+      Archive="$(_SymbolPackagePath)"
+      Pdb="$(MSBuildProjectDirectory)\..\FSharp.Refactor.Analyzers.Ionide\bin\$(Configuration)\net8.0\FSharp.Refactor.Analyzers.Ionide.pdb"
+      EntryName="analyzers/dotnet/fs/FSharp.Refactor.Analyzers.Ionide.pdb" />
+  </Target>
+
   <ItemGroup>
     <!-- build ordering only: the packed .Ionide.dll must exist -->
     <ProjectReference

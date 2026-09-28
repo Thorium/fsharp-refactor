@@ -5,6 +5,10 @@
        release in lockstep. Bump HERE (and only here) before tagging. -->
   <PropertyGroup>
     <Version>0.8.36</Version>
+    <!-- a .snupkg beside every .nupkg: `dotnet nuget push *.nupkg` sends it
+         to the symbol server with its package -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
 </Project>
