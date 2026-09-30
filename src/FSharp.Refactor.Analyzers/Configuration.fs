@@ -43,7 +43,16 @@ let ConfigFileName = "fsharprefactor.json"
 /// passes through. The other reserved keys name no rule; their values are
 /// never a rule entry whatever their shape.
 let private reservedRootKeys =
-    set [ "rules"; "hints"; "ignorepaths"; "suppressions"; "publicapi"; "apichanges" ]
+    set
+        [
+            "rules"
+            "hints"
+            "ignorepaths"
+            "suppressions"
+            "publicapi"
+            "apichanges"
+            "defines"
+        ]
 
 let private ruleNamedRootKeys = set [ "hints" ]
 
@@ -249,6 +258,45 @@ let parseIgnorePaths (json: string) : string list =
     | :? JsonException
     | :? InvalidOperationException -> []
 
+/// Is this a symbol `#if` can test: a letter or underscore, then letters,
+/// digits and underscores?
+let isDefineSymbol (symbol: string) =
+    not (String.IsNullOrEmpty symbol)
+    && (Char.IsLetter symbol.[0] || symbol.[0] = '_')
+    && symbol |> Seq.forall (fun c -> Char.IsLetterOrDigit c || c = '_')
+
+/// Preprocessor symbols from the config's `"defines"`: an array of
+/// strings, or one string of `;`- or `,`-separated symbols. Pure and total:
+/// anything malformed, and any entry that is not a symbol, yields nothing.
+let parseDefines (json: string) : string list =
+    try
+        let options =
+            JsonDocumentOptions(CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true)
+
+        use doc = JsonDocument.Parse(json, options)
+
+        let pieces (text: string) =
+            text.Split([| ';'; ',' |], StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+            |> List.ofArray
+
+        let declared =
+            match doc.RootElement.TryGetProperty "defines" with
+            | true, value when value.ValueKind = JsonValueKind.Array ->
+                value.EnumerateArray()
+                |> Seq.collect (fun item ->
+                    if item.ValueKind = JsonValueKind.String then
+                        pieces (item.GetString())
+                    else
+                        [])
+                |> List.ofSeq
+            | true, value when value.ValueKind = JsonValueKind.String -> pieces (value.GetString())
+            | _ -> []
+
+        declared |> List.filter isDefineSymbol |> List.distinct
+    with
+    | :? JsonException
+    | :? InvalidOperationException -> []
+
 /// The parsed content of one config file.
 type ConfigData =
     {
@@ -293,6 +341,12 @@ type ConfigData =
         /// Covers everything the flag does, cross-file rewrites included,
         /// and so implies `publicApi: false`.
         ApiChanges: bool
+        /// `"defines"`: preprocessor symbols every build and script check of
+        /// the run defines, like `--define`. For code a repository builds
+        /// with extra symbols - `#if LOCAL_BUILD` in example scripts that
+        /// otherwise reference a published package - which a run without
+        /// them cannot see.
+        Defines: string list
     }
 
 /// The `"suppressions"` policy string; unknown values read as "all" so a
@@ -396,6 +450,7 @@ let private emptyConfig =
         Suppressions = "all"
         PublicApi = None
         ApiChanges = false
+        Defines = []
     }
 
 let private parseCache = ConcurrentDictionary<string, DateTime * ConfigData>()
@@ -457,6 +512,7 @@ let configFor (analyzedFile: string) : ConfigData =
                     Suppressions = parseSuppressions content
                     PublicApi = parsePublicApi content
                     ApiChanges = parseApiChanges content
+                    Defines = parseDefines content
                 }
 
             let _, config =
@@ -506,6 +562,9 @@ let publicSurfaceOpen (analyzedFile: string) : bool =
 /// Does the repository ask for `--api-changes` on every run, cross-file
 /// rewrites included?
 let apiChangesFor (analyzedFile: string) : bool = (configFor analyzedFile).ApiChanges
+
+/// The config's `"defines"` for a file being analyzed.
+let definesFor (analyzedFile: string) : string list = (configFor analyzedFile).Defines
 
 /// The single entry point the analyzers use: is this rule enabled for this file?
 /// Build-generated sources (AssemblyInfo.fs, AssemblyAttributes.fs under

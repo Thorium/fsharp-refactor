@@ -200,6 +200,67 @@ module private Out =
         line Console.Error Console.IsErrorRedirected ConsoleColor.Red text
 
 
+/// Preprocessor symbols this run defines on top of what each compilation
+/// defines itself: `--define` and the config's `"defines"`.
+///
+/// Code under `#if LOCAL_BUILD` is not in the parse tree unless something
+/// defines LOCAL_BUILD, so without a way to say so the tool can neither
+/// analyse it nor keep it compiling. The typical case is a script written
+/// for both worlds - `#r` of the repository's own build under
+/// `#if LOCAL_BUILD`, a published package otherwise: read without the
+/// symbol it is a consumer of the package, and nothing the run changes in
+/// the repository's sources is checked against it.
+///
+/// Process-wide, set once per run before any MSBuild call: every child
+/// process (runProcessIn) and every script's compilation reads it.
+module internal RunDefines =
+    let mutable private symbols: string list = []
+
+    /// Replace the run's symbols (duplicates dropped, order kept).
+    let set (defined: string list) = symbols <- List.distinct defined
+
+    /// The run's symbols.
+    let current () = symbols
+
+    /// The symbols as compiler flags, for script and parse-only compilations.
+    let flags () =
+        symbols |> List.map (fun symbol -> $"--define:{symbol}") |> Array.ofList
+
+    /// The value of the `DefineConstants` environment variable a child
+    /// MSBuild gets, or None when the run defines nothing.
+    ///
+    /// An environment variable rather than `-p:DefineConstants=...`, and
+    /// deliberately: a global property overrides every assignment in the
+    /// project, so the SDK's DEBUG and TRACE and the project's own
+    /// `$(DefineConstants);FOO` would all be dropped and the run would
+    /// build different code than `dotnet build` does. MSBuild reads an
+    /// environment variable as the property's initial value instead, and
+    /// the project's `$(DefineConstants);...` assignments append to it.
+    /// Whatever the environment already carries is kept in front.
+    let environmentValue (inherited: string) =
+        match symbols with
+        | [] -> None
+        | defined ->
+            let kept =
+                if String.IsNullOrWhiteSpace inherited then
+                    []
+                else
+                    [ inherited.Trim().TrimEnd ';' ]
+
+            Some(String.Join(";", kept @ defined))
+
+    /// Symbols from one `--define` value: `;`- or `,`-separated, each one
+    /// a symbol `#if` can test.
+    let parse (value: string) : Result<string list, string> =
+        let pieces =
+            value.Split([| ';'; ',' |], StringSplitOptions.RemoveEmptyEntries ||| StringSplitOptions.TrimEntries)
+            |> List.ofArray
+
+        match pieces |> List.tryFind (Configuration.isDefineSymbol >> not) with
+        | Some bad -> Error $"--define: '{bad}' is not a preprocessor symbol (a letter or _, then letters, digits, _)"
+        | None when pieces.IsEmpty -> Error "--define needs a symbol after it"
+        | None -> Ok pieces
+
 type private Options =
     {
         Target: string
@@ -263,6 +324,9 @@ type private Options =
         /// Overrides the automatic narrowest-framework choice, so the code
         /// behind another framework's #if can be reached.
         Framework: string
+        /// `--define`: preprocessor symbols every build and script check of
+        /// the run defines (RunDefines), on top of the config's `"defines"`.
+        Defines: string list
     }
 
 let private helpText =
@@ -295,6 +359,14 @@ OPTIONS
                         multi-targeted project is worked through framework by
                         framework, narrowest first, because code behind another
                         framework's #if is not in the parse tree at all
+  --define <symbols>    preprocessor symbols the run defines, like
+                        `dotnet fsi --define:` or a DefineConstants entry:
+                        repeatable, or ;-separated (--define:A and -d:A work
+                        too). Code under #if A is otherwise not analysed at
+                        all, and a script that #r's this repository's build
+                        only under #if A reads as a consumer of the published
+                        package. Projects keep their own DEBUG, TRACE and
+                        DefineConstants; the config's "defines" adds more
   --api-changes         also apply cross-file fixes that change internal
                         signatures, rewriting call sites project-wide. Held
                         back and merely counted without this. Public
@@ -445,6 +517,12 @@ let rec private parseArgsLoop opts args =
     | "--create-config" :: rest -> parseArgsLoop { opts with CreateConfig = true } rest
     | "--mcp" :: rest -> parseArgsLoop { opts with Mcp = true } rest
     | "--framework" :: tfm :: rest -> parseArgsLoop { opts with Framework = tfm } rest
+    | "--define" :: value :: rest when not (value.StartsWith '-') -> defineThen opts value rest
+    | flag :: rest when
+        flag.StartsWith("--define:", StringComparison.Ordinal)
+        || flag.StartsWith("-d:", StringComparison.Ordinal)
+        ->
+        defineThen opts (flag.Substring(flag.IndexOf ':' + 1)) rest
     | "--jobs" :: n :: rest ->
         match Int32.TryParse n with
         | true, jobs when jobs > 0 -> parseArgsLoop { opts with Jobs = jobs } rest
@@ -471,11 +549,25 @@ let rec private parseArgsLoop opts args =
             "--max-passes"
             "--codes"
             "--categories"
+            "--define"
         ]
         |> List.contains flag
         ->
         Error $"'{flag}' needs a value after it"
+    // `--define --dry-run`: the next token is a flag, not a symbol
+    | "--define" :: _ -> Error "'--define' needs a value after it"
     | unknown :: _ -> Error $"Unknown argument '{unknown}'"
+
+/// One `--define` value added to the options, then the rest parsed.
+and private defineThen opts value rest =
+    match RunDefines.parse value with
+    | Error message -> Error message
+    | Ok symbols ->
+        parseArgsLoop
+            { opts with
+                Defines = opts.Defines @ symbols
+            }
+            rest
 
 /// Fold `--categories` into `--codes`. Doing it here rather than in the loop
 /// keeps the two flags order-independent, and leaves one code filter for the
@@ -526,6 +618,7 @@ let private parseArgs (argv: string[]) =
             // single-core one still overlaps a check with an analyzer pass.
             Jobs = min 4 (max 2 Environment.ProcessorCount)
             Framework = ""
+            Defines = []
         }
         (List.ofArray argv)
     |> Result.map applyCategories
@@ -563,6 +656,16 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
     // does not close them, and the flush wait after it (see there) has no
     // end. Nodes that end with their build hold nothing of ours.
     psi.Environment.["MSBUILDDISABLENODEREUSE"] <- "1"
+
+    // --define / "defines": appended to DefineConstants (RunDefines says
+    // why an environment variable and not a global property)
+    let inherited =
+        match psi.Environment.TryGetValue "DefineConstants" with
+        | true, value when not (isNull value) -> value
+        | _ -> ""
+
+    RunDefines.environmentValue inherited
+    |> Option.iter (fun value -> psi.Environment.["DefineConstants"] <- value)
 
     // A child that cannot START is the fourth way: a blocked or missing
     // executable (a paket bootstrapper under application control, `mono`
@@ -1122,7 +1225,7 @@ let private parseOnlyArgs (projectPath: string) =
             |]
             |> Array.distinct
 
-        Ok(Array.append defines sources)
+        Ok(Array.concat [ defines; RunDefines.flags (); sources ])
 
 /// A repository cloned and never built: paket declared, its restore targets
 /// missing, and every project failing with "Paket.Restore.targets was not
@@ -2711,7 +2814,8 @@ let private readScriptUnguarded (checker: FSharpChecker) (script: string) =
                             script,
                             sourceText,
                             assumeDotNetFramework = assumeDotNetFramework,
-                            useFsiAuxLib = true
+                            useFsiAuxLib = true,
+                            otherFlags = RunDefines.flags ()
                         )
                         |> Async.RunSynchronously
 
@@ -2842,6 +2946,162 @@ let private referencingCheckCache =
         Result<FileContext * FSharpSymbolUse[] * FSharpProjectOptions, string list>
      >()
 
+/// Whether an `#if`/`#elif` condition holds under `defined`: symbols, `!`,
+/// `&&`, `||` and parentheses, as the compiler reads them (`&&` binds
+/// tighter than `||`); anything else in a condition is false.
+let private conditionHolds (defined: Set<string>) (condition: string) : bool =
+    let tokens =
+        Text.RegularExpressions.Regex.Matches(condition.Split("//").[0], @"\(|\)|!|&&|\|\||[A-Za-z_][A-Za-z0-9_]*")
+        |> Seq.map (fun m -> m.Value)
+        |> List.ofSeq
+
+    let rec orExpr tokens =
+        let value, rest = andExpr tokens
+
+        match rest with
+        | "||" :: rest ->
+            let right, rest = orExpr rest
+            (value || right), rest
+        | _ -> value, rest
+
+    and andExpr tokens =
+        let value, rest = notExpr tokens
+
+        match rest with
+        | "&&" :: rest ->
+            let right, rest = andExpr rest
+            (value && right), rest
+        | _ -> value, rest
+
+    and notExpr tokens =
+        match tokens with
+        | "!" :: rest ->
+            let value, rest = notExpr rest
+            not value, rest
+        | "(" :: rest ->
+            let value, rest = orExpr rest
+
+            value,
+            (match rest with
+             | ")" :: rest -> rest
+             | rest -> rest)
+        | symbol :: rest when symbol <> ")" && symbol <> "&&" && symbol <> "||" -> defined.Contains symbol, rest
+        | rest -> false, rest
+
+    fst (orExpr tokens)
+
+/// One open `#if` block: whether the code around it is live, whether one of
+/// its branches was taken already, whether the current branch is live, and
+/// the positive symbols of the current branch's condition (none in `#else`).
+type private IfFrame =
+    {
+        ParentLive: bool
+        Taken: bool
+        Live: bool
+        Symbols: string list
+    }
+
+/// For each line of a script: whether the compiler reads it under this
+/// run's symbols (`INTERACTIVE` always, as fsi defines it), following
+/// `#if`/`#elif`/`#else`/`#endif` nesting as the compiler does; and the
+/// positive symbols of the conditions on the way to it, what a run would
+/// have to define for a line in a closed branch. Directive lines report the
+/// branch they open.
+let internal directiveScopes (lines: string seq) : (bool * string list) list =
+    let defined = set (RunDefines.current ()) |> Set.add "INTERACTIVE"
+
+    let positiveRegex =
+        Text.RegularExpressions.Regex @"(!?)\b([A-Za-z_][A-Za-z0-9_]*)\b"
+
+    let positiveSymbols (condition: string) =
+        [
+            for m in positiveRegex.Matches(condition.Split("//").[0]) do
+                if m.Groups.[1].Value = "" then
+                    m.Groups.[2].Value
+        ]
+
+    let stack = System.Collections.Generic.Stack<IfFrame>()
+
+    let directive (line: string) (name: string) =
+        line.StartsWith name
+        && (line.Length = name.Length || not (Char.IsLetterOrDigit line.[name.Length]))
+
+    let live () = stack.Count = 0 || stack.Peek().Live
+
+    [
+        for raw in lines do
+            let line = raw.Trim()
+
+            if directive line "#if" then
+                let condition = line.Substring 3
+                let parent = live ()
+                let taken = parent && conditionHolds defined condition
+
+                stack.Push
+                    {
+                        ParentLive = parent
+                        Taken = taken
+                        Live = taken
+                        Symbols = positiveSymbols condition
+                    }
+
+                yield taken, []
+            elif directive line "#elif" && stack.Count > 0 then
+                let frame = stack.Pop()
+                let condition = line.Substring 5
+                let taken = frame.ParentLive && not frame.Taken && conditionHolds defined condition
+
+                stack.Push
+                    { frame with
+                        Taken = frame.Taken || taken
+                        Live = taken
+                        Symbols = positiveSymbols condition
+                    }
+
+                yield taken, []
+            elif directive line "#else" && stack.Count > 0 then
+                let frame = stack.Pop()
+                let taken = frame.ParentLive && not frame.Taken
+
+                stack.Push
+                    { frame with
+                        Taken = true
+                        Live = taken
+                        Symbols = []
+                    }
+
+                yield taken, []
+            elif directive line "#endif" && stack.Count > 0 then
+                stack.Pop() |> ignore
+                yield live (), []
+            else
+                // outermost condition first
+                yield
+                    live (),
+                    [
+                        for frame in Seq.rev stack do
+                            yield! frame.Symbols
+                    ]
+    ]
+
+/// What a run would have to define for a line matching `isTarget` that the
+/// compiler skips to be read: the undefined positive symbols of the
+/// conditions on the way to it. A line the compiler reads names nothing,
+/// nor does one in an `#else` branch or under a negated symbol - defining
+/// something cannot switch those on.
+let internal undefinedGuardsOf (lines: string seq) (isTarget: string -> bool) : string list =
+    let defined = set (RunDefines.current ()) |> Set.add "INTERACTIVE"
+    let lines = List.ofSeq lines
+
+    Seq.zip lines (directiveScopes lines)
+    |> Seq.collect (fun (line, (live, symbols)) ->
+        if live || not (isTarget line) then
+            []
+        else
+            symbols |> List.filter (fun s -> not (defined.Contains s)))
+    |> Seq.distinct
+    |> List.ofSeq
+
 let private readReferencingScript (checker: FSharpChecker) (project: FSharpProjectOptions) (script: string) =
     let key =
         Path.GetFullPath(script).ToLowerInvariant(), Path.GetFullPath(project.ProjectFileName).ToLowerInvariant()
@@ -2867,21 +3127,20 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
                             script,
                             sourceText,
                             assumeDotNetFramework = assumeDotNetFramework,
-                            useFsiAuxLib = true
+                            useFsiAuxLib = true,
+                            otherFlags = RunDefines.flags ()
                         )
                         |> Async.RunSynchronously
 
                     let scriptOptions = withFsiAuxLib script scriptOptions
 
-                    match scriptOptions.OtherOptions |> Array.tryFind referencesProject with
-                    | None ->
-                        Error
-                            [
-                                $"its #r of {outputFile} did not resolve to a reference this pass can redirect"
-                            ]
-                    | Some reference ->
+                    // check the script with its reference to the project's
+                    // assembly answered by the project's own compilation;
+                    // diagnostics on `ignoredLines` are the #r directives this
+                    // pass replaced, not errors in the script
+                    let redirect (reference: string) (baseOptions: FSharpProjectOptions) (ignoredLines: Set<int>) =
                         let options =
-                            { scriptOptions with
+                            { baseOptions with
                                 ReferencedProjects =
                                     [| FSharpReferencedProject.FSharpReference(reference.Substring 3, project) |]
                             }
@@ -2892,7 +3151,8 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
                         let errors =
                             results.Diagnostics
                             |> Array.filter (fun d ->
-                                d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                                d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+                                && not (ignoredLines |> Set.contains d.StartLine))
 
                         if Array.isEmpty errors then
                             let parsingOptions, _ = checker.GetParsingOptionsFromProjectOptions options
@@ -2958,6 +3218,79 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
                                     $"{Path.GetFileName d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}")
                                 |> List.ofArray
                             )
+
+                    let isReference (line: string) =
+                        let trimmed = line.TrimStart()
+
+                        trimmed.StartsWith "#r"
+                        && trimmed.Contains(outputFile, StringComparison.OrdinalIgnoreCase)
+
+                    let lines = text.Split '\n'
+
+                    match scriptOptions.OtherOptions |> Array.tryFind referencesProject with
+                    | Some reference -> redirect reference scriptOptions Set.empty
+                    | None ->
+                        // the usual reason: the #r sits under `#if LOCAL_BUILD`
+                        // (a package reference otherwise), and nothing defined it
+                        let guards = undefinedGuardsOf lines isReference
+
+                        let referenceLines =
+                            lines
+                            |> Array.indexed
+                            |> Array.choose (fun (i, line) -> if isReference line then Some(i + 1) else None)
+                            |> Set.ofArray
+
+                        // only the #r lines the compiler reads under this run's
+                        // symbols: one in a branch they switch off (the package
+                        // half of `#if PACKAGE`, say) is not a reference at all
+                        let liveReferenceLines =
+                            Seq.zip lines (directiveScopes lines)
+                            |> Seq.indexed
+                            |> Seq.choose (fun (i, (line, (live, _))) ->
+                                if live && isReference line then Some(i + 1) else None)
+                            |> Set.ofSeq
+
+                        let projectOutput =
+                            project.OtherOptions
+                            |> Array.tryPick (fun o ->
+                                [ "-o:"; "--out:" ]
+                                |> List.tryPick (fun flag ->
+                                    if o.StartsWith(flag, StringComparison.OrdinalIgnoreCase) then
+                                        Some(Path.GetFullPath(o.Substring flag.Length))
+                                    else
+                                        None))
+
+                        match projectOutput with
+                        | Some output when not liveReferenceLines.IsEmpty ->
+                            // a live #r of this assembly that FCS dropped: its
+                            // path is a build that does not exist (another
+                            // configuration, a framework not built here). The
+                            // pass answers the reference with the project's own
+                            // compilation anyway, so it needs no file on disk
+                            let reference = $"-r:{output}"
+
+                            let withReference =
+                                { scriptOptions with
+                                    OtherOptions = Array.append scriptOptions.OtherOptions [| reference |]
+                                }
+
+                            redirect reference withReference liveReferenceLines
+                        | _ ->
+                            let hint =
+                                match guards with
+                                | [] when not referenceLines.IsEmpty ->
+                                    "; every #r of it sits in a branch this run's symbols switch off"
+                                | [] -> ""
+                                | symbols ->
+                                    let names = String.Join(", ", symbols)
+                                    let flags = String.Join(" ", symbols |> List.map (fun g -> $"--define {g}"))
+
+                                    $"; it sits under #if {names}, which this run does not define - pass {flags} (or \"defines\" in {Configuration.ConfigFileName}) to read it"
+
+                            Error
+                                [
+                                    $"its #r of {outputFile} did not resolve to a reference this pass can redirect{hint}"
+                                ]
 
                 match attempt false with
                 | Ok read -> Ok read
@@ -6430,7 +6763,8 @@ let private scriptProjectOptions (checker: FSharpChecker) (path: string) (assume
             path,
             sourceText,
             assumeDotNetFramework = assumeDotNetFramework,
-            useFsiAuxLib = true
+            useFsiAuxLib = true,
+            otherFlags = RunDefines.flags ()
         )
         |> Async.RunSynchronously
 
@@ -8924,6 +9258,9 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     // every later compilation would queue behind it
     let checkerRef = ref initialChecker
 
+    // before anything can start an MSBuild: resolving the targets may
+    RunDefines.set opts.Defines
+
     match resolveTargets opts.Target with
     | Error message ->
         eprintfn $"{message}"
@@ -8942,22 +9279,40 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         // standing decision, for a repository where it is always the right
         // answer. It can only widen: a run that already passed the flag is
         // unaffected, and no config can take it away.
+        let probe =
+            targets
+            |> List.tryPick (fun t ->
+                match t with
+                | Target.Project(path, _)
+                | Target.Script path -> Some path)
+
         let opts =
             if opts.ApiChanges then
                 opts
             else
-                let probe =
-                    targets
-                    |> List.tryPick (fun t ->
-                        match t with
-                        | Target.Project(path, _)
-                        | Target.Script path -> Some path)
-
                 match probe |> Option.map Configuration.apiChangesFor with
                 | Some true ->
                     Out.white $"--api-changes is on: {Configuration.ConfigFileName} asks for it."
                     { opts with ApiChanges = true }
                 | _ -> opts
+
+        // `"defines"` in fsharprefactor.json adds to --define, never replaces
+        // it; said once, since it changes which code exists at all
+        let configDefines =
+            probe |> Option.map Configuration.definesFor |> Option.defaultValue []
+
+        RunDefines.set (opts.Defines @ configDefines)
+
+        match RunDefines.current () with
+        | [] -> ()
+        | symbols ->
+            let origin =
+                match opts.Defines, configDefines with
+                | [], _ -> Configuration.ConfigFileName
+                | _, [] -> "--define"
+                | _ -> $"--define and {Configuration.ConfigFileName}"
+
+            Out.white $"""defining {String.Join(", ", symbols)} ({origin}) for every build and script check."""
 
         let several = targets.Length > 1
 
@@ -9356,6 +9711,11 @@ let defaultConfigText () =
     line "  // (currying a function, reordering its parameters). Implies publicApi: false."
     line "  \"apiChanges\": false,"
     line ""
+    line "  // Preprocessor symbols every build and script check defines, like --define:"
+    line "  // code under #if LOCAL_BUILD is analysed and kept compiling. Projects keep"
+    line "  // their own DEBUG, TRACE and DefineConstants."
+    line "  \"defines\": [],"
+    line ""
     line "  // What a `// fsharpanalyzer: ignore-line FRxxxx` comment is worth:"
     line "  //   \"all\"            it silences the finding (what editors do regardless)"
     line "  //   \"no-correctness\" correctness findings are reported anyway, never fixed"
@@ -9437,7 +9797,9 @@ let inline private (|IsNullOrWhiteSpace|_|) (input: string) =
 /// call, which is the entire point: the first analyze pays the reference
 /// parse, the rest answer from a hot cache. Progress prose is diverted to
 /// stderr so the protocol stream stays clean.
-let private runMcp () =
+/// `startupDefines`: the server's own `--define` symbols, which every
+/// analyze call keeps (a call's `defines` adds to them).
+let private runMcp (startupDefines: string list) =
     let protocolOut = Console.Out
     Console.SetOut Console.Error
 
@@ -9509,6 +9871,16 @@ let private runMcp () =
                                                                             "comma-separated: correctness,performance,idiom,cosmetic"
                                                                     ]
                                                             )
+                                                            "defines",
+                                                            box (
+                                                                dict
+                                                                    [
+                                                                        "type", box "string"
+                                                                        "description",
+                                                                        box
+                                                                            "preprocessor symbols to define, ;-separated (like --define)"
+                                                                    ]
+                                                            )
                                                             "parseOnly",
                                                             box (
                                                                 dict
@@ -9558,9 +9930,16 @@ let private runMcp () =
         | None -> Error "analyze needs a 'target'"
         | Some target ->
 
-            match parseArgs [| target |] with
-            | Error message -> Error message
-            | Ok baseOpts ->
+            let callDefines =
+                match getString "defines" with
+                | None -> Ok []
+                | Some value when String.IsNullOrWhiteSpace value -> Ok []
+                | Some value -> RunDefines.parse value
+
+            match parseArgs [| target |], callDefines with
+            | Error message, _
+            | _, Error message -> Error message
+            | Ok baseOpts, Ok callDefines ->
 
                 let codes =
                     getString "codes"
@@ -9575,6 +9954,7 @@ let private runMcp () =
                     { baseOpts with
                         DryRun = not (getBool "apply")
                         ParseOnly = getBool "parseOnly"
+                        Defines = startupDefines @ callDefines
                         Codes = codes
                         ExplicitCodes = codes
                         Categories = categories
@@ -9772,7 +10152,7 @@ let main argv =
                 | :? UnauthorizedAccessException as e ->
                     eprintfn $"Could not write {path}: {e.Message}"
                     1
-    | Ok opts when opts.Mcp -> runMcp ()
+    | Ok opts when opts.Mcp -> runMcp opts.Defines
     // no arguments at all is a question, not a mistake: show the help
     | Ok opts when opts.Target = "" ->
         printfn $"{helpText}"

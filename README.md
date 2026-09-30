@@ -421,6 +421,49 @@ let has (s: string) =
 
 `--framework <tfm>` restricts a run to one framework if you want it.
 
+### Conditional compilation symbols (`--define`)
+
+Code under `#if SOME_SYMBOL` is not in the parse tree unless something
+defines `SOME_SYMBOL`, so a run cannot analyse it, fix it or keep it
+compiling. Pass the symbols the way `dotnet fsi --define:` would:
+
+```bash
+fsharp-refactor Your.sln --api-changes --define LOCAL_BUILD
+```
+
+`--define` is repeatable and takes a `;`-separated list (`--define:A` and
+`-d:A` work too), and `"defines": ["LOCAL_BUILD"]` in `fsharprefactor.json`
+adds to it for every run. Every build the run makes and every script it
+typechecks defines them, and the run says so once at the start.
+
+Projects keep their own symbols: the tool hands MSBuild the extra ones
+through the `DefineConstants` environment variable, which the SDK and a
+project's `<DefineConstants>$(DefineConstants);...</DefineConstants>` add
+to. (`-p:DefineConstants=...` would replace them instead: DEBUG, TRACE and
+the project's own constants would vanish, and the run would build different
+code than `dotnet build` does.)
+
+The common case is a set of example scripts written for both worlds:
+
+```fsharp
+#if LOCAL_BUILD
+#r "../../src/MyLib/bin/Debug/net10.0/MyLib.dll"
+#else
+#r "nuget: MyLib"
+#endif
+```
+
+Without the symbol such a script is a consumer of the published package,
+so its calls cannot be checked against the repository's sources, and
+declarations it may use keep their shape. The run names the symbol when
+this happens:
+
+```
+  (Example.fsx #r's this project's built assembly and could not be checked against its sources, ...)
+    its #r of MyLib.dll did not resolve to a reference this pass can redirect; it sits under
+    #if LOCAL_BUILD, which this run does not define - pass --define LOCAL_BUILD ...
+```
+
 ### Allow changes to public API like types
 
 Public types and function signature changes are not done by default.

@@ -104,6 +104,7 @@
     <Compile Include="AuditMiscTests.fs" />
     <Compile Include="HazardRulesTests.fs" />
     <Compile Include="GithubIssueTests.fs" />
+    <Compile Include="DefinesTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

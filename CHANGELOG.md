@@ -2,6 +2,13 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.39
+
+- A script's `#r` of the project is redirected to the sources only where the compiler reads it: `#if`/`#elif`/`#else` nesting and `!`, `&&`, `||` in conditions are followed with the run's symbols (and `INTERACTIVE`), so a `#r` in the half that `--define PACKAGE` switches off no longer makes the script a consumer, and a `#r` under `#elif` gets the right hint.
+- `--define <symbols>` (repeatable, `;`-separated; `--define:A`, `-d:A`) and `"defines"` in fsharprefactor.json define preprocessor symbols for the whole run: every MSBuild the run starts gets them through the `DefineConstants` environment variable, which projects add to (a `-p:DefineConstants` global property would replace DEBUG, TRACE and the project's own constants), and every script and `--parse-only` compilation through `--define:`. Code under `#if LOCAL_BUILD` is analysed, fixed and verified; the MCP server keeps its startup symbols and `analyze` takes `defines`.
+- A script whose `#r` of the project's built assembly sits under an `#if` the run does not define says which symbol would switch it on and how to pass it, instead of only that the reference did not resolve.
+- A script whose live `#r` of the project's assembly names a build that does not exist (`bin/Release/...` when the run built Debug, another framework's folder) is read against the project's sources anyway, instead of being written off because FCS dropped the missing file: the reference is answered by the project's own compilation either way.
+
 ## 0.8.38
 
 - `--api-changes` typechecks only the scripts whose `#load` chain can reach the project's sources, read from their text first; a tree of example scripts no longer stalls the run in silence, and both script phases say what they are waiting on.

@@ -575,6 +575,105 @@ let ``a #r script that does not typecheck keeps the public function as it is`` (
         Assert.Contains("Lib.add (1, 2)", scriptText)
         Assert.Contains("could not be checked against its sources", output))
 
+/// The same library, with the script's `#r` written as `reference` (a
+/// format taking the framework) instead of the plain Debug path.
+let private withScriptReferencing (reference: string) (body: string -> unit) =
+    withScriptSolution false (fun project ->
+        let root =
+            Path.GetDirectoryName(Path.GetDirectoryName(Path.GetDirectoryName project))
+
+        let script = Path.Combine(root, "docs", "faq.fsx")
+        let directive = reference.Replace("{framework}", framework)
+        File.WriteAllText(script, $"{directive}\n\nlet three = Lib.add (1, 2)\nprintfn \"%%d\" three\n")
+        body root)
+
+/// `#r` of the repository's build only under `#if LOCAL_BUILD`, as example
+/// scripts written for both a local build and a published package are.
+let private localBuildReference =
+    "#if LOCAL_BUILD\n#r \"../src/Lib/bin/Debug/{framework}/Lib.dll\"\n#else\n#r \"nuget: Lib.Published\"\n#endif"
+
+[<Fact>]
+let ``a script referencing the build under an undefined if names the symbol and keeps the function`` () : unit =
+    withScriptReferencing localBuildReference (fun root ->
+        let code, output =
+            runTool [| root; "--api-changes"; "--codes"; "FR0090"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("let add (a: int, b: int) = a + b", library)
+
+        Assert.Contains(
+            "it sits under #if LOCAL_BUILD, which this run does not define - pass --define LOCAL_BUILD",
+            output
+        ))
+
+[<Fact>]
+let ``with --define the script under the if is rewritten together with the public function`` () : unit =
+    withScriptReferencing localBuildReference (fun root ->
+        let code, output =
+            runTool
+                [|
+                    root
+                    "--api-changes"
+                    "--codes"
+                    "FR0090"
+                    "--no-color"
+                    "--define"
+                    "LOCAL_BUILD"
+                |]
+
+        let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+        let scriptText = File.ReadAllText(Path.Combine(root, "docs", "faq.fsx"))
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("defining LOCAL_BUILD (--define)", output)
+        Assert.Contains("let add (a: int) (b: int) = a + b", library)
+        Assert.Contains("Lib.add 1 2", scriptText)
+        Assert.DoesNotContain("could not be checked against its sources", output))
+
+[<Fact>]
+let ``a script referencing a configuration not built is still read against the sources`` () : unit =
+    // bin/Release does not exist: the run builds Debug. The reference is
+    // answered by the project's compilation all the same
+    withScriptReferencing "#r \"../src/Lib/bin/Release/{framework}/Lib.dll\"" (fun root ->
+        let code, output =
+            runTool [| root; "--api-changes"; "--codes"; "FR0090"; "--no-color" |]
+
+        let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+        let scriptText = File.ReadAllText(Path.Combine(root, "docs", "faq.fsx"))
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("let add (a: int) (b: int) = a + b", library)
+        Assert.Contains("Lib.add 1 2", scriptText)
+        Assert.DoesNotContain("could not be checked against its sources", output))
+
+[<Fact>]
+let ``a #r of the build in a branch the run's symbols switch off is not read against the sources`` () : unit =
+    // `--define PACKAGE` selects the package half: the build's #r is not
+    // compiled, so the script is no consumer the pass may rewrite and the
+    // public function keeps its shape
+    withScriptReferencing
+        "#if PACKAGE\n#r \"nuget: Lib.Published\"\n#else\n#r \"../src/Lib/bin/Debug/{framework}/Lib.dll\"\n#endif"
+        (fun root ->
+            let code, output =
+                runTool
+                    [|
+                        root
+                        "--api-changes"
+                        "--codes"
+                        "FR0090"
+                        "--no-color"
+                        "--define"
+                        "PACKAGE"
+                    |]
+
+            let library = File.ReadAllText(Path.Combine(root, "src", "Lib", "Library.fs"))
+
+            Assert.True((code = 0), $"exit {code}:\n{output}")
+            Assert.Contains("let add (a: int, b: int) = a + b", library)
+            Assert.Contains("in a branch this run's symbols switch off", output))
+
 [<Fact>]
 let ``a public function matched on strings becomes a union together with the sibling's literal call sites`` () : unit =
     withSolution false (fun solution ->
