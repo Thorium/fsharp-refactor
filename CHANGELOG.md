@@ -2,6 +2,11 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.38
+
+- `--api-changes` typechecks only the scripts whose `#load` chain can reach the project's sources, read from their text first; a tree of example scripts no longer stalls the run in silence, and both script phases say what they are waiting on.
+- A git worktree nested inside its own repository (`.claude/worktrees/...`) is no longer swept as more of the tree; a worktree beside its repository and a submodule still are.
+
 ## 0.8.37
 
 - FR0118 passes the token only to work that is waited for (`do!`, `let!`, `return!`, `match!`, returned, blocked on, combined); fire-and-forget calls (`|> ignore`, `|> Async.Start`, a bare statement, a store) stay as written.

@@ -119,3 +119,90 @@ let ``filesNoting reports nothing skipped over a readable tree`` () =
         Assert.Equal<Set<string>>(set [ "Top.fs"; "Middle.fs" ], found)
         // a pruned directory is left out on purpose, not skipped
         Assert.Empty skipped)
+
+/// A linked worktree nested inside its own repository is another checkout
+/// of the same code: walking it builds and fixes every project twice. A
+/// worktree beside its repository (a workspace of checkouts) and a
+/// submodule are code of their own and are walked.
+[<Fact>]
+let ``walk prunes a worktree nested in its own repository only`` () =
+    withTree
+        [
+            "Repo/Real.fs", ""
+            "Repo/.claude/worktrees/agent-1/Copy.fs", ""
+            "Repo/.claude/worktrees/agent-2/Copy2.fs", ""
+            "Repo/vendor/lib/.git", "gitdir: ../../.git/modules/lib\n"
+            "Repo/vendor/lib/Sub.fs", ""
+            "Repo-branch/Branch.fs", ""
+        ]
+        (fun root ->
+            let repo = Path.Combine(root, "Repo").Replace('\\', '/')
+            // absolute, as `git worktree add` writes it by default
+            File.WriteAllText(
+                Path.Combine(root, "Repo/.claude/worktrees/agent-1/.git"),
+                $"gitdir: {repo}/.git/worktrees/agent-1\n"
+            )
+            // relative, as worktree.useRelativePaths writes it
+            File.WriteAllText(
+                Path.Combine(root, "Repo/.claude/worktrees/agent-2/.git"),
+                "gitdir: ../../../.git/worktrees/agent-2\n"
+            )
+
+            File.WriteAllText(Path.Combine(root, "Repo-branch/.git"), $"gitdir: {repo}/.git/worktrees/Repo-branch\n")
+
+            let found = FileWalk.files "*.fs" root |> Seq.map Path.GetFileName |> Set.ofSeq
+            Assert.Equal<Set<string>>(set [ "Real.fs"; "Sub.fs"; "Branch.fs" ], found)
+
+            // the worktree itself, walked as the root, is walked
+            let inside =
+                FileWalk.files "*.fs" (Path.Combine(root, "Repo", ".claude", "worktrees", "agent-1"))
+                |> Seq.map Path.GetFileName
+                |> List.ofSeq
+
+            Assert.Equal<string list>([ "Copy.fs" ], inside))
+
+let private sourcesOf (root: string) (files: string list) =
+    System.Collections.Generic.HashSet<string>(
+        files |> List.map (fun f -> Path.GetFullPath(Path.Combine(root, f))),
+        System.StringComparer.OrdinalIgnoreCase
+    )
+
+/// The script probe typechecks only what may #load a project source: a
+/// typecheck restores the script's nuget references, and an examples tree
+/// of hundreds of scripts loading their own helpers stalled a run on it.
+[<Fact>]
+let ``a script loading only its own helpers cannot reach the project`` () =
+    withTree
+        [
+            "src/Lib/Types.fs", ""
+            "examples/_common/Cli.fs", ""
+            "examples/Demo/Run.fsx", "#r \"nuget: X\"\n#load \"../_common/Cli.fs\"\n"
+        ]
+        (fun root ->
+            let sources = sourcesOf root [ "src/Lib/Types.fs" ]
+            Assert.False(Program.mayLoadAny sources (Path.Combine(root, "examples/Demo/Run.fsx"))))
+
+[<Fact>]
+let ``a script reaching a project source through another script can`` () =
+    withTree
+        [
+            "src/Lib/Types.fs", ""
+            "examples/_common/Load.fsx", "#load @\"../../src/Lib/Types.fs\"\n"
+            "examples/Demo/Run.fsx", "  #load \"../_common/Load.fsx\" \"../_common/Load.fsx\"\n"
+        ]
+        (fun root ->
+            let sources = sourcesOf root [ "src/Lib/Types.fs" ]
+            Assert.True(Program.mayLoadAny sources (Path.Combine(root, "examples/Demo/Run.fsx"))))
+
+/// `#I` can make a path resolve that the script's own directory does not:
+/// what the text cannot resolve is typechecked, not ruled out.
+[<Fact>]
+let ``a load the text cannot resolve counts as reaching`` () =
+    withTree
+        [
+            "src/Lib/Types.fs", ""
+            "scripts/Run.fsx", "#I \"../src/Lib\"\n#load \"Types.fs\"\n"
+        ]
+        (fun root ->
+            let sources = sourcesOf root [ "src/Lib/Types.fs" ]
+            Assert.True(Program.mayLoadAny sources (Path.Combine(root, "scripts/Run.fsx"))))

@@ -2,7 +2,7 @@
     "name": "fsharp-refactor-vscode",
     "displayName": "FSharp.Refactor",
     "description": "Functional refactoring hints with one-click fixes for F# - wires the FSharp.Refactor analyzers into Ionide. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.",
-    "version": "0.8.37",
+    "version": "0.8.38",
     "publisher": "TuomasHietanen",
     "license": "Unlicense",
     "icon": "icon.png",
@@ -71,7 +71,7 @@
         ]
     },
     "fsharpRefactorBuild": {
-        "analyzers": "0.8.37",
+        "analyzers": "0.8.38",
         "built": "2026-09-28 18:56 UTC"
     },
     "scripts": {

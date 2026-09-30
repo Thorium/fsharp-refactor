@@ -3144,6 +3144,88 @@ let rec private applyEditGroupsCheckingScripts
 
         applyEditGroupsCheckingScripts checker dryRun suppressed brokenElsewhere survivors
 
+let private loadLine =
+    Text.RegularExpressions.Regex(@"^[ \t]*#load\b(.*)$", Text.RegularExpressions.RegexOptions.Multiline)
+
+let private quotedPath = Text.RegularExpressions.Regex("@?\"([^\"\\r\\n]*)\"")
+
+/// A file's `#load` targets, resolved against its own directory, as read
+/// from its text; None when that cannot be told: the file is unreadable,
+/// or a `#load` names no literal path or one that is not there (an `#I`
+/// search path may resolve it). Per path and write time: a whole-tree run
+/// asks it of every script once per compilation.
+let private textualLoads =
+    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * string[] option>(
+        StringComparer.OrdinalIgnoreCase
+    )
+
+let private loadsOf (file: string) : string[] option =
+    let stamp =
+        try
+            File.GetLastWriteTimeUtc file
+        with _ -> // fsharpanalyzer: ignore-line FR0055
+            DateTime.MinValue
+
+    match textualLoads.TryGetValue file with
+    | true, (known, loads) when known = stamp -> loads
+    | _ ->
+        let loads =
+            try
+                let directory = Path.GetDirectoryName file
+                let targets = ResizeArray<string>()
+                let mutable readable = true
+
+                for m in loadLine.Matches(File.ReadAllText file) do
+                    let paths = quotedPath.Matches m.Groups.[1].Value
+
+                    if paths.Count = 0 then
+                        readable <- false
+
+                    for p in paths do
+                        let full = Path.GetFullPath(Path.Combine(directory, p.Groups.[1].Value))
+
+                        if File.Exists full then
+                            targets.Add full
+                        else
+                            readable <- false
+
+                if readable then Some(targets.ToArray()) else None
+            with _ -> // an unreadable file cannot be ruled out; fsharpanalyzer: ignore-line FR0055
+                None
+
+        textualLoads.[file] <- (stamp, loads)
+        loads
+
+/// Can the script's `#load` closure reach any of `sources`? Read from the
+/// text, over-approximating (`#if` branches and block comments count, a
+/// `#load` this cannot resolve counts as reaching), so a script it rules
+/// out loads none of them and need not be typechecked to find that out:
+/// the typecheck resolves its `#r "nuget: ..."` references, seconds per
+/// script, and a repository of examples holds hundreds that `#load` only
+/// helpers of their own.
+let internal mayLoadAny (sources: System.Collections.Generic.HashSet<string>) (script: string) =
+    let seen =
+        System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+    let pending = System.Collections.Generic.Stack<string>()
+    pending.Push(Path.GetFullPath script)
+    let mutable reaches = false
+
+    while not reaches && pending.Count > 0 do
+        let file = pending.Pop()
+
+        if seen.Add file then
+            match loadsOf file with
+            | None -> reaches <- true
+            | Some targets ->
+                for target in targets do
+                    if sources.Contains target then
+                        reaches <- true
+                    else
+                        pending.Push target
+
+    reaches
+
 let private findScriptCallSites (checker: FSharpChecker) (root: string) (options: FSharpProjectOptions) =
     let searchRoot =
         let full =
@@ -3257,7 +3339,16 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
         for f in options.SourceFiles do
             unverifiable.Add(Path.GetFullPath f) |> ignore
 
-    for script in scripts do
+    let loading = scripts |> Array.filter (mayLoadAny projectSources)
+
+    // said when there is typechecking to wait for, not again on a later
+    // pass that reads them from the cache
+    let uncached = loading |> Array.filter (scriptCache.ContainsKey >> not)
+
+    if uncached.Length > 0 then
+        Out.dim $"  ({uncached.Length} script(s) may #load this project's sources; typechecking them for call sites)"
+
+    for script in loading do
         let info = readScript checker script
         let loaded = info.Loaded |> Array.filter projectSources.Contains
 
@@ -3324,9 +3415,14 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
              let usesByName =
                  System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
 
+             if not referencing.IsEmpty then
+                 Out.dim
+                     $"  ({referencing.Length} script(s) #r this project's assembly; typechecking them against its sources for call sites)"
+
              for script in referencing do
                  let loadsSources =
-                     (readScript checker script).Loaded |> Array.exists projectSources.Contains
+                     mayLoadAny projectSources script
+                     && (readScript checker script).Loaded |> Array.exists projectSources.Contains
 
                  if loadsSources then
                      unread.Add script
