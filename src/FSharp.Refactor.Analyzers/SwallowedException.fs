@@ -30,7 +30,9 @@
 /// Only trivially empty or constant-default bodies with catch-all patterns
 /// (`_`, a bare binder, or `:? System.Exception`) are flagged; a handler
 /// that catches a SPECIFIC exception type and deliberately ignores it is a
-/// decision, not an accident, and stays quiet.
+/// decision, not an accident, and stays quiet; so is a `when` guard, on the
+/// exception or on state (`with _ when stopping -> ()`), which lets every
+/// exception outside its condition surface.
 module FSharp.Refactor.SwallowedException
 
 open FSharp.Compiler.CodeAnalysis
@@ -1021,17 +1023,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             match expr with
             | SynExpr.TryWith(tryExpr = tryBody; withCases = clauses) when not (continuationRaises path expr.Range) ->
                 for i, clause in List.indexed clauses do
-                    // a guard that never looks at the exception (`with _ when
-                    // watch -> ()`) still swallows every one of them; a guard
-                    // on the exception itself is a decision
+                    // a guard limits the catch to the cases it names, on the
+                    // exception or on state (`with _ when stopping -> ()`
+                    // surfaces everything while not stopping): a decision,
+                    // like a specific type. Only a constant `when true`
+                    // still swallows every exception
                     let guarded =
                         match clause with
                         | SynMatchClause(pat = pat; whenExpr = Some whenGuard; resultExpr = result) ->
-                            let guardText = textOfRange source whenGuard.Range
-
-                            match binderOf pat with
-                            | ValueSome name when Regex.IsMatch(guardText, $@"\b{Regex.Escape name}\b") -> None
-                            | _ -> Some(pat, result, Some whenGuard)
+                            match stripParens whenGuard with
+                            | SynExpr.Const(SynConst.Bool true, _) -> Some(pat, result, Some whenGuard)
+                            | _ -> None
                         | SynMatchClause(pat = pat; whenExpr = None; resultExpr = result) -> Some(pat, result, None)
 
                     match guarded with

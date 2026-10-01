@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.40
+
+- FR0055 stays quiet on a catch-all with a `when` guard, on the exception or on state (`with _ when stopping -> ()` lets every exception surface while not stopping); only a constant `when true` is still noted.
+
 ## 0.8.39
 
 - A script's `#r` of the project is redirected to the sources only where the compiler reads it: `#if`/`#elif`/`#else` nesting and `!`, `&&`, `||` in conditions are followed with the run's symbols (and `INTERACTIVE`), so a `#r` in the half that `--define PACKAGE` switches off no longer makes the script a consumer, and a `#r` under `#elif` gets the right hint.

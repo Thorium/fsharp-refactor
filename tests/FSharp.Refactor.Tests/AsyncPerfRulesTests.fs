@@ -760,9 +760,10 @@ let ``a fallback that is a variable, a sentinel or a tuple carrying a default di
     )
 
 [<Fact>]
-let ``a guard that never looks at the exception still swallows every one`` () =
-    // `with _ when watch -> ()`
-    match
+let ``a guarded catch-all is a decision, not a swallow`` () =
+    // a guard on state lets every exception outside it surface: `with _
+    // when watch -> ()`, and the shutdown window of a serve loop
+    Assert.Empty(
         swallowedIn (
             fsharp
                 """
@@ -772,9 +773,52 @@ let ``a guard that never looks at the exception still swallows every one`` () =
                     with _ when watch -> ()
                 """
         )
+    )
+
+    Assert.Empty(
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let mutable stopping = false
+                let run (serve: Async<unit>) =
+                    Async.Start (async {
+                        try do! serve
+                        with _ when stopping -> () })
+                let runDefault (serve: unit -> int) =
+                    try serve ()
+                    with :? System.Exception when stopping -> 0
+                """
+        )
+    )
+
+    // a constant `when true` guards nothing
+    match
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let copy (src: string) (dst: string) =
+                    try System.IO.File.Copy(src, dst, true)
+                    with _ when true -> ()
+                """
+        )
     with
-    | [ s ] -> Assert.Equal("_ when watch", s.PatternText)
-    | other -> failwithf "Expected exactly one guarded swallow note, got %A" other
+    | [ s ] -> Assert.Equal("_ when true", s.PatternText)
+    | other -> failwithf "Expected exactly one swallow note, got %A" other
+
+    Assert.Single(
+        swallowedIn (
+            fsharp
+                """
+                module Test
+                let copy (src: string) (dst: string) =
+                    try System.IO.File.Copy(src, dst, true)
+                    with _ when (true) -> ()
+                """
+        )
+    )
+    |> ignore
 
     // a guard on the exception itself is a decision
     Assert.Empty(
