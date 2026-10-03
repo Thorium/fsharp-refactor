@@ -70,12 +70,18 @@
 module FSharp.Refactor.Tool.Program
 
 open System
+open System.Collections.Concurrent
+open System.Collections.Generic
 open System.Diagnostics
 open System.IO
 open System.Reflection
+open System.Text
 open System.Text.Json
+open System.Text.RegularExpressions
+open System.Threading.Tasks
 open FSharp.Analyzers.SDK
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Diagnostics
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.SyntaxTrivia
@@ -717,7 +723,7 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
             // is in the builders within milliseconds of the exit, so the
             // flush gets seconds, never the run.
             let flushed =
-                System.Threading.Tasks.Task.Run(fun () ->
+                Task.Run(fun () ->
                     try
                         p.WaitForExit()
                     with
@@ -802,7 +808,7 @@ let private gitIgnoredFiles (projectDir: string) (files: string[]) : Set<string>
 
             p.StandardInput.Close()
 
-            if p.WaitForExit(30_000) then
+            if p.WaitForExit 30_000 then
                 p.WaitForExit()
 
                 // 0: some ignored (listed); 1: none; 128: not a repository
@@ -850,14 +856,15 @@ let private editableSources (options: FSharpProjectOptions) : string[] =
 /// and the pass would analyse nothing. The build then falls back to a
 /// neutral directory, outside any global.json, and says so: analysed with
 /// the SDK `dotnet` resolves there.
-let private buildDirectories =
-    System.Collections.Generic.Dictionary<string, string option>()
+let private buildDirectories = Dictionary<string, string option>()
 
 let private sdkPinUnsatisfied (stdout: string) (stderr: string) =
     let text = stdout + stderr
 
     text.Contains "A compatible .NET SDK was not found"
     || text.Contains "compatible installed .NET SDK for global.json"
+
+let private runForProjectRegex = Regex @"Requested SDK version: ([^\r\n]+)"
 
 let private runForProject (project: string) (timeout: TimeSpan) (fileName: string) (arguments: string) =
     let key = Path.GetFullPath(project).ToLowerInvariant()
@@ -872,8 +879,7 @@ let private runForProject (project: string) (timeout: TimeSpan) (fileName: strin
             let neutral = Path.GetTempPath()
 
             let pin =
-                let m =
-                    Text.RegularExpressions.Regex.Match(stdout + stderr, @"Requested SDK version: ([^\r\n]+)")
+                let m = runForProjectRegex.Match(stdout + stderr)
 
                 if m.Success then m.Groups.[1].Value.Trim() else "an SDK"
 
@@ -950,8 +956,7 @@ let private tfmRank (tfm: string) =
 /// for compiler arguments, and the outer build of a multi-targeted project
 /// never runs CoreCompile: "no FscCommandLineArgs". Cached per project: the
 /// evaluation costs seconds.
-let private listedFrameworks =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string list>()
+let private listedFrameworks = ConcurrentDictionary<string, string list>()
 
 /// A project file's text with its XML comments taken out: a framework list
 /// an author commented away is not one the project builds. A commented
@@ -960,6 +965,13 @@ let private listedFrameworks =
 /// for a net48 pass that no restore produced (NETSDK1005).
 let internal projectTextWithoutComments (text: string) =
     Workspace.projectTextWithoutComments text
+
+let private targetFrameworksOfRegex = Regex @"^[A-Za-z][A-Za-z0-9.\-+]*$"
+
+let private targetFrameworksOfRegex2 =
+    Regex "<TargetFrameworks>([^<]+)</TargetFrameworks>"
+
+let private targetFrameworksOfRegex3 = Regex "<TargetFrameworks\\s+[^>]*Condition"
 
 let internal targetFrameworksOf (projectPath: string) : string list =
     listedFrameworks.GetOrAdd(
@@ -977,20 +989,16 @@ let internal targetFrameworksOf (projectPath: string) : string list =
             let split (listed: string) =
                 listed.Split ';'
                 |> Array.map _.Trim()
-                |> Array.filter (fun tfm ->
-                    tfm <> ""
-                    && Text.RegularExpressions.Regex.IsMatch(tfm, @"^[A-Za-z][A-Za-z0-9.\-+]*$"))
+                |> Array.filter (fun tfm -> tfm <> "" && targetFrameworksOfRegex.IsMatch tfm)
                 |> Array.sortBy tfmRank
                 |> List.ofArray
 
-            let m =
-                Text.RegularExpressions.Regex.Match(text, "<TargetFrameworks>([^<]+)</TargetFrameworks>")
+            let m = targetFrameworksOfRegex2.Match text
 
             // a second, conditioned element (one adding net10.0 to
             // netstandard2.0 outside official builds, say) makes the
             // plain one only part of the answer
-            let conditioned =
-                Text.RegularExpressions.Regex.IsMatch(text, "<TargetFrameworks\\s+[^>]*Condition")
+            let conditioned = targetFrameworksOfRegex3.IsMatch text
 
             if m.Success && not conditioned && not (m.Groups.[1].Value.Contains "$(") then
                 split m.Groups.[1].Value
@@ -1003,7 +1011,7 @@ let internal targetFrameworksOf (projectPath: string) : string list =
                         $"msbuild \"{path}\" --getProperty:TargetFrameworks"
 
                 // the value is the LAST line; anything before it is chatter
-                out.Split('\n')
+                out.Split '\n'
                 |> Array.map _.Trim()
                 |> Array.filter (fun l -> l <> "")
                 |> Array.tryLast
@@ -1053,7 +1061,7 @@ let private compileItemRegex =
 /// property or a wildcard are the evaluation's business and are left out,
 /// as `registerFileFloors` does.
 let private compileItemsCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, Map<string, string>>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, Map<string, string>>(StringComparer.OrdinalIgnoreCase)
 
 let private compileItemsOf (project: string) =
     compileItemsCache.GetOrAdd(
@@ -1064,7 +1072,7 @@ let private compileItemsOf (project: string) =
 
                 compileItemRegex.Matches(File.ReadAllText p)
                 |> Seq.map (fun m -> m.Groups.[1].Value)
-                |> Seq.filter (fun item -> not (item.Contains '$') && not (item.Contains '*'))
+                |> Seq.filter (fun item -> not (item.Contains '$' || item.Contains '*'))
                 |> Seq.map (fun item ->
                     let full = Path.GetFullPath(Path.Combine(dir, item.Replace('\\', '/')))
                     full.ToLowerInvariant(), full)
@@ -1082,7 +1090,7 @@ let private compileItemsOf (project: string) =
 /// directive trivia (Text.hasConfigurationConditional), so a `#if DEBUG`
 /// quoted in a comment or a string is not one.
 let private configurationConditionals =
-    System.Collections.Concurrent.ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
 
 /// Memoised per project for the run: asked at the verification, at the
 /// extra pass and at the sibling check, and no fix writes such a
@@ -1142,7 +1150,7 @@ let private configurationSuffix () =
 /// The configuration the project builds by default (Debug unless it says
 /// otherwise), so the verification can build the OTHER one.
 let private defaultConfigurations =
-    System.Collections.Concurrent.ConcurrentDictionary<string, BuildConfiguration>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, BuildConfiguration>(StringComparer.OrdinalIgnoreCase)
 
 let private defaultConfiguration (project: string) =
     defaultConfigurations.GetOrAdd(
@@ -1233,8 +1241,7 @@ let private parseOnlyArgs (projectPath: string) =
 /// itself documents (dotnet tool restore, dotnet paket restore) — unless a
 /// global.json pins an SDK this machine lacks, when those commands cannot
 /// run either and the person is told what to run after installing it.
-let private preparedRoots =
-    System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+let private preparedRoots = ConcurrentDictionary<string, bool>()
 
 /// A repository that ships its own .NET — global.json's `sdk.paths` naming
 /// a directory beside it (the `.dotnet` of Arcade repositories) — builds
@@ -1287,7 +1294,7 @@ let private ensurePrivateSdk (projectPath: string) =
                     else
                         None)
                 // "$host$" is the dotnet running this, not a directory
-                |> Seq.filter (fun p -> not (p.StartsWith "$"))
+                |> Seq.filter (fun p -> not (p.StartsWith '$'))
                 |> Seq.map (fun p -> Path.GetFullPath(Path.Combine(Path.GetDirectoryName globalJson, p)))
                 |> Seq.tryFind (fun dir ->
                     File.Exists(Path.Combine(dir, "dotnet.exe"))
@@ -1428,6 +1435,7 @@ let private ensureRestorable (projectPath: string) =
 /// on `-t:Build` instead of `-t:Rebuild`: no clean, so the outputs a
 /// script's `#r` or an old-style project's path reference need stay where
 /// they are, and no third build to put them back.
+[<Literal>]
 let private forceCoreCompile =
     " -p:NonExistentFile=__NonExistentSubDir__\\__NonExistentFile__"
 
@@ -1505,7 +1513,7 @@ let private readFallbackCache (key: string) (framework: string) : (string * int)
                 match line.LastIndexOf '\t' with
                 | -1 -> None
                 | i ->
-                    match Int32.TryParse(line.Substring(i + 1)) with
+                    match Int32.TryParse(line.AsSpan(i + 1)) with
                     | true, n -> Some(line.Substring(0, i), n)
                     | _ -> None)
             |> List.ofArray
@@ -1685,7 +1693,7 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
 
         let harvestedSites =
             [
-                for m in fallbackPattern.Matches($"{buildOut}\n{buildErr}") do
+                for m in fallbackPattern.Matches $"{buildOut}\n{buildErr}" do
                     let file: string = m.Groups.["file"].Value.Trim()
 
                     match Int32.TryParse m.Groups.["line"].Value with
@@ -1920,12 +1928,12 @@ let private analyzerName (m: MethodInfo) =
 /// and macOS answer UTF-8 to `GetEncoding 0`, which would put U+FFFD back
 /// in) - a legacy file came from a Windows machine. CSharp.Refactor's
 /// Workspace.legacyEncoding, the same answer on both sides.
-let private legacyEncoding () : System.Text.Encoding =
-    System.Text.Encoding.RegisterProvider System.Text.CodePagesEncodingProvider.Instance
-    let system = System.Text.Encoding.GetEncoding 0
+let private legacyEncoding () : Encoding =
+    Encoding.RegisterProvider CodePagesEncodingProvider.Instance
+    let system = Encoding.GetEncoding 0
 
     if system.CodePage = 65001 then
-        System.Text.Encoding.GetEncoding 1252
+        Encoding.GetEncoding 1252
     else
         system
 
@@ -1940,26 +1948,26 @@ let private legacyEncoding () : System.Text.Encoding =
 /// and ANY fix to the file then rewrites the whole of it as UTF-8, each
 /// `ä` now EF BF BD. And UTF-32LE's mark (FF FE 00 00) begins with
 /// UTF-16LE's (FF FE), so it is tested first.
-let private sourceEncoding (bytes: byte array) : System.Text.Encoding * int =
+let private sourceEncoding (bytes: byte array) : Encoding * int =
     let startsWith (mark: byte list) =
         bytes.Length >= mark.Length
         && List.forall2 (fun i b -> bytes.[i] = b) [ 0 .. mark.Length - 1 ] mark
 
     if startsWith [ 0xEFuy; 0xBBuy; 0xBFuy ] then
-        System.Text.UTF8Encoding true, 3
+        UTF8Encoding true, 3
     elif startsWith [ 0xFFuy; 0xFEuy; 0uy; 0uy ] then
-        System.Text.UTF32Encoding(false, true), 4
+        UTF32Encoding(false, true), 4
     elif startsWith [ 0uy; 0uy; 0xFEuy; 0xFFuy ] then
-        System.Text.UTF32Encoding(true, true), 4
+        UTF32Encoding(true, true), 4
     elif startsWith [ 0xFFuy; 0xFEuy ] then
-        System.Text.Encoding.Unicode, 2
+        Encoding.Unicode, 2
     elif startsWith [ 0xFEuy; 0xFFuy ] then
-        System.Text.Encoding.BigEndianUnicode, 2
+        Encoding.BigEndianUnicode, 2
     else
         try
-            System.Text.UTF8Encoding(false, true).GetString bytes |> ignore
-            System.Text.UTF8Encoding false, 0
-        with :? System.Text.DecoderFallbackException ->
+            UTF8Encoding(false, true).GetString bytes |> ignore
+            UTF8Encoding false, 0
+        with :? DecoderFallbackException ->
             legacyEncoding (), 0
 
 /// A source file's bytes as text, in the encoding sourceEncoding finds.
@@ -1974,12 +1982,12 @@ let private decodeSource (bytes: byte array) =
 let internal readSource (path: string) = decodeSource (File.ReadAllBytes path)
 
 /// The encoding a source file is written in (see sourceEncoding).
-let internal encodingOf (path: string) : System.Text.Encoding =
+let internal encodingOf (path: string) : Encoding =
     try
         fst (sourceEncoding (File.ReadAllBytes path))
     with
     | :? IOException
-    | :? UnauthorizedAccessException -> System.Text.UTF8Encoding false
+    | :? UnauthorizedAccessException -> UTF8Encoding false
 
 /// The typecheck of a multi-targeted project's NEXT framework, started
 /// while the current one is swept (see prefetchNextFramework). FCS runs
@@ -1994,8 +2002,7 @@ let internal encodingOf (path: string) : System.Text.Encoding =
 /// wait is nearly always nothing (the check finishes inside the sweep),
 /// and a pass that then applies fixes simply leaves FCS to re-check the
 /// changed files incrementally, as it would have anyway.
-let private speculativeCheck: System.Threading.Tasks.Task ref =
-    ref System.Threading.Tasks.Task.CompletedTask
+let private speculativeCheck: Task ref = ref Task.CompletedTask
 
 let private awaitSpeculation () =
     let inFlight = speculativeCheck.Value
@@ -2017,7 +2024,7 @@ let private awaitSpeculation () =
 /// fixes. Cleared
 /// per run, beside runOriginals.
 let internal originalBytes =
-    System.Collections.Generic.Dictionary<string, byte array>(StringComparer.OrdinalIgnoreCase)
+    Dictionary<string, byte array>(StringComparer.OrdinalIgnoreCase)
 
 /// Keep a file's bytes as the run's original, unless it has them already.
 let internal keepOriginalBytes (path: string) (bytes: byte array) =
@@ -2056,6 +2063,8 @@ let private writeSource (path: string) (text: string) =
 /// the fix for noise that was there before it.
 let mutable internal parseOnlyRun = false
 
+let private fsiAuxLibRegex = Regex @"^(\S+) \[(.+)\]$"
+
 /// `fsi.CommandLineArgs` and friends live in
 /// FSharp.Compiler.Interactive.Settings.dll, which FCS references under
 /// useFsiAuxLib only when that assembly sits beside the compiler — this
@@ -2063,8 +2072,7 @@ let mutable internal parseOnlyRun = false
 /// for the script's directory does, so it is referenced from there;
 /// without it every script touching `fsi` reads as "does not typecheck".
 let private fsiAuxLib =
-    let cache =
-        System.Collections.Concurrent.ConcurrentDictionary<string, string option>()
+    let cache = ConcurrentDictionary<string, string option>()
 
     fun (scriptDir: string) ->
         cache.GetOrAdd(
@@ -2081,7 +2089,7 @@ let private fsiAuxLib =
 
                     sdks.Split '\n'
                     |> Array.tryPick (fun line ->
-                        let m = System.Text.RegularExpressions.Regex.Match(line.Trim(), @"^(\S+) \[(.+)\]$")
+                        let m = fsiAuxLibRegex.Match(line.Trim())
 
                         if m.Success && m.Groups.[1].Value = version then
                             Some(
@@ -2243,7 +2251,7 @@ let private projectErrors (checker: FSharpChecker) (options: FSharpProjectOption
 
     results.Diagnostics
     |> Array.filter (fun d ->
-        d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+        d.Severity = FSharpDiagnosticSeverity.Error
         && (not parseOnlyRun || d.Subcategory = "parse"))
 
 let private errorCount (checker: FSharpChecker) (options: FSharpProjectOptions) = (projectErrors checker options).Length
@@ -2287,7 +2295,7 @@ let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOp
         |> List.toArray
         |> Array.collect (fun path ->
             try
-                let text = FSharp.Compiler.Text.SourceText.ofString (readSource path)
+                let text = SourceText.ofString (readSource path)
 
                 let _, answer =
                     checker.ParseAndCheckFileInProject(path, 0, text, options)
@@ -2297,7 +2305,7 @@ let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOp
                 | FSharpCheckFileAnswer.Succeeded results ->
                     results.Diagnostics
                     |> Array.filter (fun d ->
-                        d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+                        d.Severity = FSharpDiagnosticSeverity.Error
                         && (not parseOnlyRun || d.Subcategory = "parse"))
                 | FSharpCheckFileAnswer.Aborted -> [||]
             with
@@ -2343,8 +2351,7 @@ let private fixKey (code: string) (file: string) (f: Fix) =
 /// Files a verification put back for refusing another project or
 /// framework, for the rest of the run: the next framework round would
 /// otherwise apply the same fixes again and bisect again.
-let private putBackFiles =
-    System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+let private putBackFiles = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
 /// The files the compilation's snapshot covers — its own sources — and
 /// the ORIGINAL text of every file written OUTSIDE it: a sibling project's
@@ -2354,11 +2361,10 @@ let private putBackFiles =
 /// put-backs — the error-count guard, the all-frameworks arbiter, the
 /// bisection — can put them back with the definitions they were rewritten
 /// for. Empty while there is no snapshot (--dry-run writes nothing anyway).
-let internal snapshotFiles =
-    System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+let internal snapshotFiles = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
 let internal extraSnapshot =
-    System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 
 /// The text every file had when the RUN first saw it - across
 /// compilations, unlike a snapshot, which starts afresh per compilation.
@@ -2366,7 +2372,7 @@ let internal extraSnapshot =
 /// it fails on is one an earlier compilation of the run rewrote
 /// (`putBackRunEdits`).
 let internal runOriginals =
-    System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
 
 /// Every set of files one suggestion edited together, across the RUN: a
 /// definition and the call sites --api-changes rewrote with it, in a
@@ -2389,8 +2395,7 @@ let internal clearRunTies () = lock runTies runTies.Clear
 
 /// `files` and every file a run tie reaches from them, transitively.
 let private runTiedTo (files: string list) =
-    let reached =
-        System.Collections.Generic.HashSet<string>(files, StringComparer.OrdinalIgnoreCase)
+    let reached = HashSet<string>(files, StringComparer.OrdinalIgnoreCase)
 
     let ordered = ResizeArray<string>(files)
     let ties = lock runTies (fun () -> List.ofSeq runTies)
@@ -2425,7 +2430,7 @@ let internal recordExtra (file: string) (before: string) =
 /// by the api pass because that project compiles this one's files directly
 /// — for the one-word note on their fix lines. Set by the api pass for
 /// the duration of its apply, empty otherwise.
-let private linkedFiles = System.Collections.Generic.HashSet<string>()
+let private linkedFiles = HashSet<string>()
 
 /// Rules whose insertions at ONE point may all land in the same pass. FR0006
 /// puts every active pattern it extracts right above the enclosing
@@ -2456,8 +2461,8 @@ let mutable private appliedFindings = 0
 /// second applied, leave its binding undefined.
 let private applyEditGroups
     (dryRun: bool)
-    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
-    (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
+    (suppressed: HashSet<string * string * string * string>)
+    (editsByFile: Dictionary<string, ResizeArray<int * string * Fix>>)
     : int * AppliedFile list =
     let mutable applied = 0
     appliedFindings <- 0
@@ -2487,7 +2492,7 @@ let private applyEditGroups
                 let mutable current = text
                 let mutable appliedRanges: (Range * string * bool) list = []
                 let mutable appliedHere: (int * string * Fix) list = []
-                let groupDecisions = System.Collections.Generic.Dictionary<int, bool>()
+                let groupDecisions = Dictionary<int, bool>()
 
                 let pointInsertion (r: Range) (fromText: string) =
                     fromText = "" && Range.equals (Range.mkRange r.FileName r.Start r.Start) r
@@ -2669,7 +2674,7 @@ type private ScriptInfo =
 /// Keyed by script path; the write time is the invalidation, so a script
 /// this run just edited is re-read on the next pass.
 let private scriptCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * ScriptInfo>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, DateTime * ScriptInfo>(StringComparer.OrdinalIgnoreCase)
 
 /// Call sites that live OUTSIDE the project's compilation: scripts under
 /// the scanned path that `#load` its sources.
@@ -2691,11 +2696,11 @@ type private ScriptCallSites =
         /// Parse contexts, so a call-site edit can be rendered in the script.
         Contexts: (string * FileContext) list
         /// Uses inside the scripts, indexed by the symbol's full name.
-        UsesByFullName: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>
+        UsesByFullName: Dictionary<string, FSharpSymbolUse[]>
         /// Project sources #loaded by a script we could NOT typecheck. Its
         /// call sites are unreadable, so nothing defined in these files may
         /// be reshaped — the same restraint as an unresolvable use.
-        Unverifiable: System.Collections.Generic.HashSet<string>
+        Unverifiable: HashSet<string>
         /// The scripts that `#r` the project's BUILT assembly, read on
         /// demand: each costs a typecheck of the project in memory, paid -
         /// like the sibling reading - only once a rule asks about a
@@ -2712,7 +2717,7 @@ and private ReferencingScripts =
         /// Parse contexts of the scripts read, for rendering their edits.
         Contexts: (string * FileContext) list
         /// Their uses, indexed by the symbol's full name.
-        UsesByFullName: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>
+        UsesByFullName: Dictionary<string, FSharpSymbolUse[]>
         /// The scripts read, with the options that read them: the recheck
         /// once the edits are on disk goes through the same redirected
         /// reference - the dll they name is not rebuilt between rounds,
@@ -2824,8 +2829,7 @@ let private readScriptUnguarded (checker: FSharpChecker) (script: string) =
 
                     let errors =
                         results.Diagnostics
-                        |> Array.filter (fun d ->
-                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                        |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
                     options, results, errors
 
@@ -2853,8 +2857,7 @@ let private readScriptUnguarded (checker: FSharpChecker) (script: string) =
                         Uses = [||]
                         Errors =
                             results.Diagnostics
-                            |> Array.filter (fun d ->
-                                d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                            |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
                             |> Array.truncate 2
                             |> Array.map (fun d ->
                                 $"{Path.GetFileName d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}")
@@ -2941,17 +2944,16 @@ let private readScript (checker: FSharpChecker) (script: string) =
 ///
 /// Read once per round per script: cleared with the sibling cache.
 let private referencingCheckCache =
-    System.Collections.Generic.Dictionary<
-        string * string,
-        Result<FileContext * FSharpSymbolUse[] * FSharpProjectOptions, string list>
-     >()
+    Dictionary<string * string, Result<FileContext * FSharpSymbolUse[] * FSharpProjectOptions, string list>>()
+
+let private conditionHoldsRegex = Regex @"\(|\)|!|&&|\|\||[A-Za-z_][A-Za-z0-9_]*"
 
 /// Whether an `#if`/`#elif` condition holds under `defined`: symbols, `!`,
 /// `&&`, `||` and parentheses, as the compiler reads them (`&&` binds
 /// tighter than `||`); anything else in a condition is false.
 let private conditionHolds (defined: Set<string>) (condition: string) : bool =
     let tokens =
-        Text.RegularExpressions.Regex.Matches(condition.Split("//").[0], @"\(|\)|!|&&|\|\||[A-Za-z_][A-Za-z0-9_]*")
+        conditionHoldsRegex.Matches(condition.Split("//").[0])
         |> Seq.map (fun m -> m.Value)
         |> List.ofSeq
 
@@ -3001,6 +3003,9 @@ type private IfFrame =
         Symbols: string list
     }
 
+let private directiveScopesRegex =
+    Text.RegularExpressions.Regex @"(!?)\b([A-Za-z_][A-Za-z0-9_]*)\b"
+
 /// For each line of a script: whether the compiler reads it under this
 /// run's symbols (`INTERACTIVE` always, as fsi defines it), following
 /// `#if`/`#elif`/`#else`/`#endif` nesting as the compiler does; and the
@@ -3010,8 +3015,7 @@ type private IfFrame =
 let internal directiveScopes (lines: string seq) : (bool * string list) list =
     let defined = set (RunDefines.current ()) |> Set.add "INTERACTIVE"
 
-    let positiveRegex =
-        Text.RegularExpressions.Regex @"(!?)\b([A-Za-z_][A-Za-z0-9_]*)\b"
+    let positiveRegex = directiveScopesRegex
 
     let positiveSymbols (condition: string) =
         [
@@ -3020,7 +3024,7 @@ let internal directiveScopes (lines: string seq) : (bool * string list) list =
                     m.Groups.[2].Value
         ]
 
-    let stack = System.Collections.Generic.Stack<IfFrame>()
+    let stack = Stack<IfFrame>()
 
     let directive (line: string) (name: string) =
         line.StartsWith name
@@ -3151,7 +3155,7 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
                         let errors =
                             results.Diagnostics
                             |> Array.filter (fun d ->
-                                d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error
+                                d.Severity = FSharpDiagnosticSeverity.Error
                                 && not (ignoredLines |> Set.contains d.StartLine))
 
                         if Array.isEmpty errors then
@@ -3178,7 +3182,7 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
                             // restraint the `#load` reading and the sibling
                             // reading apply
                             let projectFiles =
-                                System.Collections.Generic.HashSet<string>(
+                                HashSet<string>(
                                     project.SourceFiles |> Array.map Path.GetFullPath,
                                     StringComparer.OrdinalIgnoreCase
                                 )
@@ -3294,10 +3298,7 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
 
                 match attempt false with
                 | Ok read -> Ok read
-                | Error coreErrors ->
-                    match attempt true with
-                    | Ok read -> Ok read
-                    | Error _ -> Error coreErrors
+                | Error coreErrors -> (attempt true) |> Result.mapError (fun _ -> coreErrors)
             with
             | :? IOException
             | :? UnauthorizedAccessException -> Error [ "the script could not be read" ]
@@ -3351,12 +3352,13 @@ let inline private (|Exists|_|) (input: string) =
 /// another file went in has left a definition reshaped and a call site
 /// not. That is exactly the state a group exists to make impossible, so
 /// such a group is put back whole here, with the broken ones.
+[<TailCall>]
 let rec private applyEditGroupsCheckingScripts
     (checker: FSharpChecker)
     (dryRun: bool)
-    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (suppressed: HashSet<string * string * string * string>)
     (brokenElsewhere: AppliedFile list -> Set<int>)
-    (editsByFile: System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>)
+    (editsByFile: Dictionary<string, ResizeArray<int * string * Fix>>)
     : int * AppliedFile list =
     // which of the scripts about to be edited were typechecking BEFORE the
     // edit. The check below asks whether a rewritten script still has a
@@ -3367,10 +3369,9 @@ let rec private applyEditGroupsCheckingScripts
     // actually broke may take its group down.
     let contextBefore =
         if dryRun then
-            System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            HashSet<string>(StringComparer.OrdinalIgnoreCase)
         else
-            let checkable =
-                System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            let checkable = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
             for path in editsByFile.Keys do
                 if
@@ -3454,9 +3455,7 @@ let rec private applyEditGroupsCheckingScripts
             writeSource cf.Path cf.Before
 
         let survivors =
-            System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>(
-                StringComparer.OrdinalIgnoreCase
-            )
+            Dictionary<string, ResizeArray<int * string * Fix>>(StringComparer.OrdinalIgnoreCase)
 
         for kv in editsByFile do
             let kept =
@@ -3488,9 +3487,7 @@ let private quotedPath = Text.RegularExpressions.Regex("@?\"([^\"\\r\\n]*)\"")
 /// search path may resolve it). Per path and write time: a whole-tree run
 /// asks it of every script once per compilation.
 let private textualLoads =
-    System.Collections.Concurrent.ConcurrentDictionary<string, DateTime * string[] option>(
-        StringComparer.OrdinalIgnoreCase
-    )
+    ConcurrentDictionary<string, DateTime * string[] option>(StringComparer.OrdinalIgnoreCase)
 
 let private loadsOf (file: string) : string[] option =
     let stamp =
@@ -3536,11 +3533,10 @@ let private loadsOf (file: string) : string[] option =
 /// the typecheck resolves its `#r "nuget: ..."` references, seconds per
 /// script, and a repository of examples holds hundreds that `#load` only
 /// helpers of their own.
-let internal mayLoadAny (sources: System.Collections.Generic.HashSet<string>) (script: string) =
-    let seen =
-        System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+let internal mayLoadAny (sources: HashSet<string>) (script: string) =
+    let seen = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
-    let pending = System.Collections.Generic.Stack<string>()
+    let pending = Stack<string>()
     pending.Push(Path.GetFullPath script)
     let mutable reaches = false
 
@@ -3590,10 +3586,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
         | None -> projectDir
 
     let projectSources =
-        System.Collections.Generic.HashSet<string>(
-            options.SourceFiles |> Array.map Path.GetFullPath,
-            StringComparer.OrdinalIgnoreCase
-        )
+        HashSet<string>(options.SourceFiles |> Array.map Path.GetFullPath, StringComparer.OrdinalIgnoreCase)
 
     // the directories the walk could not read (and the reparse points it
     // does not follow): scripts there, if any, are invisible to this probe
@@ -3632,7 +3625,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
 
         let pattern =
             Text.RegularExpressions.Regex(
-                "^\\s*#r\\s+@?\"(?:[^\"\\r\\n]*[\\\\/])?" + assemblyFile + "\"",
+                $"^\\s*#r\\s+@?\"(?:[^\"\\r\\n]*[\\\\/])?{assemblyFile}\"",
                 Text.RegularExpressions.RegexOptions.IgnoreCase
                 ||| Text.RegularExpressions.RegexOptions.Multiline
             )
@@ -3648,11 +3641,9 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
 
     let contexts = ResizeArray()
 
-    let usesByName =
-        System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+    let usesByName = Dictionary<string, ResizeArray<FSharpSymbolUse>>()
 
-    let unverifiable =
-        System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    let unverifiable = HashSet<string>(StringComparer.OrdinalIgnoreCase)
 
     // a directory this walk could not read may hold a script that #loads
     // any file of this project, and its calls cannot be read: the same
@@ -3745,8 +3736,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
              let unread = ResizeArray()
              let contexts = ResizeArray()
 
-             let usesByName =
-                 System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+             let usesByName = Dictionary<string, ResizeArray<FSharpSymbolUse>>()
 
              if not referencing.IsEmpty then
                  Out.dim
@@ -3784,7 +3774,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
                          for reason in reasons do
                              Out.dim $"    {reason}"
 
-             let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+             let byName = Dictionary<string, FSharpSymbolUse[]>()
 
              for kv in usesByName do
                  byName.[kv.Key] <- kv.Value.ToArray()
@@ -3796,7 +3786,7 @@ let private findScriptCallSites (checker: FSharpChecker) (root: string) (options
                  Unread = List.ofSeq unread
              })
 
-    let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+    let byName = Dictionary<string, FSharpSymbolUse[]>()
 
     for kv in usesByName do
         byName.[kv.Key] <- kv.Value.ToArray()
@@ -3837,7 +3827,7 @@ type private SiblingCallSites =
         /// Parse contexts of every sibling read, for the file lookup.
         Contexts: (string * FileContext) list
         /// Uses inside the siblings, indexed by the symbol's full name.
-        UsesByFullName: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>
+        UsesByFullName: Dictionary<string, FSharpSymbolUse[]>
         /// Was every project that can see this project's PUBLIC
         /// declarations read — a workspace enumerated, every referencing
         /// project an F# one that typechecked?
@@ -3863,9 +3853,7 @@ type private SiblingCallSites =
 /// A sibling's compiler arguments, once per run: they come from MSBuild,
 /// which is the expensive half, and do not change as sources are edited.
 let private siblingOptionsCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, Result<FSharpProjectOptions, string>>(
-        StringComparer.OrdinalIgnoreCase
-    )
+    ConcurrentDictionary<string, Result<FSharpProjectOptions, string>>(StringComparer.OrdinalIgnoreCase)
 
 /// A sibling's typecheck, keyed by (sibling, referenced project): the
 /// sibling is checked against THAT project's sources in memory, so one
@@ -3873,8 +3861,7 @@ let private siblingOptionsCache =
 /// and once per ROUND, since the previous round's edits are what it must
 /// now see; the api pass clears this as each round begins. What survives
 /// the run is the MSBuild half above.
-let private siblingCheckCache =
-    System.Collections.Generic.Dictionary<string * string, SiblingInfo>()
+let private siblingCheckCache = Dictionary<string * string, SiblingInfo>()
 
 /// Read one sibling: MSBuild for its arguments, then a typecheck with the
 /// analyzed project referenced IN MEMORY rather than through the dll on
@@ -3889,6 +3876,32 @@ let private siblingCheckCache =
 /// whose arguments carry no such reference is not compiled against the
 /// project after all — a ProjectReference with ReferenceOutputAssembly
 /// false, say — and is reported unreadable rather than assumed harmless.
+let private siblingKey (sibling: string) (project: FSharpProjectOptions) =
+    Path.GetFullPath(sibling).ToLowerInvariant(), Path.GetFullPath(project.ProjectFileName).ToLowerInvariant()
+
+/// A sibling's arguments with the analyzed project referenced in memory
+/// (see readSibling); None where they carry no reference to it.
+let private siblingInMemoryOptions
+    (project: FSharpProjectOptions)
+    (linksSources: bool)
+    (siblingOptions: FSharpProjectOptions)
+    : FSharpProjectOptions option =
+    let outputFile = outputFileNameOf project
+
+    let referencesProject (arg: string) =
+        arg.StartsWith("-r:", StringComparison.OrdinalIgnoreCase)
+        && String.Equals(Path.GetFileName(arg.Substring 3), outputFile, StringComparison.OrdinalIgnoreCase)
+
+    if linksSources then
+        Some siblingOptions
+    else
+        siblingOptions.OtherOptions
+        |> Array.tryFind referencesProject
+        |> Option.map (fun reference ->
+            { siblingOptions with
+                ReferencedProjects = [| FSharpReferencedProject.FSharpReference(reference.Substring 3, project) |]
+            })
+
 let private readSibling
     (checker: FSharpChecker)
     (optionsOf: string -> Result<FSharpProjectOptions, string>)
@@ -3901,8 +3914,7 @@ let private readSibling
     (linksSources: bool)
     (sibling: string)
     =
-    let key =
-        Path.GetFullPath(sibling).ToLowerInvariant(), Path.GetFullPath(project.ProjectFileName).ToLowerInvariant()
+    let key = siblingKey sibling project
 
     match siblingCheckCache.TryGetValue key with
     | true, info -> info
@@ -3920,29 +3932,11 @@ let private readSibling
             match siblingOptionsCache.GetOrAdd(Path.GetFullPath sibling, optionsOf) with
             | Error message -> unreadable [ message ]
             | Ok siblingOptions ->
-                let outputFile = outputFileNameOf project
-
-                let referencesProject (arg: string) =
-                    arg.StartsWith("-r:", StringComparison.OrdinalIgnoreCase)
-                    && String.Equals(Path.GetFileName(arg.Substring 3), outputFile, StringComparison.OrdinalIgnoreCase)
-
-                let inMemory =
-                    if linksSources then
-                        Some siblingOptions
-                    else
-                        siblingOptions.OtherOptions
-                        |> Array.tryFind referencesProject
-                        |> Option.map (fun reference ->
-                            { siblingOptions with
-                                ReferencedProjects =
-                                    [| FSharpReferencedProject.FSharpReference(reference.Substring 3, project) |]
-                            })
-
-                match inMemory with
+                match siblingInMemoryOptions project linksSources siblingOptions with
                 | None ->
                     unreadable
                         [
-                            $"its compiler arguments carry no reference to {outputFile}, so it cannot be checked against this project"
+                            $"its compiler arguments carry no reference to {outputFileNameOf project}, so it cannot be checked against this project"
                         ]
                 | Some options ->
 
@@ -3953,8 +3947,7 @@ let private readSibling
 
                     let errors =
                         results.Diagnostics
-                        |> Array.filter (fun d ->
-                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                        |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
                     if not (Array.isEmpty errors) then
                         { unreadable (
@@ -3968,7 +3961,7 @@ let private readSibling
                         }
                     else
                         let projectFiles =
-                            System.Collections.Generic.HashSet<string>(
+                            HashSet<string>(
                                 project.SourceFiles |> Array.map Path.GetFullPath,
                                 StringComparer.OrdinalIgnoreCase
                             )
@@ -3979,7 +3972,7 @@ let private readSibling
                         // from the project's compilation, and their trees
                         // from the project's parse
                         let own =
-                            System.Collections.Generic.HashSet<string>(
+                            HashSet<string>(
                                 options.SourceFiles
                                 |> Array.map Path.GetFullPath
                                 |> Array.filter (projectFiles.Contains >> not),
@@ -4044,6 +4037,195 @@ let private readSibling
         siblingCheckCache.[key] <- info
         info
 
+/// An identifier as source text spells it. The same pattern reads a
+/// sibling's sources and tests a symbol's name, so "the sources do not
+/// contain this identifier" means the same thing on both sides.
+let private identifierPattern = Regex @"[\p{L}_][\p{L}\p{Nd}_']*"
+
+let private plainIdentifier = Regex @"^[\p{L}_][\p{L}\p{Nd}_']*$"
+
+/// Members the language calls without their name being written: an
+/// indexer, a loop's enumerator, a `use`'s Dispose, a computation
+/// expression's builder methods, an operator.
+let private impliedMemberNames =
+    HashSet<string>(
+        [
+            "Item"
+            "Invoke"
+            "GetEnumerator"
+            "MoveNext"
+            "Current"
+            "Dispose"
+            "DisposeAsync"
+            "GetSlice"
+            "SetSlice"
+            "ToString"
+            "Equals"
+            "GetHashCode"
+            "CompareTo"
+            "Return"
+            "ReturnFrom"
+            "Yield"
+            "YieldFrom"
+            "Zero"
+            "Combine"
+            "Delay"
+            "Run"
+            "For"
+            "While"
+            "Using"
+            "TryWith"
+            "TryFinally"
+            "Source"
+            "Quote"
+            "GetAwaiter"
+            "GetResult"
+            "IsCompleted"
+            "OnCompleted"
+            "GetReverseIndex"
+            // reached through FSharp.Core's inline functions, by constraint
+            "One"
+            "DivideByInt"
+            "Abs"
+            "Sign"
+            "Sqrt"
+            "Sin"
+            "Cos"
+            "Tan"
+            "Asin"
+            "Acos"
+            "Atan"
+            "Atan2"
+            "Sinh"
+            "Cosh"
+            "Tanh"
+            "Log"
+            "Log10"
+            "Exp"
+            "Pow"
+            "Ceiling"
+            "Floor"
+            "Round"
+            "Truncate"
+        ]
+    )
+
+/// What a source file must WRITE to use this symbol: its name, and for a
+/// function or value of a module the name that brings the module's
+/// contents into reach as well - the module's own (an `open`, a qualified
+/// call, an abbreviation all spell it), or for an `[<AutoOpen>]` module
+/// the enclosing module's or the last segment of its namespace. A name
+/// common to every codebase (`map`, `create`) then reads only the siblings
+/// that also name its module.
+///
+/// None where a use needs no spelling: a constructor (reached through any
+/// abbreviation of its type), a member the language calls implicitly, a
+/// custom operation (spelled by its keyword), an operator or any name
+/// that is not a plain identifier. None reads every sibling.
+let private mentionNames (symbol: FSharpSymbol) : (string * string option) option =
+    let autoOpened (attributes: FSharpAttribute seq) =
+        attributes
+        |> Seq.exists (fun a -> a.AttributeType.DisplayName.StartsWith "AutoOpen")
+
+    // the name a file must spell to reach a module's contents; None where
+    // none is needed or none can be told
+    let rec reach (entity: FSharpEntity) : string option =
+        if not entity.IsFSharpModule then
+            None
+        elif autoOpened entity.Attributes then
+            match entity.DeclaringEntity with
+            | Some parent -> reach parent
+            | None ->
+                entity.Namespace
+                |> Option.map (fun ns -> ns.Split('.') |> Array.last)
+                |> Option.filter plainIdentifier.IsMatch
+        elif plainIdentifier.IsMatch entity.DisplayName then
+            Some entity.DisplayName
+        else
+            None
+
+    let container (m: FSharpMemberOrFunctionOrValue) =
+        if m.IsModuleValueOrMember && not m.IsMember && not m.IsExtensionMember then
+            // an assembly-level AutoOpen opens a module for every referencer,
+            // with nothing written in their sources
+            if autoOpened m.Assembly.Contents.Attributes then
+                None
+            else
+                m.DeclaringEntity |> Option.bind reach
+        else
+            None
+
+    let plain (name: string) (within: string option) =
+        if plainIdentifier.IsMatch name then
+            Some(name, within)
+        else
+            None
+
+    try
+        match symbol with
+        | :? FSharpMemberOrFunctionOrValue as m ->
+            let name = m.DisplayName
+
+            let implied =
+                m.IsConstructor
+                || ((m.IsMember || m.IsProperty)
+                    && (impliedMemberNames.Contains name
+                        || name.StartsWith("Bind", StringComparison.Ordinal)
+                        || name.StartsWith("MergeSources", StringComparison.Ordinal)
+                        || name.StartsWith("op_", StringComparison.Ordinal)
+                        || m.Attributes
+                           |> Seq.exists (fun a -> a.AttributeType.DisplayName.StartsWith "CustomOperation")))
+
+            if implied then
+                None
+            else
+                plain
+                    name
+                    (try
+                        container m
+                     with _ -> // the name alone decides; fsharpanalyzer: ignore-line FR0055
+                         None)
+        | _ -> plain symbol.DisplayName None
+    with _ -> // a symbol that cannot be read is one every sibling is read for; fsharpanalyzer: ignore-line FR0055
+        None
+
+/// The sibling projects of one api pass, read as they are needed. A
+/// typecheck of a referencing project is the expensive half of the pass -
+/// a large test project costs minutes - and a project whose sources never
+/// spell a declaration's name cannot call it. So a sibling is read when a
+/// rule first asks for the uses of a symbol its sources mention, and the
+/// answers below speak for the siblings read so far.
+///
+/// That makes `PublicRead` and `AssemblyRead` provisional: a sibling read
+/// later may turn out not to typecheck. The api pass repeats its analysis
+/// whenever `Unreadable` changed under it, so the answers a rule acted on
+/// are the ones that held at the end.
+type private LazySiblings =
+    {
+        /// Read every sibling with a source file that spells the name, and
+        /// beside it the name its module is reached by, where one is given;
+        /// None reads them all.
+        Ensure: (string * string option) option -> unit
+        /// The call sites of the siblings read so far.
+        Current: unit -> SiblingCallSites
+        /// Each readable sibling read so far, with the uses in its files.
+        ReadUses: unit -> (string * FSharpSymbolUse[]) list
+        /// The sibling files that spell the name (and the name its module
+        /// is reached by), parsed and nothing more - siblings not read
+        /// included. None where that cannot be told: a use that needs no
+        /// spelling, a referencer in another language, sources that cannot
+        /// be listed.
+        Spelled: (string * string option) option -> (ParsedInput * ISourceText) list option
+        /// The own source files of every sibling whose arguments are known,
+        /// read or not: the checks that scan source TEXT - a function named
+        /// in a string, or inside an `#if` region - ask all of them.
+        Sources: unit -> string list
+        /// Has any question been asked - is there anything read to recheck?
+        Started: unit -> bool
+        /// How many siblings read so far could not be read.
+        Unreadable: unit -> int
+    }
+
 /// Index the call sites in the sibling projects that can see this
 /// project's declarations — the complement of findScriptCallSites for
 /// the callers a `#load` does not explain.
@@ -4051,7 +4233,8 @@ let private readSibling
 /// The workspace is the run's solution, or the nearest one listing the
 /// project, or the directory the run was pointed at (Workspace.workspaceOf);
 /// its projects referencing this one, directly or through another, are the
-/// siblings. Each F# sibling is typechecked and its uses indexed; a
+/// siblings. An F# sibling is typechecked and its uses indexed once a rule
+/// asks about a symbol its sources mention (see LazySiblings); a
 /// sibling in another language, one that does not typecheck, or a
 /// workspace that cannot be enumerated at all leaves the public
 /// declarations as they are — said once, like the signature-file skip.
@@ -4060,11 +4243,11 @@ let private findSiblingCallSites
     (root: string)
     (options: FSharpProjectOptions)
     (optionsOf: string -> Result<FSharpProjectOptions, string>)
-    : SiblingCallSites =
+    : LazySiblings =
     let unread =
         {
             Contexts = []
-            UsesByFullName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+            UsesByFullName = Dictionary<string, FSharpSymbolUse[]>()
             PublicRead = false
             AssemblyRead = (fun _ -> false)
             Read = []
@@ -4072,145 +4255,344 @@ let private findSiblingCallSites
             Linked = Set.empty
         }
 
+    let nothing =
+        {
+            Ensure = ignore
+            Current = (fun () -> unread)
+            Spelled = (fun _ -> None)
+            Sources = (fun () -> [])
+            ReadUses = (fun () -> [])
+            Started = (fun () -> false)
+            Unreadable = (fun () -> 0)
+        }
+
     // a script compilation is nobody's reference target, and the project
     // sources it #loads belong to a project whose other callers this
     // compilation cannot see: nothing public is reshaped from here
     if options.SourceFiles |> Array.exists Visibility.isScriptFile then
-        unread
+        nothing
     else
-        match Workspace.workspaceOf root options.ProjectFileName with
-        | None ->
-            Out.dim
-                "  (no solution lists this project, so nothing referencing it can be read; public declarations keep their shape)"
+        // who can see the project: enumerated on the first question, since
+        // a pass with no candidate asks none
+        let plan =
+            lazy
+                (match Workspace.workspaceOf root options.ProjectFileName with
+                 | None ->
+                     Out.dim
+                         "  (no solution lists this project, so nothing referencing it can be read; public declarations keep their shape)"
 
-            unread
-        | Some workspace ->
-            let referencers = Workspace.referencersOf workspace options.ProjectFileName
+                     None
+                 | Some workspace ->
+                     let referencers = Workspace.referencersOf workspace options.ProjectFileName
 
-            let foreign, fsharp =
-                referencers |> List.partition (Workspace.isFSharpProject >> not)
+                     let foreign, fsharp =
+                         referencers |> List.partition (Workspace.isFSharpProject >> not)
 
-            if not foreign.IsEmpty then
-                let names = foreign |> List.map Path.GetFileName |> String.concat ", "
-                let verb = if foreign.Length = 1 then "references" else "reference"
+                     if not foreign.IsEmpty then
+                         let names = foreign |> List.map Path.GetFileName |> String.concat ", "
+                         let verb = if foreign.Length = 1 then "references" else "reference"
 
-                Out.skip $"  ({names} {verb} this project and cannot be read; public declarations keep their shape)"
+                         Out.skip
+                             $"  ({names} {verb} this project and cannot be read; public declarations keep their shape)"
 
-            // a project compiling some of this project's sources directly
-            // is another compilation of those declarations, read like a
-            // referencer: its own files hold call sites of its own copy
-            let linkers =
-                Workspace.sharedSourcesOf workspace options.ProjectFileName (editableSources options)
-                |> List.filter (fun (linker, _) ->
-                    Workspace.isFSharpProject linker
-                    && not (
-                        fsharp
-                        |> List.exists (fun r -> String.Equals(r, linker, StringComparison.OrdinalIgnoreCase))
-                    ))
+                     // a project compiling some of this project's sources directly
+                     // is another compilation of those declarations, read like a
+                     // referencer: its own files hold call sites of its own copy
+                     let linkers =
+                         Workspace.sharedSourcesOf workspace options.ProjectFileName (editableSources options)
+                         |> List.filter (fun (linker, _) ->
+                             Workspace.isFSharpProject linker
+                             && not (
+                                 fsharp
+                                 |> List.exists (fun r -> String.Equals(r, linker, StringComparison.OrdinalIgnoreCase))
+                             ))
 
-            let readOne (linksSources: bool) (sibling: string) (why: string) =
-                if not linksSources then
-                    Out.dim $"  {Path.GetFileName sibling} {why}; reading its call sites"
+                     // a workspace project that does not reference this one cannot
+                     // call it, friend or not
+                     let unreferencing =
+                         workspace
+                         |> List.filter (fun p ->
+                             not (
+                                 referencers
+                                 |> List.exists (fun r -> String.Equals(r, p, StringComparison.OrdinalIgnoreCase))
+                             )
+                             && not (
+                                 String.Equals(
+                                     Path.GetFullPath p,
+                                     Path.GetFullPath options.ProjectFileName,
+                                     StringComparison.OrdinalIgnoreCase
+                                 )
+                             ))
+                         |> List.map Workspace.assemblyNameOf
+                         |> Set.ofList
 
-                let info = readSibling checker optionsOf options linksSources sibling
+                     Some(foreign, fsharp, linkers, unreferencing))
 
-                if not info.Errors.IsEmpty then
-                    Out.skip
-                        $"  ({Path.GetFileName sibling} cannot be read, so its calls cannot be rewritten; declarations it can see keep their shape)"
+        // the siblings read, in the order they were
+        let loaded = ResizeArray<string * bool * SiblingInfo>()
 
-                    for e in info.Errors do
-                        Out.dim $"    {e}"
+        let isLoaded (sibling: string) =
+            loaded.Exists(fun (project, _, _) -> String.Equals(project, sibling, StringComparison.OrdinalIgnoreCase))
 
-                info
+        let projectFiles =
+            lazy
+                (HashSet<string>(
+                    options.SourceFiles
+                    |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant())
+                ))
 
-            let read =
-                [
-                    for sibling in fsharp do
-                        readOne false sibling "references this project"
-                    for linker, _ in linkers do
-                        readOne true linker ""
-                ]
+        // every identifier each of the sibling's own files spells -
+        // comments, strings and inactive `#if` branches included, which is
+        // the safe side: a mention anywhere reads the sibling. None where
+        // the sources cannot be listed or read: such a sibling is always
+        // read, and says there why it is unreadable
+        let identifiers =
+            Dictionary<string, (string * HashSet<string>) list option>(StringComparer.OrdinalIgnoreCase)
 
-            // a linker's own files, for the note on their fix lines
-            let linked =
-                [
-                    for linker, _ in linkers do
-                        let info = readSibling checker optionsOf options true linker
+        let identifiersOf (sibling: string) =
+            match identifiers.TryGetValue sibling with
+            | true, known -> known
+            | false, _ ->
+                let found =
+                    match siblingOptionsCache.GetOrAdd(Path.GetFullPath sibling, optionsOf) with
+                    | Error _ -> None
+                    | Ok siblingOptions ->
+                        try
+                            [
+                                for file in siblingOptions.SourceFiles do
+                                    if not (projectFiles.Value.Contains(Path.GetFullPath(file).ToLowerInvariant())) then
+                                        let names = HashSet<string>(StringComparer.Ordinal)
 
-                        for file, _ in info.Contexts do
-                            Path.GetFullPath(file).ToLowerInvariant()
-                ]
-                |> Set.ofList
+                                        for m in identifierPattern.Matches(readSource file) do
+                                            names.Add m.Value |> ignore
 
-            // the shared files of a linker that could not be read: their
-            // declarations have call sites nothing can reach
-            let unreadShared =
-                [
-                    for linker, files in linkers do
-                        if not (readSibling checker optionsOf options true linker).Errors.IsEmpty then
-                            yield! files
-                ]
+                                        file, names
+                            ]
+                            |> Some
+                        with
+                        | :? IOException
+                        | :? UnauthorizedAccessException -> None
 
-            let usesByName =
-                System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+                identifiers.[sibling] <- found
+                found
 
-            for info in read do
-                for u in info.Uses do
-                    match symbolFullName u.Symbol with
-                    | Some name ->
-                        match usesByName.TryGetValue name with
-                        | true, existing -> existing.Add u
-                        | false, _ ->
-                            let fresh = ResizeArray()
-                            fresh.Add u
-                            usesByName.[name] <- fresh
-                    | None -> ()
+        let spells (name: string) (within: string option) (spelled: HashSet<string>) =
+            spelled.Contains name
+            && (match within with
+                | Some reachedBy -> spelled.Contains reachedBy
+                | None -> true)
 
-            let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+        let mentioned (sibling: string) (names: (string * string option) option) =
+            match names with
+            | None -> Some "it may use a declaration without naming it"
+            | Some(name, within) ->
+                match identifiersOf sibling with
+                | None -> Some "its sources cannot be read as text"
+                | Some files ->
+                    if files |> List.exists (snd >> spells name within) then
+                        match within with
+                        | Some reachedBy -> Some $"it mentions '{reachedBy}' and '{name}'"
+                        | None -> Some $"it mentions '{name}'"
+                    else
+                        None
 
-            for kv in usesByName do
-                byName.[kv.Key] <- kv.Value.ToArray()
+        let mutable current: SiblingCallSites option = None
 
-            let readable = read |> List.filter (fun info -> info.Errors.IsEmpty)
+        let readOne (linksSources: bool) (sibling: string) (why: string) =
+            Out.dim $"  {Path.GetFileName sibling} {why}; reading its call sites"
 
-            let verified =
-                readable
-                |> List.map (fun info -> Workspace.assemblyNameOf info.Project)
-                |> Set.ofList
+            let info = readSibling checker optionsOf options linksSources sibling
 
-            // a workspace project that does not reference this one cannot
-            // call it, friend or not
-            let unreferencing =
-                workspace
-                |> List.filter (fun p ->
-                    not (
-                        referencers
-                        |> List.exists (fun r -> String.Equals(r, p, StringComparison.OrdinalIgnoreCase))
-                    )
-                    && not (
-                        String.Equals(
-                            Path.GetFullPath p,
-                            Path.GetFullPath options.ProjectFileName,
-                            StringComparison.OrdinalIgnoreCase
-                        )
-                    ))
-                |> List.map Workspace.assemblyNameOf
-                |> Set.ofList
+            if not info.Errors.IsEmpty then
+                Out.skip
+                    $"  ({Path.GetFileName sibling} cannot be read, so its calls cannot be rewritten; declarations it can see keep their shape)"
 
-            {
-                Contexts = readable |> List.collect (fun info -> info.Contexts)
-                UsesByFullName = byName
-                PublicRead = foreign.IsEmpty && read.Length = readable.Length
-                AssemblyRead =
-                    (fun name ->
-                        verified
-                        |> Set.exists (fun v -> String.Equals(v, name, StringComparison.OrdinalIgnoreCase))
-                        || unreferencing
-                           |> Set.exists (fun v -> String.Equals(v, name, StringComparison.OrdinalIgnoreCase)))
-                Read = readable
-                UnreadShared = unreadShared
-                Linked = linked
-            }
+                for e in info.Errors do
+                    Out.dim $"    {e}"
+
+            loaded.Add(sibling, linksSources, info)
+            current <- None
+
+        let ensure (names: (string * string option) option) =
+            match plan.Value with
+            | None -> ()
+            | Some(_, fsharp, linkers, _) ->
+                for sibling in fsharp do
+                    if not (isLoaded sibling) then
+                        match mentioned sibling names with
+                        | Some reason -> readOne false sibling $"references this project and {reason}"
+                        | None -> ()
+
+                for linker, _ in linkers do
+                    if not (isLoaded linker) then
+                        match mentioned linker names with
+                        | Some reason -> readOne true linker $"compiles this project's sources and {reason}"
+                        | None -> ()
+
+        let build () =
+            match plan.Value with
+            | None -> unread
+            | Some(foreign, _, linkers, unreferencing) ->
+                let read = [ for _, _, info in loaded -> info ]
+
+                // a linker's own files, for the note on their fix lines
+                let linked =
+                    [
+                        for _, linksSources, info in loaded do
+                            if linksSources then
+                                for file, _ in info.Contexts do
+                                    Path.GetFullPath(file).ToLowerInvariant()
+                    ]
+                    |> Set.ofList
+
+                // the shared files of a linker that could not be read: their
+                // declarations have call sites nothing can reach
+                let unreadShared =
+                    [
+                        for linker, files in linkers do
+                            for project, _, info in loaded do
+                                if
+                                    String.Equals(project, linker, StringComparison.OrdinalIgnoreCase)
+                                    && not info.Errors.IsEmpty
+                                then
+                                    yield! files
+                    ]
+
+                let usesByName = Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+
+                for info in read do
+                    for u in info.Uses do
+                        match symbolFullName u.Symbol with
+                        | Some name ->
+                            match usesByName.TryGetValue name with
+                            | true, existing -> existing.Add u
+                            | false, _ ->
+                                let fresh = ResizeArray()
+                                fresh.Add u
+                                usesByName.[name] <- fresh
+                        | None -> ()
+
+                let byName = Dictionary<string, FSharpSymbolUse[]>()
+
+                for kv in usesByName do
+                    byName.[kv.Key] <- kv.Value.ToArray()
+
+                let readable = read |> List.filter (fun info -> info.Errors.IsEmpty)
+
+                // a sibling read and found unreadable answers no; one not
+                // read yet has been asked about nothing it mentions
+                let unreadable =
+                    read
+                    |> List.filter (fun info -> not info.Errors.IsEmpty)
+                    |> List.map (fun info -> Workspace.assemblyNameOf info.Project)
+
+                {
+                    Contexts = readable |> List.collect (fun info -> info.Contexts)
+                    UsesByFullName = byName
+                    PublicRead = foreign.IsEmpty && read.Length = readable.Length
+                    AssemblyRead =
+                        (fun name ->
+                            let named (candidates: string seq) =
+                                candidates
+                                |> Seq.exists (fun v -> String.Equals(v, name, StringComparison.OrdinalIgnoreCase))
+
+                            not (named unreadable)
+                            && (named (readable |> List.map (fun info -> Workspace.assemblyNameOf info.Project))
+                                || named unreferencing
+                                || (match plan.Value with
+                                    | Some(_, fsharp, linkers, _) ->
+                                        Seq.append fsharp (linkers |> List.map fst)
+                                        |> Seq.filter (isLoaded >> not)
+                                        |> Seq.map Workspace.assemblyNameOf
+                                        |> named
+                                    | None -> false)))
+                    Read = readable
+                    UnreadShared = unreadShared
+                    Linked = linked
+                }
+
+        // a sibling file parsed for a question of syntax, once
+        let parsedFiles =
+            Dictionary<string, (ParsedInput * ISourceText) option>(StringComparer.OrdinalIgnoreCase)
+
+        let parsedFile (siblingOptions: FSharpProjectOptions) (file: string) =
+            match parsedFiles.TryGetValue file with
+            | true, known -> known
+            | false, _ ->
+                let parsed =
+                    try
+                        let sourceText = SourceText.ofString (readSource file)
+                        let parsingOptions, _ = checker.GetParsingOptionsFromProjectOptions siblingOptions
+
+                        let result =
+                            checker.ParseFile(file, sourceText, parsingOptions) |> Async.RunSynchronously
+
+                        Some(result.ParseTree, sourceText)
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException -> None
+
+                parsedFiles.[file] <- parsed
+                parsed
+
+        let spelled (names: (string * string option) option) =
+            match names, plan.Value with
+            | Some(name, within), Some(foreign, fsharp, linkers, _) when foreign.IsEmpty ->
+                let siblingFiles (sibling: string) =
+                    match identifiersOf sibling, siblingOptionsCache.TryGetValue(Path.GetFullPath sibling) with
+                    | Some files, (true, Ok siblingOptions) ->
+                        files
+                        |> List.filter (snd >> spells name within)
+                        |> List.map (fun (file, _) -> parsedFile siblingOptions file)
+                        |> Some
+                    | _ -> None
+
+                let perSibling =
+                    List.append fsharp (linkers |> List.map fst) |> List.map siblingFiles
+
+                if
+                    perSibling
+                    |> List.forall (function
+                        | Some files -> files |> List.forall Option.isSome
+                        | None -> false)
+                then
+                    Some(perSibling |> List.collect (Option.get >> List.choose id))
+                else
+                    None
+            | _ -> None
+
+        {
+            Ensure = ensure
+            Spelled = spelled
+            Sources =
+                (fun () ->
+                    match plan.Value with
+                    | Some(_, fsharp, linkers, _) ->
+                        [
+                            for sibling in List.append fsharp (linkers |> List.map fst) do
+                                match identifiersOf sibling with
+                                | Some files -> yield! files |> List.map fst
+                                | None -> ()
+                        ]
+                    | None -> [])
+            Current =
+                (fun () ->
+                    match current with
+                    | Some sites -> sites
+                    | None ->
+                        let sites = build ()
+                        current <- Some sites
+                        sites)
+            ReadUses =
+                (fun () ->
+                    [
+                        for project, _, info in loaded do
+                            if info.Errors.IsEmpty then
+                                project, info.Uses
+                    ])
+            Started = (fun () -> plan.IsValueCreated)
+            Unreadable = (fun () -> loaded |> Seq.filter (fun (_, _, info) -> not info.Errors.IsEmpty) |> Seq.length)
+        }
 
 /// The linkers alone, for the channel the ANALYZERS read: the FR0069,
 /// FR0093 and FR0049 migrations reshape `internal` declarations
@@ -4226,8 +4608,8 @@ let private findLinkerCallSites
     (root: string)
     (options: FSharpProjectOptions)
     (optionsOf: string -> Result<FSharpProjectOptions, string>)
-    : (string * FileContext) list * System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]> * string list =
-    let byName = System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>()
+    : (string * FileContext) list * Dictionary<string, FSharpSymbolUse[]> * string list =
+    let byName = Dictionary<string, FSharpSymbolUse[]>()
 
     if options.SourceFiles |> Array.exists Visibility.isScriptFile then
         [], byName, []
@@ -4244,8 +4626,7 @@ let private findLinkerCallSites
                     for linker, files in linkers -> files, readSibling checker optionsOf options true linker
                 ]
 
-            let usesByName =
-                System.Collections.Generic.Dictionary<string, ResizeArray<FSharpSymbolUse>>()
+            let usesByName = Dictionary<string, ResizeArray<FSharpSymbolUse>>()
 
             for _, info in read do
                 for u in info.Uses do
@@ -4303,10 +4684,10 @@ let private runApiPass
     /// an MSBuild evaluation and a typecheck per referencing project
     /// (minutes, for a widely referenced library), and is asked for
     /// only once a file holds a tupled definition worth reshaping.
-    (siblingSites: Lazy<SiblingCallSites>)
+    (siblings: LazySiblings)
     (codes: Set<string> option)
     (dryRun: bool)
-    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (suppressed: HashSet<string * string * string * string>)
     =
     if options.SourceFiles |> Array.exists (fun f -> f.EndsWith ".fsi") then
         Out.skip "  (api pass skipped: signature files would need the same changes)"
@@ -4322,7 +4703,7 @@ let private runApiPass
         let parsingOptions, _ = checker.GetParsingOptionsFromProjectOptions options
 
         let fileContexts =
-            System.Collections.Generic.Dictionary<string, Text.FileContext>(StringComparer.OrdinalIgnoreCase)
+            Dictionary<string, Text.FileContext>(StringComparer.OrdinalIgnoreCase)
 
         for file in options.SourceFiles do
             let sourceText = SourceText.ofString (readSource file)
@@ -4354,7 +4735,7 @@ let private runApiPass
             | false, _ ->
                 scriptSites.Referencing.Value.Contexts
                 |> List.tryFind sameFile
-                |> Option.orElseWith (fun () -> siblingSites.Value.Contexts |> List.tryFind sameFile)
+                |> Option.orElseWith (fun () -> siblings.Current().Contexts |> List.tryFind sameFile)
                 |> Option.map snd
 
         let suggestions = ResizeArray<ApiSuggestion>()
@@ -4362,7 +4743,7 @@ let private runApiPass
         /// The uses the other compilations contribute for this symbol,
         /// matched by full name because each compiled it separately, then
         /// by declaration because a name is not identity.
-        let usesIn (index: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>) (symbol: FSharpSymbol) =
+        let usesIn (index: Dictionary<string, FSharpSymbolUse[]>) (symbol: FSharpSymbol) =
             match symbolFullName symbol with
             | Some name ->
                 match index.TryGetValue name with
@@ -4378,13 +4759,29 @@ let private runApiPass
                             [
                                 usesIn scriptSites.UsesByFullName symbol
                                 usesIn scriptSites.Referencing.Value.UsesByFullName symbol
-                                usesIn siblingSites.Value.UsesByFullName symbol
+                                // the siblings that spell the symbol's name are read
+                                // for it here; the rest cannot hold a use of it
+                                (siblings.Ensure(mentionNames symbol)
+                                 usesIn (siblings.Current().UsesByFullName) symbol)
                             ])
                 // a script compiled against the dll that could not be read
                 // against the sources is a caller of the public declarations
                 // nothing can vouch for
-                PublicRead = (fun () -> scriptSites.Referencing.Value.Unread.IsEmpty && siblingSites.Value.PublicRead)
-                AssemblyRead = (fun name -> siblingSites.Value.AssemblyRead name)
+                PublicRead = (fun () -> scriptSites.Referencing.Value.Unread.IsEmpty && siblings.Current().PublicRead)
+                AssemblyRead = (fun name -> siblings.Current().AssemblyRead name)
+                // the scripts are read by now, and their trees are at hand;
+                // the siblings answer from a parse
+                Spelled =
+                    (fun symbol ->
+                        siblings.Spelled(mentionNames symbol)
+                        |> Option.map (fun siblingFiles ->
+                            List.concat
+                                [
+                                    scriptSites.Contexts |> List.map (fun (_, ctx) -> ctx.ParseTree, ctx.Source)
+                                    scriptSites.Referencing.Value.Contexts
+                                    |> List.map (fun (_, ctx) -> ctx.ParseTree, ctx.Source)
+                                    siblingFiles
+                                ]))
             }
 
         // a file a broken script #loads is left alone entirely: we cannot
@@ -4399,7 +4796,7 @@ let private runApiPass
         // a file only once a rule found something in it, which is when the
         // sibling reading has been paid for anyway
         let inUnreadShared (file: string) =
-            siblingSites.Value.UnreadShared
+            siblings.Current().UnreadShared
             |> List.exists (fun shared ->
                 String.Equals(Path.GetFullPath shared, Path.GetFullPath file, StringComparison.OrdinalIgnoreCase))
 
@@ -4408,20 +4805,22 @@ let private runApiPass
         // generator's template. A generator emitting `Row.text r "Name"`
         // from a string keeps the old order when FR0091 reorders `Row.text`
         // and rewrites the calls it can see. Such a function keeps its shape.
-        let sourcesInPlay =
-            lazy
-                (Seq.concat
-                    [
-                        options.SourceFiles |> Seq.ofArray
-                        siblingSites.Value.Read |> Seq.collect (fun info -> info.Options.SourceFiles)
-                        scriptSites.Referencing.Value.Read |> Seq.map fst
-                    ]
-                 |> Seq.distinct
-                 |> List.ofSeq)
+        // every sibling's sources, read or not: a template names a function
+        // by its short name alone, which is no reason to typecheck its
+        // project and every reason to leave the function as it is
+        let sourcesInPlay () =
+            Seq.concat
+                [
+                    options.SourceFiles |> Seq.ofArray
+                    siblings.Sources() |> Seq.ofList
+                    scriptSites.Referencing.Value.Read |> Seq.map fst
+                ]
+            |> Seq.distinct
+            |> List.ofSeq
 
         let namedInAString (functionName: string) =
             let short = functionName.Split('.') |> Array.last
-            Text.stringLiteralMentions sourcesInPlay.Value short
+            Text.stringLiteralMentions (sourcesInPlay ()) short
 
         let templated = ResizeArray<string>()
         let branched = ResizeArray<string>()
@@ -4435,30 +4834,44 @@ let private runApiPass
             if namedInAString functionName then
                 templated.Add functionName
                 false
-            elif Text.namedInDirectiveRegion sourcesInPlay.Value short then
+            elif Text.namedInDirectiveRegion (sourcesInPlay ()) short then
                 branched.Add functionName
                 false
             else
                 true
 
-        // FR0157's world: the project's uses beside every sibling's, so an
-        // exported function's call sites are in sight rather than assumed
-        // absent. Built once, and only once a file holds a candidate match:
-        // forcing the siblings is the expensive reading
-        let stringUnionWorld =
-            lazy
-                (let siblingUses =
-                    siblingSites.Value.Read |> Seq.collect (fun info -> info.Uses) |> Array.ofSeq
+        // one use index per sibling read, built when FR0157 first asks
+        let siblingIndexCache =
+            Dictionary<string, StringUnion.UseIndex>(StringComparer.OrdinalIgnoreCase)
 
-                 let internalsVisible =
-                     match ProjectSources.internalsVisibleTo projectResults with
-                     | Some friends -> not (friends |> List.forall outside.AssemblyRead)
-                     | None -> ProjectSources.hasInternalsVisibleTo projectResults
+        let siblingIndexes (symbol: FSharpSymbol option) =
+            symbol |> Option.iter (mentionNames >> siblings.Ensure)
+
+            [
+                for project, uses in siblings.ReadUses() do
+                    match siblingIndexCache.TryGetValue project with
+                    | true, index -> index
+                    | false, _ ->
+                        let index = StringUnion.indexUses uses
+                        siblingIndexCache.[project] <- index
+                        index
+            ]
+
+        // FR0157's world: the project's uses beside the siblings', so an
+        // exported function's call sites are in sight rather than assumed
+        // absent. Built once per analysis, and only once a file holds a
+        // candidate match
+        let makeStringUnionWorld () =
+            lazy
+                (let internalsVisible =
+                    match ProjectSources.internalsVisibleTo projectResults with
+                    | Some friends -> not (friends |> List.forall outside.AssemblyRead)
+                    | None -> ProjectSources.hasInternalsVisibleTo projectResults
 
                  Analyzers.stringUnionApiWorld
                      projectResults
                      options.SourceFiles
-                     siblingUses
+                     siblingIndexes
                      (fun name -> fileLookup name |> Option.map (fun c -> c.ParseTree, c.Source))
                      // an executable's public declarations have no caller elsewhere
                      // by construction, and a `publicApi: false` says the same
@@ -4471,53 +4884,73 @@ let private runApiPass
                           |> Array.exists (fun f -> Configuration.publicSurfaceSetting f = Some false)))
                      internalsVisible)
 
-        for file in reshapable do
-            let ctx = fileContexts.[Path.GetFullPath file]
+        let stringUnionWorld = ref (makeStringUnionWorld ())
 
-            let _, checkAnswer =
-                checker.ParseAndCheckFileInProject(file, 0, ctx.Source, options)
-                |> Async.RunSynchronously
+        let analyse () =
+            for file in reshapable do
+                let ctx = fileContexts.[Path.GetFullPath file]
 
-            match checkAnswer with
-            | FSharpCheckFileAnswer.Succeeded checkResults ->
-                if wanted file "FR0090" "TupleParams" then
-                    for s in
-                        TupleParams.findApiChanges ctx checkResults projectResults fileLookup outside
-                        |> List.filter (fun s -> not (inUnreadShared file) && notTemplated s.FunctionName) do
-                        suggestions.Add
-                            {
-                                Code = "FR0090"
-                                FunctionName = s.FunctionName
-                                Edits = s.Edits |> List.map (fun e -> e.Range, e.Original, e.Replacement)
-                            }
+                let _, checkAnswer =
+                    checker.ParseAndCheckFileInProject(file, 0, ctx.Source, options)
+                    |> Async.RunSynchronously
 
-                if wanted file "FR0091" "ParamOrder" then
-                    for s in
-                        ParamOrder.findApiChanges ctx checkResults projectResults fileLookup outside
-                        |> List.filter (fun s -> not (inUnreadShared file) && notTemplated s.FunctionName) do
-                        suggestions.Add
-                            {
-                                Code = "FR0091"
-                                FunctionName = s.FunctionName
-                                Edits = s.Edits
-                            }
+                match checkAnswer with
+                | FSharpCheckFileAnswer.Succeeded checkResults ->
+                    if wanted file "FR0090" "TupleParams" then
+                        for s in
+                            TupleParams.findApiChanges ctx checkResults projectResults fileLookup outside
+                            |> List.filter (fun s -> not (inUnreadShared file) && notTemplated s.FunctionName) do
+                            suggestions.Add
+                                {
+                                    Code = "FR0090"
+                                    FunctionName = s.FunctionName
+                                    Edits = s.Edits |> List.map (fun e -> e.Range, e.Original, e.Replacement)
+                                }
 
-                if wanted file "FR0157" "StringUnion" && StringUnion.hasCandidates ctx.ParseTree then
-                    for s in
-                        StringUnion.find stringUnionWorld.Value ctx.ParseTree ctx.Source
-                        // a record field's retyping changes the record's printed
-                        // text and order: the editor offers it, a sweep does not
-                        |> List.filter (fun s ->
-                            not s.FieldSlot
-                            && not (inUnreadShared file)
-                            && s.Reshaped |> List.forall notTemplated) do
-                        suggestions.Add
-                            {
-                                Code = "FR0157"
-                                FunctionName = s.Name
-                                Edits = s.Edits |> List.map (fun e -> e.Range, e.Original, e.Replacement)
-                            }
-            | FSharpCheckFileAnswer.Aborted -> ()
+                    if wanted file "FR0091" "ParamOrder" then
+                        for s in
+                            ParamOrder.findApiChanges ctx checkResults projectResults fileLookup outside
+                            |> List.filter (fun s -> not (inUnreadShared file) && notTemplated s.FunctionName) do
+                            suggestions.Add
+                                {
+                                    Code = "FR0091"
+                                    FunctionName = s.FunctionName
+                                    Edits = s.Edits
+                                }
+
+                    if wanted file "FR0157" "StringUnion" && StringUnion.hasCandidates ctx.ParseTree then
+                        for s in
+                            StringUnion.find stringUnionWorld.Value.Value ctx.ParseTree ctx.Source
+                            // a record field's retyping changes the record's printed
+                            // text and order: the editor offers it, a sweep does not
+                            |> List.filter (fun s ->
+                                not s.FieldSlot
+                                && not (inUnreadShared file)
+                                && s.Reshaped |> List.forall notTemplated) do
+                            suggestions.Add
+                                {
+                                    Code = "FR0157"
+                                    FunctionName = s.Name
+                                    Edits = s.Edits |> List.map (fun e -> e.Range, e.Original, e.Replacement)
+                                }
+                | FSharpCheckFileAnswer.Aborted -> ()
+
+        // The outside answers speak for the siblings read so far, and a
+        // sibling is read as the rules ask about symbols it mentions. One
+        // that turns out unreadable changes PublicRead and AssemblyRead for
+        // every rule that asked before it was read: the analysis runs again
+        // from the answers as they now stand, until a run reads no new
+        // unreadable sibling - once per such sibling at most
+        let mutable settled = false
+
+        while not settled do
+            let unreadable = siblings.Unreadable()
+            suggestions.Clear()
+            templated.Clear()
+            branched.Clear()
+            stringUnionWorld.Value <- makeStringUnionWorld ()
+            analyse ()
+            settled <- siblings.Unreadable() = unreadable
 
         if templated.Count > 0 then
             let names = templated |> Seq.distinct |> String.concat ", "
@@ -4532,16 +4965,14 @@ let private runApiPass
                 $"  ({branched.Count} migration(s) kept back: the function is named inside an #if region, whose other branch has call sites no parse tree holds: {names})"
 
         let editsByFile =
-            System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>(
-                StringComparer.OrdinalIgnoreCase
-            )
+            Dictionary<string, ResizeArray<int * string * Fix>>(StringComparer.OrdinalIgnoreCase)
 
         // one group per suggestion; within a FILE its edits then apply all
         // or nothing (a cross-file suggestion still applies per file)
         let mutable nextGroup = 0
 
         let acceptedRanges =
-            System.Collections.Generic.Dictionary<string, ResizeArray<Range>>(StringComparer.OrdinalIgnoreCase)
+            Dictionary<string, ResizeArray<Range>>(StringComparer.OrdinalIgnoreCase)
 
         let overlapsAccepted (r: Range) =
             match acceptedRanges.TryGetValue(Path.GetFullPath r.FileName) with
@@ -4568,7 +4999,7 @@ let private runApiPass
                 let inSiblings =
                     s.Edits
                     |> List.filter (fun (r, _, _) ->
-                        siblingSites.Value.Contexts
+                        siblings.Current().Contexts
                         |> List.exists (fun (file, _) ->
                             String.Equals(
                                 Path.GetFullPath file,
@@ -4634,8 +5065,8 @@ let private runApiPass
         /// script a context, so this is the only check it gets.
         let outsideBroken (changed: AppliedFile list) =
             let siblings =
-                if siblingSites.IsValueCreated then
-                    siblingSites.Value.Read
+                if siblings.Started() then
+                    siblings.Current().Read
                     |> List.map (fun info -> Path.GetFileName info.Project, info.Options)
                 else
                     []
@@ -4665,8 +5096,7 @@ let private runApiPass
 
                     let errors =
                         results.Diagnostics
-                        |> Array.filter (fun d ->
-                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                        |> Array.filter (fun d -> d.Severity = FSharpDiagnosticSeverity.Error)
 
                     let own =
                         compilation.SourceFiles
@@ -4788,13 +5218,25 @@ let private runApiPass
 
         linkedFiles.Clear()
 
-        if siblingSites.IsValueCreated then
-            linkedFiles.UnionWith siblingSites.Value.Linked
+        if siblings.Started() then
+            linkedFiles.UnionWith(siblings.Current().Linked)
 
         try
             applyEditGroupsCheckingScripts checker dryRun suppressed outsideBroken editsByFile
         finally
             linkedFiles.Clear()
+
+let private chooseDualConstantRegex =
+    Regex "'\\$\\(TargetFramework\\)'\\s*==\\s*'([^']+)'"
+
+let private chooseDualConstantRegex2 =
+    Regex "'\\$\\(TargetFramework\\)'\\s*==\\s*'[^']+'"
+
+let private chooseDualConstantRegex3 = Regex "(?i)\\bOr\\b|[()\\s]"
+let private chooseDualConstantRegex4 = Regex @"^(?i)net(standard|coreapp)?[\d_]+$"
+
+let private chooseDualConstantRegex5 =
+    Regex @"^(?i)(net4\d*|netstandard1[\d_]*|netstandard2_?0|netcoreapp2_?0)$"
 
 /// One analyze-and-apply pass over every file. Returns the number of fixes
 /// applied.
@@ -4816,38 +5258,30 @@ let private chooseDualConstant (projectPath: string) (modern: string list) (lega
         let text = projectTextWithoutComments (File.ReadAllText projectPath)
 
         let tfmsOf (condition: string) =
-            let comparisons =
-                System.Text.RegularExpressions.Regex.Matches(condition, "'\\$\\(TargetFramework\\)'\\s*==\\s*'([^']+)'")
+            let comparisons = chooseDualConstantRegex.Matches condition
 
             if comparisons.Count = 0 || condition.Contains "!=" then
                 None
             else
                 // strip the recognized comparisons; only Or, parens and
                 // whitespace may remain, or the condition is too clever
-                let stripped =
-                    System.Text.RegularExpressions.Regex.Replace(
-                        condition,
-                        "'\\$\\(TargetFramework\\)'\\s*==\\s*'[^']+'",
-                        ""
-                    )
+                let stripped = chooseDualConstantRegex2.Replace(condition, "")
 
-                let leftovers =
-                    System.Text.RegularExpressions.Regex.Replace(stripped, "(?i)\\bOr\\b|[()\\s]", "")
+                let leftovers = chooseDualConstantRegex3.Replace(stripped, "")
 
                 if leftovers = "" then
                     Some [ for m in comparisons -> m.Groups.[1].Value ]
                 else
                     None
 
-        let definedOn =
-            System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<string>>()
+        let definedOn = Dictionary<string, HashSet<string>>()
 
         // constants also defined SOMEWHERE we cannot resolve to a framework
         // set — an unconditioned <DefineConstants>$(DefineConstants);FIREBIRD</...>,
         // a Configuration condition, anything clever. Those may be active on
         // legacy frameworks too, so they are disqualified outright: when the
         // scope cannot be known, the constant is not a candidate
-        let tainted = System.Collections.Generic.HashSet<string>()
+        let tainted = HashSet<string>()
 
         for groupMatch in propertyGroupRegex.Matches text do
             let groupCondition = conditionAttributeRegex.Match groupMatch.Groups.[1].Value
@@ -4880,7 +5314,7 @@ let private chooseDualConstant (projectPath: string) (modern: string list) (lega
                     for constant in constants do
                         match definedOn.TryGetValue constant with
                         | true, existing -> existing.UnionWith tfms
-                        | false, _ -> definedOn.[constant] <- System.Collections.Generic.HashSet tfms
+                        | false, _ -> definedOn.[constant] <- HashSet tfms
 
         // only framework-SHAPED names qualify (NETSTANDARD21, NET8, net80):
         // a flavor constant like MICROSOFTSQL or LOGARY5 may share the exact
@@ -4889,8 +5323,7 @@ let private chooseDualConstant (projectPath: string) (modern: string list) (lega
         // unconditionally — legacy included — turning our #if into a break.
         // The trailing digits are required: a bare NETSTANDARD is often a
         // leftover of netstandard-vs-net451 days, defined everywhere
-        let frameworkShaped =
-            System.Text.RegularExpressions.Regex @"^(?i)net(standard|coreapp)?[\d_]+$"
+        let frameworkShaped = chooseDualConstantRegex4
 
         // a name that DENOTES a legacy framework (NET48, NET451, NET481,
         // NETSTANDARD2_0...) can never guard the modern branch, whatever
@@ -4898,8 +5331,7 @@ let private chooseDualConstant (projectPath: string) (modern: string list) (lega
         // that constant during the legacy compilation itself, invisibly
         // to this textual parse, and #if NET48 would then flip the modern
         // branch ON for net48
-        let legacyNamed =
-            System.Text.RegularExpressions.Regex @"^(?i)(net4\d*|netstandard1[\d_]*|netstandard2_?0|netcoreapp2_?0)$"
+        let legacyNamed = chooseDualConstantRegex5
 
         definedOn
         |> Seq.filter (fun kv ->
@@ -4928,8 +5360,7 @@ let private chooseDualConstant (projectPath: string) (modern: string list) (lega
 /// deltas are rare, the narrowest-first ordering analyses the most
 /// restrictive context first, and the alternative is the full N×TFM
 /// re-sweep this dedup exists to remove.
-let private directiveFreeCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, bool>()
+let private directiveFreeCache = ConcurrentDictionary<string, bool>()
 
 /// `#if INTERACTIVE` / `#if !INTERACTIVE` / `#if COMPILED` is how a file
 /// is written to work as both a project source and a `#load`ed script:
@@ -4958,6 +5389,8 @@ let internal isDirectiveFree (path: string) =
                 false
     )
 
+let private sourcesUseConditionalsRegex = Regex "Compile\\s+Include=\"([^\"]+)\""
+
 /// Do any of the project's sources use conditional compilation? Parsed
 /// from the fsproj's own Compile items — cheap, and it fails TOWARD
 /// caution: wildcards, imports or an unreadable file all report true, so
@@ -4970,7 +5403,7 @@ let private sourcesUseConditionals (projectPath: string) =
         let projText = File.ReadAllText projectPath
 
         let includes =
-            System.Text.RegularExpressions.Regex.Matches(projText, "Compile\\s+Include=\"([^\"]+)\"")
+            sourcesUseConditionalsRegex.Matches projText
             |> Seq.map (fun m -> m.Groups.[1].Value)
             |> List.ofSeq
 
@@ -4980,7 +5413,7 @@ let private sourcesUseConditionals (projectPath: string) =
             includes
             |> List.exists (fun rel ->
                 let path = Path.Combine(dir, rel)
-                not (File.Exists path) || not (isDirectiveFree path))
+                not (File.Exists path && isDirectiveFree path))
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         true
 
@@ -4991,7 +5424,7 @@ let private sourcesUseConditionals (projectPath: string) =
 /// per file only when its TARGET completes (intra-target passes must
 /// re-sweep, because a pass-1 fix can enable a pass-2 one); cleared at
 /// the start of each run.
-let private sweptFiles = System.Collections.Generic.HashSet<string * string>()
+let private sweptFiles = HashSet<string * string>()
 
 /// The project that compiles a source file a SCRIPT `#load`s, when one
 /// does: an fsproj in the file's directory or one above it (up to the
@@ -5011,7 +5444,7 @@ let private sweptFiles = System.Collections.Generic.HashSet<string * string>()
 /// project claims. Memoised per file: a run of many scripts asks about
 /// the same shared sources over and over.
 let private projectCompilingCache =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string option>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, string option>(StringComparer.OrdinalIgnoreCase)
 
 let private projectCompiling (file: string) : string option =
     projectCompilingCache.GetOrAdd(
@@ -5106,7 +5539,7 @@ type ReportedFinding =
         /// The finding's own line(s) with one line of margin.
         Snippet: string
         /// The 1-based first and last line the snippet covers.
-        SnippetLines: int * int
+        SnippetLines: struct (int * int)
         /// The text of the finding's range itself, as the source spells it.
         RegionText: string
     }
@@ -5148,7 +5581,39 @@ let private fingerprintAndSnippet (source: ISourceText) (file: string) (code: st
         with _ -> // fsharpanalyzer: ignore-line FR0055
             ""
 
-    hash, snippet, (snippetFirst + 1, snippetLast + 1), regionText
+    // a credential finding must not carry the credential into a report that
+    // is uploaded and shared: its own lines only (the lines around it are
+    // where the next credential sits), with the finding's span masked. The
+    // fingerprint above is of the real text and does not change
+    if code = "FR0127" || code = "FR0153" then
+        let masked =
+            [
+                for l in clamp (r.StartLine - 1) .. clamp (r.EndLine - 1) ->
+                    let text = source.GetLineString l
+                    let lineNumber = l + 1
+
+                    let from =
+                        if lineNumber = r.StartLine then
+                            min r.StartColumn text.Length
+                        else
+                            0
+
+                    let upTo =
+                        if lineNumber = r.EndLine then
+                            min r.EndColumn text.Length
+                        else
+                            text.Length
+
+                    if lineNumber = r.StartLine then
+                        text.Substring(0, from) + "\"***\"" + text.Substring(max from upTo)
+                    else
+                        text.Substring(max from upTo)
+            ]
+            |> String.concat "\n"
+
+        hash, masked, struct (clamp (r.StartLine - 1) + 1, clamp (r.EndLine - 1) + 1), "\"***\""
+    else
+        hash, snippet, struct (snippetFirst + 1, snippetLast + 1), regionText
 
 /// Fingerprints an earlier run accepted (--baseline): findings matching
 /// them are neither reported nor fixed this run.
@@ -5177,15 +5642,15 @@ let mutable private showNotes = false
 let mutable private notesOnly = false
 
 /// Category name -> held note count for the run summary.
-let private heldNoteCounts = System.Collections.Generic.Dictionary<string, int>()
+let private heldNoteCounts = Dictionary<string, int>()
 
 let private reportedFindings = ResizeArray<ReportedFinding>()
 
-let private reportedKeys = System.Collections.Generic.HashSet<string>()
+let private reportedKeys = HashSet<string>()
 
 /// Console notes already shown this run — later passes recompute the same
 /// fix-less findings, and printing them once is enough.
-let private printedNotes = System.Collections.Generic.HashSet<string>()
+let private printedNotes = HashSet<string>()
 
 /// Every comment in a parse tree, as (range, text) — the guard against
 /// fixes that would silently swallow one.
@@ -5310,6 +5775,8 @@ let private plainMessage (f: ReportedFinding) =
 /// `%SRCROOT%` base id, an artifact table, an automation id per target,
 /// and an invocation record with times and the command line.
 let private writeSarifReport (path: string) (target: string) (findings: ReportedFinding seq) =
+    // read several times below; a caller's query would run once per read
+    let findings = List.ofSeq findings
     let root = sourceRootOf target
 
     let fileUri (dir: string) =
@@ -5378,7 +5845,7 @@ let private writeSarifReport (path: string) (target: string) (findings: Reported
     let results =
         [
             for f in findings ->
-                let snippetStart, snippetEnd = f.SnippetLines
+                let struct (snippetStart, snippetEnd) = f.SnippetLines
 
                 let entries =
                     [
@@ -5477,7 +5944,7 @@ let private writeSarifReport (path: string) (target: string) (findings: Reported
         dict
             [
                 "executionSuccessful", box true
-                "startTimeUtc", box (startedUtc.ToString("o"))
+                "startTimeUtc", box (startedUtc.ToString "o")
                 "endTimeUtc", box (DateTime.UtcNow.ToString("o"))
                 "workingDirectory",
                 box (
@@ -5644,7 +6111,7 @@ let private writeHtmlReport (path: string) (target: string) (findings: ReportedF
     // the snippet starts at SnippetLines' first line, and the range's
     // columns are 0-based offsets into its lines
     let highlighted (f: ReportedFinding) =
-        let snippetStart, _ = f.SnippetLines
+        let struct (snippetStart, _) = f.SnippetLines
         let lines = f.Snippet.Split '\n'
         let firstIndex = f.StartLine - snippetStart
         let lastIndex = f.EndLine - snippetStart
@@ -5888,8 +6355,8 @@ let private runPass
     // passes after the first: the lowercased full paths worth sweeping
     // again (see `nextSweepScope`), or None for every file.
     (sweepScope: Set<string> option)
-    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
-    (blockedRuleFile: System.Collections.Generic.HashSet<string * string>)
+    (suppressed: HashSet<string * string * string * string>)
+    (blockedRuleFile: HashSet<string * string>)
     =
     let projectSw = Stopwatch.StartNew()
     let projectResults = checkProject checker options
@@ -5899,7 +6366,16 @@ let private runPass
     // project typechecking dominates, and knowing that stops people hunting
     // for a slow rule that is not there
     let mutable checkMs = 0L
-    let analyzerMs = System.Collections.Generic.Dictionary<string, int64>()
+    let analyzerMs = Dictionary<string, int64>()
+
+    // The project check above has already typechecked every file, and its
+    // incremental build keeps each file's results: asking for them costs a
+    // lookup, where a check of the file's text typechecks it a second time.
+    // The build read the file from disk as UTF-8, so a file in any other
+    // encoding is checked from the text the rules are handed - positions
+    // must agree. FSREF_FOREGROUND_CHECKS=1 checks every file the old way
+    let foregroundChecks =
+        Environment.GetEnvironmentVariable "FSREF_FOREGROUND_CHECKS" = "1"
 
     // every accepted fix, grouped by the file it EDITS: a fix range names
     // its file, so a cross-file (API-changing) rule can edit call sites
@@ -5907,7 +6383,7 @@ let private runPass
     // normalized full paths: two spellings of one file must land in ONE
     // group, or the second write would clobber the first group's edits.
     let editsByFile =
-        System.Collections.Generic.Dictionary<string, ResizeArray<int * string * Fix>>(StringComparer.OrdinalIgnoreCase)
+        Dictionary<string, ResizeArray<int * string * Fix>>(StringComparer.OrdinalIgnoreCase)
 
     // one group per suggestion (message): its edits apply all or nothing
     let mutable nextGroup = 0
@@ -5931,7 +6407,21 @@ let private runPass
             let checkSw = Stopwatch.StartNew()
 
             let! parseResults, checkAnswer =
-                checker.ParseAndCheckFileInProject(file, 0, sourceText, options)
+                async {
+                    let fromText () =
+                        checker.ParseAndCheckFileInProject(file, 0, sourceText, options)
+
+                    if foregroundChecks || not (encodingOf file :? UTF8Encoding) then
+                        return! fromText ()
+                    else
+                        let! kept =
+                            checker.GetBackgroundCheckResultsForFileInProject(file, options) |> Async.Catch
+
+                        match kept with
+                        | Choice1Of2(parsed, checkedFile) -> return parsed, FSharpCheckFileAnswer.Succeeded checkedFile
+                        // a file the build does not hold is checked from its text
+                        | Choice2Of2 _ -> return! fromText ()
+                }
 
             checkSw.Stop()
 
@@ -6005,7 +6495,7 @@ let private runPass
                         }
 
                     sw.Stop()
-                    timings.Add(m.Name, sw.ElapsedMilliseconds)
+                    timings.Add(m.Name, sw.Elapsed.Ticks)
                     collected.AddRange produced
 
                 if editorOffers then
@@ -6056,7 +6546,7 @@ let private runPass
 
                     let kept =
                         collected
-                        |> Seq.filter (fun m -> not m.Fixes.IsEmpty || not (offered.Contains $"{m.Code}|{m.Range}"))
+                        |> Seq.filter (fun m -> not (m.Fixes.IsEmpty && offered.Contains $"{m.Code}|{m.Range}"))
                         |> List.ofSeq
 
                     collected.Clear()
@@ -6505,7 +6995,9 @@ let private runPass
         eprintfn
             $"  ({filesWithErrors} of {filesToSweep.Length} file(s) have type errors; most rules stay silent on those)"
 
-    let totalAnalyzerMs = analyzerMs.Values |> Seq.sum
+    // kept in ticks: most analyzers finish a file in well under a millisecond,
+    // and whole milliseconds would count thousands of such calls as nothing
+    let totalAnalyzerMs = (analyzerMs.Values |> Seq.sum) / TimeSpan.TicksPerMillisecond
 
     // the per-file and analyzer figures are summed across threads, so they
     // add up to more than the sweep's wall clock — that gap IS the parallelism
@@ -6517,8 +7009,13 @@ let private runPass
     let slowest =
         analyzerMs
         |> Seq.sortByDescending (fun kv -> kv.Value)
-        |> Seq.truncate 5
-        |> Seq.map (fun kv -> $"{kv.Key} {kv.Value}ms")
+        |> Seq.truncate (
+            if Environment.GetEnvironmentVariable "FSREF_ALL_TIMINGS" = "1" then
+                500
+            else
+                5
+        )
+        |> Seq.map (fun kv -> $"{kv.Key} {kv.Value / TimeSpan.TicksPerMillisecond}ms")
         |> String.concat ", "
 
     if slowest <> "" then
@@ -6832,7 +7329,7 @@ let internal absolutizeArgs (projectDir: string) (args: string array) =
 /// prefetchNextFramework), keyed by full project path and framework and
 /// taken exactly once: the framework's own turn starts from them.
 let private prefetchedOptions =
-    System.Collections.Concurrent.ConcurrentDictionary<string * string, Result<FSharpProjectOptions, string>>()
+    ConcurrentDictionary<string * string, Result<FSharpProjectOptions, string>>()
 
 /// The compilation to analyze, from either input kind.
 ///
@@ -6997,7 +7494,7 @@ let private escalatedAnalyzerRegex =
     Text.RegularExpressions.Regex(@"error ((?:CA|IDE)\d+)", Text.RegularExpressions.RegexOptions.Compiled)
 
 /// The analyzer IDs this run has explained already: once each.
-let private advisedIds = System.Collections.Generic.HashSet<string>()
+let private advisedIds = HashSet<string>()
 
 /// What to do about an analyzer error (a C# project built with this run's
 /// verification turns CA/IDE warnings into errors) that a fix raised. The
@@ -7080,9 +7577,7 @@ let private buildAllFrameworks (project: string) =
 /// pass over the project and again at its verification, and the probe is
 /// a build.
 let private consumerProjects =
-    System.Collections.Concurrent.ConcurrentDictionary<string, string list * string list>(
-        StringComparer.OrdinalIgnoreCase
-    )
+    ConcurrentDictionary<string, string list * string list>(StringComparer.OrdinalIgnoreCase)
 
 /// The C# and VB projects that reference `project` — those of its solution,
 /// or of the directory the run was pointed at (Workspace.workspaceOf), with
@@ -7151,13 +7646,13 @@ let private consumersOf (probe: bool) (root: string) (project: string) : string 
                 buildable, held
     )
 
+let private errorSignatureRegex = Regex @"\(\d+,\d+(?:,\d+,\d+)?\)"
 /// An error line with its position taken out, so the same pre-existing
 /// error reads the same after a fix above it has moved the line it sits
 /// on. Comparing SETS of these, rather than counts, is what separates "the
 /// breakage is not ours" from "the breakage is not ONLY ours": an error
 /// that appears with the fixes and never without them is ours.
-let private errorSignature (line: string) =
-    Text.RegularExpressions.Regex.Replace(line, @"\(\d+,\d+(?:,\d+,\d+)?\)", "")
+let private errorSignature (line: string) = errorSignatureRegex.Replace(line, "")
 
 /// What a failed all-frameworks build says about this run's fixes, once
 /// the build is known to fail WITHOUT them too.
@@ -7309,10 +7804,7 @@ let internal restoreOnTimeout (snapshot: Map<string, string>) (onTimeout: int ->
         reraise ()
 
 let private errorSiteRegex =
-    System.Text.RegularExpressions.Regex(
-        @"^\s*(?<file>[^\r\n(]+?)\(\d+,\d+\):\s*error ",
-        System.Text.RegularExpressions.RegexOptions.Multiline
-    )
+    Regex(@"^\s*(?<file>[^\r\n(]+?)\(\d+,\d+\):\s*error ", RegexOptions.Multiline)
 
 /// A compilation fails to build on files an EARLIER compilation of this
 /// run rewrote: the failure is the run's own - a file several projects
@@ -7331,8 +7823,7 @@ let internal putBackRunEdits (buildMessage: string) (label: string) =
         |> List.map Path.GetFullPath
         |> List.distinct
 
-    let isNamed =
-        System.Collections.Generic.HashSet<string>(named, StringComparer.OrdinalIgnoreCase)
+    let isNamed = HashSet<string>(named, StringComparer.OrdinalIgnoreCase)
 
     // with the files one suggestion rewrote together with them (a
     // definition's call sites, --api-changes): putting the definition back
@@ -7453,7 +7944,7 @@ let private verifyPassChecked
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
     (baselineErrors: int)
-    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (suppressed: HashSet<string * string * string * string>)
     (changedFiles: AppliedFile list)
     : bool =
     checker.InvalidateConfiguration options
@@ -7863,7 +8354,7 @@ let internal verifyPass
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
     (baselineErrors: int)
-    (suppressed: System.Collections.Generic.HashSet<string * string * string * string>)
+    (suppressed: HashSet<string * string * string * string>)
     (changedFiles: AppliedFile list)
     : bool =
     try
@@ -7976,7 +8467,7 @@ let private prefetchNextFramework (runChecker: FSharpChecker) (opts: Options) (t
             match ahead with
             | Ok options when checksAheadSafely options ->
                 speculativeCheck.Value <-
-                    System.Threading.Tasks.Task.Run(fun () ->
+                    Task.Run(fun () ->
                         try
                             checker.ParseAndCheckProject options |> Async.RunSynchronously |> ignore
                         with _ -> // reported by the framework's own check; fsharpanalyzer: ignore-line FR0055
@@ -7997,6 +8488,9 @@ let private releaseFrameworkCheckers () =
                 c.ClearLanguageServiceRootCachesAndCollectAndFinalizeAllTransients()
             with _ -> // fsharpanalyzer: ignore-line FR0055
                 ())
+
+let private runTargetRegex = Regex @"\[([^\[\]]+\.fsproj)(?:::|\])"
+let private runTargetRegex2 = Regex "Include=\"([^\"]+\\.fsi?)\""
 
 /// Analyze and fix one compilation; returns its exit code.
 let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool) (target: Target) =
@@ -8063,7 +8557,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // and a solution containing one must not fail the whole run's exit
         if message.Contains "- skipped" || message.Contains "beyond --parse-only" then
             0
-        else if message.Contains "dotnet build failed" then
+        elif message.Contains "dotnet build failed" then
             System.Threading.Interlocked.Increment(&runBuildFailures) |> ignore
             failed "does not build, so it was not analysed"
         else
@@ -8219,7 +8713,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             for file, ctx in linkerContexts do
                 ProjectSources.seed file ctx.ParseTree ctx.Source
 
-            let usesIn (index: System.Collections.Generic.Dictionary<string, FSharpSymbolUse[]>) name symbol =
+            let usesIn (index: Dictionary<string, FSharpSymbolUse[]>) name symbol =
                 match index.TryGetValue name with
                 | true, uses -> uses |> Array.filter (fun u -> sameDeclaration symbol u.Symbol)
                 | false, _ -> [||]
@@ -8359,8 +8853,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             if all = files then files else tiedTo all
 
         // fixes a verification rollback rejected; never re-applied this run
-        let suppressed =
-            System.Collections.Generic.HashSet<string * string * string * string>()
+        let suppressed = HashSet<string * string * string * string>()
 
         let baselineErrorList =
             if skipCompilationCheck then
@@ -8501,9 +8994,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                 // the sibling's arguments come from MSBuild the
                                 // way the project's own did, framework chosen
                                 // the same way (its narrowest)
-                                (lazy
-                                    (findSiblingCallSites checker opts.Target options (fun sibling ->
-                                        optionsFor checker opts.ParseOnly "" (Target.Project(sibling, None)))))
+                                (findSiblingCallSites checker opts.Target options (fun sibling ->
+                                    optionsFor checker opts.ParseOnly "" (Target.Project(sibling, None))))
                                 opts.Codes
                                 opts.DryRun
                                 suppressed)
@@ -8539,8 +9031,8 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             // `return! task {` layer upon layer). Legitimate
             // repeat-firing — paren peeling, layer-by-layer unwinding —
             // SHRINKS the file and passes freely.
-            let blockedRuleFile = System.Collections.Generic.HashSet<string * string>()
-            let ruleFilePasses = System.Collections.Generic.Dictionary<string * string, int>()
+            let blockedRuleFile = HashSet<string * string>()
+            let ruleFilePasses = Dictionary<string * string, int>()
 
             let updateDivergenceGuard (changedFiles: AppliedFile list) =
                 for cf in changedFiles do
@@ -8948,11 +9440,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
 
                                         again
                                         |> Array.choose (fun line ->
-                                            let m =
-                                                Text.RegularExpressions.Regex.Match(
-                                                    line,
-                                                    @"\[([^\[\]]+\.fsproj)(?:::|\])"
-                                                )
+                                            let m = runTargetRegex.Match line
 
                                             if m.Success then
                                                 Some(canonical m.Groups.[1].Value)
@@ -8964,10 +9452,7 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                             try
                                                 let dir = Path.GetDirectoryName otherProject
 
-                                                Text.RegularExpressions.Regex.Matches(
-                                                    File.ReadAllText otherProject,
-                                                    "Include=\"([^\"]+\\.fsi?)\""
-                                                )
+                                                runTargetRegex2.Matches(File.ReadAllText otherProject)
                                                 |> Seq.map (fun m -> canonical (Path.Combine(dir, m.Groups.[1].Value)))
                                                 |> Array.ofSeq
                                             with
@@ -9154,6 +9639,9 @@ let private rulesAsRows () =
     RuleCatalog.allRules
     |> List.map (fun (code, category) -> code, RuleCatalog.name category, Configuration.isEnabledIn Map.empty code "")
 
+let private orderNarrowestFirstRegex =
+    Regex "<TargetFrameworks?>([^<]+)</TargetFrameworks?>"
+
 /// Order a multi-compilation run NARROWEST TARGET FIRST, solution-wide.
 /// Within one project the narrowest framework already goes first; across
 /// projects the same principle protects shared source files — a fix
@@ -9173,8 +9661,7 @@ let private orderNarrowestFirst (targets: Target list) =
             try
                 let text = projectTextWithoutComments (File.ReadAllText path)
 
-                let m =
-                    Text.RegularExpressions.Regex.Match(text, "<TargetFrameworks?>([^<]+)</TargetFrameworks?>")
+                let m = orderNarrowestFirstRegex.Match text
 
                 if m.Success then
                     m.Groups.[1].Value.Split ';'
@@ -9196,9 +9683,9 @@ let private orderNarrowestFirst (targets: Target list) =
             | Target.Script _ -> (99, 0))
 
 let private fsharpCorePinRegex =
-    System.Text.RegularExpressions.Regex(
+    Regex(
         @"<PackageReference\s+(?:Include|Update)\s*=\s*""FSharp\.Core""[^>]*Version\s*=\s*""(\d+)\.",
-        System.Text.RegularExpressions.RegexOptions.IgnoreCase
+        RegexOptions.IgnoreCase
     )
 
 /// Every project of the run, with the lowest FSharp.Core major its restore
@@ -9241,7 +9728,7 @@ let private registerFileFloors (targets: Target list) =
                     for m in compileItemRegex.Matches text do
                         let item = m.Groups.[1].Value
 
-                        if not (item.Contains '$') && not (item.Contains '*') then
+                        if not (item.Contains '$' || item.Contains '*') then
                             CapabilityFix.registerFileFloor (Path.Combine(dir, item.Replace('\\', '/'))) major
                 | None -> ()
             with
@@ -9684,7 +10171,7 @@ let private printRules (json: bool) =
 /// JSON with comments and trailing commas, which is what the config
 /// parser accepts (JsonCommentHandling.Skip, AllowTrailingCommas).
 let defaultConfigText () =
-    let text = System.Text.StringBuilder()
+    let text = StringBuilder()
     let line (s: string) = text.AppendLine s |> ignore
 
     line "// fsharprefactor.json - per-repository configuration for fsharp-refactor."
@@ -9806,7 +10293,7 @@ let private runMcp (startupDefines: string list) =
     let checker = FSharpChecker.Create(keepAssemblyContents = false)
 
     let respond (idJson: string) (resultJson: string) =
-        protocolOut.WriteLine($"{{\"jsonrpc\":\"2.0\",\"id\":{idJson},\"result\":{resultJson}}}")
+        protocolOut.WriteLine $"{{\"jsonrpc\":\"2.0\",\"id\":{idJson},\"result\":{resultJson}}}"
         protocolOut.Flush()
 
     let respondError (idJson: string) (code: int) (message: string) =
@@ -10014,8 +10501,11 @@ let private runMcp (startupDefines: string list) =
                         | _ -> None
 
                     id, m, p
-                with _ ->
-                    "null", "", None
+                // a line that is not JSON, or whose "method" is not a string: answered
+                // as an unknown request below. Anything else is not this parser's
+                with
+                | :? JsonException
+                | :? InvalidOperationException -> "null", "", None
 
             match method_ with
             | "initialize" ->

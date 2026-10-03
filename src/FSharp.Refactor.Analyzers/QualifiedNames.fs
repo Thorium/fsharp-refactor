@@ -183,13 +183,13 @@ let mutable private cachedAssemblies: (string * FSharpAssembly list) option = No
 let private referencedAssemblies (check: FSharpCheckFileResults) =
     let read () =
         try
-            check.ProjectContext.GetReferencedAssemblies()
+            OptionModule.referencedAssemblies check
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             []
 
     let key =
         try
-            check.ProjectContext.ProjectOptions.ProjectFileName
+            (OptionModule.projectContext check).ProjectOptions.ProjectFileName
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             ""
 
@@ -743,10 +743,10 @@ let find
         // asks the same question in every file) and this project's own, up
         // to this file (a project module `Utils.Expect` beside
         // Expecto.Expect clashes within the project itself)
-        let assemblies = referencedAssemblies check
+        let assemblies = lazy (referencedAssemblies check)
 
         let assemblyKey =
-            assemblies |> List.map (fun a -> a.SimpleName) |> String.concat ";"
+            lazy (assemblies.Value |> List.map (fun a -> a.SimpleName) |> String.concat ";")
 
         let projectEntities =
             lazy
@@ -863,10 +863,10 @@ let find
         let scopeNames (openedName: string) : Map<string, bool> =
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
-                    $"{openedName}|{assemblyKey}",
+                    $"{openedName}|{assemblyKey.Value}",
                     fun _ ->
                         try
-                            assemblies
+                            assemblies.Value
                             |> Seq.collect (fun a ->
                                 try
                                     a.Contents.Entities |> List.ofSeq
@@ -894,14 +894,14 @@ let find
             | _ -> e.DisplayName
 
         let moduleNamed (ns: string) =
-            let key = $"module:{ns}|{assemblyKey}"
+            let key = $"module:{ns}|{assemblyKey.Value}"
 
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
                     key,
                     fun _ ->
                         try
-                            assemblies
+                            assemblies.Value
                             |> Seq.collect (fun a ->
                                 try
                                     a.Contents.Entities |> List.ofSeq
@@ -1136,10 +1136,10 @@ let find
 
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
-                    $"extensions:{ns}|{assemblyKey}",
+                    $"extensions:{ns}|{assemblyKey.Value}",
                     fun _ ->
                         try
-                            assemblies
+                            assemblies.Value
                             |> Seq.collect (fun a ->
                                 try
                                     a.Contents.Entities |> List.ofSeq
@@ -1231,10 +1231,10 @@ let find
 
             let fromAssemblies =
                 exportedNamesCache.GetOrAdd(
-                    $"abbreviations:{ns}|{assemblyKey}",
+                    $"abbreviations:{ns}|{assemblyKey.Value}",
                     fun _ ->
                         try
-                            assemblies
+                            assemblies.Value
                             |> Seq.collect (fun a ->
                                 try
                                     a.Contents.Entities |> List.ofSeq

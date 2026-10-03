@@ -1472,6 +1472,26 @@ let cases =
                     r.Length
         }
 
+        // FR0180: a generator built per call to be drawn from once, against
+        // the shared one. Unseeded and clock-seeded are measured apart: the
+        // constructors differ, and the clock-seeded one also reads the clock
+        {
+            Code = "FR0180"
+            Name = "Random().Next 20  ->  Random.Shared.Next 20"
+            Cat = Perf
+            Iters = 2_000_000
+            Before = fun () -> Random().Next 20
+            After = fun () -> Random.Shared.Next 20
+        }
+        {
+            Code = "FR0180"
+            Name = "Random(DateTime.Now.Millisecond).Next 20  ->  Shared"
+            Cat = Perf
+            Iters = 2_000_000
+            Before = fun () -> Random(DateTime.Now.Millisecond).Next 20
+            After = fun () -> Random.Shared.Next 20
+        }
+
         // FR0172: `.[0]` on a list in an arm walks no cells, so the cons
         // pattern is the idiom (and the compile-time exhaustiveness check),
         // not a speed-up: measured level, both a few ns and no allocation

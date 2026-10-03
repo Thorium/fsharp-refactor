@@ -16,7 +16,9 @@
     <ToolCommandName>fsharp-refactor</ToolCommandName>
     <PackageId>fsharp-refactor</PackageId>
     <Description>Applies the FSharp.Refactor analyzers' quick fixes to F# code from the command line. Point it at a project, a script, a solution, a directory or a glob; --dry-run reports without editing. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.</Description>
-    <PackageReleaseNotes>0.8.40: FR0055 stays quiet on a catch-all with a `when` guard, on the exception or on state (`with _ when stopping -&gt; ()`); only `when true` is still noted.
+    <PackageReleaseNotes>0.8.41: New rules FR0175 (date format `hh`/`mm`/`MM` mix-ups, fix), FR0176 (date parts from two instants, fix), FR0177 (always-true/false comparison pair), FR0178 (`.Value` in the empty branch), FR0179 (discarded immutable update), FR0180 (`Random` per call to `Random.Shared`, fix), FR0181 (specific catch around a blocking wait). FR0067 covers `Convert.To*` on a string, FR0017 `let _ = asyncCall`, FR0127 credential-named literals; reports mask credential findings. FR0049 accepts a read behind a bounded `Task.WaitAny`. Faster sweeps: files are no longer typechecked twice, and the project-wide use list is built once. `--api-changes` reads a referencing project only when its sources name the declaration.
+
+ 0.8.40: FR0055 stays quiet on a catch-all with a `when` guard, on the exception or on state (`with _ when stopping -&gt; ()`); only `when true` is still noted.
 
  0.8.39: `--define` (and `&quot;defines&quot;` in fsharprefactor.json) defines preprocessor symbols for the whole run: every MSBuild, script and `--parse-only` compilation. A script&apos;s `#r` of the project counts only where its `#if` nesting is live; one under an undefined `#if` names the symbol to pass, and one naming a missing build is read against the project&apos;s sources.
 

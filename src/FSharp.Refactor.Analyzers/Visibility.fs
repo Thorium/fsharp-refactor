@@ -315,6 +315,13 @@ type Outside =
         /// declarations of an assembly with friends are reshaped only when
         /// every friend answers yes.
         AssemblyRead: string -> bool
+        /// The files of those other compilations that spell the symbol's
+        /// name, PARSED only: every file that can hold a use of it, read or
+        /// not, at the price of a parse. A rule whose change needs a use of
+        /// a certain shape asks here first, and spares the host the
+        /// typecheck of every referencing project when no file holds one.
+        /// None where the host cannot say; the rule then asks `Uses`.
+        Spelled: FSharpSymbol -> (ParsedInput * FSharp.Compiler.Text.ISourceText) list option
     }
 
 /// The host that has read nothing beyond the compilation itself, which is
@@ -325,4 +332,5 @@ let unknownOutside =
         Uses = (fun _ -> [||])
         PublicRead = (fun () -> false)
         AssemblyRead = (fun _ -> false)
+        Spelled = (fun _ -> None)
     }

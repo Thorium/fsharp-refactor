@@ -141,6 +141,13 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\DroppedTimer.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\EnumerationMutation.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DateTimeKindMix.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\DateFormat.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\DateParts.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\ConstantComparison.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\EmptyOptionValue.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\DiscardedUpdate.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\RandomShared.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\WrappedCatch.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LogTemplates.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\UnicodeHygiene.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\SecretLiterals.fs" />

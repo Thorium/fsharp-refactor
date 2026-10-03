@@ -2,6 +2,7 @@
 /// repositories actually contain.
 module FSharp.Refactor.Tool.FileWalk
 
+open System
 open System.Collections.Generic
 open System.IO
 
@@ -26,23 +27,22 @@ let private isNestedWorktree (directory: string) =
         File.Exists marker
         && (let text = (File.ReadAllText marker).Trim()
 
-            text.StartsWith("gitdir:", System.StringComparison.OrdinalIgnoreCase)
+            text.StartsWith("gitdir:", StringComparison.OrdinalIgnoreCase)
             && (let gitdir =
                     Path
                         .GetFullPath(Path.Combine(directory, text.Substring("gitdir:".Length).Trim()))
                         .Replace('\\', '/')
 
-                let at =
-                    gitdir.IndexOf("/.git/worktrees/", System.StringComparison.OrdinalIgnoreCase)
+                let at = gitdir.IndexOf("/.git/worktrees/", StringComparison.OrdinalIgnoreCase)
 
                 at > 0
                 && (Path.GetFullPath(directory).Replace('\\', '/') + "/")
-                    .StartsWith(gitdir.Substring(0, at) + "/", System.StringComparison.OrdinalIgnoreCase)))
+                    .StartsWith(gitdir.Substring(0, at) + "/", StringComparison.OrdinalIgnoreCase)))
     with
     | :? IOException
-    | :? System.UnauthorizedAccessException
-    | :? System.ArgumentException
-    | :? System.NotSupportedException -> false
+    | :? UnauthorizedAccessException
+    | :? ArgumentException
+    | :? NotSupportedException -> false
 
 let private isPruned (directory: string) =
     pruned.Contains((Path.GetFileName directory).ToLowerInvariant())
@@ -59,7 +59,7 @@ let private listing (pattern: string) (directory: string) =
         )
     with
     | :? IOException
-    | :? System.UnauthorizedAccessException
+    | :? UnauthorizedAccessException
     | :? System.Security.SecurityException -> None
 
 /// Files matching `pattern` anywhere under `root`, and — through `skipped`,
@@ -99,10 +99,10 @@ let filesNoting (pattern: string) (root: string) (skipped: string -> unit) : str
                     // walk forever — reparse points are not followed
                     let isReparse =
                         try
-                            File.GetAttributes(subdirectory).HasFlag System.IO.FileAttributes.ReparsePoint
+                            File.GetAttributes(subdirectory).HasFlag FileAttributes.ReparsePoint
                         with
-                        | :? System.IO.IOException
-                        | :? System.UnauthorizedAccessException -> true
+                        | :? IOException
+                        | :? UnauthorizedAccessException -> true
 
                     if isReparse then
                         skipped subdirectory

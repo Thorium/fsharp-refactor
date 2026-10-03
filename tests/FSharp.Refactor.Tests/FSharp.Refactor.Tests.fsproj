@@ -105,6 +105,10 @@
     <Compile Include="HazardRulesTests.fs" />
     <Compile Include="GithubIssueTests.fs" />
     <Compile Include="DefinesTests.fs" />
+    <Compile Include="DateRulesTests.fs" />
+    <Compile Include="LogicRulesTests.fs" />
+    <Compile Include="HistoryRulesTests.fs" />
+    <Compile Include="GuardParityTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

@@ -984,7 +984,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
 
     /// The arguments an application of `node` supplies, in order,
     /// followed by the ancestors above the whole application.
-    member _.ArgumentsOf(path: SyntaxNode list, node: SynExpr) : SynExpr list * SyntaxNode list * SynExpr =
+    static member ArgumentsOf(path: SyntaxNode list, node: SynExpr) : SynExpr list * SyntaxNode list * SynExpr =
         // the arguments gather in reverse, turned once at the top
         let rec climb (path: SyntaxNode list) (current: SynExpr) (reversedArgs: SynExpr list) =
             match path with
@@ -1401,7 +1401,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                 | Some(useIndex, _) ->
                     match nodeAt useIndex u.Range with
                     | Some(path, node) ->
-                        let args, _, _ = this.ArgumentsOf(path, node)
+                        let args, _, _ = Analysis.ArgumentsOf(path, node)
 
                         if position < args.Length then
                             this.Classify(u.Range.FileName, args.[position])
@@ -1432,7 +1432,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     | Some(path, node) ->
                         match slot.Kind with
                         | "return" ->
-                            let args, rest, whole = this.ArgumentsOf(path, node)
+                            let args, rest, whole = Analysis.ArgumentsOf(path, node)
 
                             if args.Length = parameterCount slot.Symbol then
                                 [ this.SinkOf(u.Range.FileName, rest, whole) ]
@@ -1528,7 +1528,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                             | Some(ui, _) ->
                                 match nodeAt ui u.Range with
                                 | Some(path, node) ->
-                                    let supplied, _, _ = this.ArgumentsOf(path, node)
+                                    let supplied, _, _ = Analysis.ArgumentsOf(path, node)
 
                                     if supplied.Length = parameterCount owner then
                                         Some(u.Range.FileName, u.Range)

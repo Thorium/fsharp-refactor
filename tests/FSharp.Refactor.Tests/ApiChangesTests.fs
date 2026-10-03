@@ -670,6 +670,7 @@ let private withSiblingProject
                         | None -> [||])
                 PublicRead = (fun () -> true)
                 AssemblyRead = (fun _ -> true)
+                Spelled = (fun _ -> None)
             }
 
         let contexts =

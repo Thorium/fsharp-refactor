@@ -138,7 +138,7 @@ let private unionsInScope (check: FSharpCheckFileResults) =
 
     let referenced =
         try
-            check.ProjectContext.GetReferencedAssemblies() |> List.collect ofAssembly
+            OptionModule.referencedAssemblies check |> List.collect ofAssembly
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             []
 

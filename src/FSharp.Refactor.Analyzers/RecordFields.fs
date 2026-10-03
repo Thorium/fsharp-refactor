@@ -71,7 +71,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // only records the compiler itself flagged as incomplete
         let incomplete =
             check.Diagnostics
-            |> Array.filter (fun d -> d.ErrorNumber = 764)
+            // this file's alone: a check result can carry the diagnostics of
+            // the files before it, and a range is only a range
+            |> Array.filter (fun d ->
+                d.ErrorNumber = 764
+                && System.String.Equals(
+                    System.IO.Path.GetFullPath d.Range.FileName,
+                    System.IO.Path.GetFullPath parseTree.FileName,
+                    System.StringComparison.OrdinalIgnoreCase
+                ))
             |> Array.map (fun d -> d.Range)
 
         if incomplete.Length = 0 then

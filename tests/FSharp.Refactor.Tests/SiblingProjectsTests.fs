@@ -760,3 +760,166 @@ let ``a public function matched on strings keeps its shape while a sibling passe
 
         Assert.True((code = 0), $"exit {code}:\n{output}")
         Assert.Contains("let describe (region: string) =", File.ReadAllText library))
+
+// ---- a sibling is read only once its sources name the declaration ----
+
+/// The library and its test project with a third project beside them: a
+/// referencer of the library that does not typecheck, and that spells
+/// `Lib.add` (in a comment) only when asked to.
+let private writeBystanderSolution (root: string) (namesTheFunction: bool) =
+    writeSolution root false |> ignore
+
+    let write (relative: string) (content: string) =
+        let path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))
+        Directory.CreateDirectory(Path.GetDirectoryName path) |> ignore
+        File.WriteAllText(path, content)
+
+    write
+        "tests/Bystander/Bystander.fsproj"
+        $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Bystander.fs\" />\n  </ItemGroup>\n  <ItemGroup>\n    <ProjectReference Include=\"../../src/Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
+
+    write
+        "tests/Bystander/Bystander.fs"
+        (if namesTheFunction then
+             fsharp
+                 """
+                 module Bystander
+
+                 // Lib.add is what this would call
+                 let broken: int = "not a number"
+
+                 """
+         else
+             fsharp
+                 """
+                 module Bystander
+
+                 let fine: int = 1
+
+                 """)
+
+    let entries =
+        [
+            "Lib", """src\Lib\Lib.fsproj"""
+            "Tests", """tests\Tests\Tests.fsproj"""
+            "Bystander", """tests\Bystander\Bystander.fsproj"""
+        ]
+        |> List.map (fun (name, path) ->
+            $"Project(\"{{F2A71F9B-5D33-465A-A702-920D77279786}}\") = \"{name}\", \"{path}\", \"{{{Guid.NewGuid()}}}\"\nEndProject")
+        |> String.concat "\n"
+
+    write "Probe.sln" $"Microsoft Visual Studio Solution File, Format Version 12.00\n{entries}\nGlobal\nEndGlobal\n"
+    Path.Combine(root, "Probe.sln")
+
+let private withBystanderSolution (namesTheFunction: bool) (body: string -> unit) =
+    let root =
+        Path.Combine(Path.GetTempPath(), "fsref-siblings-" + Guid.NewGuid().ToString "N")
+
+    try
+        body (writeBystanderSolution root namesTheFunction)
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``a referencing project whose sources never name the function is not read`` () : unit =
+    withBystanderSolution false (fun solution ->
+        let lib = Path.Combine(Path.GetDirectoryName solution, "src", "Lib", "Lib.fsproj")
+
+        let _, output =
+            runTool [| lib; "--api-changes"; "--codes"; "FR0090"; "--dry-run"; "--no-color" |]
+
+        Assert.Contains("Tests.fsproj references this project and it mentions 'Lib' and 'add'", output)
+        Assert.DoesNotContain("Bystander.fsproj references this project", output)
+        Assert.Contains("of them in referencing projects", output))
+
+[<Fact>]
+let ``a referencing project that names the function and does not typecheck keeps it as it is`` () : unit =
+    withBystanderSolution true (fun solution ->
+        let lib = Path.Combine(Path.GetDirectoryName solution, "src", "Lib", "Lib.fsproj")
+
+        let _, output =
+            runTool [| lib; "--api-changes"; "--codes"; "FR0090"; "--dry-run"; "--no-color" |]
+
+        Assert.Contains("Bystander.fsproj cannot be read", output)
+        Assert.DoesNotContain("of them in referencing projects", output)
+        Assert.Contains("0 api-changing edit(s) would be applied", output))
+
+/// A library with a data-first function, and a test project calling it
+/// directly - and through an eta-blocking lambda when asked to.
+let private writeOrderSolution (root: string) (withLambda: bool) =
+    let solution = writeSolution root false
+
+    let write (relative: string) (content: string) =
+        File.WriteAllText(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)), content)
+
+    write
+        "src/Lib/Library.fs"
+        (fsharp
+            """
+            module Lib
+
+            let scale (value: int) (factor: float) = float value * factor
+
+            """)
+
+    write
+        "tests/Tests/Tests.fs"
+        (if withLambda then
+             fsharp
+                 """
+                 module Tests
+
+                 let direct () = Lib.scale 2 1.5
+
+                 let mapped () = [ 1; 2 ] |> List.map (fun v -> Lib.scale v 2.0)
+
+                 """
+         else
+             fsharp
+                 """
+                 module Tests
+
+                 let direct () = Lib.scale 2 1.5
+
+                 """)
+
+    solution
+
+let private withOrderSolution (withLambda: bool) (body: string -> unit) =
+    let root =
+        Path.Combine(Path.GetTempPath(), "fsref-siblings-" + Guid.NewGuid().ToString "N")
+
+    try
+        body (writeOrderSolution root withLambda)
+    finally
+        try
+            Directory.Delete(root, true)
+        with _ ->
+            ()
+
+[<Fact>]
+let ``a parameter swap with no lambda spelled anywhere reads no referencing project`` () : unit =
+    withOrderSolution false (fun solution ->
+        let lib = Path.Combine(Path.GetDirectoryName solution, "src", "Lib", "Lib.fsproj")
+
+        let code, output =
+            runTool [| lib; "--api-changes"; "--codes"; "FR0091"; "--dry-run"; "--no-color" |]
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.DoesNotContain("reading its call sites", output)
+        Assert.Contains("0 api-changing edit(s) would be applied", output))
+
+[<Fact>]
+let ``a parameter swap whose only lambda is in the referencing project reads it and rewrites both`` () : unit =
+    withOrderSolution true (fun solution ->
+        let lib = Path.Combine(Path.GetDirectoryName solution, "src", "Lib", "Lib.fsproj")
+
+        let code, output =
+            runTool [| lib; "--api-changes"; "--codes"; "FR0091"; "--dry-run"; "--no-color" |]
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.Contains("Tests.fsproj references this project and it mentions 'Lib' and 'scale'", output)
+        Assert.Contains("of them in referencing projects", output))

@@ -33,6 +33,9 @@ let isFSharpProject (path: string) =
 let private samePath (a: string) (b: string) =
     String.Equals(Path.GetFullPath a, Path.GetFullPath b, StringComparison.OrdinalIgnoreCase)
 
+let private projectsInSolutionRegex = Regex "Path\\s*=\\s*\"([^\"]+)\""
+let private projectsInSolutionRegex2 = Regex "\"([^\"]+\\.(?:fs|cs|vb)proj)\""
+
 /// The project paths a solution lists — every language — resolved against
 /// the solution's own directory and filtered to files that exist. `.slnx`
 /// is XML with one `Path="..."` per project; the classic `.sln` has one
@@ -51,11 +54,9 @@ let projectsInSolution (solutionPath: string) : string list =
 
     let paths =
         if solutionPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) then
-            Regex.Matches(text, "Path\\s*=\\s*\"([^\"]+)\"")
-            |> Seq.map (fun m -> m.Groups.[1].Value)
+            projectsInSolutionRegex.Matches text |> Seq.map (fun m -> m.Groups.[1].Value)
         else
-            Regex.Matches(text, "\"([^\"]+\\.(?:fs|cs|vb)proj)\"")
-            |> Seq.map (fun m -> m.Groups.[1].Value)
+            projectsInSolutionRegex2.Matches text |> Seq.map (fun m -> m.Groups.[1].Value)
 
     paths
     |> Seq.filter isProjectFile
@@ -93,6 +94,9 @@ type ProjectReference =
 let projectTextWithoutComments (text: string) =
     Regex.Replace(text, @"<!--.*?-->", "", RegexOptions.Singleline)
 
+let private assemblyNameOfRegex =
+    Regex "<AssemblyName>\\s*([^<]+?)\\s*</AssemblyName>"
+
 /// The name of the assembly a project builds: its `<AssemblyName>` when
 /// the project spells one out, else the project file's own name — the
 /// SDK default. This is the name an InternalsVisibleTo attribute carries.
@@ -104,7 +108,7 @@ let assemblyNameOf (projectPath: string) : string =
         | :? IOException
         | :? UnauthorizedAccessException -> ""
 
-    let m = Regex.Match(text, "<AssemblyName>\\s*([^<]+?)\\s*</AssemblyName>")
+    let m = assemblyNameOfRegex.Match text
 
     if m.Success && not (m.Groups.[1].Value.Contains "$(") then
         m.Groups.[1].Value
@@ -229,7 +233,8 @@ let projectReferencesOf (projectPath: string) : string list =
     projectReferenceShapesOf projectPath
     |> List.choose (function
         | Resolved p -> Some p
-        | _ -> None)
+        | ByName _
+        | Unresolvable -> None)
     |> List.distinctBy (fun p -> p.ToLowerInvariant())
 
 /// Does a reference name this project?
@@ -265,7 +270,7 @@ let sharedSourcesOf (workspace: string list) (project: string) (sources: string 
         Regex.Matches(text, "<Compile\\s[^>]*?Include\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)
         |> Seq.collect (fun m -> m.Groups.[1].Value.Split(';', StringSplitOptions.RemoveEmptyEntries))
         |> Seq.map (fun item -> item.Trim())
-        |> Seq.filter (fun item -> not (item.Contains "$(" || item.Contains "*"))
+        |> Seq.filter (fun item -> not (item.Contains "$(" || item.Contains '*'))
         |> Seq.choose (fun item ->
             try
                 Some(Path.GetFullPath(Path.Combine(dir, item.Replace('\\', Path.DirectorySeparatorChar))))
@@ -380,21 +385,22 @@ let workspaceOf (runTarget: string) (project: string) : string list option =
 let referencersOf (workspace: string list) (project: string) : string list =
     let references = workspace |> List.map (fun p -> p, projectReferenceShapesOf p)
 
-    let mutable reached = [ project ]
+    // breadth first, in the order reached
+    let reached = ResizeArray [ project ]
     let mutable frontier = [ project ]
 
     while not frontier.IsEmpty do
         let next =
             references
             |> List.filter (fun (p, refs) ->
-                not (reached |> List.exists (samePath p))
+                not (reached.Exists(fun seen -> samePath p seen))
                 && refs |> List.exists (fun r -> frontier |> List.exists (namesProject r)))
             |> List.map fst
 
-        reached <- reached @ next
+        reached.AddRange next
         frontier <- next
 
-    reached |> List.filter (fun p -> not (samePath p project))
+    reached |> Seq.filter (fun p -> not (samePath p project)) |> List.ofSeq
 
 /// `referencersOf` for a decision that COSTS something per match - a build,
 /// a held public surface: only references resolved to a path count, at
@@ -411,18 +417,19 @@ let resolvedReferencersOf (workspace: string list) (project: string) : string li
         | ByName _
         | Unresolvable -> false
 
-    let mutable reached = [ project ]
+    // breadth first, in the order reached
+    let reached = ResizeArray [ project ]
     let mutable frontier = [ project ]
 
     while not frontier.IsEmpty do
         let next =
             references
             |> List.filter (fun (p, refs) ->
-                not (reached |> List.exists (samePath p))
+                not (reached.Exists(fun seen -> samePath p seen))
                 && refs |> List.exists (fun r -> frontier |> List.exists (resolvesTo r)))
             |> List.map fst
 
-        reached <- reached @ next
+        reached.AddRange next
         frontier <- next
 
-    reached |> List.filter (fun p -> not (samePath p project))
+    reached |> Seq.filter (fun p -> not (samePath p project)) |> List.ofSeq

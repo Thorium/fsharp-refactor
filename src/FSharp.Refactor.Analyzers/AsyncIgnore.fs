@@ -11,6 +11,22 @@
 /// Typed rule: the operand must be a simple identifier whose type resolves to
 /// FSharp.Core's Async<'T> (shadowing-proof); the file must have no type
 /// errors.
+///
+/// A wildcard binding discards the same way:
+///
+///     async {
+///         let _ = save order      // built, never run
+///         return ok
+///     }
+///
+/// Only a CALL is read here. A call builds a computation nobody else
+/// holds, so discarding it loses the work; a bare name may be started,
+/// returned or awaited somewhere else, and binding it to `_` proves
+/// nothing - that stays quiet. So does a call whose work is under way
+/// before the Async exists: a MailboxProcessor's `PostAndAsyncReply`
+/// (posted already) and `Async.AwaitTask`/`AwaitEvent` (live already). Directly inside `async { }` or `task { }`
+/// the editor offers `let! _ =`. A sweep never applies it: awaiting starts
+/// work that has not been running, which is the author's decision.
 module FSharp.Refactor.AsyncIgnore
 
 open FSharp.Compiler.CodeAnalysis
@@ -31,6 +47,11 @@ type Suggestion =
         /// its outcome — result and failure alike — is lost, and a pooled
         /// ValueTask must be consumed exactly once.
         IsValueTask: bool
+        /// Discarded by `let _ =` rather than by `ignore`.
+        IsBinding: bool
+        /// `let` -> `let!`, when the binding sits directly in a computation
+        /// expression that can bind the value.
+        BindFix: (range * string * string) option
     }
 
 [<Literal>]
@@ -60,6 +81,9 @@ let private (|Ignored|_|) (e: SynExpr) =
 let rec private headAndDepth (depth: int) (e: SynExpr) =
     match e with
     | SynExpr.Paren(expr = inner) -> headAndDepth depth inner
+    // `f <| arg` applies one more argument to f
+    | SynExpr.App(funcExpr = SynExpr.App(isInfix = true; funcExpr = IdentName "op_PipeLeft"; argExpr = lhs)) ->
+        headAndDepth (depth + 1) lhs
     // a pipe IS an App(isInfix = false) at the outer node, so this arm must
     // come first or `x |> makeAsync` dead-ends in the operator application
     | PipeApp(_, rhs) -> headAndDepth (depth + 1) rhs
@@ -140,9 +164,46 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | _ -> ValueNone
         | _ -> ValueNone
 
+    // calls whose work does not wait for the Async they answer with: a
+    // MailboxProcessor posts its message before it returns the reply's
+    // computation, and `Async.Await*` wraps a task, an event or a handle
+    // that is live already. Dropping those drops the WAIT, not the work
+    let alreadyUnderWay (callee: Ident) =
+        match resolve callee with
+        | ValueSome value ->
+            (try
+                let owner =
+                    value.DeclaringEntity
+                    |> Option.bind (fun e -> e.TryFullName)
+                    |> Option.defaultValue ""
+
+                owner.StartsWith "Microsoft.FSharp.Control.FSharpMailboxProcessor"
+                || (owner.StartsWith "Microsoft.FSharp.Control"
+                    && value.DisplayName.StartsWith "Await")
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 true)
+        | ValueNone -> true
+
+    // the builder of the computation expression the node sits in directly:
+    // a lambda, a nested function or another builder in between means
+    // `let!` there would bind in something else, or in nothing
+    let enclosingBuilder (path: SyntaxNode list) =
+        path
+        |> List.takeWhile (fun node ->
+            match node with
+            | SyntaxNode.SynExpr(SynExpr.Lambda _ | SynExpr.MatchLambda _ | SynExpr.ObjExpr _) -> false
+            | SyntaxNode.SynBinding _ -> false
+            | _ -> true)
+        |> List.tryPick (fun node ->
+            match node with
+            | SyntaxNode.SynExpr(SynExpr.App(
+                isInfix = false; funcExpr = SynExpr.Ident builder; argExpr = SynExpr.ComputationExpr _)) ->
+                Some builder.idText
+            | _ -> None)
+
     let collector =
         { new SyntaxCollectorBase() with
-            override _.WalkExpr(_path, expr) =
+            override _.WalkExpr(path, expr) =
                 match expr with
                 | Ignored operand ->
                     match ignoredComputation operand with
@@ -153,8 +214,53 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 OriginalText = textOfRange source expr.Range
                                 Name = ident.idText
                                 IsValueTask = isValueTask
+                                IsBinding = false
+                                BindFix = None
                             }
                     | ValueNone -> ()
+                | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
+                    match lou.Bindings with
+                    | [ SynBinding(headPat = SynPat.Wild _; expr = rhs) ] ->
+                        match stripParens rhs with
+                        // a call builds a computation nobody else holds; a
+                        // bare name may be started or returned elsewhere
+                        | SynExpr.App _ as call ->
+                            match ignoredComputation call with
+                            | ValueSome(ident, isValueTask) when not (alreadyUnderWay ident) ->
+                                let start = expr.Range.Start
+
+                                let keyword =
+                                    Range.mkRange
+                                        expr.Range.FileName
+                                        start
+                                        (Position.mkPos start.Line (start.Column + 3))
+
+                                // `async` binds an Async; `task` binds both
+                                let binds =
+                                    match enclosingBuilder path with
+                                    | Some "async" -> not isValueTask
+                                    | Some "task"
+                                    | Some "backgroundTask" -> true
+                                    | _ -> false
+
+                                let discarded = Range.unionRanges keyword rhs.Range
+
+                                suggestions.Add
+                                    {
+                                        Range = discarded
+                                        OriginalText = textOfRange source discarded
+                                        Name = ident.idText
+                                        IsValueTask = isValueTask
+                                        IsBinding = true
+                                        BindFix =
+                                            if binds && textOfRange source keyword = "let" then
+                                                Some(keyword, "let", "let!")
+                                            else
+                                                None
+                                    }
+                            | _ -> ()
+                        | _ -> ()
+                    | _ -> ()
                 | _ -> ()
         }
 

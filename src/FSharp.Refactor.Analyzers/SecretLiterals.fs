@@ -39,6 +39,9 @@ type Suggestion =
         /// the value is a [<Literal>]: a compile-time constant a type provider
         /// reads before the program runs
         DesignTimeLiteral: bool
+        /// The name the code gives the literal, for a finding made by name
+        /// rather than by a provider's format; empty otherwise.
+        Name: string
     }
 
 let private patterns =
@@ -158,6 +161,7 @@ let find (parseTree: ParsedInput) : Suggestion list =
                             Range = r
                             Provider = provider
                             DesignTimeLiteral = designTime r
+                            Name = ""
                         }
                     | ValueNone -> ()
                 // the literal parts of an interpolated string: a key with a
@@ -172,6 +176,7 @@ let find (parseTree: ParsedInput) : Suggestion list =
                                     Range = r
                                     Provider = provider
                                     DesignTimeLiteral = designTime r
+                                    Name = ""
                                 }
                             | ValueNone -> ()
                         | SynInterpolatedStringPart.FillExpr _ -> ()
@@ -198,8 +203,189 @@ let find (parseTree: ParsedInput) : Suggestion list =
                             Range = r
                             Provider = provider
                             DesignTimeLiteral = true
+                            Name = ""
                         }
                     | ValueNone -> ()
         ]
 
     fromExprs @ fromTypes |> List.distinctBy (fun s -> s.Range)
+
+/// A name that says its value is a credential.
+let private credentialName =
+    Regex(@"(?i)(password|passwd|pwd|secret|api_?key|access_?key|private_?key|token|credential)", RegexOptions.Compiled)
+
+/// ...unless the name is ABOUT the credential rather than the credential:
+/// `passwordHeader`, `tokenEndpoint`, `secretName`, `passwordKey`.
+let private describingName =
+    Regex(
+        @"(?i)((password|passwd|pwd|secret|key|token|credentials?)_?(name|field|header|param|parameter|path|file|label|prompt|message|format|regex|pattern|length|policy|hint|error|title|text|url|uri|type|kind|id|property|setting|option|claim|scheme|prefix|suffix|expiry|lifetime|timeout|endpoint|provider|validator|hash|salt|chars?|rules?|requirement|strength|mask|separator|delimiter|count|limit|size|budget)s?|(password|passwd|pwd|token|credentials?)_?keys?)$",
+        RegexOptions.Compiled
+    )
+
+let private wordsOfRegex = Regex @"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+"
+
+/// The words of a camelCase / snake_case name, lower-cased:
+/// `servicePassword` -> service, password; `API_KEY` -> api, key.
+let private wordsOf (name: string) =
+    wordsOfRegex.Matches name
+    |> Seq.map (fun m -> m.Value.ToLowerInvariant())
+    |> List.ofSeq
+
+let private credentialWords =
+    set
+        [
+            "password"
+            "passwd"
+            "pwd"
+            "secret"
+            "token"
+            "credential"
+            "credentials"
+            "apikey"
+        ]
+
+/// A credential word must be a WORD of the name: `apiToken` yes,
+/// `tokenizer` no.
+let private namesCredential (name: string) =
+    let words = wordsOf name
+
+    let asWord =
+        words |> List.exists credentialWords.Contains
+        || (words
+            |> List.pairwise
+            |> List.exists (fun (a, b) -> b = "key" && (a = "api" || a = "access" || a = "private" || a = "secret")))
+
+    asWord && not (describingName.IsMatch name)
+
+/// An environment variable or setting spelled in capitals: `GITHUB_TOKEN`.
+let private settingName = Regex(@"^[A-Z][A-Z0-9_.:-]*$", RegexOptions.Compiled)
+
+/// The literal reads as a value, not as a placeholder, a prompt, or the
+/// NAME of the setting the credential comes from.
+let private credentialValue (name: string) (text: string) =
+    text.Length >= 6
+    && not (text |> Seq.exists System.Char.IsWhiteSpace)
+    && not (placeholderPassword.IsMatch text)
+    && not (isTestFixture text)
+    && not (credentialName.IsMatch text)
+    && not (settingName.IsMatch text)
+    && not (text.Equals(name, System.StringComparison.OrdinalIgnoreCase))
+    && not (text.Contains '{' || text.Contains "%s" || text.Contains "://")
+
+/// A string literal bound to a name that says it is a credential:
+///
+///     let servicePassword = "..."
+///     { User = user; ApiKey = "..." }
+///     client.Password <- "..."
+///     if password = "..." then ...
+///     Authenticate(user, "...")          // typed: the parameter is `password`
+///
+/// The key formats above are found by what the literal looks like; this is
+/// found by what the code calls it. Quiet for a name that is ABOUT the
+/// credential (`passwordHeader`, `tokenEndpoint`), and for a literal that
+/// is a placeholder, a prompt, a test fixture, or the name of the setting
+/// the credential is read from (`"GITHUB_TOKEN"`, `"Db:Password"`). The
+/// positional-argument shape needs check results; the rest is parse-only.
+let findNamed
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharp.Compiler.CodeAnalysis.FSharpCheckFileResults option)
+    : Suggestion list =
+    let index = AstIndex.ofTree parseTree
+
+    let literal (name: string) (e: SynExpr) : Suggestion option =
+        match FSharp.Refactor.Text.stripParens e with
+        | SynExpr.Const(SynConst.String(text, _, _), r) when namesCredential name && credentialValue name text ->
+            Some
+                {
+                    Range = r
+                    Provider = "credential name"
+                    DesignTimeLiteral = false
+                    Name = name
+                }
+        | _ -> None
+
+    let ofBindings (bindings: SynBinding list) =
+        bindings
+        |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
+            match p with
+            | SynPat.Named(ident = SynIdent(ident = id))
+            | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))) -> literal id.idText rhs
+            | _ -> None)
+
+    // the parameter names of a tupled call, in order
+    let parameterNames (callee: Ident) =
+        match check with
+        | Some results when not (OptionModule.hasErrors results) ->
+            match BlockingSites.valueAt results source callee with
+            | Some value ->
+                (try
+                    match value.CurriedParameterGroups |> Seq.tryHead with
+                    | Some group -> group |> Seq.map (fun p -> p.DisplayName) |> List.ofSeq
+                    | None -> []
+                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                     [])
+            | None -> []
+        | _ -> []
+
+    let calleeOf (f: SynExpr) =
+        match f with
+        | SynExpr.Ident id -> Some id
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+        | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
+        | _ -> None
+
+    [
+        for _, decl in index.Decls do
+            match decl with
+            | SynModuleDecl.Let(bindings = bindings) -> yield! ofBindings bindings
+            | _ -> ()
+        for _, e in index.Exprs do
+            match e with
+            | FSharp.Refactor.Text.LetOrUseE lou when not lou.IsBang -> yield! ofBindings lou.Bindings
+            // name = "literal": a named argument, a property initialiser, or
+            // a comparison with the credential itself
+            | SynExpr.App(
+                isInfix = false
+                funcExpr = SynExpr.App(
+                    isInfix = true; funcExpr = FSharp.Refactor.Text.IdentName "op_Equality"; argExpr = lhs)
+                argExpr = rhs) ->
+                match FSharp.Refactor.Text.stripParens lhs with
+                | SynExpr.Ident id -> yield! literal id.idText rhs |> Option.toList
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+                    yield! literal (List.last ids).idText rhs |> Option.toList
+                | _ -> ()
+            | SynExpr.Record(recordFields = fields) ->
+                for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = value) in fields do
+                    match List.tryLast ids, value with
+                    | Some field, Some rhs -> yield! literal field.idText rhs |> Option.toList
+                    | _ -> ()
+            | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids); expr = rhs) when not ids.IsEmpty ->
+                yield! literal (List.last ids).idText rhs |> Option.toList
+            | SynExpr.DotSet(longDotId = SynLongIdent(id = ids); rhsExpr = rhs) when not ids.IsEmpty ->
+                yield! literal (List.last ids).idText rhs |> Option.toList
+            // f(user, "literal"): the parameter the literal lands on
+            | SynExpr.App(isInfix = false; funcExpr = f; argExpr = SynExpr.Paren(expr = argument)) ->
+                match calleeOf f with
+                | Some callee ->
+                    let arguments =
+                        match argument with
+                        | SynExpr.Tuple(exprs = items) -> items
+                        | single -> [ single ]
+
+                    if
+                        arguments
+                        |> List.exists (fun a ->
+                            match a with
+                            | SynExpr.Const(SynConst.String _, _) -> true
+                            | _ -> false)
+                    then
+                        let names = parameterNames callee
+
+                        if names.Length = arguments.Length then
+                            for name, a in List.zip names arguments do
+                                yield! literal name a |> Option.toList
+                | None -> ()
+            | _ -> ()
+    ]
+    |> List.distinctBy (fun s -> s.Range)

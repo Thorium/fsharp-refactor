@@ -54,13 +54,17 @@ let private versiondRegex = Regex @"Version=(\d+)\."
 /// has no such attribute).
 let private coreHasAttribute (check: FSharpCheckFileResults) (fileName: string) =
     let projectMinAllows =
-        match CapabilityFix.minFSharpCoreMajorFor check.ProjectContext.ProjectOptions.ProjectFileName fileName with
+        match
+            CapabilityFix.minFSharpCoreMajorFor
+                (OptionModule.projectContext check).ProjectOptions.ProjectFileName
+                fileName
+        with
         | ValueSome projectMin -> projectMin >= 8
         | ValueNone -> true
 
     projectMinAllows
     && (try
-            check.ProjectContext.GetReferencedAssemblies()
+            OptionModule.referencedAssemblies check
             |> List.exists (fun a ->
                 a.SimpleName = "FSharp.Core"
                 && (let m = versiondRegex.Match a.QualifiedName
@@ -178,9 +182,11 @@ let rec private ok (c: Ctx) (isTail: bool) (e: SynExpr) : bool =
     | _ -> mentionFree c e.Range
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
-    if not (coreHasAttribute check parseTree.FileName) then
-        []
-    else
+    // asked only once a candidate exists: reading the project's references
+    // costs milliseconds, and most files have no recursive function at all
+    let supported = lazy (coreHasAttribute check parseTree.FileName)
+
+    let candidates () =
         let index = AstIndex.ofTree parseTree
 
         [
@@ -222,7 +228,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             guardsAndScrutinees |> List.forall (mentionFree c)
                             && tailBodies |> List.forall (ok c true)
 
-                        if allTail && c.SelfCalls.Value > 0 then
+                        if allTail && c.SelfCalls.Value > 0 && supported.Value then
                             let kw = trivia.LeadingKeyword.Range
 
                             let ownLine =
@@ -241,3 +247,5 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | _ -> ()
                 | _ -> ()
         ]
+
+    candidates ()

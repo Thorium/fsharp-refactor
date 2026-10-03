@@ -214,6 +214,19 @@ let private collectApplications (mayBeMutableIn: AstIndex.Index -> Ident -> bool
     AstIndex.replay collector parseTree
     apps, lambdas
 
+/// Does the file hold a `fun x -> f x k` whose function is spelled with
+/// this name? A question of syntax, asked of files nothing has typechecked:
+/// every eta-blocking lambda of the function is one of these, whatever else
+/// shares the name.
+let private spellsLambdaSite (name: string) (parseTree: ParsedInput) (source: ISourceText) =
+    let _, lambdas = collectApplications (fun _ _ -> false) parseTree
+
+    lambdas.Values
+    |> Seq.exists (fun (_, funcRange, _) ->
+        let spelled = textOfRange source funcRange
+        let last = spelled.Substring(spelled.LastIndexOf '.' + 1)
+        last.Trim('`', ' ') = name)
+
 /// The swap edits for one direct application `f a b` → `f b a`, or None when
 /// the use is not swappable.
 let private callEdits (source: ISourceText) (funcEnd: pos) (a1: SynExpr) (a2: SynExpr) =
@@ -238,6 +251,31 @@ let private callEdits (source: ISourceText) (funcEnd: pos) (a1: SynExpr) (a2: Sy
 /// builder needs them for whichever file a use lives in.
 type private Artifacts = Dictionary<int * int, AppSite> * Dictionary<int * int, range * range * SynExpr> * ISourceText
 
+/// One use as the swap would rewrite it: whether it is an eta-blocking
+/// lambda, with its edits. None for a use that cannot be rewritten.
+let private siteEdits (artifactsFor: string -> Artifacts option) (u: FSharpSymbolUse) =
+    match artifactsFor u.Range.FileName with
+    | None -> None
+    | Some(apps, lambdas, useSource) ->
+        let useKey = u.Range.EndLine, u.Range.EndColumn
+
+        match lambdas.TryGetValue useKey with
+        | true, (lambdaRange, funcRange, captured) ->
+            // `fun x -> f x k` collapses to `f k`, keeping whatever
+            // qualification the call site wrote (`LibA.f k`)
+            Some(
+                true,
+                [
+                    lambdaRange,
+                    textOfRange useSource lambdaRange,
+                    textOfRange useSource funcRange + " " + argumentText useSource captured
+                ]
+            )
+        | _ ->
+            match apps.TryGetValue useKey with
+            | true, TwoArgs(a1, a2) -> callEdits useSource u.Range.End a1 a2 |> Option.map (fun edits -> false, edits)
+            | _ -> None
+
 /// The shared tail of both variants: turn a candidate and its uses into a
 /// suggestion, reading each use through its own file's artifacts.
 ///
@@ -253,31 +291,7 @@ let private buildSuggestion
     (artifactsFor: string -> Artifacts option)
     (uses: FSharpSymbolUse array)
     : Suggestion option =
-    let siteResults =
-        uses
-        |> Array.map (fun u ->
-            match artifactsFor u.Range.FileName with
-            | None -> None
-            | Some(apps, lambdas, useSource) ->
-                let useKey = u.Range.EndLine, u.Range.EndColumn
-
-                match lambdas.TryGetValue useKey with
-                | true, (lambdaRange, funcRange, captured) ->
-                    // `fun x -> f x k` collapses to `f k`, keeping whatever
-                    // qualification the call site wrote (`LibA.f k`)
-                    Some(
-                        true,
-                        [
-                            lambdaRange,
-                            textOfRange useSource lambdaRange,
-                            textOfRange useSource funcRange + " " + argumentText useSource captured
-                        ]
-                    )
-                | _ ->
-                    match apps.TryGetValue useKey with
-                    | true, TwoArgs(a1, a2) ->
-                        callEdits useSource u.Range.End a1 a2 |> Option.map (fun edits -> false, edits)
-                    | _ -> None)
+    let siteResults = uses |> Array.map (siteEdits artifactsFor)
 
     let lambdaCount =
         siteResults
@@ -439,15 +453,44 @@ let findApiChanges
                 with
                 | None -> None
                 | Some symbolUse when hasDistinctParamTypes symbolUse.Symbol ->
-                    let uses =
-                        // a `#load`ing script or a sibling project is a real call site
-                        // that `project` cannot see. Missing one is the single thing this
-                        // rule cannot survive: the definition changes shape and the
-                        // caller stops compiling.
-                        Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (outside.Uses symbolUse.Symbol)
+                    let own =
+                        project.GetUsesOfSymbol symbolUse.Symbol
                         |> Array.filter (fun u -> not u.IsFromDefinition)
 
-                    buildSuggestion false candidate defFile.Source artifactsFor uses
+                    // the project's own call sites first: one that cannot be
+                    // rewritten suppresses the suggestion whatever the callers
+                    // outside look like, and the host is then not asked to read
+                    // them - a typecheck of every project that names the function
+                    let ownSites = own |> Array.map (siteEdits artifactsFor)
+
+                    // and the swap needs a lambda to collapse: with none in the
+                    // project and none spelled in any file outside, there is no
+                    // suggestion to make and nothing outside to read for it
+                    let lambdaInSight () =
+                        ownSites
+                        |> Array.exists (function
+                            | Some(true, _) -> true
+                            | _ -> false)
+                        || (match outside.Spelled symbolUse.Symbol with
+                            | Some files ->
+                                files
+                                |> List.exists (fun (tree, source) ->
+                                    spellsLambdaSite candidate.Ident.idText tree source)
+                            | None -> true)
+
+                    if ownSites |> Array.exists Option.isNone || not (lambdaInSight ()) then
+                        None
+                    else
+                        let uses =
+                            // a `#load`ing script or a sibling project is a real call site
+                            // that `project` cannot see. Missing one is the single thing this
+                            // rule cannot survive: the definition changes shape and the
+                            // caller stops compiling.
+                            Array.append
+                                own
+                                (outside.Uses symbolUse.Symbol |> Array.filter (fun u -> not u.IsFromDefinition))
+
+                        buildSuggestion false candidate defFile.Source artifactsFor uses
                 | Some _ -> None)
 
 /// Find private data-first two-parameter functions with eta-blocking lambda

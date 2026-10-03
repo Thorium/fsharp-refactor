@@ -46,7 +46,7 @@ let private (|StringConst|_|) (e: SynExpr) =
 /// (.NET 5+ — absent on netstandard2.0/net48, where the fix would not
 /// compile.)
 let private toHexStringAvailable (check: FSharpCheckFileResults) =
-    check.ProjectContext.GetReferencedAssemblies()
+    OptionModule.referencedAssemblies check
     |> Seq.exists (fun assembly ->
         try
             match assembly.Contents.FindEntityByPath [ "System"; "Convert" ] with

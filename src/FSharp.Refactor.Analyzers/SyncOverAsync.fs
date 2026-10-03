@@ -697,6 +697,38 @@ let findWith
                 |> Option.defaultValue []
             | _ -> []
 
+        // `Task.WaitAny([| t |], ...)` over exactly one task: that task, as
+        // written (an upcast to Task is how a Task<'T> gets into the array)
+        let waitAnyOver (e: SynExpr) : string option =
+            let rec single (element: SynExpr) =
+                match stripParens element with
+                | SynExpr.Upcast(expr = inner)
+                | SynExpr.Typed(expr = inner) -> single inner
+                | SynExpr.Ident _
+                | SynExpr.LongIdent _ as name -> Some(textOfRange source name.Range)
+                | _ -> None
+
+            let only (array: SynExpr) =
+                match stripParens array with
+                | SynExpr.ArrayOrList(isArray = true; exprs = [ element ]) -> single element
+                | SynExpr.ArrayOrListComputed(isArray = true; expr = element) ->
+                    match element with
+                    | SynExpr.Sequential _ -> None
+                    | _ -> single element
+                | _ -> None
+
+            match stripParens e with
+            | SynExpr.App(
+                isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
+                ids.Length >= 2
+                && (List.last ids).idText = "WaitAny"
+                && (enclosingEntityOf check source (List.last ids)) |> taskFamily
+                ->
+                match stripParens arg with
+                | SynExpr.Tuple(exprs = first :: _) -> only first
+                | first -> only first
+            | _ -> None
+
         // the receivers a condition proves complete — in its then branch,
         // and in its else branch: `vt.IsCompletedSuccessfully`, a WhenAny
         // winner compared equal to the task, conjoined with anything, or
@@ -716,6 +748,30 @@ let findWith
             | SynExpr.App(isInfix = false; funcExpr = IdentName "not"; argExpr = inner) ->
                 let t, e = completionTests inner
                 e, t
+            // `Task.WaitAny([| t |], timeout)` over that one task answers its
+            // index, 0, when it finished and -1 when the wait ran out: the
+            // wait is the block, bounded and in plain sight, and the read
+            // behind a non-negative answer drains a finished task
+            | SynExpr.App(
+                isInfix = false
+                funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = l)
+                argExpr = r) when (waitAnyOver l).IsSome ->
+                let finished = Option.toList (waitAnyOver l)
+
+                let bound =
+                    match stripParens r with
+                    | SynExpr.Const(SynConst.Int32 n, _) -> ValueSome n
+                    | SynExpr.App(funcExpr = IdentName "op_UnaryNegation"; argExpr = SynExpr.Const(SynConst.Int32 n, _)) ->
+                        ValueSome -n
+                    | _ -> ValueNone
+
+                match op.idText, bound with
+                | "op_LessThan", ValueSome 0
+                | "op_Equality", ValueSome -1 -> [], finished
+                | "op_GreaterThanOrEqual", ValueSome 0
+                | "op_Inequality", ValueSome -1
+                | "op_Equality", ValueSome 0 -> finished, []
+                | _ -> [], []
             | Compare(equal, l, r) ->
                 let lText = textOfRange source l.Range
                 let rText = textOfRange source r.Range

@@ -43,6 +43,12 @@ let private shapes =
         // FR0017: a fully applied call whose result is an Async
         withFree "AsyncCallIgnored" [ "FR0017" ] genSmall (fun n i ->
             $"let f{i} () =\n    let make (k: int) = async {{ return k + {n} }}\n    make {n} |> ignore")
+        // FR0017: a call building an Async, bound to a wildcard inside a computation
+        withFree "AsyncBoundToWildcard" [ "FR0017" ] (Gen.elements [ "async"; "task" ]) (fun builder i ->
+            $"let f{i} () =\n    let make (k: int) = async {{ return k }}\n    {builder} {{\n        let _ = make {i}\n        return {i}\n    }}")
+        // FR0017 must stay quiet: a name bound to a wildcard may be run elsewhere
+        withFree "AsyncNameBoundToWildcard" [ "!FR0017" ] genSmall (fun n i ->
+            $"let f{i} () =\n    let work = async {{ return {n} }}\n    let _ = work\n    work")
         // FR0017: a ValueTask discarded is consumed by nobody
         fixed' "ValueTaskIgnored" [ "FR0017" ] (fun i -> $"let f{i} (vt: ValueTask<int>) = vt |> ignore")
         // FR0149: a started computation with no handler
@@ -212,6 +218,10 @@ let family: Family =
                     for s in UseBinding.findEscapingUse c.Tree c.Source c.Check do
                         if not s.Edits.IsEmpty then
                             yield "FR0150", edits "FR0150" s.Edits
+                    // the editor's `let!` for a wildcard-bound computation
+                    for s in AsyncIgnore.find c.Tree c.Source c.Check do
+                        for r, _, replacement in Option.toList s.BindFix do
+                            yield "FR0017", [ edit "FR0017" r replacement ]
                 ]
         Notes =
             fun c ->

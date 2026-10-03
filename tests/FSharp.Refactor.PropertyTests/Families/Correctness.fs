@@ -5,7 +5,8 @@
 /// CheckedArithmetic, FR0136 EmptyGuid, FR0121 DateTimeRules, FR0134
 /// DateTimeOffsetMigration, FR0123 MonitorLock (the semaphore leak too),
 /// FR0046 WeakLock, FR0159 IntDivisionToFloat, FR0160 LostInnerException,
-/// FR0162 LazyInit, FR0163 DroppedTimer, FR0165 DateTimeKindMix.
+/// FR0162 LazyInit, FR0163 DroppedTimer, FR0165 DateTimeKindMix, FR0175
+/// DateFormat, FR0176 DateParts.
 ///
 /// FR0120 CatchLogException is typed-gated to entities whose full name
 /// starts with Microsoft.Extensions.Logging, Serilog or Logary, which a
@@ -37,11 +38,12 @@ let private shapes =
         withFree "RaiseCaughtInTask" [ "FR0044" ] genSmall (fun n i ->
             $"let f{i} (t: Task<int>) =\n    task {{\n        try\n            let! x = t\n            return x + {n}\n        with ex ->\n            return raise ex\n    }}")
         // FR0055: the empty catch-all
-        withFree
-            "EmptyCatchAll"
-            [ "FR0055" ]
-            (Gen.elements [ "_"; ":? Exception"; "_ when Console.IsOutputRedirected" ])
-            (fun p i -> $"let f{i} (act: unit -> unit) =\n    try\n        act ()\n    with {p} -> ()")
+        withFree "EmptyCatchAll" [ "FR0055" ] (Gen.elements [ "_"; ":? Exception" ]) (fun p i ->
+            $"let f{i} (act: unit -> unit) =\n    try\n        act ()\n    with {p} -> ()")
+        // FR0055 must stay quiet: a guarded catch-all lets every exception
+        // surface while the guard is false
+        withFree "GuardedCatchAll" [ "!FR0055" ] genSmall (fun _ i ->
+            $"let f{i} (act: unit -> unit) =\n    try\n        act ()\n    with _ when Console.IsOutputRedirected -> ()")
         // FR0055: a division whose catch is really a zero guard
         withFree "DivisionFallback" [ "FR0055" ] genSmall (fun n i ->
             $"let f{i} (a: int) (b: int) =\n    try\n        a / b\n    with _ -> {n}")
@@ -115,6 +117,79 @@ let private shapes =
                 $"module Clock{i} =\n    let startedUtc = DateTime.UtcNow\n    let check{i} () = DateTime.Now.ToUniversalTime() > startedUtc\n    let offset{i} () = DateTime.Now - DateTime.UtcNow"
             else
                 $"module Clock{i} =\n    let started = DateTime.Now\n    let check{i} () = DateTime.Now.Date > started.Date")
+        // FR0175: a 12-hour clock with no designator, minutes for the month,
+        // the month for minutes, and the two swapped
+        withFree
+            "SlippedDateFormat"
+            [ "FR0175" ]
+            (Gen.elements [ "yyyyMMddhhmmss"; "yyyy-mm-dd"; "HH:MM:ss"; "yyyy-mm-dd HH:MM" ])
+            (fun format i -> $"let stamp{i} (d: DateTime) = d.ToString \"{format}\"")
+        // FR0175 must stay quiet: sound formats, and a TimeSpan's own `hh`
+        withFree
+            "SoundDateFormat"
+            [ "!FR0175" ]
+            (Gen.elements [ "yyyyMMddHHmmss"; "hh:mm tt"; "mm:ss"; "MM/dd/yyyy HH:mm" ])
+            (fun format i ->
+                $"let stamp{i} (d: DateTime) = d.ToString \"{format}\"\nlet span{i} (t: TimeSpan) = t.ToString \"hh\"")
+        // FR0176: the year before a shift, the month after it
+        withFree "DateFromTwoInstants" [ "FR0176" ] genSmall (fun n i ->
+            $"let lastMonth{i} (now: DateTime) = DateTime(now.Year, now.AddMonths(-{n + 1}).Month, 25)")
+        // FR0176 must stay quiet: both parts read from the shifted instant
+        withFree "DateFromOneInstant" [ "!FR0176" ] genSmall (fun n i ->
+            $"let lastMonth{i} (now: DateTime) =\n    let previous = now.AddMonths(-{n + 1})\n    DateTime(previous.Year, previous.Month, 25)")
+        // FR0177: two different constants against one operand, always true
+        withFree "AlwaysTrueComparison" [ "FR0177" ] genSmall (fun n i ->
+            $"let check{i} (status: int) = status <> {n} || status <> {n + 1}")
+        // FR0177: one bound on both strict sides, always false
+        withFree "AlwaysFalseRange" [ "FR0177" ] genSmall (fun n i ->
+            $"let between{i} (x: int) (limit: int) = x > limit && x < limit && x <> {n}")
+        // FR0177 must stay quiet: the same shapes with the sound operator
+        withFree "SoundComparison" [ "!FR0177" ] genSmall (fun n i ->
+            $"let check{i} (status: int) (lo: int) (hi: int) = status <> {n} && status <> {n + 1} && status > lo && status < hi")
+        // FR0178: Value read where the option was tested empty
+        withFree
+            "ValueInEmptyBranch"
+            [ "FR0178" ]
+            (Gen.elements [ "x.IsNone"; "not x.IsSome"; "x = None" ])
+            (fun test i ->
+                $"let read{i} (x: int option) =\n    if {test} then\n        printfn \"%%d\" x.Value\n        x.Value\n    else\n        {i}")
+        // FR0178 must stay quiet: another option's value in that branch
+        withFree "OtherValueInEmptyBranch" [ "!FR0178" ] genSmall (fun n i ->
+            $"let read{i} (x: int option) (y: int option) =\n    if x.IsNone then\n        printfn \"%%d\" {n}\n        y.Value\n    else\n        {n}")
+        // FR0179: a Map or Set update handed to ignore
+        withFree
+            "ImmutableUpdateIgnored"
+            [ "FR0179" ]
+            (Gen.elements
+                [
+                    "index.Add({0}, {0}) |> ignore"
+                    "Map.add {0} {0} index |> ignore"
+                    "ignore (index.Remove {0})"
+                ])
+            (fun form i -> $"let put{i} (index: Map<int, int>) = " + form.Replace("{0}", string i))
+        // FR0179 must stay quiet: the result is kept
+        withFree "ImmutableUpdateKept" [ "!FR0179" ] genSmall (fun n i ->
+            $"let put{i} (index: Map<int, int>) = index.Add({n}, {n})")
+        // FR0180: a Random built per call, unseeded or seeded from the clock
+        withFree
+            "RandomPerCall"
+            [ "FR0180" ]
+            (Gen.elements
+                [
+                    "Random()"
+                    "Random(DateTime.Now.Millisecond)"
+                    "new Random(Environment.TickCount)"
+                ])
+            (fun ctor i -> $"let draw{i} () = ({ctor}).Next {i + 2}")
+        // FR0180 must stay quiet: a seed that is a decision
+        withFree "RandomSeeded" [ "!FR0180" ] genSmall (fun n i ->
+            $"let draw{i} (seed: int) = Random(seed + {n}).Next 5")
+        // FR0181: a specific handler around a blocking wait
+        withFree "WrappedCatch" [ "FR0181" ] (Gen.elements [ "work.Wait()"; "Task.WaitAll(work)" ]) (fun wait i ->
+            $"let wait{i} (work: Task) =\n    try\n        {wait}\n        {i}\n    with\n    | :? InvalidOperationException -> {i + 1}")
+        // FR0181 must stay quiet: the aggregate is handled
+        withFree "AggregateCaught" [ "!FR0181" ] genSmall (fun n i ->
+            $"let wait{i} (work: Task) =\n    try\n        work.Wait()\n        {n}\n    with\n    | :? AggregateException -> {n + 1}\n    | :? InvalidOperationException -> {n + 2}")
         // FR0163: a threading timer dropped into ignore
         withFree "DroppedTimer" [ "FR0163" ] genSmall (fun n i ->
             $"let f{i} (tick: obj -> unit) =\n    new Timer(TimerCallback tick, null, 0, {n + 1}) |> ignore\n    {n}")
@@ -297,6 +372,22 @@ let family: Family =
                     for s in WeakLock.find c.Tree c.Source c.Check do
                         if not s.Fix.IsEmpty then
                             yield fixes "FR0046" s.Fix
+                    for s in DateFormat.find c.Tree c.Source c.Check do
+                        yield "FR0175", [ edit "FR0175" s.Range s.ReplacementText ]
+                    for s in DateParts.find c.Tree c.Source c.Check do
+                        for r, _, replacement in Option.toList s.Fix do
+                            yield "FR0176", [ edit "FR0176" r replacement ]
+                    for s in RandomShared.find c.Tree c.Source c.Check do
+                        for replacement in Option.toList s.ReplacementText do
+                            yield "FR0180", [ edit "FR0180" s.Range replacement ]
+                    // the editor's two clauses, each its own offer
+                    for s in WrappedCatch.find c.Tree c.Source c.Check do
+                        for at, text in Option.toList s.InnerOffer @ Option.toList s.BaseOffer do
+                            yield "FR0181", [ edit "FR0181" at text ]
+                    // the editor's other operator for a two-comparison chain
+                    for s in ConstantComparison.find c.Tree c.Source c.Check do
+                        for r, _, replacement in Option.toList s.OperatorFix do
+                            yield "FR0177", [ edit "FR0177" r replacement ]
                 ]
         Notes =
             fun c ->
@@ -325,5 +416,9 @@ let family: Family =
                     for s in LazyInit.find c.Tree c.Source -> "FR0162", s.Range
                     for s in DroppedTimer.find c.Tree c.Source c.Check -> "FR0163", s.Range
                     for s in DateTimeKindMix.find c.Tree c.Source c.Check -> "FR0165", s.Range
+                    for s in ConstantComparison.find c.Tree c.Source c.Check -> "FR0177", s.Range
+                    for s in EmptyOptionValue.find c.Tree c.Source c.Check -> "FR0178", s.Range
+                    for s in DiscardedUpdate.find c.Tree c.Source c.Check -> "FR0179", s.Range
+                    for s in WrappedCatch.find c.Tree c.Source c.Check -> "FR0181", s.Range
                 ]
     }

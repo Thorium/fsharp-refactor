@@ -94,9 +94,7 @@ let private capturingUnionCases (check: FSharpCheckFileResults) =
 let private assemblySignatures (check: FSharpCheckFileResults) =
     try
         check.PartialAssemblySignature
-        :: [
-            for assembly in check.ProjectContext.GetReferencedAssemblies() -> assembly.Contents
-        ]
+        :: [ for assembly in OptionModule.referencedAssemblies check -> assembly.Contents ]
     with _ -> // fsharpanalyzer: ignore-line FR0055
         []
 

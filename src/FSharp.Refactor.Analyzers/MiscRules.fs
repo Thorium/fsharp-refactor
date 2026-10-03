@@ -7,13 +7,19 @@
 /// 2. Culture-sensitive parsing (FR0067, CA1305): `DateTime.Parse s` and
 ///    `Double.Parse s` read differently under different server cultures
 ///    ("1,5" vs "1.5", day/month order); pass CultureInfo.InvariantCulture
-///    (or the intended culture) explicitly.
+///    (or the intended culture) explicitly. With check results at hand,
+///    `Convert.ToDecimal s` / `ToDouble` / `ToSingle` / `ToDateTime` on a
+///    string joins them: the same parse behind another name. The overload
+///    must resolve to the one taking a single string - the numeric
+///    overloads read no text and have no culture to pass.
 ///
 /// 3. Duplicate enum values (FR0068, CA1069): two enum cases with the
 ///    same literal value are usually a copy-paste slip — comparisons and
 ///    ToString silently conflate them.
 module FSharp.Refactor.MiscRules
 
+open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
@@ -44,8 +50,13 @@ type DuplicateEnumSuggestion =
 let private cultureSensitiveOwners =
     set [ "DateTime"; "DateTimeOffset"; "Double"; "Single"; "Decimal" ]
 
-/// Find all three. Parse-only.
-let find
+let private cultureSensitiveConversions =
+    set [ "ToDecimal"; "ToDouble"; "ToSingle"; "ToDateTime" ]
+
+/// Find all three. Parse-only without check results; with them the culture
+/// note also reads `Convert` calls on a string.
+let findChecked
+    (check: FSharpCheckFileResults option)
     (parseTree: ParsedInput)
     (source: ISourceText)
     : MutableStateSuggestion list * CultureParseSuggestion list * DuplicateEnumSuggestion list =
@@ -121,17 +132,51 @@ let find
     let inTranslatedContext (r: range) =
         translatedRanges |> Array.exists (fun z -> Range.rangeContainsRange z r)
 
+    // `Convert.ToDecimal s` resolved to the overload taking one string
+    let convertsString (conversion: Ident) =
+        match check with
+        | Some results when not (OptionModule.hasErrors results) ->
+            let r = conversion.idRange
+            let lineText = source.GetLineString(r.EndLine - 1)
+
+            match OptionModule.symbolUseAt results (r.EndLine, r.EndColumn, lineText, [ conversion.idText ]) with
+            | Some symbolUse ->
+                match symbolUse.Symbol with
+                | :? FSharpMemberOrFunctionOrValue as mfv ->
+                    (try
+                        (mfv.DeclaringEntity
+                         |> Option.bind (fun e -> e.TryFullName)
+                         |> Option.exists ((=) "System.Convert"))
+                        && (match mfv.CurriedParameterGroups |> Seq.map List.ofSeq |> List.ofSeq with
+                            | [ [ only ] ] ->
+                                // the parameter is typed with the `string` abbreviation
+                                let parameterType = only.Type.StripAbbreviations()
+
+                                parameterType.HasTypeDefinition
+                                && parameterType.TypeDefinition.TryFullName = Some "System.String"
+                            | _ -> false)
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         false)
+                | _ -> false
+            | None -> false
+        | _ -> false
+
     let parses: CultureParseSuggestion list =
         [
             for _, e in index.Exprs do
                 match e with
-                // FR0067: single-argument Parse on culture-sensitive types
+                // FR0067: single-argument Parse on culture-sensitive types,
+                // single-string Convert to one
                 | SynExpr.App(
                     isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) ->
                     match List.rev ids with
                     | parseId :: owner :: _ when
-                        parseId.idText = "Parse"
-                        && cultureSensitiveOwners.Contains owner.idText
+                        ((parseId.idText = "Parse" && cultureSensitiveOwners.Contains owner.idText)
+                         || (owner.idText = "Convert"
+                             && cultureSensitiveConversions.Contains parseId.idText
+                             && (match stripParens arg with
+                                 | SynExpr.Tuple _ -> false
+                                 | _ -> convertsString parseId)))
                         // inside a query/quotation the whole suggestion stands
                         // down, note included: the expression belongs to the
                         // database's type system, where cultures do not exist and
@@ -159,7 +204,7 @@ let find
 
                             {
                                 Range = e.Range
-                                CallName = owner.idText + ".Parse"
+                                CallName = $"{owner.idText}.{parseId.idText}"
                                 CultureFix = cultureFix
                             }
                     | _ -> ()
@@ -266,3 +311,6 @@ let find
         |> List.ofSeq
 
     churningMutables, parses, enums
+
+/// Find all three, parse-only.
+let find (parseTree: ParsedInput) (source: ISourceText) = findChecked None parseTree source

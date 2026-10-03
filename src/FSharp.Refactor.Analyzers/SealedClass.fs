@@ -60,21 +60,10 @@ type Suggestion =
         Fix: (range * string) option
     }
 
-/// Every symbol use of the project, read once per project results: the
-/// walk over every file's typed tree is the expensive part, and a file
-/// with several candidate classes would otherwise pay it per class.
-let private projectUsesCache =
-    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckProjectResults, FSharpSymbolUse[]>()
-
-let private projectUses (project: FSharpCheckProjectResults) =
-    projectUsesCache.GetValue(
-        project,
-        fun p ->
-            try
-                p.GetAllUsesOfAllSymbols()
-            with _ -> // no uses known: every candidate stands down below; fsharpanalyzer: ignore-line FR0055
-                [||]
-    )
+/// Every symbol use of the project: read once per project results and
+/// shared (see OptionModule.projectUses). No uses known: every candidate
+/// stands down below.
+let private projectUses (project: FSharpCheckProjectResults) = OptionModule.projectUses project
 
 /// Every entity of the project's own assembly, nested ones included, in
 /// pre-order: one walk into a list, where a `seq { yield! }` per level
@@ -354,7 +343,7 @@ let find
             let projectFiles =
                 lazy
                     (try
-                        check.ProjectContext.ProjectOptions.SourceFiles
+                        (OptionModule.projectContext check).ProjectOptions.SourceFiles
                         |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant())
                         |> Set.ofArray
                      with _ -> // fsharpanalyzer: ignore-line FR0055

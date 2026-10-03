@@ -2,6 +2,25 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.41
+
+- New FR0175 (correctness, fix): a date format with `hh` and no `tt`, `mm` between year and day, or `MM` beside the hours (`yyyyMMddhhmmss`, `yyyy-mm-dd`, `HH:MM:ss`); a `ParseExact` format, and `hh` on a clock face or beside a designator rendered elsewhere, are the editor's offer.
+- New FR0176 (correctness, fix): a date built from the year of one instant and the month of a shifted one (`DateTime(now.Year, now.AddMonths(-1).Month, 25)`) reads both from the shifted instant; a plain month beside a shifted year is the editor's offer.
+- FR0067 reads `Convert.ToDecimal`/`ToDouble`/`ToSingle`/`ToDateTime` on a string like the `Parse` it is.
+- FR0017 also reads `let _ = save x`: a call building an Async bound to a wildcard never runs; `let! _ =` is the editor's offer inside `async { }`/`task { }`.
+- New FR0177 (correctness, note): `x <> A || x <> B` over two constants is always true, `x = A && x = B` and `x > e && x < e` always false; the other operator is the editor's offer.
+- New FR0178 (correctness, note): `.Value` read in the branch where the option was tested empty.
+- New FR0179 (correctness, note): an update of a `Map`, `Set` or immutable collection handed to `ignore`.
+- New FR0180 (performance, fix): a `Random` built per call, unseeded or seeded from the clock, is `Random.Shared`; a note where the framework has none.
+- New FR0181 (correctness, note): a `:? T` handler around `Task.Wait`/`.Result` misses the task's exception, which arrives in an `AggregateException`; the editor offers a clause for `InnerException` or `GetBaseException()`.
+- FR0127 also finds a literal by what the code calls it (`let servicePassword = "..."`, `{ ApiKey = "..." }`, a `password` parameter); quiet in tests and for placeholders and setting names.
+- Reports mask the span of a credential finding (FR0127, FR0153) and drop its context lines: the SARIF, HTML and CSV no longer carry the literal.
+- Faster sweeps: FR0131 reads the project's references only for a file that has a tail-recursive candidate (it asked once per file), and FR0177 matches a pair of comparisons on text before asking the typechecker.
+- FR0049 stays quiet on a task read behind `Task.WaitAny([| t |], timeout) >= 0` over that one task: the bounded wait is the block, and the read drains a finished task.
+- Faster sweeps: each file's check results come from the project check instead of a second typecheck of the file; the project-wide symbol-use list is built once and shared by FR0157 and the sealed-class rule (several threads used to build it at once); FR0147 reads the reference list only when a namespace qualifies. Rule timings are kept in ticks, so the summed figure no longer drops sub-millisecond calls. `FSREF_FOREGROUND_CHECKS=1` restores the per-file check, `FSREF_ALL_TIMINGS=1` lists every analyzer.
+- FR0180 leaves a generator that is stored, returned or passed on: only one drawn from where it is built is rewritten.
+- `--api-changes` reads a referencing project only when a rule asks about a declaration its sources name (the function, and the module it is reached through); FR0090 and FR0091 check the project's own call sites first, and FR0091 looks for a lambda to collapse in a parse before any typecheck. A widely referenced library no longer pays a typecheck of every test project for a change none of them can see.
+
 ## 0.8.40
 
 - FR0055 stays quiet on a catch-all with a `when` guard, on the exception or on state (`with _ when stopping -> ()` lets every exception surface while not stopping); only a constant `when true` is still noted.

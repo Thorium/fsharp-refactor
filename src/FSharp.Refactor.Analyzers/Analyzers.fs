@@ -1995,6 +1995,7 @@ let paramOrderCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 let private discardedAsyncMessages
     (fileName: string)
+    (offerBind: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
     checkResults
@@ -2006,7 +2007,15 @@ let private discardedAsyncMessages
         |> List.map (fun s ->
             hint
                 "FR0017"
-                (if s.IsValueTask then
+                (if s.IsBinding && s.IsValueTask then
+                     sprintf
+                         "'%s' returns a ValueTask and `let _ =` drops it: a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it - `let! _ =` inside task { } - or call .AsTask() and hand the task to whoever waits."
+                         s.Name
+                 elif s.IsBinding then
+                     sprintf
+                         "'%s' builds an Async computation and `let _ =` discards it without running it: nothing it does ever happens. Bind it - `let! _ =` (do! when it returns unit) - or Async.Start it to fire and forget."
+                         s.Name
+                 elif s.IsValueTask then
                      sprintf
                          "'%s' returns a ValueTask: ignore drops its outcome - a failure is never observed, and a pooled ValueTask must be consumed exactly once. Await it (let! _ = / do! inside task { }) or call .AsTask() and hand the task to whoever waits."
                          s.Name
@@ -2016,7 +2025,11 @@ let private discardedAsyncMessages
                          s.Name
                          s.Name)
                 s.Range
-                [])
+                // awaiting starts work that was not running: the editor
+                // offers it, a sweep leaves the note
+                (match s.BindFix with
+                 | Some(r, original, replacement) when offerBind -> [ fix r original replacement ]
+                 | _ -> []))
 
 // ---- FR0149 UnhandledStart ----
 
@@ -2065,13 +2078,13 @@ let private unhandledStartMessages
 let asyncIgnoreEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenAnyEnabled ctx.FileName [ "FR0017"; "FR0149" ] "AsyncIgnore" (fun () ->
         whenChecked ctx (fun check ->
-            discardedAsyncMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText check
+            discardedAsyncMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText check
             @ unhandledStartMessages ctx.FileName true ctx.ParseFileResults.ParseTree ctx.SourceText check))
 
 [<CliAnalyzer("AsyncIgnore", "Flag Async computations discarded with ignore", HelpBase)>]
 let asyncIgnoreCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenAnyEnabled ctx.FileName [ "FR0017"; "FR0149" ] "AsyncIgnore" (fun () ->
-        discardedAsyncMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+        discardedAsyncMessages ctx.FileName false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
         @ unhandledStartMessages ctx.FileName false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0018 DictTryAdd ----
@@ -2516,20 +2529,13 @@ let accumulatorLoopCliAnalyzer (ctx: CliContext) : Async<Message list> =
 /// locals, parameters and fields per candidate, and a walk of every file's
 /// typed tree per question would be the whole sweep's cost. Public: the
 /// apply tool's api pass adds the sibling projects' uses beside it.
+/// A Lazy per entry: the table's factory can run on every thread that asks
+/// at once, and only the stored entry's index is ever built.
 let private projectUseIndexes =
-    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckProjectResults, StringUnion.UseIndex>()
+    System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckProjectResults, Lazy<StringUnion.UseIndex>>()
 
 let projectUseIndex (project: FSharpCheckProjectResults) : StringUnion.UseIndex =
-    projectUseIndexes.GetValue(
-        project,
-        fun p ->
-            StringUnion.indexUses (
-                try
-                    p.GetAllUsesOfAllSymbols()
-                with _ -> // no uses known: every candidate stands down; fsharpanalyzer: ignore-line FR0055
-                    [||]
-            )
-    )
+    projectUseIndexes.GetValue(project, fun p -> lazy (StringUnion.indexUses (OptionModule.projectUses p))).Value
 
 /// The type names a compilation declares, nested ones included: one walk
 /// into a list, where a `seq { yield! }` per level would allocate an
@@ -2606,10 +2612,12 @@ let private stringUnionWorld
 /// The world the apply tool's api pass builds, with the sibling projects'
 /// uses and files beside the project's own: every call site of an exported
 /// function is then in sight, and its literals can prove the set closed.
+/// `siblingIndexes`: the use indexes of the siblings the host has read; asked
+/// with a symbol, the host first reads the siblings that can hold a use of it.
 let stringUnionApiWorld
     (project: FSharpCheckProjectResults)
     (sourceFiles: string[])
-    (siblingUses: FSharpSymbolUse seq)
+    (siblingIndexes: FSharpSymbol option -> StringUnion.UseIndex list)
     (fileLookup: string -> (ParsedInput * ISourceText) option)
     (publicRead: bool)
     (internalsVisible: bool)
@@ -2617,12 +2625,12 @@ let stringUnionApiWorld
     let sameFile (a: string) (b: string) =
         String.Equals(IO.Path.GetFullPath a, IO.Path.GetFullPath b, StringComparison.OrdinalIgnoreCase)
 
-    let indexes = lazy [ projectUseIndex project; StringUnion.indexUses siblingUses ]
-
     {
-        UsesOf = (fun symbol -> StringUnion.usesIn indexes.Value symbol)
+        UsesOf = (fun symbol -> StringUnion.usesIn (projectUseIndex project :: siblingIndexes (Some symbol)) symbol)
         File = fileLookup
-        SymbolAt = (fun file id -> StringUnion.symbolIn indexes.Value file id)
+        // an identifier in a sibling's file: that sibling has been read, or
+        // the file would not be in sight
+        SymbolAt = (fun file id -> StringUnion.symbolIn (projectUseIndex project :: siblingIndexes None) file id)
         // a sibling's files come after every file of the project: the union
         // belongs beside the project's declaration, never in a caller
         FileOrder =
@@ -4406,7 +4414,12 @@ let unicodeCliAnalyzer (ctx: CliContext) : Async<Message list> =
 
 // ---- FR0127 SecretLiterals ----
 
-let private secretMessages (fileName: string) (parseTree: ParsedInput) : Message list =
+let private secretMessages
+    (fileName: string)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    (check: FSharpCheckFileResults option)
+    : Message list =
     // two codes from one scan, each behind its own switch: a config that
     // turns FR0153 off keeps the FR0127 leaks, and the other way round
     let leakEnabled = Configuration.isRuleEnabled fileName "FR0127" "SecretLiterals"
@@ -4414,16 +4427,36 @@ let private secretMessages (fileName: string) (parseTree: ParsedInput) : Message
     let designTimeEnabled =
         Configuration.isRuleEnabled fileName "FR0153" "SecretLiterals"
 
-    SecretLiterals.find parseTree
+    let byFormat = SecretLiterals.find parseTree
+
+    // a literal the code itself calls a password, a secret, a token: found
+    // by name where no provider's format gives it away. A test names its
+    // fixtures the same way, so test files are left alone
+    let byName =
+        if leakEnabled && not (AstIndex.isTestFile (AstIndex.ofTree parseTree) source) then
+            SecretLiterals.findNamed parseTree source check
+            |> List.filter (fun s -> byFormat |> List.forall (fun f -> f.Range <> s.Range))
+        else
+            []
+
+    byFormat @ byName
     |> List.filter (fun s ->
         if s.DesignTimeLiteral then
             designTimeEnabled
         else
             leakEnabled)
     |> List.map (fun s ->
-        // a literal cannot move to configuration, so the check is a different
-        // one: the value should be a development credential
-        if s.DesignTimeLiteral then
+        if s.Name <> "" then
+            hint
+                "FR0127"
+                $"A string literal is given to '{s.Name}': a credential written in source is published to everyone who can read the repository and stays in its history. Read it from configuration or a secret store - and if it was ever real, rotate it."
+                s.Range
+                []
+        elif
+            // a literal cannot move to configuration, so the check is a different
+            // one: the value should be a development credential
+            s.DesignTimeLiteral
+        then
             let what =
                 match s.Provider with
                 | "connection-string password" -> "This connection string carries its password"
@@ -4447,12 +4480,12 @@ let private secretMessages (fileName: string) (parseTree: ParsedInput) : Message
 [<EditorAnalyzer("SecretLiterals", "Provider-format API keys in string literals", HelpBase)>]
 let secretsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
     whenAnyEnabled ctx.FileName [ "FR0127"; "FR0153" ] "SecretLiterals" (fun () ->
-        secretMessages ctx.FileName ctx.ParseFileResults.ParseTree)
+        secretMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 [<CliAnalyzer("SecretLiterals", "Provider-format API keys in string literals", HelpBase)>]
 let secretsCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenAnyEnabled ctx.FileName [ "FR0127"; "FR0153" ] "SecretLiterals" (fun () ->
-        secretMessages ctx.FileName ctx.ParseFileResults.ParseTree)
+        secretMessages ctx.FileName ctx.ParseFileResults.ParseTree ctx.SourceText (Some ctx.CheckFileResults))
 
 // ---- FR0128 ObsoleteCrypto ----
 
@@ -4931,6 +4964,7 @@ let private miscRulesMessages
     (source: ISourceText)
     (offerAlternatives: bool)
     (fableTarget: bool)
+    (check: FSharpCheckFileResults option)
     : Message list =
     let mutableEnabled =
         Configuration.isRuleEnabled fileName "FR0062" "VisibleMutableState"
@@ -4945,7 +4979,7 @@ let private miscRulesMessages
     if not (mutableEnabled || parseEnabled || enumEnabled) then
         []
     else
-        let mutables, parses, enums = MiscRules.find parseTree source
+        let mutables, parses, enums = MiscRules.findChecked check parseTree source
 
         let mutableMessages =
             if mutableEnabled then
@@ -5053,7 +5087,8 @@ let miscRulesEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText
                     true
-                    (referencesAssembly "Fable.Core" ctx.ProjectOptions))
+                    (referencesAssembly "Fable.Core" ctx.ProjectOptions)
+                    ctx.CheckFileResults)
     }
 
 [<CliAnalyzer("MiscRules", "Visible mutable state, culture parsing, duplicate enum values", HelpBase)>]
@@ -5066,7 +5101,8 @@ let miscRulesCliAnalyzer (ctx: CliContext) : Async<Message list> =
                     ctx.ParseFileResults.ParseTree
                     ctx.SourceText
                     false
-                    (referencesAssembly "Fable.Core" ctx.ProjectOptions))
+                    (referencesAssembly "Fable.Core" ctx.ProjectOptions)
+                    (Some ctx.CheckFileResults))
     }
 
 // ---- FR0069 / FR0070 StructHints ----
@@ -6859,3 +6895,290 @@ let byteStringLiteralEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let byteStringLiteralCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0171" "ByteStringLiteral" (fun () ->
         byteStringLiteralMessages (Some ctx.CheckFileResults) ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+// ---- FR0175 DateFormat ----
+
+let private dateFormatMessages
+    (offerFixes: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    // a test pins the text it expects, format slip included
+    if AstIndex.isTestFile (AstIndex.ofTree parseTree) source then
+        []
+    else
+        DateFormat.find parseTree source checkResults
+        |> List.map (fun (s: DateFormat.Suggestion) ->
+            let reasons =
+                s.Slips
+                |> List.map (fun slip ->
+                    match slip with
+                    | DateFormat.Slip.TwelveHour ->
+                        "`hh` is the 12-hour clock and the format has no `tt`, so 14:05 and 02:05 come out as the same text - `HH` is the 24-hour one"
+                    | DateFormat.Slip.MinutesForMonth ->
+                        "`mm` is minutes, here between the year and the day where the month belongs - `MM` is the month"
+                    | DateFormat.Slip.MonthForMinutes ->
+                        "`MM` is the month, here beside the hours and seconds where the minutes belong - `mm` is minutes")
+                |> String.concat "; "
+
+            // what a parser accepts, and whether a clock face shows its
+            // AM/PM somewhere else, are the author's call: a sweep leaves
+            // those alone, an editor offers the rewrite
+            let fixes =
+                if s.SweepSafe || offerFixes then
+                    [ fix s.Range s.OriginalText s.ReplacementText ]
+                else
+                    []
+
+            let parseNote =
+                if s.IsParse then
+                    " This format is handed to a parser, so the rewrite changes what it accepts; a sweep leaves it alone."
+                elif not s.SweepSafe then
+                    " A 12-hour clock is right when AM/PM is shown beside it by other means; a sweep leaves this one alone."
+                else
+                    ""
+
+            hint "FR0175" $"Date format \"{s.Format}\": {reasons}. Write \"{s.Repaired}\".{parseNote}" s.Range fixes)
+
+[<EditorAnalyzer("DateFormat", "A date format specifier that cannot mean what its position says", HelpBase)>]
+let dateFormatEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0175" "DateFormat" (fun () ->
+        whenChecked ctx (dateFormatMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("DateFormat", "A date format specifier that cannot mean what its position says", HelpBase)>]
+let dateFormatCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0175" "DateFormat" (fun () ->
+        dateFormatMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0176 DateParts ----
+
+let private datePartsMessages
+    (offerFixes: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    DateParts.find parseTree source checkResults
+    |> List.map (fun (s: DateParts.Suggestion) ->
+        let message =
+            if s.Part = "day" then
+                $"The day and the month are read from two instants, '{s.BaseText}' and '{s.ShiftedText}': the day may belong to another month, or not exist in the one beside it (the 31st of a 30-day month throws). Shift the whole date first, then read its parts - or keep the shifted date itself, which clamps the day."
+            else
+                $"The {s.Part} is read from '{s.BaseText}' and the rest from '{s.ShiftedText}': when the shift crosses a year boundary the two disagree - last month's December, computed in January, lands in the current year. Read both from '{s.ShiftedText}'."
+
+        hint
+            "FR0176"
+            message
+            s.Range
+            (match s.Fix with
+             | Some(r, original, replacement) when s.SweepSafe || offerFixes -> [ fix r original replacement ]
+             | _ -> []))
+
+[<EditorAnalyzer("DateParts", "A date built from the parts of two different instants", HelpBase)>]
+let datePartsEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0176" "DateParts" (fun () ->
+        whenChecked ctx (datePartsMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("DateParts", "A date built from the parts of two different instants", HelpBase)>]
+let datePartsCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0176" "DateParts" (fun () ->
+        datePartsMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0177 ConstantComparison ----
+
+let private constantComparisonMessages
+    (offerFixes: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    ConstantComparison.find parseTree source checkResults
+    |> List.map (fun (s: ConstantComparison.Suggestion) ->
+        let message =
+            match s.Verdict, s.OperatorFix with
+            | ConstantComparison.Verdict.AlwaysTrue, _ ->
+                $"'{s.First}' or '{s.Second}' is always true: no value equals both constants, so one side always holds. `&&` was probably meant - not this one and not that one."
+            | ConstantComparison.Verdict.AlwaysFalse, Some _ ->
+                $"'{s.First}' and '{s.Second}' is always false: no value equals both constants. `||` was probably meant - this one or that one."
+            | ConstantComparison.Verdict.AlwaysFalse, None ->
+                $"'{s.First}' and '{s.Second}' is always false: no value satisfies both, so everything this guards never runs (in a query: no row is ever returned). One side names the wrong operand or the wrong operator."
+
+        // which operator was meant is not in the code: the editor offers
+        // the other one, a sweep leaves the note
+        hint
+            "FR0177"
+            message
+            s.Range
+            (match s.OperatorFix with
+             | Some(r, original, replacement) when offerFixes -> [ fix r original replacement ]
+             | _ -> []))
+
+[<EditorAnalyzer("ConstantComparison", "Two comparisons that are always true or always false together", HelpBase)>]
+let constantComparisonEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0177" "ConstantComparison" (fun () ->
+        whenChecked ctx (constantComparisonMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("ConstantComparison", "Two comparisons that are always true or always false together", HelpBase)>]
+let constantComparisonCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0177" "ConstantComparison" (fun () ->
+        constantComparisonMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0178 EmptyOptionValue ----
+
+let private emptyOptionValueMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    EmptyOptionValue.find parseTree source checkResults
+    |> List.map (fun (s: EmptyOptionValue.Suggestion) ->
+        hint
+            "FR0178"
+            $"'{s.Receiver}.Value' is read in the branch where '{s.Test}' says the option is empty: it throws every time this branch runs. The test is upside down or the branches are swapped."
+            s.Range
+            [])
+
+[<EditorAnalyzer("EmptyOptionValue", ".Value read in the branch where the option is empty", HelpBase)>]
+let emptyOptionValueEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0178" "EmptyOptionValue" (fun () ->
+        whenChecked ctx (emptyOptionValueMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("EmptyOptionValue", ".Value read in the branch where the option is empty", HelpBase)>]
+let emptyOptionValueCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0178" "EmptyOptionValue" (fun () ->
+        emptyOptionValueMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0179 DiscardedUpdate ----
+
+let private discardedUpdateMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    DiscardedUpdate.find parseTree source checkResults
+    |> List.map (fun (s: DiscardedUpdate.Suggestion) ->
+        hint
+            "FR0179"
+            $"'{s.CallName}' answers with a new {s.Collection} and leaves the original as it was; ignore drops the answer, so nothing changes. Keep the result - rebind it, or fold it into the next step."
+            s.Range
+            [])
+
+[<EditorAnalyzer("DiscardedUpdate", "An immutable collection's update handed to ignore", HelpBase)>]
+let discardedUpdateEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0179" "DiscardedUpdate" (fun () ->
+        whenChecked ctx (discardedUpdateMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("DiscardedUpdate", "An immutable collection's update handed to ignore", HelpBase)>]
+let discardedUpdateCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0179" "DiscardedUpdate" (fun () ->
+        discardedUpdateMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0180 RandomShared ----
+
+let private randomSharedMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    RandomShared.find parseTree source checkResults
+    |> List.map (fun (s: RandomShared.Suggestion) ->
+        let what =
+            if s.ClockSeeded then
+                "A Random seeded from the clock repeats its numbers whenever two are built in the same tick, and a new one is built on every call here"
+            else
+                "A Random is built on every call here to be drawn from once; on .NET Framework two built in the same tick draw the same numbers"
+
+        match s.ReplacementText with
+        // a capability fix: Random.Shared is .NET 6's. On a dual-framework
+        // run it goes under the project's own #if constant, and where no
+        // guard can be emitted the narrowest target has no such member
+        | Some replacement when CapabilityFix.guardUnavailable () ->
+            hint
+                "FR0180"
+                $"{what}. `{replacement}` is one thread-safe generator, properly seeded - on the newer frameworks this project targets; the narrowest one has none, so the rewrite needs an #if guard of your own."
+                s.Range
+                []
+        // a seed written across an #if belongs to both branches; the parse
+        // tree showed one of them
+        | Some replacement when Text.spansDirective source s.Range ->
+            hint
+                "FR0180"
+                $"{what}. `{replacement}` is one thread-safe generator, properly seeded (not rewritten here: the constructor spans a compiler directive)."
+                s.Range
+                []
+        | Some replacement ->
+            hint
+                "FR0180"
+                $"{what}. `{replacement}` is one thread-safe generator, properly seeded."
+                s.Range
+                [ CapabilityFix.make source s.Range s.OriginalText replacement ]
+        | None ->
+            hint
+                "FR0180"
+                $"{what}. Build one generator and share it (this framework has no Random.Shared; a static one needs a lock, Random is not thread-safe)."
+                s.Range
+                [])
+
+[<EditorAnalyzer("RandomShared", "A Random constructed per call is Random.Shared", HelpBase)>]
+let randomSharedEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0180" "RandomShared" (fun () ->
+        if isFable ctx.ProjectOptions then
+            []
+        else
+            whenChecked ctx (randomSharedMessages ctx.ParseFileResults.ParseTree ctx.SourceText)
+            |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+[<CliAnalyzer("RandomShared", "A Random constructed per call is Random.Shared", HelpBase)>]
+let randomSharedCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0180" "RandomShared" (fun () ->
+        if isFable ctx.ProjectOptions then
+            []
+        else
+            randomSharedMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults
+            |> commentSafeOnly ctx.ParseFileResults.ParseTree ctx.SourceText)
+
+// ---- FR0181 WrappedCatch ----
+
+let private wrappedCatchMessages
+    (offerFixes: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    checkResults
+    : Message list =
+    WrappedCatch.find parseTree source checkResults
+    |> List.collect (fun (s: WrappedCatch.Suggestion) ->
+        let destination =
+            if s.HasCatchAll then
+                "the catch-all below receives it instead"
+            else
+                "it leaves this function instead"
+
+        let note =
+            hint
+                "FR0181"
+                $"A task's failure reaches this handler wrapped: '{s.Wait}' raises an AggregateException, so the handler for '{s.TypeText}' sees only what the try body throws directly, and {destination}. Handle the AggregateException and test what it wraps - one level down (InnerException) or the root cause (GetBaseException())."
+                s.Range
+                []
+
+        // which level was meant is not in the code: the editor offers both
+        if offerFixes then
+            [
+                note
+                match s.InnerOffer with
+                | Some(at, text) ->
+                    hint
+                        "FR0181"
+                        $"Fix: also handle an AggregateException whose InnerException is a {s.TypeText} (one level down)."
+                        s.Range
+                        [ fix at "" text ]
+                | None -> ()
+                match s.BaseOffer with
+                | Some(at, text) ->
+                    hint
+                        "FR0181"
+                        $"Alternative: also handle an AggregateException whose GetBaseException() is a {s.TypeText} (the root cause)."
+                        s.Range
+                        [ fix at "" text ]
+                | None -> ()
+            ]
+        else
+            [ note ])
+
+[<EditorAnalyzer("WrappedCatch", "A specific handler around a blocking wait misses the wrapped exception", HelpBase)>]
+let wrappedCatchEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0181" "WrappedCatch" (fun () ->
+        whenChecked ctx (wrappedCatchMessages true ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("WrappedCatch", "A specific handler around a blocking wait misses the wrapped exception", HelpBase)>]
+let wrappedCatchCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0181" "WrappedCatch" (fun () ->
+        wrappedCatchMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)

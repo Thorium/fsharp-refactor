@@ -63,7 +63,7 @@ let substantive = set [ Category.Correctness; Category.Performance ]
 /// decided where it belongs.
 let private categories =
     [ // --- correctness: the code does not do what it looks like it does
-        "FR0017", Category.Correctness, "Async discarded with ignore never runs"
+        "FR0017", Category.Correctness, "Async discarded with ignore or bound to a wildcard never runs"
         "FR0018", Category.Correctness, "check-then-add races"
         "FR0019", Category.Correctness, "Equals without GetHashCode"
         "FR0020", Category.Correctness, "abstract member called during construction"
@@ -179,6 +179,7 @@ let private categories =
         "FR0173",
         Category.Performance,
         "a range built only to be mapped over allocates a second collection the size of the result; init builds the result alone"
+        "FR0180", Category.Performance, "a Random built per call, unseeded or seeded from the clock, is Random.Shared"
         "FR0174",
         Category.Performance,
         "a query copied before Where/Select (or filter/map) loads every row; the query runs them and the copy follows"
@@ -307,6 +308,22 @@ let private categories =
         "FR0169",
         Category.Correctness,
         "a seq parameter or local enumerated twice on one path runs a query or a generator again"
+        "FR0175",
+        Category.Correctness,
+        "a date format with hh and no tt, mm between year and day, or MM beside the hours writes the wrong field"
+        "FR0176",
+        Category.Correctness,
+        "a date built from the year of one instant and the month of a shifted one disagrees across a year boundary"
+        "FR0177",
+        Category.Correctness,
+        "x <> A || x <> B over two constants is always true; x = A && x = B and x > e && x < e are always false"
+        "FR0178", Category.Correctness, ".Value read in the branch where the option was tested empty throws every time"
+        "FR0179",
+        Category.Correctness,
+        "an update of a Map, Set or immutable collection handed to ignore changes nothing"
+        "FR0181",
+        Category.Correctness,
+        "a specific handler around Task.Wait/Result misses the task's exception, which arrives in an AggregateException"
         "FR0073",
         Category.Idiom,
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -433,7 +450,6 @@ let advisory =
     set
         [
             "FR0146"
-            "FR0017"
             "FR0019"
             "FR0020"
             "FR0027"
@@ -466,6 +482,8 @@ let advisory =
             "FR0163"
             "FR0165"
             "FR0169"
+            "FR0178"
+            "FR0179"
         ]
 
 /// The rules worth looking at first — a likely defect too costly to hold

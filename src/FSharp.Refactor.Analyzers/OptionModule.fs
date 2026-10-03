@@ -68,6 +68,44 @@ let symbolUseAt
     let key = struct (line, column, lineText, String.concat "\n" names)
     memo.GetOrAdd(key, fun _ -> check.GetSymbolUseAtLocation(line, column, lineText, names))
 
+/// The file's project context, built once per check result. FCS builds a
+/// new one - a symbol environment over every reference - on each read of
+/// `ProjectContext`, and half a dozen rules ask per file.
+let private projectContexts =
+    ConditionalWeakTable<FSharpCheckFileResults, Lazy<FSharpProjectContext>>()
+
+let projectContext (check: FSharpCheckFileResults) : FSharpProjectContext =
+    projectContexts.GetValue(check, fun c -> lazy c.ProjectContext).Value
+
+/// The assemblies the file's project references, read once per check result.
+let private referencedAssembliesCache =
+    ConditionalWeakTable<FSharpCheckFileResults, Lazy<FSharpAssembly list>>()
+
+let referencedAssemblies (check: FSharpCheckFileResults) : FSharpAssembly list =
+    referencedAssembliesCache.GetValue(check, fun c -> lazy ((projectContext c).GetReferencedAssemblies())).Value
+
+/// Every symbol use of the project, read once per project results and
+/// shared by the rules that ask project-wide questions. Reading it walks
+/// every file's resolutions - seconds on a large project - and a sweep
+/// asks from several threads at once: the table alone would let each of
+/// them compute it, so the entry is a Lazy and only the stored one runs.
+/// Empty where the uses cannot be read: every asker then stands down.
+let private projectUsesCache =
+    ConditionalWeakTable<FSharpCheckProjectResults, Lazy<FSharpSymbolUse[]>>()
+
+let projectUses (project: FSharpCheckProjectResults) : FSharpSymbolUse[] =
+    projectUsesCache
+        .GetValue(
+            project,
+            fun p ->
+                lazy
+                    (try
+                        p.GetAllUsesOfAllSymbols()
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         [||])
+        )
+        .Value
+
 /// Names for one wrapper family: Some/None/Option or ValueSome/ValueNone/ValueOption.
 type WrapperConfig =
     {
@@ -1153,12 +1191,14 @@ let dottedReadCannotThrow (check: FSharpCheckFileResults) (source: ISourceText) 
                  false)
         | None -> false
 
+    let count = ids.Length
+
     not ids.IsEmpty
-    && [ 1 .. ids.Length ]
+    && [ 1..count ]
        |> List.forall (fun n ->
-           match (if n = ids.Length then whole else symbolOf (List.take n ids)) with
+           match (if n = count then whole else symbolOf (List.take n ids)) with
            | Some symbol -> safeSymbol symbol
-           | None -> n < ids.Length && namespacePrefix (List.take n ids))
+           | None -> n < count && namespacePrefix (List.take n ids))
 
 /// `callsOnlyCoreWith` where every user function fails: FSharp.Core and
 /// System.String only.

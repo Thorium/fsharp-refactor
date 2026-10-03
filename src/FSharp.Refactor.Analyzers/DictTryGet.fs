@@ -100,7 +100,7 @@ let private tryAddTypes =
 /// not compile. ConcurrentDictionary has had one since .NET 4.) The same
 /// capability probe as FR0053's toHexStringAvailable.
 let private dictionaryTryAddAvailable (check: FSharpCheckFileResults) =
-    check.ProjectContext.GetReferencedAssemblies()
+    OptionModule.referencedAssemblies check
     |> Seq.exists (fun assembly ->
         try
             match assembly.Contents.FindEntityByPath [ "System"; "Collections"; "Generic"; "Dictionary`2" ] with

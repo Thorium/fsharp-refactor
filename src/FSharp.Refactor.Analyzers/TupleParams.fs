@@ -291,20 +291,29 @@ let findApiChanges
                     with
                     | None -> None
                     | Some symbolUse ->
-                        let uses =
-                            // a `#load`ing script or a sibling project is a real call site
-                            // that `project` cannot see. Missing one is the single thing this
-                            // rule cannot survive: the definition changes shape and the
-                            // caller stops compiling.
-                            Array.append (project.GetUsesOfSymbol symbolUse.Symbol) (outside.Uses symbolUse.Symbol)
-                            |> Array.filter (fun u -> not u.IsFromDefinition)
-
-                        let callEdits =
+                        let editsOf (uses: FSharpSymbolUse[]) =
                             uses
+                            |> Array.filter (fun u -> not u.IsFromDefinition)
                             |> Array.map (fun u ->
                                 appsFor u.Range.FileName
                                 |> Option.bind (fun (apps, useSource) ->
                                     callEdit useSource apps candidate.Elements.Length u.Range))
+
+                        // the project's own call sites first: one that cannot be
+                        // rewritten settles it, and the host is then not asked to
+                        // read the compilations outside - a typecheck of every
+                        // project that names the function
+                        let ownEdits = editsOf (project.GetUsesOfSymbol symbolUse.Symbol)
+
+                        let callEdits =
+                            if ownEdits |> Array.exists Option.isNone then
+                                ownEdits
+                            else
+                                // a `#load`ing script or a sibling project is a real call site
+                                // that `project` cannot see. Missing one is the single thing this
+                                // rule cannot survive: the definition changes shape and the
+                                // caller stops compiling.
+                                Array.append ownEdits (editsOf (outside.Uses symbolUse.Symbol))
 
                         if callEdits |> Array.exists Option.isNone then
                             None
