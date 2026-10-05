@@ -435,7 +435,8 @@ applying introduces one. For a multi-targeted project every framework is built
 before it reports success.
 
 Rules can be turned off per repository with a fsharprefactor.json.
-Full documentation: https://github.com/Thorium/fsharp-refactor"""
+Full documentation: https://github.com/Thorium/fsharp-refactor
+"""
 
 [<TailCall>]
 let rec private parseArgsLoop opts args =
