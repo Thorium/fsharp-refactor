@@ -682,6 +682,21 @@ let private selfActiveBases =
 let private selfActiveType check source binder =
     typeIsA selfActiveBases Set.empty check source binder
 
+/// A top-level window: a WinForms `Form`, a WPF or Avalonia `Window`.
+/// Shown with `Show`, run by `Application.Run` or shown by a method of its
+/// own, it lives until the user closes it, and closing disposes it; only
+/// `ShowDialog` returns with it closed, so only that scope is its owner.
+let private windowBases =
+    set
+        [
+            "System.Windows.Forms.Form"
+            "System.Windows.Window"
+            "Avalonia.Controls.Window"
+        ]
+
+let private windowType check source binder =
+    typeIsA windowBases Set.empty check source binder
+
 let private flushSensitive check source binder =
     typeIsA flushSensitiveBases (set [ "System.Data.IDbTransaction" ]) check source binder
 
@@ -1789,6 +1804,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             // f`, `t.Elapsed |> Event.add f`, `x.Subscribe o`), a
                             // token registration, a `Start()`/`Enable...` call.
                             // `use` would stop it on the way out
+                            // a window the scope does not show modally closes, and
+                            // disposes, itself: neither a fix nor a note
+                            let windowShown =
+                                windowType check source binder
+                                && not (
+                                    binderMentions
+                                    |> Array.exists (fun (_, e) ->
+                                        match e with
+                                        | SynExpr.LongIdent(longDotId = SynLongIdent(id = _ :: (_ :: _ as members))) ->
+                                            (List.last members).idText = "ShowDialog"
+                                        | _ -> false)
+                                )
+
                             let selfActive =
                                 selfActiveType check source binder
                                 || AstIndex.exprsWithin index rhs.Range
@@ -1911,7 +1939,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     expr.Range.Start
                                     (Position.mkPos expr.Range.StartLine (expr.Range.StartColumn + 3))
 
-                            if textOfRange source letRange = "let" && not transferred then
+                            if textOfRange source letRange = "let" && not transferred && not windowShown then
                                 let canFix =
                                     handedTo.IsNone
                                     && not inResult

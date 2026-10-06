@@ -671,3 +671,43 @@ let ``a disposable read inside a returned lazy refuses the fix`` () =
                 lazy (s.ReadByte())
             """)
     |> ignore
+
+[<Fact>]
+let ``FR0075 a window shown non-modally or run as the main window is not the scope's to dispose`` () =
+    // a shown window closes, and disposes itself, when the user is done with it;
+    // only the modal `ShowDialog` returns with the window closed
+    let source =
+        fsharp
+            """
+            namespace System.Windows.Forms
+            type Form() =
+                member _.Show() = ()
+                member _.Show(owner: obj) = ()
+                member _.ShowDialog() = 0
+                interface System.IDisposable with
+                    member _.Dispose() = ()
+            type Application =
+                static member Run(main: Form) = ()
+            namespace App
+            open System.Windows.Forms
+            type MyForm() =
+                inherit Form()
+            module M =
+                let shown () =
+                    let f = new MyForm()
+                    f.Show()
+                let modal () =
+                    let f = new MyForm()
+                    f.ShowDialog() |> ignore
+                let main () =
+                    let f = new MyForm()
+                    Application.Run(f)
+            """
+
+    let tree, sourceText, checkResults = parseAndCheck source
+
+    let fired =
+        UseBinding.find tree sourceText checkResults
+        |> List.map (fun s -> s.Range.StartLine)
+
+    Assert.Equal<int list>([ 19 ], fired)

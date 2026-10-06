@@ -5120,3 +5120,30 @@ let ``FR0118: work started and not waited for keeps its own lifetime; awaited, b
         |> List.sort
 
     Assert.Equal<string list>([ "a"; "awaited"; "b"; "local"; "returned"; "sync" ], fired)
+
+[<Fact>]
+let ``FR0118 never picks the enclosing member as the token-taking overload`` () =
+    // the overload with the token IS the member the call sits in: adding the
+    // token would make it call itself forever
+    let source =
+        fsharp
+            """
+            module Test
+            open System.Threading
+            open System.Threading.Tasks
+            type Runner() =
+                let tcs = TaskCompletionSource<int>()
+                member _.WaitForExitAsync() : Task<int> = tcs.Task
+                member this.WaitForExitAsync(token: CancellationToken) : Task<int> =
+                    let t = this.WaitForExitAsync()
+                    t
+                member _.LoadAsync() : Task<int> = tcs.Task
+                member _.LoadAsync(token: CancellationToken) : Task<int> = tcs.Task
+                member this.Run(token: CancellationToken) : Task<int> =
+                    this.LoadAsync()
+            """
+
+    let fired =
+        cancellationIn source |> List.map (fun s -> s.MethodName, s.Range.StartLine)
+
+    Assert.Equal<(string * int) list>([ "LoadAsync", 13 ], fired)

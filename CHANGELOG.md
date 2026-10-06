@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.42
+
+- FR0075 counts a window the scope does not show modally (`form.Show()`, `Application.Run form`, a method of its own that shows it) as self-active: a `use` there disposed the window on the spot (C# twin CR0060).
+
 ## 0.8.41
 
 - New FR0175 (correctness, fix): a date format with `hh` and no `tt`, `mm` between year and day, or `MM` beside the hours (`yyyyMMddhhmmss`, `yyyy-mm-dd`, `HH:MM:ss`); a `ParseExact` format, and `hh` on a clock face or beside a designator rendered elsewhere, are the editor's offer.
