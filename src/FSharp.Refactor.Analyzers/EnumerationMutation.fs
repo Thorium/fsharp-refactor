@@ -13,12 +13,14 @@
 /// freely — every element present at the start is visited once, which is
 /// what the loop meant. Typed-gated to System.Collections.Generic's
 /// mutable types; the concurrent collections enumerate a snapshot or
-/// tolerate edits by design and are left alone. `Remove`, `Clear` and an
-/// overwrite through the indexer on a `Dictionary` or `HashSet` are
-/// allowed mid-enumeration since .NET Core 3.0 (measured on this
-/// runtime), so only their additions count — a sweep over a .NET
-/// Framework target would see more; a `List<T>` throws on every edit,
-/// an indexer store included.
+/// tolerate edits by design and are left alone. A `Dictionary` allows
+/// `Remove` and `Clear` mid-enumeration since .NET Core 3.0, and an
+/// overwrite through the indexer since .NET 5; a `HashSet` allows `Remove`
+/// and `Clear` since .NET 5 (measured: .NET Framework 4.8 throws on all of
+/// them, .NET Core 3.1 on the overwrite and the set's edits). The target
+/// is read off the project's core library, so a .NET Framework or
+/// netstandard project counts every edit; on .NET 5+ only additions count.
+/// A `List<T>` throws on every edit, an indexer store included.
 module FSharp.Refactor.EnumerationMutation
 
 open FSharp.Compiler.CodeAnalysis
@@ -83,6 +85,35 @@ let private tolerantOfRemoval =
             "System.Collections.Generic.Dictionary`2"
             "System.Collections.Generic.HashSet`1"
         ]
+
+/// What a Dictionary or HashSet refuses on a runtime that tolerates none
+/// of it: every removal and overwrite as well as growth.
+let private everyDictionaryOrSetEdit =
+    additions + set [ "Remove"; "Clear"; "set_Item" ]
+
+/// Does the project run on .NET Core at least as new as `version`, read off
+/// its references' core library: the reference pack's `System.Runtime`
+/// (4.2.2 is .NET Core 3.x, 5.0.0 .NET 5) or a runtime's own
+/// `System.Private.CoreLib` (4.0.0 through 3.x). The `System.Runtime`
+/// facades of .NET Framework and netstandard say 4.1.2; mscorlib and
+/// netstandard vouch for nothing.
+let private coreRuntimeAtLeast (version: System.Version) (check: FSharpCheckFileResults) =
+    OptionModule.referencedAssemblies check
+    |> List.exists (fun assembly ->
+        (assembly.SimpleName = "System.Runtime"
+         || assembly.SimpleName = "System.Private.CoreLib")
+        && (try
+                match System.Reflection.AssemblyName(assembly.QualifiedName).Version with
+                | null -> false
+                | v -> v >= version
+            with _ -> // an unreadable identity vouches for nothing: every edit counts; fsharpanalyzer: ignore-line FR0055
+                false))
+
+/// .NET Core 3.0 let `Dictionary.Remove`/`Clear` pass under enumeration;
+/// .NET 5 an overwriting indexer set and `HashSet.Remove`/`Clear` too
+/// (measured: on 3.1 those two still throw, on .NET Framework all of them).
+let private dictionaryRemovalTolerated = System.Version(4, 2, 2)
+let private everyRemovalTolerated = System.Version(5, 0, 0)
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
@@ -314,10 +345,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match genericCollection collection with
                         | Some typeName ->
                             let refused =
-                                if tolerantOfRemoval.Contains typeName then
-                                    additions
-                                else
+                                if not (tolerantOfRemoval.Contains typeName) then
                                     allEdits
+                                elif coreRuntimeAtLeast everyRemovalTolerated check then
+                                    additions
+                                elif
+                                    typeName = "System.Collections.Generic.Dictionary`2"
+                                    && coreRuntimeAtLeast dictionaryRemovalTolerated check
+                                then
+                                    additions.Add "set_Item"
+                                else
+                                    everyDictionaryOrSetEdit
 
                             match mutationIn collection refused body with
                             | Some mutation ->

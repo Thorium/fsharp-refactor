@@ -479,6 +479,41 @@ let everyMentionRewritable (text: string) (literal: string) : bool =
     mentions 0
     |> List.forall (fun i -> covered |> List.exists (fun (s, e) -> s <= i && i + literal.Length <= e))
 
+/// The message a literal spells, without its quotes or a closing
+/// punctuation mark: what a test embedding it in a longer text repeats.
+let messageCore (literal: string) : string =
+    if literal.Length >= 2 && literal.StartsWith "\"" && literal.EndsWith "\"" then
+        literal.Substring(1, literal.Length - 2).TrimEnd('.', '!', ':', ';', ' ')
+    else
+        ""
+
+/// A string of the source text - regular, verbatim, triple-quoted, the
+/// interpolated forms (their `$` stands outside the quotes) - with the
+/// quotes it is written with.
+let private stringLiteral =
+    Regex("\"\"\"[\\s\\S]*?\"\"\"|@\"(?:[^\"]|\"\")*\"|\"(?:[^\"\\\\]|\\\\.)*\"", RegexOptions.Compiled)
+
+// once per test text: the repository scan hands every asker the same text
+// instance, and a sweep asks once per constant message of every file
+let private testStrings =
+    System.Runtime.CompilerServices.ConditionalWeakTable<string, string[]>()
+
+let private stringsOf (text: string) : string[] =
+    testStrings.GetValue(text, fun t -> [| for m in stringLiteral.Matches t -> m.Value |])
+
+/// Does a string of this test text hold the literal's message inside a
+/// longer text - an interpolated expectation, `$"parse failed: {inner}"`
+/// built around it, a concatenation's piece? The enrichment changes the
+/// message such an assertion embeds, and no prefix check can be written
+/// for it, so it vetoes the enrichment. A string that IS the literal is
+/// `everyMentionRewritable`'s question.
+let embeddedInString (text: string) (literal: string) : bool =
+    let core = messageCore literal
+
+    core.Length > 0
+    && text.Contains core
+    && stringsOf text |> Array.exists (fun s -> s <> literal && s.Contains core)
+
 let findAssertions
     (source: ISourceText)
     (fileName: string)

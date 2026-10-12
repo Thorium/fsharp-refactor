@@ -131,9 +131,10 @@ let private shapes =
             (Gen.elements [ "yyyyMMddHHmmss"; "hh:mm tt"; "mm:ss"; "MM/dd/yyyy HH:mm" ])
             (fun format i ->
                 $"let stamp{i} (d: DateTime) = d.ToString \"{format}\"\nlet span{i} (t: TimeSpan) = t.ToString \"hh\"")
-        // FR0176: the year before a shift, the month after it
+        // FR0176: the year before a shift, the month after it - a shift of
+        // 1..11 months, since whole years written in months are left alone
         withFree "DateFromTwoInstants" [ "FR0176" ] genSmall (fun n i ->
-            $"let lastMonth{i} (now: DateTime) = DateTime(now.Year, now.AddMonths(-{n + 1}).Month, 25)")
+            $"let lastMonth{i} (now: DateTime) = DateTime(now.Year, now.AddMonths(-{n % 11 + 1}).Month, 25)")
         // FR0176 must stay quiet: both parts read from the shifted instant
         withFree "DateFromOneInstant" [ "!FR0176" ] genSmall (fun n i ->
             $"let lastMonth{i} (now: DateTime) =\n    let previous = now.AddMonths(-{n + 1})\n    DateTime(previous.Year, previous.Month, 25)")

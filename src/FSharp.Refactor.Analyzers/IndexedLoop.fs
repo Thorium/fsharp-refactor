@@ -178,7 +178,7 @@ let private findIn
             | Some check -> enumeratesInIndexOrder check source collIdent
             | None -> true)
 
-    let suggestions: Suggestion list =
+    let candidates: (range * (Set<string> -> string * Suggestion)) list =
         [
             for path, expr in index.Exprs do
                 match expr with
@@ -374,38 +374,69 @@ let private findIn
                         let headerEdit element =
                             headerRange, textOfRange source headerRange, $"for {element} in {collText}"
 
-                        match alias with
-                        | Some(element, aliasRange) ->
-                            {
-                                Range = expr.Range
-                                CollectionText = collText
-                                Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ]
-                            }
-                        | None ->
-                            // the element is `item`, or `item2`, `item3`... when a
-                            // name is already taken: mentioned inside the loop, or
-                            // bound by anything on the path to it
-                            let taken (name: string) =
-                                enclosingNames.Contains name || Regex.IsMatch(loopText, identifierPattern name)
+                        // `introduced`: the elements the fixes of the loops around
+                        // this one name - absent from the source, yet bound around
+                        // this loop once they apply
+                        let make (introduced: Set<string>) =
+                            match alias with
+                            | Some(element, aliasRange) ->
+                                element,
+                                {
+                                    Range = expr.Range
+                                    CollectionText = collText
+                                    Edits = [ headerEdit element; aliasRange, textOfRange source aliasRange, "" ]
+                                }
+                            | None ->
+                                // the element is `item`, or `item2`, `item3`... when a
+                                // name is already taken: mentioned inside the loop, bound
+                                // by anything on the path to it, or an enclosing fix's
+                                let taken (name: string) =
+                                    enclosingNames.Contains name
+                                    || introduced.Contains name
+                                    || Regex.IsMatch(loopText, identifierPattern name)
 
-                            let element =
-                                Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
-                                |> Seq.find (taken >> not)
+                                let element =
+                                    Seq.append (Seq.singleton "item") (Seq.initInfinite (fun n -> $"item{n + 2}"))
+                                    |> Seq.find (taken >> not)
 
-                            let useEdits =
-                                indexedUses
-                                |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
-                                |> Array.toList
+                                let useEdits =
+                                    indexedUses
+                                    |> Array.map (fun (useRange, _) -> useRange, textOfRange source useRange, element)
+                                    |> Array.toList
 
-                            {
-                                Range = expr.Range
-                                CollectionText = collText
-                                Edits = headerEdit element :: useEdits
-                            }
+                                element,
+                                {
+                                    Range = expr.Range
+                                    CollectionText = collText
+                                    Edits = headerEdit element :: useEdits
+                                }
+
+                        expr.Range, make
                 | _ -> ()
         ]
 
-    suggestions
+    // each loop is judged against the source alone, so two nested loops over
+    // different collections would both take `item`, the inner one SHADOWING
+    // the outer (`f xs.[i] ys.[j]` → `f item item`, which compiles). Outer
+    // loops are named first; an inner one skips their names
+    candidates
+    |> List.sortBy (fun (r: range, _) -> r.StartLine, r.StartColumn)
+    |> List.fold
+        (fun (named, suggestions) (r, make) ->
+            let introduced =
+                named
+                |> List.choose (fun (outer: range, element) ->
+                    if Range.rangeContainsRange outer r then
+                        Some element
+                    else
+                        None)
+                |> Set.ofList
+
+            let element, suggestion = make introduced
+            (r, element) :: named, suggestion :: suggestions)
+        ([], [])
+    |> snd
+    |> List.rev
 
 /// Find index-based loops whose index only ever indexes the bound
 /// collection, over the sources the gate admits. Parse-only: the source's

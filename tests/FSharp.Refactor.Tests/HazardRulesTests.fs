@@ -497,6 +497,32 @@ let ``FR0164: a removal from a dictionary or set, an edit to another collection,
 
     Assert.Empty(enumerationMutationsIn source)
 
+[<Fact>]
+let ``FR0164: on .NET Framework a removal from a dictionary or set, and an overwrite, still throw`` () =
+    // the tolerance came with .NET Core 3.0 (Dictionary.Remove) and .NET 5
+    // (the overwrite, HashSet.Remove): net48 throws on every one of them
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Generic
+            let prune (d: Dictionary<int, int>) (h: HashSet<int>) =
+                for KeyValue(k, v) in d do
+                    if v < 0 then d.Remove k |> ignore
+                for KeyValue(k, v) in d do
+                    d.[k] <- v + 1
+                for x in h do
+                    if x < 0 then h.Remove x |> ignore
+            """
+
+    let tree, sourceText, checkResults = parseAndCheckLegacyFramework source
+
+    Assert.Equal<string list>(
+        [ "d"; "d"; "h" ],
+        EnumerationMutation.find tree sourceText checkResults
+        |> List.map (fun s -> s.Collection)
+    )
+
 // ---- regressions ----
 
 [<Fact>]

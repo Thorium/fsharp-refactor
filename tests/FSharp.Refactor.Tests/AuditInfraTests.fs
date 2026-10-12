@@ -576,6 +576,33 @@ let ``FR0092: a test spelling the text about something else vetoes the enrichmen
         Assert.Contains("RulesTests.fs mentions its exact text", m.Message)
     | other -> failwithf "Expected one FR0092 note, got %A" other
 
+[<Fact>]
+let ``FR0092: a test embedding the message in a longer expectation vetoes the enrichment`` () =
+    // the caller wraps the message (`$"score failed: {inner}"`), and the test
+    // spells the wrapped text: no prefix check covers it, so the enrichment
+    // would turn it red
+    let _, messages =
+        enrichmentWith """Assert.Equal($"score failed: negative", ex.Message)"""
+
+    match messages with
+    | [ m ] ->
+        Assert.Empty m.Fixes
+        Assert.Contains("RulesTests.fs mentions its exact text", m.Message)
+    | other -> failwithf "Expected one FR0092 note, got %A" other
+
+[<Fact>]
+let ``FR0092: only a longer string holding the message counts as embedding it`` () =
+    let embedded text =
+        FailwithContext.embeddedInString text "\"Empty expression.\""
+
+    // the exact literal is everyMentionRewritable's to judge
+    Assert.False(embedded """Assert.Equal("Empty expression.", ex.Message)""")
+    Assert.True(embedded """Assert.Equal($"FieldLoader: {name}: Empty expression", ex.Message)""")
+    Assert.True(embedded "Assert.Equal(@\"a \"\"b\"\" Empty expression\", ex.Message)")
+    Assert.True(embedded "let expected = \"\"\"parse: Empty expression\"\"\"")
+    // a comment saying it is no string of the test
+    Assert.False(embedded "// Empty expression is what the parser says\nlet x = \"other\"")
+
 // ---- test-file gates shared with CSharp.Refactor (CR0110, CR0169) ----
 
 /// A file the test-marker regex recognises (`[<Test>]`) without a test

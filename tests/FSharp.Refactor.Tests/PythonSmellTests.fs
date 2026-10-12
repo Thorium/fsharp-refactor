@@ -490,6 +490,42 @@ let ``a nested loop rebinding the index keeps the outer loop`` () =
     )
 
 [<Fact>]
+let ``nested loops over different collections take different elements, the inner never shadowing the outer`` () =
+    // both fixes apply in one pass: an inner `item` would shadow the outer
+    // one and `(xs.[i], ys.[j])` would read `(item, item)` - and compile
+    let source =
+        fsharp
+            """
+            module Test
+            let pairs (xs: int[]) (ys: int[]) =
+                let acc = ResizeArray<int * int>()
+                for i in 0 .. xs.Length - 1 do
+                    for j in 0 .. ys.Length - 1 do
+                        acc.Add((xs.[i], ys.[j]))
+                acc
+            """
+
+    let found = indexedLoopsIn source
+    Assert.Equal(2, found.Length)
+    let patched = applyAll source (found |> List.collect (fun s -> s.Edits))
+
+    Assert.Equal(
+        fsharp
+            """
+            module Test
+            let pairs (xs: int[]) (ys: int[]) =
+                let acc = ResizeArray<int * int>()
+                for item in xs do
+                    for item2 in ys do
+                        acc.Add((item, item2))
+                acc
+            """,
+        patched
+    )
+
+    assertTypechecks "Patched source" patched
+
+[<Fact>]
 let ``a match pattern rebinding the index keeps the loop`` () =
     Assert.Empty(
         indexedLoopsIn (

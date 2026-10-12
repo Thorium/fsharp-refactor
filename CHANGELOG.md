@@ -2,6 +2,12 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.44
+
+- FR0101 gives nested index loops over different collections different elements: both took `item`, the inner one shadowing the outer, so `(xs.[i], ys.[j])` became `(item, item)` and still compiled.
+- FR0164 reads the target runtime off the project's core library: `Dictionary.Remove`/`Clear` pass from .NET Core 3.0, an overwriting indexer set and `HashSet.Remove`/`Clear` from .NET 5; on .NET Framework and netstandard, where all of them throw, they are reported again.
+- FR0092 leaves a message that a test file holds inside a longer string (an interpolated expectation): no prefix check can cover it.
+
 ## 0.8.43
 
 - Visual Studio extension: bundles FsAutoComplete 0.85.3, whose quick fixes are titled by what they write; the package refuses an older one.

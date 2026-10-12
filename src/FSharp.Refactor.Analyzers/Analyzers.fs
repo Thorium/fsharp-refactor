@@ -5605,10 +5605,19 @@ let private failwithContextMessages
             // a mention the loosening cannot rewrite - another assertion
             // dialect, or a test stub throwing the same text - keeps the
             // enrichment out even under --api-changes: the test would go red
+            // ...and so does a test string holding the message inside a longer
+            // text (`$"FieldLoader: {inner}"`'s expectation spelled out): the
+            // enrichment changes what it embeds, and no prefix check covers it
             let unrewritable =
                 assertedIn
                 |> List.tryFind (fun (_, text) ->
                     isNull text || not (FailwithContext.everyMentionRewritable text s.OriginalText))
+                |> Option.orElseWith (fun () ->
+                    match FailwithContext.messageCore s.OriginalText with
+                    | "" -> None
+                    | core ->
+                        Configuration.testFilesMentioning fileName core
+                        |> List.tryFind (fun (_, text) -> FailwithContext.embeddedInString text s.OriginalText))
 
             match assertedIn, unrewritable with
             | (testFile, _) :: _, _ when not applies ->
