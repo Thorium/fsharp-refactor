@@ -2,6 +2,12 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.43
+
+- Visual Studio extension: bundles FsAutoComplete 0.85.3, whose quick fixes are titled by what they write; the package refuses an older one.
+
+- VS Code extension: when Ionide's FsAutoComplete is older than 0.85 (quick fixes all titled `Fix FRxxxx`), offers once to install or update the `fsautocomplete` dotnet tool and point `FSharp.fsac.netCoreDllPath` at it, so each fix is titled by what it writes; follows `dotnet tool update`, hands back to Ionide's own once that is as new. New commands `Use FsAutoComplete 0.85+` and `Use Ionide's bundled FsAutoComplete again`; Status reports the FsAutoComplete version and whether titles are descriptive (it reported Ionide's bundled one as not found).
+
 ## 0.8.42
 
 - FR0075 counts a window the scope does not show modally (`form.Show()`, `Application.Run form`, a method of its own that shows it) as self-active: a `use` there disposed the window on the spot (C# twin CR0060).

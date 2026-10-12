@@ -169,10 +169,11 @@ type FixAction(buffer: ITextBuffer, snapshot: ITextSnapshot, title: string, edit
     interface IDisposable with
         member _.Dispose() = ()
 
-/// FsAutoComplete titles every analyzer fix "Fix <code>", so a primary
-/// and its alternatives render as identical menu entries; the replacement
-/// text is appended so the user can tell which fix is which (upstreaming
-/// the title fix to FSAC is the durable version of this).
+/// FsAutoComplete before 0.85 titles every analyzer fix "Fix <code>", so a
+/// primary and its alternatives render as identical menu entries; the
+/// replacement text is appended so the user can tell which fix is which.
+/// 0.85+ titles each fix by its replacement itself, so no two titles repeat
+/// and this leaves them as they are.
 let private disambiguate (raw: (string * Edit list) list) =
     let duplicated =
         raw

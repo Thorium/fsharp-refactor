@@ -121,6 +121,12 @@ with `ls ~/.nuget/packages/fsharp.refactor.analyzers/`). On Windows the
 cache lives under `%USERPROFILE%\.nuget\packages`. Suggestions
 appear as `Hint`-severity diagnostics with a light-bulb one-click fix.
 
+FsAutoComplete 0.85+ titles each fix by what it writes (`Fix FR0136 →
+Guid.NewGuid()`); an older one says only `Fix FR0136`. Ionide bundles its
+own FsAutoComplete; to run a newer one, `dotnet tool install -g
+fsautocomplete` and set `FSharp.fsac.netCoreDllPath` to its
+`fsautocomplete.dll` (the extension above offers to do both).
+
 The package ships the analyzers built against TWO FSharp.Analyzers.SDK
 versions side by side - `FSharp.Refactor.Analyzers.Ionide.dll` for SDK
 0.35.0 (what stock Ionide's FsAutoComplete bundles, 7.31.x and earlier)

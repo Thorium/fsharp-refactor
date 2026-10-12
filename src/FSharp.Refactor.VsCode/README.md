@@ -30,12 +30,27 @@ After wiring and a window reload, open any F# file: suggestions appear as
 `Hint`-severity squiggles with `FR`-prefixed codes, each carrying a
 light-bulb quick fix (`Ctrl+.`).
 
+The quick fix is titled by what it writes - `Fix FR0136 → Guid.NewGuid()`
+beside `Fix FR0136 → Guid.Empty` - from FsAutoComplete 0.85 on. An older
+FsAutoComplete titles every fix just `Fix FR0136`, so a fix and its
+alternative look the same. Ionide bundles its own FsAutoComplete, which
+can lag behind (Ionide 7.31 bundles 0.83); when it does, the extension
+**asks** once to install or update the `fsautocomplete` dotnet global
+tool and point Ionide at it through the global
+`FSharp.fsac.netCoreDllPath` setting. Decline and nothing changes;
+`FSharp.Refactor: Use FsAutoComplete 0.85+` re-offers it, and `Use
+Ionide's bundled FsAutoComplete again` undoes it. A path it set follows
+`dotnet tool update` (which deletes the old version's folder), and is
+dropped again once Ionide's own FsAutoComplete is as new. A
+`netCoreDllPath` you set yourself is never touched.
+
 Six more commands:
 
 - `FSharp.Refactor: Status (versions and wiring)` — the extension and
   analyzers versions, whether the analyzers directory is wired into
   `FSharp.analyzersPath` (and any stale entry from an older version),
-  Ionide's version and the FsAutoComplete it runs, and whether the
+  Ionide's version, the FsAutoComplete it runs (where, which version, and
+  so whether fix titles say what the fix writes), and whether the
   `fsharp-refactor` dotnet tool is installed. The first thing to run when
   no hints appear.
 - `FSharp.Refactor: Run the tool on this workspace` — the light bulbs fix

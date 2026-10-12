@@ -76,6 +76,11 @@ if (-not $NoFsac) {
         $payload = Find-FsacPayload (Join-Path $toolDir ".store\fsautocomplete")
     }
     if (-not $payload) { throw "fsautocomplete payload not found; pass -NoFsac to package without it" }
+    # before 0.85 FSAC titles every analyzer fix "Fix <code>" only
+    $fsacVersion = [version](Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $payload))))
+    if ($fsacVersion -lt [version]"0.85.0") {
+        throw "fsautocomplete $fsacVersion is older than 0.85.0; run: dotnet tool update -g fsautocomplete"
+    }
 
     Copy-Item -Recurse -LiteralPath $payload (Join-Path $staging "fsac")
     Write-Host "Bundled FsAutoComplete from $payload"
