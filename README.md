@@ -11,7 +11,7 @@ The tool clarifies the (agent-generated or old) code's intent, reduces non-alpha
 Suggestions are `Hint` severity: they mark an opportunity, not a defect, and
 never gate your build.
 
-This project is the big brother of [CSharp.Refactor](../csharp-refactor/README.md)
+This project is the big brother of (CSharp.Refactor)[https://github.com/Thorium/csharp-refactor]
 
 ---
 
