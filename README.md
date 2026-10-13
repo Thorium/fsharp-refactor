@@ -1001,3 +1001,5 @@ This project aims to be compatible with other products, so you won't end-up havi
 | [Fantomas](https://fsprojects.github.io/fantomas/) | None | Different focus: Fantomas is a code layout tool. We are compatible so you can use both. |
 | [FSharp.Analyzers.SDK](https://ionide.io/FSharp.Analyzers.SDK/) | None | Our tool, fsharp-refactor, is built on FSharp.Analyzers.SDK |
 | [CSharp.Refactor](https://github.com/Thorium/csharp-refactor) | Subset | The little sister of this tool, to run in your C# projects. |
+
+<!-- mcp-name: io.github.Thorium/fsharp-refactor -->

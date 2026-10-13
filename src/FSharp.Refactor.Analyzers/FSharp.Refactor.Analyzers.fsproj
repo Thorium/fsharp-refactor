@@ -27,7 +27,7 @@
     <PackageProjectUrl>https://github.com/Thorium/fsharp-refactor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Thorium/fsharp-refactor</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <PackageTags>fsharp;analyzers;refactoring;codefix;ionide;fsautocomplete</PackageTags>
+    <PackageTags>fsharp;analyzers;refactoring;codefix;static-analysis;code-quality;linter;ionide;fsautocomplete</PackageTags>
     <PackageIcon>icon.png</PackageIcon>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageLicenseExpression>Unlicense</PackageLicenseExpression>
