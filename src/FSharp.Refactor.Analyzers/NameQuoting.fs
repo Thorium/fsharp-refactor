@@ -173,8 +173,23 @@ let find
                     | _ -> ()
             ]
 
+        // a quoted form is free only when no candidate of another name quotes
+        // to it and the file spells no such name already: two names renamed
+        // to one, or one onto an existing name, rebind each other's uses
+        let fileText = lazy (source.GetSubTextString(0, source.Length))
+
+        let quotedFree =
+            candidates
+            |> List.groupBy (fun (_, quoted, _, _) -> quoted)
+            |> List.filter (fun (quoted, group) ->
+                (group |> List.distinctBy (fun (id: Ident, _, _, _) -> id.idText) |> List.length) = 1
+                && not (fileText.Value.Contains $"``{quoted}``"))
+            |> List.map fst
+            |> Set.ofList
+
         [
-            for id, quoted, mustProveInFile, declaredPrivately in candidates do
+            for id, quoted, mustProveInFile, declaredPrivately in
+                candidates |> List.filter (fun (_, quoted, _, _) -> quotedFree.Contains quoted) do
                 let lineText = source.GetLineString(id.idRange.EndLine - 1)
 
                 match

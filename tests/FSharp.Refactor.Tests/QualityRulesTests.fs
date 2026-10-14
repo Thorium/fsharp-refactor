@@ -943,6 +943,98 @@ let ``FR0071: a sign flip by -1 and checked arithmetic stay in the loop`` () =
         Assert.Empty(invariantsIn (opening + "\n" + loopOver "a + 3"))
 
 [<Fact>]
+let ``FR0071: a binding whose name the loop header or an earlier statement reads stays`` () =
+    // hoisted, `let n = k * 2` would rebind the `n` of `0 .. n - 1`
+    Assert.Empty(
+        invariantsIn (
+            fsharp
+                """
+                let f (n: int) (k: int) =
+                    for i in 0 .. n - 1 do
+                        let n = k * 2
+                        printfn "%d" (i + n)
+                """
+        )
+    )
+
+    // ...and the `n` an earlier binding of the body reads
+    Assert.Empty(
+        invariantsIn (
+            fsharp
+                """
+                let f (n: int) (k: int) (xs: int list) =
+                    for i in xs do
+                        let m = n + i
+                        let n = k * 2
+                        printfn "%d" (m + n)
+                """
+        )
+    )
+
+    // ...and a binding named like the loop variable: hoisted, the loop
+    // variable would hide it
+    Assert.Empty(
+        invariantsIn (
+            fsharp
+                """
+                let f (k: int) (xs: int list) =
+                    for c in xs do
+                        let c = k * 2
+                        printfn "%d" c
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0071: a binding reading a lambda parameter is not hoisted above the lambda`` () =
+    // the loop shares its line with `fun k ->`: the anchor is the pipeline,
+    // where `k` is the outer parameter, not the lambda's
+    Assert.Empty(
+        invariantsIn (
+            fsharp
+                """
+                let f (k: int) (xs: int list) =
+                    xs |> List.iter (fun k -> for x in 0 .. 3 do
+                                                let c = k * 2
+                                                printfn "%d" (x + c))
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0071: a binding reading what an anchoring lambda binds is not hoisted above it`` () =
+    // the anchor is the lambda itself: above it, `k` is the outer parameter
+    Assert.Empty(
+        invariantsIn (
+            fsharp
+                """
+                let f (k: int) (xs: int list) =
+                    xs
+                    |> List.iter (
+                        fun k -> for x in 0 .. 3 do
+                                   let c = k * 2
+                                   printfn "%d" (x + c))
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0071: a binding reading an anchoring outer loop's variable is not hoisted above it`` () =
+    // the inner loop shares its line with the outer one, the anchor: above
+    // it, `i` is the outer parameter
+    Assert.Empty(
+        invariantsIn (
+            fsharp
+                """
+                let g (i: int) (n: int) =
+                    for i in 0 .. n do for j in 0 .. 3 do
+                                         let c = i * 2
+                                         printfn "%d" (j + c)
+                """
+        )
+    )
+
+[<Fact>]
 let ``an array literal stays: hoisting would share one buffer`` () =
     // every iteration allocates its own buffer; hoisted, they all write
     // into the same one
@@ -1594,6 +1686,60 @@ let ``logging the message only is a legitimate PII choice`` () =
                     with ex ->
                         logger.LogError("work failed: {Error}", ex.Message)
                         0
+            """
+
+    Assert.Empty(catchLogsIn source)
+
+[<Fact>]
+let ``FR0120: a handler that rebinds the exception name ahead of the log gets no fix`` () =
+    // at the call `ex` is a string: `LogError(ex, ...)` would log it as an argument
+    let source =
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) (read: unit -> string) =
+                    try read () with ex ->
+                        let ex = ex.GetBaseException().Message
+                        logger.LogError("load failed")
+                        ex
+            """
+
+    Assert.Empty(catchLogsIn source)
+
+[<Fact>]
+let ``FR0120: a namesake whose scope closed before the log keeps the fix`` () =
+    // the arm's and the lambda's `ex` are out of scope at the call
+    let source =
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) (work: unit -> int) (check: unit -> Result<unit, string>) =
+                    try
+                        work ()
+                    with ex ->
+                        match check () with
+                        | Error ex -> printfn "%s" ex
+                        | Ok () -> ()
+                        [ "a" ] |> List.iter (fun ex -> printfn "%s" ex)
+                        logger.LogError("work failed")
+                        0
+            """
+
+    match catchLogsIn source with
+    | [ s ] -> Assert.Equal("ex", s.ExceptionName)
+    | other -> failwithf "Expected one catch-log suggestion, got %A" other
+
+[<Fact>]
+let ``FR0120: a log in a nested handler that binds no name gets no outer exception`` () =
+    // the rollback failure is the nested handler's; the outer `ex` is another one
+    let source =
+        fsharp
+            """
+            module M =
+                let run (logger: ILogger) (save: unit -> unit) (rollback: unit -> unit) =
+                    try save () with ex ->
+                        (try rollback () with _ -> logger.LogError("rollback failed"))
+                        reraise ()
             """
 
     Assert.Empty(catchLogsIn source)
@@ -3165,6 +3311,36 @@ let ``a snake-case local renames inside its function`` () =
         Assert.Contains("let ``this is my very complex case`` = 4", patched)
         assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one local quoting suggestion, got %A" other
+
+[<Fact>]
+let ``FR0133: two names quoting to the same form, or to a name already quoted, stay`` () =
+    // both would become ``total count of all items``: the second rename
+    // rebinds the first
+    Assert.Empty(
+        nameQuotingIn (
+            fsharp
+                """
+                module M
+                let f () =
+                    let totalCountOfAllItems = 4
+                    let total_count_of_all_items = 5
+                    totalCountOfAllItems + total_count_of_all_items
+                """
+        )
+    )
+
+    Assert.Empty(
+        nameQuotingIn (
+            fsharp
+                """
+                module M
+                let private ``total count of all items`` = 3
+                let f () =
+                    let totalCountOfAllItems = 4
+                    totalCountOfAllItems + ``total count of all items``
+                """
+        )
+    )
 
 [<Fact>]
 let ``an acronym is a word already`` () =

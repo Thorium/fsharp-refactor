@@ -182,11 +182,9 @@ let private freshNames (full: string) (baseNames: string list) =
     let taken (candidate: string) =
         Regex.IsMatch(full, identifierPattern candidate)
 
+    // None for a name with no free spelling
     baseNames
-    |> List.map (fun baseName ->
-        [ baseName; baseName + "2"; baseName + "3" ]
-        |> List.tryFind (taken >> not)
-        |> Option.defaultValue baseName)
+    |> List.map (fun baseName -> [ baseName; baseName + "2"; baseName + "3" ] |> List.tryFind (taken >> not))
 
 let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let index = AstIndex.ofTree parseTree
@@ -330,18 +328,30 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                             cs |> List.exists (fun (SynMatchClause(pat = p)) -> bindsName p)
                                         | _ -> false))
 
+                            let names =
+                                lazy
+                                    (freshNames
+                                        fileText.Value
+                                        [ nameText + "Head"; nameText + "Second"; nameText + "Tail" ])
+
+                            let freshFor part =
+                                match part with
+                                | Part.Head -> names.Value.[0]
+                                | Part.Second -> names.Value.[1]
+                                | Part.Tail -> names.Value.[2]
+
                             if
                                 accounted
                                 && not parts.IsEmpty
                                 && not rebound
                                 && (not (parts.Contains Part.Second) || excluded 1)
+                                // every name the arm spells needs a free spelling
+                                && parts |> Seq.forall (freshFor >> Option.isSome)
                             then
-                                let names =
-                                    freshNames
-                                        fileText.Value
-                                        [ nameText + "Head"; nameText + "Second"; nameText + "Tail" ]
-
-                                let headName, secondName, tailName = names.[0], names.[1], names.[2]
+                                let headName, secondName, tailName =
+                                    names.Value.[0] |> Option.defaultValue "_",
+                                    names.Value.[1] |> Option.defaultValue "_",
+                                    names.Value.[2] |> Option.defaultValue "_"
 
                                 let nameOf part =
                                     match part with

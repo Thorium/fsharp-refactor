@@ -563,6 +563,27 @@ let ``a name the project already uses for a type takes the Kind suffix`` () =
     Assert.Equal("ModeKind", s.Name)
 
 [<Fact>]
+let ``FR0157: a name the file reads from an opened namespace takes the Kind suffix`` () =
+    // a union called Encoding would shadow System.Text.Encoding in the arms
+    let source =
+        fsharp
+            """
+            open System.Text
+            let f (encoding: string) (s: string) =
+                match encoding with
+                | "ascii" -> Encoding.ASCII.GetBytes s
+                | "utf8" -> Encoding.UTF8.GetBytes s
+                | _ -> [||]
+            let x = f "ascii" "a", f "utf8" "b"
+            """
+
+    match findIn source with
+    | [ s ] ->
+        Assert.Equal("EncodingKind", s.Name)
+        assertTypechecks "Patched source" (applyEdits source s.Edits)
+    | other -> failwithf "Expected exactly one suggestion, got %d: %A" (List.length other) other
+
+[<Fact>]
 let ``call sites in a later file are rewritten with the definition`` () =
     let sourceA =
         fsharp

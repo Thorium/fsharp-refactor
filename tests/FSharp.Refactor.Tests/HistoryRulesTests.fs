@@ -134,6 +134,29 @@ let ``FR0181: a specific handler around a blocking wait is noted, with both leve
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
+let ``FR0181: no offer when both binder names are taken`` () =
+    // `as aggregateEx` would shadow the counter the handler reads
+    let source =
+        fsharp
+            """
+            module M
+            open System
+            open System.Threading.Tasks
+            let aggregate = 1
+            let aggregateEx = 2
+            let a (work: Task) =
+                try
+                    work.Wait()
+                    aggregate
+                with
+                | :? InvalidOperationException -> aggregateEx
+            """
+
+    match wrappedIn source with
+    | [ a ] -> Assert.True(a.InnerOffer.IsNone && a.BaseOffer.IsNone)
+    | other -> failwithf "Expected one finding, got %A" other
+
+[<Fact>]
 let ``FR0181: an aggregate handler, a general one, a wait under a lambda and no wait at all stay quiet`` () =
     let source =
         fsharp

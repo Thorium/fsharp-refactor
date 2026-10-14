@@ -242,7 +242,10 @@ let private readKind (check: FSharpCheckFileResults) (source: ISourceText) (id: 
 /// The insertion point: the nearest enclosing expression (the loop itself,
 /// or e.g. the pipeline feeding a lambda) that starts its own line. Only
 /// expression ancestors are considered, so the hoisted binding never
-/// leaves the scope whose values it reads.
+/// leaves the scope whose values it reads. With it come the names the
+/// expressions from the loop up to and including the anchor bind (a
+/// lambda's parameters, an outer loop's variable, a `let … in`): above the
+/// anchor they are out of scope, or name something else.
 let private insertionAnchor (source: ISourceText) (path: SyntaxNode list) (loopExpr: SynExpr) =
     let startsItsLine (r: range) =
         let line = source.GetLineString(r.StartLine - 1)
@@ -260,9 +263,21 @@ let private insertionAnchor (source: ISourceText) (path: SyntaxNode list) (loopE
             | SyntaxNode.SynExpr e -> Some e
             | _ -> None)
 
-    loopExpr :: ancestors
-    |> List.tryFind (fun e -> startsItsLine e.Range)
-    |> Option.map (fun e -> e.Range)
+    let boundBy (e: SynExpr) =
+        match e with
+        | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.collect patBoundNames
+        | SynExpr.For(ident = id) -> [ id.idText ]
+        | SynExpr.ForEach(pat = pat) -> patBoundNames pat
+        | LetOrUseE lou -> lou.Bindings |> List.collect (fun (SynBinding(headPat = p)) -> patBoundNames p)
+        | _ -> []
+
+    let chain = loopExpr :: ancestors
+
+    chain
+    |> List.tryFindIndex (fun e -> startsItsLine e.Range)
+    |> Option.map (fun i ->
+        let crossedBound = chain |> List.take (i + 1) |> List.collect boundBy |> Set.ofList
+        chain.[i].Range, crossedBound)
 
 /// The leading `let` bindings of a loop body, with the continuation each
 /// one wraps.
@@ -478,11 +493,19 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | true, ranges -> ranges |> Seq.exists (Range.rangeContainsRange r >> not)
             | false, _ -> false
 
+        // does this name appear inside `r` ahead of `before`?
+        let mentionedBefore (r: range) (before: pos) (name: string) =
+            match mentionIndex.TryGetValue name with
+            | true, ranges ->
+                ranges
+                |> Seq.exists (fun m -> Range.rangeContainsRange r m && Position.posLt m.Start before)
+            | false, _ -> false
+
         let suggestions: Suggestion list =
             [
                 for path, loopExpr, loopVars, body, isLazy in candidates do
                     match insertionAnchor source path loopExpr with
-                    | Some anchor ->
+                    | Some(anchor, crossedBound) ->
                         let mutable boundEarlier = Set.empty
 
                         for binding, continuation in leadingLets [] body do
@@ -495,7 +518,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 isSingleLine binding.RangeOfBindingWithRhs
                                 && binding.RangeOfBindingWithRhs.EndLine < continuation.Range.StartLine
                                 ->
-                                let forbidden = loopVars + boundEarlier |> Set.add name.idText
+                                let forbidden = loopVars + boundEarlier + crossedBound |> Set.add name.idText
 
                                 // the text whose calls could write a mutable the
                                 // binding reads: the whole anchor statement. The
@@ -527,6 +550,17 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     // the hoisted binding's wider scope must collide
                                     // with nothing: the name may live only in the loop
                                     && not (usedOutside loopExpr.Range name.idText)
+                                    // nor may the loop read it ahead of the
+                                    // binding (its bounds, its condition, an
+                                    // earlier statement): hoisted, the binding
+                                    // would rebind those reads
+                                    && not (
+                                        mentionedBefore loopExpr.Range binding.RangeOfBindingWithRhs.Start name.idText
+                                    )
+                                    // nor be a name the loop, an earlier binding or
+                                    // an enclosing lambda or loop binds: inside them that
+                                    // binder would hide the hoisted value
+                                    && not ((loopVars + boundEarlier + crossedBound).Contains name.idText)
                                     // a shadowed operator can have arbitrary
                                     // semantics; the typed gate runs last
                                     && ops |> List.forall (OptionModule.resolvesToCoreOperator check source)

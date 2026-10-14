@@ -106,6 +106,41 @@ let ``FR0160: a wrapper constructed without the caught exception gains it as the
     | other -> failwithf "Expected three findings, got %A" other
 
 [<Fact>]
+let ``FR0160: a script-level handler's fresh binder skips a name the handler reads`` () =
+    // no binding encloses the try: `with ex` would shadow the `ex` it prints
+    let source =
+        fsharp
+            """
+            let load () = ()
+            let ex = "cfg.json"
+            try load () with _ ->
+                printfn "failed: %s" (string ex)
+                raise (System.InvalidOperationException "bad config")
+            """
+
+    match lostInnersIn source with
+    | [ s ] ->
+        Assert.NotEqual<string>("ex", s.Binder)
+        let patched = applyAll source s.Edits
+        assertTypechecks "Patched source" patched
+    | other -> failwithf "Expected one finding, got %A" other
+
+    // every candidate taken: the note stands without a fix
+    let crowded =
+        fsharp
+            """
+            let load () = ()
+            let ex, exn, inner, innerException = "a", "b", "c", "d"
+            try load () with _ ->
+                printfn "%s %s %s %s" ex exn inner innerException
+                raise (System.InvalidOperationException "bad config")
+            """
+
+    match lostInnersIn crowded with
+    | [ s ] -> Assert.Empty s.Edits
+    | other -> failwithf "Expected one finding, got %A" other
+
+[<Fact>]
 let ``FR0160: a failwith that never reads the caught exception is the note`` () =
     let source =
         fsharp

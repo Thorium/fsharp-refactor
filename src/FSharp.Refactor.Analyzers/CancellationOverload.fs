@@ -153,23 +153,53 @@ let private cleanupZones (index: AstIndex.Index) (source: ISourceText) (check: F
 /// in names -> ... ]`, a `let ct = ...`, a lambda or match variable — so
 /// that `ct` at `r` may be something else entirely? Any pattern binding
 /// the name inside the token's binding, ahead of `r`, counts: an
-/// over-approximation of scope that only ever withholds a fix.
-let private shadowedBefore (index: AstIndex.Index) (name: string) (paramId: range) (bindingRange: range) (r: range) =
-    index.Pats
-    |> Array.exists (fun (_, pat) ->
-        let bound =
-            match pat with
-            | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
-            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> Some id
-            | _ -> None
+/// over-approximation of scope that only ever withholds a fix. A lambda's
+/// parameters are not among the index's patterns: `lambdaParams` holds
+/// them, (name, lambda range), and a lambda enclosing `r` that binds the
+/// name counts too.
+let private shadowedBefore
+    (index: AstIndex.Index)
+    (lambdaParams: (string * range) list)
+    (name: string)
+    (paramId: range)
+    (bindingRange: range)
+    (r: range)
+    =
+    (lambdaParams
+     |> List.exists (fun (n, lambda) ->
+         n = name
+         && Range.rangeContainsRange bindingRange lambda
+         && Range.rangeContainsRange lambda r))
+    || (index.Pats
+        |> Array.exists (fun (_, pat) ->
+            let bound =
+                match pat with
+                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> Some id
+                | _ -> None
 
-        match bound with
-        | Some id ->
-            id.idText = name
-            && not (Range.equals id.idRange paramId)
-            && Range.rangeContainsRange bindingRange id.idRange
-            && Position.posLt id.idRange.Start r.Start
-        | None -> false)
+            match bound with
+            | Some id ->
+                id.idText = name
+                && not (Range.equals id.idRange paramId)
+                && Range.rangeContainsRange bindingRange id.idRange
+                && Position.posLt id.idRange.Start r.Start
+            | None -> false))
+
+/// Every lambda parameter named like one of `names`, with its lambda's range.
+let private lambdaParamsNamed (index: AstIndex.Index) (names: Set<string>) =
+    if names.IsEmpty then
+        []
+    else
+        [
+            for _, e in index.Exprs do
+                match e with
+                | SynExpr.Lambda(parsedData = Some(pats, _)) ->
+                    for n in pats |> List.collect patBoundNames do
+                        if names.Contains n then
+                            yield n, e.Range
+                | _ -> ()
+        ]
 
 /// Result types that are work which may still be running after the call.
 let private pendingTypes =
@@ -364,6 +394,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let inCleanup (callRange: range) =
             cleanupRanges |> Array.exists (fun z -> Range.rangeContainsRange z callRange)
 
+        let lambdaParams =
+            lambdaParamsNamed index (tokenParams |> List.map (fun (name, _, _) -> name) |> Set.ofList)
+
         // the single in-scope token for a call site, if there is exactly one
         let tokenFor (callRange: range) =
             let inScope =
@@ -377,7 +410,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 && not (
                     inScope
                     |> List.exists (fun (n, bindingRange, paramId) ->
-                        shadowedBefore index n paramId bindingRange callRange)
+                        shadowedBefore index lambdaParams n paramId bindingRange callRange)
                 )
                 ->
                 Some name
@@ -642,6 +675,9 @@ let findUnobservedLoopsWith
                     | _ -> ()
             ]
 
+        let lambdaParams =
+            lambdaParamsNamed index (tokenParams |> List.map (fun (name, _, _) -> name) |> Set.ofList)
+
         // the one token in scope, as `find` reads it
         let tokenFor (r: range) =
             let inScope =
@@ -652,7 +688,8 @@ let findUnobservedLoopsWith
             | [ name ] when
                 not (
                     inScope
-                    |> List.exists (fun (n, bindingRange, paramId) -> shadowedBefore index n paramId bindingRange r)
+                    |> List.exists (fun (n, bindingRange, paramId) ->
+                        shadowedBefore index lambdaParams n paramId bindingRange r)
                 )
                 ->
                 Some name

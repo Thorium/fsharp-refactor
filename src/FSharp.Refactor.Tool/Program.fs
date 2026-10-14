@@ -10512,7 +10512,7 @@ let private runMcp (startupDefines: string list) =
             | "initialize" ->
                 respond
                     idJson
-                    """{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"fsharp-refactor","version":"0.6.6"}}"""
+                    $"""{{"protocolVersion":"2024-11-05","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"fsharp-refactor","version":"{toolVersion.Value}"}}}}"""
             | "notifications/initialized"
             | "notifications/cancelled" -> ()
             | "ping" -> respond idJson "{}"

@@ -91,6 +91,19 @@ let ``stage referencing the parameter is not rewritten`` () =
     )
 
 [<Fact>]
+let ``FR0012: a stage referencing a primed parameter is not rewritten`` () =
+    // composed, `add x'` would read the module-level `x'`
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            let add a b = a + b
+            let x' = 100
+            let r = [1;2;3] |> List.map (fun x' -> x' |> add x' |> string)
+            """
+    )
+
+[<Fact>]
 let ``single stage is not rewritten`` () =
     // eta-reduction territory, not composition
     assertNoSuggestion "module Test\nlet f g xs = xs |> List.map (fun x -> g x)"

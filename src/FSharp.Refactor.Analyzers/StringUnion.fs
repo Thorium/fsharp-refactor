@@ -2001,6 +2001,20 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
     // `domain` field each would get a `Domain`, a duplicate definition
     let introduced = HashSet<string>()
 
+    // each file's whole text, read once for the union-name checks
+    let wholeTexts = Dictionary<string, string option>()
+
+    let wholeText (file: string) =
+        match wholeTexts.TryGetValue file with
+        | true, text -> text
+        | false, _ ->
+            let text =
+                analysis.FileOf file
+                |> Option.map (fun (_, t: ISourceText) -> t.GetSubTextString(0, t.Length))
+
+            wholeTexts.[file] <- text
+            text
+
     let candidates =
         [
             for _, expr in index.Exprs do
@@ -2591,11 +2605,34 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                     None
                             | _ -> None
 
+                        // a type or module name this file or a declaring file
+                        // already reads (`Encoding.UTF8` from an opened
+                        // System.Text, `: Color`, `new Version`) would be
+                        // shadowed by the union there; the project's type names
+                        // miss what an `open` brings in. A field or property of
+                        // the same name (`x.Mode`, `Mode = 1`) is no such read
+                        let spelledInFiles (n: string) =
+                            let name = Text.RegularExpressions.Regex.Escape n
+
+                            let typeRead =
+                                $@"(?<![\w'.]){name}(?=\s*\.)|:\s*{name}(?![\w'])|\bnew\s+{name}(?![\w'])"
+
+                            fileName :: (declFiles |> List.map fst)
+                            |> List.distinct
+                            |> List.exists (fun f ->
+                                match wholeText f with
+                                | Some whole ->
+                                    mentionsIdentifier whole n
+                                    && Text.RegularExpressions.Regex.IsMatch(whole, typeRead)
+                                | None -> false)
+
                         let unionName =
                             [ Some baseName; ownerPrefixed; Some(baseName + "Kind") ]
                             |> List.choose id
                             |> List.tryFind (fun n ->
-                                (not (world.TypeNames.Contains n || introduced.Contains n)) && n <> "")
+                                (not (world.TypeNames.Contains n || introduced.Contains n))
+                                && n <> ""
+                                && not (spelledInFiles n))
 
                         unionName |> Option.iter (introduced.Add >> ignore)
 

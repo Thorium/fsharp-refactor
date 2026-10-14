@@ -2040,6 +2040,20 @@ let ``CancellationToken None is replaced by the in-scope token`` () =
     | other -> failwithf "Expected one propagation suggestion, got %A" other
 
 [<Fact>]
+let ``FR0118: a lambda parameter that rebinds the token name gets no fix`` () =
+    // inside the lambda `ct` is one of the linked tokens, not the parameter
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                let drain (gate: SemaphoreSlim) (ct: CancellationToken) (linked: CancellationToken list) =
+                    linked |> List.iter (fun ct -> gate.Wait())
+                """
+        )
+    )
+
+[<Fact>]
 let ``no token in scope means no suggestion`` () =
     Assert.Empty(
         cancellationIn (

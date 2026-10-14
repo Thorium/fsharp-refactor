@@ -123,12 +123,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     true
                                 | _ -> false)
 
+                        // a branch that binds the subject's name again (a lambda
+                        // parameter, a pattern binder) casts a different value
+                        // under it: the cast is not the subject's to replace
+                        let subjectRebound =
+                            bodies
+                            |> List.exists (fun body ->
+                                (AstIndex.patsWithin index body.Range
+                                 |> Array.exists (fun (_, p) -> patBoundNames p |> List.contains subject.idText))
+                                || (AstIndex.exprsWithin index body.Range
+                                    |> Array.exists (fun (_, e) ->
+                                        match e with
+                                        | SynExpr.Lambda(parsedData = Some(pats, _)) ->
+                                            pats |> List.exists (patBoundNames >> List.contains subject.idText)
+                                        | _ -> false)))
+
                         if
                             sameSubject
                             && distinctTypes
                             && bodiesInline
                             && castsAgree
                             && not subjectAssigned
+                            && not subjectRebound
                         then
                             let wholeText = textOfRange source expr.Range
 

@@ -127,6 +127,27 @@ let ``a parameter named fst shadows`` () =
     assertNoSuggestion "module Test\nlet g fst = List.map (fun (a, b) -> a) [ fst ]"
 
 [<Fact>]
+let ``FR0095: a primary-constructor parameter or a class let shadows`` () =
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type User(id: int) =
+                member _.M(xs: int list) = xs |> List.map (fun x -> x)
+            """
+    )
+
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type P() =
+                let fst (_, b) = b
+                member _.F(xs: (int * int) list) = xs |> List.map (fun (a, b) -> a)
+            """
+    )
+
+[<Fact>]
 let ``a match-bound snd shadows`` () =
     assertNoSuggestion (
         fsharp

@@ -2114,11 +2114,33 @@ let findEscapingUse
                             // the binding moves only when nothing it passes
                             // on the way touches it, and it owns its line so
                             // the edit is a whole-line move
+                            // nor binds, ahead of the computation, the binder's
+                            // name or a name its right-hand side reads: below
+                            // that binding the moved `use` would read the new one
+                            let movedNames =
+                                AstIndex.exprsWithin index rhs.Range
+                                |> Array.choose (fun (_, e) ->
+                                    match e with
+                                    | SynExpr.Ident id -> Some id.idText
+                                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> Some first.idText
+                                    | _ -> None)
+                                |> Set.ofArray
+                                |> Set.add binder.idText
+
+                            let reboundBetween =
+                                Position.posLt lou.Body.Range.Start ceExpr.Range.Start
+                                && (let between =
+                                        Range.mkRange lou.Range.FileName lou.Body.Range.Start ceExpr.Range.Start
+
+                                    AstIndex.patsWithin index between
+                                    |> Array.exists (fun (_, p) -> patBoundNames p |> List.exists movedNames.Contains))
+
                             let untouchedBetween =
-                                passed
-                                |> List.forall (fun e ->
-                                    Range.rangeContainsRange e.Range ceExpr.Range
-                                    || not (mentionsIn binder.idText e.Range))
+                                not reboundBetween
+                                && passed
+                                   |> List.forall (fun e ->
+                                       Range.rangeContainsRange e.Range ceExpr.Range
+                                       || not (mentionsIn binder.idText e.Range))
 
                             let useLine = lou.Range.StartLine
                             let useText = (source.GetLineString(useLine - 1)).TrimEnd()

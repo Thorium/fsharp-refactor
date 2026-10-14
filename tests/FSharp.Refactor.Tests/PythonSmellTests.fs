@@ -349,6 +349,22 @@ let ``a branch without a cast just drops the as-binder`` () =
         "match shape with | :? Circle -> 1.0 | :? Rect as v -> v.W | _ -> 0.0"
 
 [<Fact>]
+let ``FR0103: a branch that rebinds the subject keeps its casts and the chain stays`` () =
+    // the `x` cast inside the lambda is the lambda's parameter, not the subject
+    Assert.Empty(
+        typeTestsIn (
+            fsharp
+                """
+                module Test
+                let f (x: obj) (ys: obj list) =
+                    if x :? string then ys |> List.sumBy (fun x -> (x :?> string).Length)
+                    elif x :? int then 0
+                    else -1
+                """
+        )
+    )
+
+[<Fact>]
 let ``a compound condition needs a when guard and stays`` () =
     Assert.Empty(
         typeTestsIn (

@@ -328,6 +328,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                          |> Seq.choose (fun (_, e) ->
                              match e with
                              | SynExpr.Ident id when Range.rangeContainsRange r id.idRange -> Some id.idText
+                             // `value.Length` reads `value` too
+                             | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) when
+                                 Range.rangeContainsRange r first.idRange
+                                 ->
+                                 Some first.idText
                              | _ -> None))
                         (index.Pats
                          |> Seq.choose (fun (_, p) ->

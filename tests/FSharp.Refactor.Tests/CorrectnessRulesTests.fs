@@ -451,6 +451,23 @@ let ``FR0046: a lock on a string literal gets a lock object before the binding``
     | other -> failwithf "Expected one weak-lock finding, got %A" other
 
 [<Fact>]
+let ``FR0046: a lock object name the file already uses gets no fix`` () =
+    // a second `bumpLock` would shadow the one the reset reads
+    let source =
+        fsharp
+            """
+            module Test
+            let mutable count = 0
+            let bumpLock = "other"
+            let bump () = lock "cache" (fun () -> count <- count + 1)
+            let reset () = lock bumpLock (fun () -> count <- 0)
+            """
+
+    match locksIn source with
+    | [ bump; _ ] -> Assert.Empty bump.Fix
+    | other -> failwithf "Expected two weak-lock findings, got %A" other
+
+[<Fact>]
 let ``FR0046: a lock on a module string value gets its lock object next to that value`` () =
     let source =
         fsharp

@@ -30,7 +30,6 @@
 /// pure partial applications (`List.map f`) this is unobservable.
 module FSharp.Refactor.Composition
 
-open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
@@ -120,8 +119,7 @@ let private isOperatorStage (source: ISourceText) (stage: SynExpr) =
 /// Conservative free-variable check: reject the rewrite if the parameter name
 /// appears anywhere in the stage's text (over-approximates, which is the safe
 /// direction).
-let private mentionsParam (param: string) (text: string) =
-    Regex.IsMatch(text, sprintf @"\b%s\b" (Regex.Escape param))
+let private mentionsParam (param: string) (text: string) = mentionsIdentifier text param
 
 /// Does this stage name a .NET MEMBER rather than a function value? A method
 /// is not first class in F#. `SwitchCase.switchCase (transformGuard e)` is a

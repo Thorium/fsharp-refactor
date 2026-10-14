@@ -167,11 +167,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                             let wholeText = textOfRange source e.Range
 
+                            // both names taken: nothing offered
                             let fresh =
-                                if (word "aggregate").IsMatch wholeText then
-                                    "aggregateEx"
-                                else
-                                    "aggregate"
+                                [ "aggregate"; "aggregateEx" ]
+                                |> List.tryFind (mentionsIdentifier wholeText >> not)
 
                             for SynMatchClause(pat = p; whenExpr = guard; resultExpr = result; range = clauseRange) in
                                 clauses do
@@ -199,12 +198,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         let barred = lead.Trim() = "|"
 
                                         let offer (inner: string) =
-                                            if
+                                            match fresh with
+                                            | Some fresh when
                                                 barred
                                                 && guard.IsNone
                                                 && not binderUsed
                                                 && clauseRange.StartLine = result.Range.EndLine
-                                            then
+                                                ->
                                                 let indent = lead.Substring(0, lead.IndexOf '|')
 
                                                 let at =
@@ -214,8 +214,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                     at,
                                                     $"\n{indent}| :? System.AggregateException as {fresh} when ({fresh}.{inner} :? {typeText}) -> {bodyText}"
                                                 )
-                                            else
-                                                None
+                                            | _ -> None
 
                                         {
                                             Range = p.Range

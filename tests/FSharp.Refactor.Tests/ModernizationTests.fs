@@ -1922,6 +1922,25 @@ let ``a function's wildcard arm is named so its argument can be quoted`` () =
     )
 
 [<Fact>]
+let ``FR0092: the wildcard arm's name skips a name the binding reads through a dot`` () =
+    // named `value`, the arm would shadow the module's `value` in its guard
+    match
+        failwithContextIn (
+            fsharp
+                """
+                module Test
+                let value = "limit"
+                let classify = function
+                    | "a" -> 1
+                    | _ when value.Length > 3 -> failwith "unexpected key"
+                    | _ -> 0
+                """
+        )
+    with
+    | [ s ] -> Assert.Equal(Some "input", s.PatternEdit |> Option.map (fun (_, _, fresh) -> fresh))
+    | other -> failwithf "Expected exactly one function-arm hint, got %A" other
+
+[<Fact>]
 let ``a File factory result leaks like a bare constructor`` () =
     // File.OpenRead is THE way to open a file; ownership transfers to the
     // caller exactly as with `new FileStream(...)`
@@ -4781,6 +4800,29 @@ let ``FR0150: a statement between the use and the computation that reads it hold
     match escapingUsesIn source with
     | [ s ] ->
         Assert.Equal("cts", s.Name)
+        Assert.Empty s.Edits
+    | other -> failwithf "Expected exactly one escaping-use note, got %A" other
+
+[<Fact>]
+let ``FR0150: a statement between that rebinds a name the use reads holds the fix back`` () =
+    // moved below `let path = path + ".bak"`, the stream would open the backup
+    let source =
+        fsharp
+            """
+            open System.IO
+            let read (path: string) =
+                use stream = new FileStream(path, FileMode.Open)
+                let path = path + ".bak"
+                task {
+                    let buf = Array.zeroCreate 10
+                    let! n = stream.ReadAsync(buf, 0, 10)
+                    return n
+                }
+            """
+
+    match escapingUsesIn source with
+    | [ s ] ->
+        Assert.Equal("stream", s.Name)
         Assert.Empty s.Edits
     | other -> failwithf "Expected exactly one escaping-use note, got %A" other
 

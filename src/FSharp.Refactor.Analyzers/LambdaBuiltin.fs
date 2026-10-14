@@ -89,7 +89,8 @@ let private argumentToMethod (path: SyntaxNode list) =
 ///
 /// Scope is read off the tree, because this rule carries no typed results
 /// and is worth keeping usable under --parse-only: the enclosing `let`s,
-/// parameters, lambda arguments, match and loop patterns on the path, and
+/// parameters, lambda arguments, match and loop patterns on the path, an
+/// enclosing class's primary-constructor parameters and `let`s, and
 /// the module-level bindings declared ABOVE the position. The far more
 /// common `let id = 42` in some unrelated function stays where it is and
 /// costs nothing here. A module opened from another file that rebinds the
@@ -107,6 +108,13 @@ let private shadowedAt (path: SyntaxNode list) (at: range) =
                 bindingNames bindings
             | _ -> [])
 
+    // an enclosing class's primary-constructor parameters and its `let`s
+    let typeMemberNames (m: SynMemberDefn) =
+        match m with
+        | SynMemberDefn.ImplicitCtor(ctorArgs = args) -> patNames args
+        | SynMemberDefn.LetBindings(bindings = bindings) -> bindingNames bindings
+        | _ -> []
+
     path
     |> List.collect (fun node ->
         match node with
@@ -118,6 +126,12 @@ let private shadowedAt (path: SyntaxNode list) (at: range) =
         | SyntaxNode.SynExpr(SynExpr.For(ident = ident)) -> [ ident.idText ]
         | SyntaxNode.SynModuleOrNamespace(SynModuleOrNamespace(decls = decls))
         | SyntaxNode.SynModule(SynModuleDecl.NestedModule(decls = decls)) -> declaredAbove decls
+        | SyntaxNode.SynTypeDefn(SynTypeDefn(typeRepr = repr; implicitConstructor = ctor; members = members)) ->
+            (ctor |> Option.toList |> List.collect typeMemberNames)
+            @ (members |> List.collect typeMemberNames)
+            @ (match repr with
+               | SynTypeDefnRepr.ObjectModel(members = members) -> members |> List.collect typeMemberNames
+               | _ -> [])
         | _ -> [])
     |> Set.ofList
 

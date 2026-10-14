@@ -215,13 +215,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             walk path
 
         // the enclosing declaration, whose names a fresh binder must not
-        // shadow (a parameter called `ex`)
+        // shadow (a parameter called `ex`); outside any binding (a script's
+        // or a module's top-level try), the whole try-with, which holds
+        // every read the handler makes
         let declarationOf (path: SyntaxNode list) (fallback: range) =
             path
             |> List.tryPick (fun node ->
                 match node with
                 | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
                 | _ -> None)
+            |> Option.orElse (
+                path
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynExpr(SynExpr.TryWith _ as tryWith) -> Some tryWith.Range
+                    | _ -> None)
+            )
             |> Option.defaultValue fallback
 
         [
@@ -254,17 +263,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 | None ->
                                     let scope = declarationOf path e.Range
 
+                                    // every candidate taken: the note stands alone
                                     let fresh =
-                                        [ "ex"; "exn"; "inner" ]
+                                        [ "ex"; "exn"; "inner"; "innerException" ]
                                         |> List.tryFind (fun candidate -> not (mentions candidate scope))
-                                        |> Option.defaultValue "innerException"
 
-                                    match pat with
-                                    | SynPat.Wild _ -> fresh, [ pat.Range, textOfRange source pat.Range, fresh ]
-                                    | SynPat.IsInst _ ->
+                                    match fresh, pat with
+                                    | Some fresh, SynPat.Wild _ ->
+                                        fresh, [ pat.Range, textOfRange source pat.Range, fresh ]
+                                    | Some fresh, SynPat.IsInst _ ->
                                         let original = textOfRange source pat.Range
                                         fresh, [ pat.Range, original, $"{original} as {fresh}" ]
-                                    | _ -> fresh, []
+                                    | fresh, _ -> defaultArg fresh "innerException", []
 
                             let argEdit =
                                 match arg with

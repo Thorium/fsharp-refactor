@@ -118,6 +118,54 @@ let ``existing pattern of the same name suppresses the hint`` () =
     )
 
 [<Fact>]
+let ``FR0006: a pattern name the file already uses as an identifier suppresses the hint`` () =
+    // `(|Empty|_|)` would capture the union case in `g`'s pattern
+    assertNoSuggestion (
+        fsharp
+            """
+            module Test
+            type Slot =
+                | Empty
+                | Taken of int
+            let empty (n: int) = n = 0
+            let f x =
+                match x with
+                | n when empty n -> Empty
+                | n -> Taken n
+            let g s =
+                match s with
+                | Empty -> 0
+                | Taken n -> n
+            """
+    )
+
+[<Fact>]
+let ``FR0006: a guard function named input gets another parameter name`` () =
+    assertSingleSuggestion
+        (fsharp
+            """
+            module Test
+            let input (n: int) = n > 0
+            let f x =
+                match x with
+                | n when input n -> n
+                | n -> 0
+            """)
+        (fsharp
+            """
+            module Test
+            let input (n: int) = n > 0
+            [<return: Struct>]
+            let inline private (|Input|_|) value =
+                if input value then ValueSome value else ValueNone
+
+            let f x =
+                match x with
+                | Input n -> n
+                | n -> 0
+            """)
+
+[<Fact>]
 let ``complex guard expression is not extracted`` () =
     assertNoSuggestion (
         fsharp

@@ -555,6 +555,22 @@ let ``FR0172: a taken name gets a numeric suffix`` () =
     appliedTypechecks source |> ignore
 
 [<Fact>]
+let ``FR0172: every suffixed name taken stands the rule down`` () =
+    Assert.Empty(
+        findIn (
+            fsharp
+                """
+                module Test
+                let itmsHead, itmsHead2, itmsHead3 = 5, 6, 7
+                let f (xs: int list) =
+                    match xs with
+                    | [] -> 0
+                    | itms -> itms.[0] + itmsHead + itmsHead2 + itmsHead3
+                """
+        )
+    )
+
+[<Fact>]
 let ``FR0172 harness: the typecheck sees an incomplete match as FS0025`` () =
     // what appliedTypechecks guards against must be visible to it
     let _, _, check =

@@ -2,6 +2,16 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.45
+
+- Fixes that add, rename or move a name no longer rebind another one; each case compiled with a changed meaning or broke the build.
+- FR0071 keeps a binding the loop's bounds, condition or an earlier statement read, and one reading what an enclosing lambda or loop on its line binds.
+- FR0103 keeps a branch that rebinds the subject; FR0150 keeps a `use` whose right-hand side reads a name rebound before the computation.
+- FR0120 and FR0118 insert the exception or token only where it is still bound at the call; FR0120 gives a log in an unnamed nested handler nothing.
+- FR0012 sees primed parameters; FR0092's and FR0160's fresh names skip dotted and script-level reads; FR0181, FR0160 and FR0172 offer nothing when every name is taken.
+- FR0133 skips two names quoting to one; FR0095 counts class `let`s and constructor parameters; FR0046 and FR0006 skip names the file already uses; FR0157 skips a union name an `open` brings in.
+- `--mcp` reports the tool's own version in `initialize` (it answered 0.6.6).
+
 ## 0.8.44
 
 - FR0101 gives nested index loops over different collections different elements: both took `item`, the inner one shadowing the outer, so `(xs.[i], ys.[j])` became `(item, item)` and still compiled.

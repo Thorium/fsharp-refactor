@@ -68,25 +68,57 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        // handler clauses that bind an exception, with their body ranges
+        // handler clauses with the name each binds its exception to, if
+        // any, and their body ranges
         let handlers =
             [
                 for _, e in index.Exprs do
                     match e with
                     | SynExpr.TryWith(withCases = cases) ->
                         for SynMatchClause(pat = p; resultExpr = result) in cases do
-                            match exceptionNameOf p with
-                            | ValueSome name -> yield name, result.Range
-                            | ValueNone -> ()
+                            yield exceptionNameOf p, result.Range
                     | _ -> ()
             ]
 
-        // the innermost handler an expression sits in
+        // the name binds something else at `r` when the handler body binds it
+        // again ahead of `r` in a scope holding `r`: a `let`, a loop or match
+        // variable, a lambda parameter. A pattern's scope is its nearest
+        // enclosing match clause or expression (the `let`'s block)
+        let reboundBefore (name: string) (body: range) (r: range) =
+            (AstIndex.patsWithin index body
+             |> Array.exists (fun (path, p) ->
+                 Position.posLt p.Range.Start r.Start
+                 && List.contains name (patBoundNames p)
+                 && (path
+                     |> List.tryPick (fun node ->
+                         match node with
+                         | SyntaxNode.SynMatchClause c -> Some c.Range
+                         | SyntaxNode.SynExpr e -> Some e.Range
+                         | _ -> None)
+                     |> Option.forall (fun scope -> Range.rangeContainsRange scope r))))
+            || (AstIndex.exprsWithin index body
+                |> Array.exists (fun (_, e) ->
+                    Position.posLt e.Range.Start r.Start
+                    && Range.rangeContainsRange e.Range r
+                    && (match e with
+                        | SynExpr.Lambda(parsedData = Some(pats, _)) ->
+                            pats |> List.exists (patBoundNames >> List.contains name)
+                        | SynExpr.For(ident = id) -> id.idText = name
+                        | _ -> false)))
+
+        // the exception name of the innermost handler an expression sits in,
+        // while it still names that exception there; a handler that binds
+        // no name has none to offer, and its enclosing handler's is another
+        // exception
         let handlerOf (r: range) =
             handlers
             |> List.filter (fun (_, body) -> Range.rangeContainsRange body r)
             |> List.sortBy (fun (_, body) -> body.EndLine - body.StartLine, body.EndColumn)
             |> List.tryHead
+            |> Option.bind (fun (name, body) ->
+                match name with
+                | ValueSome name when not (reboundBefore name body r) -> Some(name, body)
+                | _ -> None)
 
         // which library an identifier belongs to, by the typed check
         let familyOf (id: Ident) =
@@ -197,14 +229,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                              | _ -> false)
                         | _ -> false)
                     ->
-                    // the innermost handler this call sits in
-                    let handler =
-                        handlers
-                        |> List.filter (fun (_, body) -> Range.rangeContainsRange body expr.Range)
-                        |> List.sortBy (fun (_, body) -> body.EndLine - body.StartLine, body.EndColumn)
-                        |> List.tryHead
-
-                    match handler with
+                    match handlerOf expr.Range with
                     | Some(exName, _) when
                         // any mention of the exception — ex, ex.Message,
                         // ex.ToString() — means the author already chose what

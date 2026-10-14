@@ -94,7 +94,12 @@ let private ssnullbRegex = Regex @"\s*\|\s*null\b"
 /// then fails resolution. An F# function infers
 /// fine; a member gets its resolved parameter type spelled out; an
 /// unresolvable guard skips the suggestion.
-let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText) (fnExpr: SynExpr) : string voption =
+let private inputParameter
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (fnExpr: SynExpr)
+    (paramName: string)
+    : string voption =
     let lastIdent =
         match fnExpr with
         | SynExpr.Ident id -> Some id
@@ -113,7 +118,7 @@ let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText)
             | :? FSharpMemberOrFunctionOrValue as value ->
                 try
                     if not value.IsMember then
-                        ValueSome "input"
+                        ValueSome paramName
                     else
                         let t = value.CurriedParameterGroups.[0].[0].Type
 
@@ -126,7 +131,7 @@ let private inputParameter (check: FSharpCheckFileResults) (source: ISourceText)
                         // a plain `string` just as well: drop it always
                         let formatted = ssnullbRegex.Replace(t.Format symbolUse.DisplayContext, "")
 
-                        ValueSome $"(input: {formatted})"
+                        ValueSome $"({paramName}: {formatted})"
                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                     ValueNone
             | _ -> ValueNone
@@ -245,11 +250,30 @@ let find
 
                                 let aligned = contextColumn |> Option.forall (fun c -> c = decl.Range.StartColumn)
 
-                                if ownLine && aligned && not (fileText.Value.Contains $"(|{patternName}|") then
-                                    match inputParameter check source fnExpr with
+                                let fnText = textOfRange source fnExpr.Range
+
+                                // the pattern's parameter must not be the guard
+                                // function itself (`let input n = ...`)
+                                let paramName =
+                                    [ "input"; "value"; "arg" ] |> List.tryFind (mentionsIdentifier fnText >> not)
+
+                                // the new pattern name must be new to the file:
+                                // a union case, another pattern or a value
+                                // spelled bare would be captured by it in every
+                                // later pattern (`Char.IsDigit`'s member name
+                                // after a dot is not such a use)
+                                let patternNameTaken () =
+                                    Regex.IsMatch(
+                                        fileText.Value,
+                                        @"(?<![\w'.])" + Regex.Escape patternName + @"(?![\w'])"
+                                    )
+
+                                if ownLine && aligned && paramName.IsSome && not (patternNameTaken ()) then
+                                    let paramName = paramName.Value
+
+                                    match inputParameter check source fnExpr paramName with
                                     | ValueNone -> ()
                                     | ValueSome inputParam ->
-                                        let fnText = textOfRange source fnExpr.Range
                                         let indent = String(' ', decl.Range.StartColumn)
 
                                         // new code gets the best form directly:
@@ -261,19 +285,23 @@ let find
                                         let binding =
                                             if structForm then
                                                 sprintf
-                                                    "[<return: Struct>]\n%slet inline private (|%s|_|) %s =\n%s    if %s input then ValueSome input else ValueNone"
+                                                    "[<return: Struct>]\n%slet inline private (|%s|_|) %s =\n%s    if %s %s then ValueSome %s else ValueNone"
                                                     indent
                                                     patternName
                                                     inputParam
                                                     indent
                                                     fnText
+                                                    paramName
+                                                    paramName
                                             else
                                                 sprintf
-                                                    "let inline private (|%s|_|) %s =\n%s    if %s input then Some input else None"
+                                                    "let inline private (|%s|_|) %s =\n%s    if %s %s then Some %s else None"
                                                     patternName
                                                     inputParam
                                                     indent
                                                     fnText
+                                                    paramName
+                                                    paramName
 
                                         let insertAt =
                                             Range.mkRange decl.Range.FileName decl.Range.Start decl.Range.Start

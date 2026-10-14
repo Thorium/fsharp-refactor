@@ -147,6 +147,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
+        // a lock object's name must be new to the file: a second binding of
+        // it shadows (or, at module level, duplicates) the first
+        let fileText = lazy (source.GetSubTextString(0, source.Length))
+
+        let nameFree (name: string) =
+            not (mentionsIdentifier fileText.Value name)
+
         [
             for path, expr in index.Exprs do
                 match expr with
@@ -194,7 +201,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     | _ -> "lockObj", None
 
                                 match insertAfter, enclosingModuleLet path with
-                                | Some declRange, _ ->
+                                | Some declRange, _ when nameFree lockName ->
                                     // after the value's own declaration, at its
                                     // indentation
                                     let indent = String.replicate declRange.StartColumn " "
@@ -209,7 +216,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         at, "", $"{indent}let private {lockName} = obj ()\n"
                                         target.Range, targetText, lockName
                                     ]
-                                | None, Some(declRange, Some name) when declRange <> Range.range0 ->
+                                | None, Some(declRange, Some name) when
+                                    declRange <> Range.range0 && nameFree $"{name}Lock"
+                                    ->
                                     // before the enclosing binding, at its
                                     // indentation
                                     let lockName = $"{name}Lock"
