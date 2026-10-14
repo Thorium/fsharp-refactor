@@ -1532,6 +1532,66 @@ let private writeFallbackCache (key: string) (framework: string) (sites: (string
             ()
     | None -> ()
 
+/// The restores this run has done, by project, command and defined
+/// symbols, with the stamps (write time, length) of the project file and of
+/// the assets file and no-op cache NuGet keeps in `obj`. A restore is
+/// still the one in place while all three are unchanged: another restore
+/// (a verification build's implicit one, with other properties) rewrites
+/// them. Cleared when a run starts, since a resident --mcp host serves trees
+/// edited between runs.
+let private restoresDone = ConcurrentDictionary<string, (int64 * int64) list>()
+
+let private restoreStamps (projectPath: string) =
+    let stamp (path: string) =
+        let info = FileInfo path
+
+        if info.Exists then
+            Some(info.LastWriteTimeUtc.Ticks, info.Length)
+        else
+            None
+
+    let obj = Path.Combine(Path.GetDirectoryName projectPath, "obj")
+
+    match
+        stamp projectPath,
+        stamp (Path.Combine(obj, "project.assets.json")),
+        stamp (Path.Combine(obj, "project.nuget.cache"))
+    with
+    | Some project, Some assets, Some cache -> Some [ project; assets; cache ]
+    | _ -> None
+
+/// Does the project, or a Directory.Build.props/.targets above it, move
+/// where restore writes (artifacts output, a custom intermediate or
+/// restore path), or a Directory.Build.rsp add switches? Then `obj` beside
+/// the project is not where the restore's state is read from.
+let private restoreLayoutUnknown (projectPath: string) =
+    let names =
+        [
+            "UseArtifactsOutput"
+            "ArtifactsPath"
+            "BaseIntermediateOutputPath"
+            "MSBuildProjectExtensionsPath"
+            "RestoreOutputPath"
+        ]
+
+    let mentions (path: string) =
+        File.Exists path
+        && (let text = File.ReadAllText path
+            names |> List.exists text.Contains)
+
+    let rec above (dir: DirectoryInfo) =
+        not (isNull dir)
+        && (mentions (Path.Combine(dir.FullName, "Directory.Build.props"))
+            || mentions (Path.Combine(dir.FullName, "Directory.Build.targets"))
+            || File.Exists(Path.Combine(dir.FullName, "Directory.Build.rsp"))
+            || above dir.Parent)
+
+    try
+        mentions projectPath || above (DirectoryInfo(Path.GetDirectoryName projectPath))
+    with
+    | :? IOException
+    | :? UnauthorizedAccessException -> true
+
 let private fscArgs (chosenFramework: string) (projectPath: string) =
     // msbuild runs from the project's own directory (its global.json), so a
     // path given relative to the caller's directory must become absolute
@@ -1631,8 +1691,34 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
         // <MSBuild> task hits both, and the verification then puts good fixes
         // back on the strength of them.
         // `dotnet build` restores implicitly; `msbuild -t:Build` does not.
+        // The same restore this run already did, with its files untouched
+        // since (restoresDone), is not run again: a second framework's pass
+        // or a re-read of a referencing project.
+        let restoreArgs = $"msbuild \"{projectPath}\" -t:Restore"
+
+        let restoreKey =
+            String.Join(
+                "|",
+                projectPath.ToLowerInvariant(),
+                runner,
+                restoreArgs,
+                String.Join(";", RunDefines.current ())
+            )
+
         let restoreExit, restoreOut, restoreErr =
-            run $"msbuild \"{projectPath}\" -t:Restore"
+            match restoresDone.TryGetValue restoreKey with
+            | true, stamps when restoreStamps projectPath = Some stamps -> 0, "", ""
+            | _ ->
+                let result = run restoreArgs
+
+                match result, restoreLayoutUnknown projectPath with
+                | (0, _, _), false ->
+                    match restoreStamps projectPath with
+                    | Some stamps -> restoresDone.[restoreKey] <- stamps
+                    | None -> restoresDone.TryRemove restoreKey |> ignore
+                | _ -> restoresDone.TryRemove restoreKey |> ignore
+
+                result
 
         let frameworks = targetFrameworksOf projectPath
 
@@ -9388,10 +9474,13 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                     let mutable builds = 0
                                     let maxBuilds = 12
 
+                                    // the put-back sets whose build passed: the same set
+                                    // is the same tree, so it is written again but not
+                                    // rebuilt
+                                    let passedSets = HashSet<Set<string>>(HashIdentity.Structural)
+
                                     // the tree with exactly these files put back
                                     let passesReverting (reverted: Set<string>) =
-                                        builds <- builds + 1
-
                                         for path in changed do
                                             writeSource
                                                 path
@@ -9400,9 +9489,16 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                                                  else
                                                      Map.find path fixedText)
 
-                                        match verificationBuild () with
-                                        | Ok() -> true
-                                        | Error _ -> false
+                                        if passedSets.Contains reverted then
+                                            true
+                                        else
+                                            builds <- builds + 1
+
+                                            match verificationBuild () with
+                                            | Ok() ->
+                                                passedSets.Add reverted |> ignore
+                                                true
+                                            | Error _ -> false
 
                                     // a signature and its implementation move as ONE:
                                     // split across halves, both halves fail and
@@ -9748,6 +9844,8 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
     // before anything can start an MSBuild: resolving the targets may
     RunDefines.set opts.Defines
+    // a restore of an earlier run says nothing about this one's tree
+    restoresDone.Clear()
 
     match resolveTargets opts.Target with
     | Error message ->
