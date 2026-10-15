@@ -12,6 +12,7 @@ open FSharp.Compiler.Text
 open FSharp.Analyzers.SDK
 open FSharp.Compiler.Symbols
 open System
+open System.IO
 
 [<Literal>]
 let private HelpBase =
@@ -332,7 +333,7 @@ type private SiblingPatterns =
 let patternBoundInSibling (fileName: string) (options: AnalyzerProjectOptions) : string -> bool =
     let full (p: string) =
         try
-            System.IO.Path.GetFullPath p
+            Path.GetFullPath p
         with _ -> // fsharpanalyzer: ignore-line FR0055
             p
 
@@ -595,7 +596,7 @@ let private referencesAssembly (name: string) (options: AnalyzerProjectOptions) 
     options.OtherOptions
     |> List.exists (fun (arg: string) ->
         arg.StartsWith "-r:"
-        && System.IO.Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"')
+        && Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"')
            |> fun n -> n.Equals(name, StringComparison.OrdinalIgnoreCase))
 
 /// A Fable project: it references Fable.Core, and its code runs as
@@ -612,7 +613,7 @@ let private referenceNames (options: AnalyzerProjectOptions) =
     options.OtherOptions
     |> List.choose (fun (arg: string) ->
         if arg.StartsWith "-r:" then
-            Some(System.IO.Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"'))
+            Some(Path.GetFileNameWithoutExtension((arg.Substring 3).Trim '"'))
         else
             None)
 
@@ -5608,10 +5609,13 @@ let private failwithContextMessages
             // ...and so does a test string holding the message inside a longer
             // text (`$"FieldLoader: {inner}"`'s expectation spelled out): the
             // enrichment changes what it embeds, and no prefix check covers it
+            // ...and so does a C# test: the loosening is written in F#
             let unrewritable =
                 assertedIn
-                |> List.tryFind (fun (_, text) ->
-                    isNull text || not (FailwithContext.everyMentionRewritable text s.OriginalText))
+                |> List.tryFind (fun (testFile, text) ->
+                    isNull text
+                    || testFile.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+                    || not (FailwithContext.everyMentionRewritable text s.OriginalText))
                 |> Option.orElseWith (fun () ->
                     match FailwithContext.messageCore s.OriginalText with
                     | "" -> None
@@ -5623,13 +5627,19 @@ let private failwithContextMessages
             | (testFile, _) :: _, _ when not applies ->
                 hint
                     "FR0092"
-                    $"This failure message is a constant, but a test pins its exact text ({System.IO.Path.GetFileName testFile}), so it is left alone. Under --api-changes it would be interpolated with %s{s.FunctionName}'s arguments and the assertion loosened to a prefix check."
+                    $"This failure message is a constant, but a test pins its exact text ({Path.GetFileName testFile}), so it is left alone. Under --api-changes it would be interpolated with %s{s.FunctionName}'s arguments and the assertion loosened to a prefix check."
+                    s.Range
+                    []
+            | _, Some(testFile, _) when testFile.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ->
+                hint
+                    "FR0092"
+                    $"This failure message is a constant, but the C# test {Path.GetFileName testFile} mentions its exact text, and the rewrite loosens F# assertions only, so it is left alone."
                     s.Range
                     []
             | _, Some(testFile, _) ->
                 hint
                     "FR0092"
-                    $"This failure message is a constant, but {System.IO.Path.GetFileName testFile} mentions its exact text in a form the rewrite cannot loosen to a prefix check (only FsUnit `should equal` and xUnit `Assert.Equal` on an exception's `Message` are), so it is left alone."
+                    $"This failure message is a constant, but {Path.GetFileName testFile} mentions its exact text in a form the rewrite cannot loosen to a prefix check (only FsUnit `should equal` and xUnit `Assert.Equal` on an exception's `Message` are), so it is left alone."
                     s.Range
                     []
             | _ ->

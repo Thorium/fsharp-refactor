@@ -449,6 +449,24 @@ let ``FR0105: the plain million still names its threshold`` () =
 let ``a test source is named by a whole word, not a substring`` (path: string) (expected: bool) =
     Assert.Equal(expected, Configuration.isTestSourcePath path)
 
+[<Theory>]
+[<InlineData("[<Xunit.Fact>]", true)>]
+[<InlineData("[<NUnit.Framework.TestAttribute>]", true)>]
+[<InlineData("[<Trait(\"Category\", \"Slow\"); Fact>]", true)>]
+[<InlineData("[<TestCase(1)>]", true)>]
+[<InlineData("[<System.Obsolete(\"Test me\")>]", false)>]
+[<InlineData("[<System.Obsolete(\"Use X; Test Y instead\")>]", false)>]
+[<InlineData("[<Trait(\"Area\", \"a; b\"); Fact>]", true)>]
+[<InlineData("[<Test.Helpers.Marker>]", false)>]
+[<InlineData("[<Testing>]", false)>]
+let ``a test attribute marks a file that opens no framework, qualified or after another attribute``
+    (attribute: string)
+    (expected: bool)
+    =
+    let source = $"module M\n\n{attribute}\nlet check () = ()\n"
+    let tree, sourceText = FSharp.Refactor.Tests.Parsing.parse source
+    Assert.Equal(expected, AstIndex.isTestFile (AstIndex.ofTree tree) sourceText)
+
 let private repository () =
     let root = freshDir "repo"
     Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
@@ -589,6 +607,35 @@ let ``FR0092: a test embedding the message in a longer expectation vetoes the en
         Assert.Empty m.Fixes
         Assert.Contains("RulesTests.fs mentions its exact text", m.Message)
     | other -> failwithf "Expected one FR0092 note, got %A" other
+
+[<Fact>]
+let ``FR0092: a C# test pinning the text holds the enrichment, never rewritten`` () =
+    // a C# test project of the F# library: the scan finds it, and the
+    // loosening, written in F#, does not touch it
+    let root, rules = repository ()
+    let tests = Path.Combine(root, "tests")
+    Directory.CreateDirectory tests |> ignore
+    let testFile = Path.Combine(tests, "RulesTests.cs")
+
+    File.WriteAllText(
+        testFile,
+        "public class RulesTests\n{\n    public void Check(System.Exception ex) => Xunit.Assert.Equal(\"negative\", ex.Message);\n}\n"
+    )
+
+    match Configuration.testFilesMentioning rules "\"negative\"" with
+    | [ (path, _) ] -> Assert.Equal(Path.GetFullPath testFile, Path.GetFullPath path)
+    | other -> failwithf "Expected the C# test file, got %A" other
+
+    Scope.set { Scope.editor with ApiChanges = true }
+
+    try
+        match run Analyzers.failwithContextCliAnalyzer (scriptContext rules (File.ReadAllText rules)) with
+        | [ m ] ->
+            Assert.Empty m.Fixes
+            Assert.Contains("the C# test RulesTests.cs mentions its exact text", m.Message)
+        | other -> failwithf "Expected one FR0092 note, got %A" other
+    finally
+        Scope.reset ()
 
 [<Fact>]
 let ``FR0092: only a longer string holding the message counts as embedding it`` () =

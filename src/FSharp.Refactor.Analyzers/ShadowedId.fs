@@ -89,7 +89,11 @@ let rec private bindersLoop (acc: Ident list) (pending: SynPat list) =
 let rec private patternScope (path: SyntaxNode list) =
     match path with
     | SyntaxNode.SynPat _ :: rest -> patternScope rest
-    | SyntaxNode.SynMatchClause clause :: _ -> ValueSome [ clause.Range ]
+    // the clause's result is in scope too: a lambda's pattern parameter
+    // (`fun (KeyValue(k, id)) -> ...`) is parsed as a match clause whose
+    // range is the pattern alone, the lambda's body its result
+    | SyntaxNode.SynMatchClause(SynMatchClause(resultExpr = result) as clause) :: _ ->
+        ValueSome [ Range.unionRanges clause.Range result.Range ]
     | SyntaxNode.SynBinding(SynBinding(headPat = headPat)) :: SyntaxNode.SynExpr(LetOrUseE lou as e) :: _ ->
         match headPat with
         | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> ValueSome [ e.Range ]
@@ -183,7 +187,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     )
                                 ))
 
-                        if bindsHere && reads.Length = 1 && editable then
+                        // a read under an `#if` branch the parse left out is in no
+                        // symbol use: a scope spanning a directive proves no
+                        // single read
+                        if
+                            bindsHere
+                            && reads.Length = 1
+                            && editable
+                            && not (scope |> List.exists (spansDirective source))
+                        then
                             let newName =
                                 if
                                     scope

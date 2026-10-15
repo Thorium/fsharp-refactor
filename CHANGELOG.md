@@ -2,6 +2,11 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.46
+
+- FR0182 checks a lambda's pattern parameter (`fun (KeyValue(k, id)) -> ...`) against the lambda's body too: a `pid` read there was captured by the rename. It stays quiet where the binding's scope holds an `#if`, whose other branch may read `id`.
+- A test file is recognised by a qualified test attribute (`[<Xunit.Fact>]`) or one after another in its brackets (`[<Trait("Category", "Slow"); Fact>]`) too; a `;` inside an attribute's string argument ends nothing. FR0092 finds a C# test pinning a failure message as well, and leaves the message alone there: its assertion loosening is written in F#.
+
 ## 0.8.45
 
 - New rule FR0182 (idiom, fix): a local binding named `id` and read once (`| true, id -> id`) hides FSharp.Core's identity function; it is renamed to `pid` where nothing in its scope spells `pid`.

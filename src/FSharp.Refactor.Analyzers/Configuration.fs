@@ -768,7 +768,8 @@ let private repositoryRoot (analyzedFile: string) =
         None
 
 /// Every test source of the repository, read once: (path, text) for each
-/// `.fs`/`.fsx` whose path names a test (`isTestSourcePath`), build output
+/// `.fs`/`.fsx` whose path names a test (`isTestSourcePath`), and each `.cs`
+/// one, since a C# test project can pin an F# library's text; build output
 /// excluded.
 let private testSources =
     ConcurrentDictionary<string, (string * string)[]>(StringComparer.OrdinalIgnoreCase)
@@ -835,11 +836,11 @@ let private readTestSources (root: string) =
         root,
         fun root ->
             try
-                Directory.EnumerateFiles(root, "*.fs*", SearchOption.AllDirectories)
+                Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
                 |> Seq.filter (fun p ->
                     let lower = relativeLower root p
 
-                    (lower.EndsWith ".fs" || lower.EndsWith ".fsx")
+                    (lower.EndsWith ".fs" || lower.EndsWith ".fsx" || lower.EndsWith ".cs")
                     && isTestSourcePath (relativeTo root p)
                     && not (
                         lower.Contains "/obj/"

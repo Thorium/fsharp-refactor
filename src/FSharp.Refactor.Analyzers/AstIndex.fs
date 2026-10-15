@@ -545,10 +545,14 @@ let private testFrameworkOpens =
 
 /// A test attribute (`[<Test>]`, `[<Fact>]`, `[<TestCase ..>]`, `[<TestCaseSource ..>]`,
 /// `[<Property>]`, `[<TestMethod>]`) or an Expecto `testCase "..."`, for
-/// files that open the framework elsewhere.
+/// files that open the framework elsewhere: the attribute may come after
+/// others in its brackets (`[<Trait("Category", "Slow"); Fact>]`), be
+/// qualified (`[<Xunit.Fact>]`, a file opening no framework at all) or
+/// carry its `Attribute` suffix. An earlier attribute's string argument is
+/// read whole, so a `;` inside it ends nothing.
 let private testMarker =
     System.Text.RegularExpressions.Regex(
-        @"\[<\s*(Test|Fact|Theory|TestCase|TestCaseSource|Property|TestMethod)\b|\btest(Case|CaseAsync|Property|Task)\s+""",
+        @"\[<\s*(?:(?:[^>\]"";]|""[^""]*"")*;\s*)*(?:\w+\.)*(Test|Fact|Theory|TestCase|TestCaseSource|Property|TestMethod)(?:Attribute)?(?=[\s(;>])|\btest(Case|CaseAsync|Property|Task)\s+""",
         System.Text.RegularExpressions.RegexOptions.Compiled
     )
 

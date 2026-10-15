@@ -3555,6 +3555,44 @@ let ``FR0182: an or-pattern binding id in each branch stays`` () =
 
     Assert.Empty(shadowedIdIn source)
 
+[<Fact>]
+let ``FR0182: a lambda's pattern parameter checks its body for pid too`` () =
+    // the pattern parameter is a match clause whose range is the pattern
+    // alone; renamed, `pid` in the body would read the dictionary's value
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Generic
+            let render (pid: int) (d: IDictionary<string, int>) =
+                d |> Seq.map (fun (KeyValue(name, id)) -> sprintf "%s %d/%d" name id pid)
+            """
+
+    match shadowedIdIn source with
+    | [ s ] ->
+        Assert.Equal(None, s.NewName)
+        Assert.Empty(s.Edits)
+    | other -> failwithf "Expected one FR0182 note, got %A" other
+
+[<Fact>]
+let ``FR0182: a scope holding an #if keeps its id`` () =
+    // the read under the undefined symbol is in no symbol use
+    let source =
+        fsharp
+            """
+            module M
+            let read (d: System.Collections.Generic.IDictionary<string, int>) =
+                match d.TryGetValue "k" with
+                | true, id ->
+            #if TRACE_LOOKUPS
+                    printfn "found %d" id
+            #endif
+                    id
+                | _ -> 0
+            """
+
+    Assert.Empty(shadowedIdIn source)
+
 // ---- FR0022 new name sources ----
 
 let private duNamesIn (source: string) =
