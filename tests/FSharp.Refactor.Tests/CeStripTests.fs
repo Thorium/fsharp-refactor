@@ -379,6 +379,20 @@ let ``task wrapping without the open is not rewritten`` () =
     assertNoSuggestion "module Test\nlet f x = task { return x }"
 
 [<Fact>]
+let ``task wrapping outside the nested module that opens Tasks is not rewritten`` () =
+    // the open reaches only its own module's code, where the rewrite is fine
+    assertSingleSuggestion
+        (fsharp
+            """
+            module Test
+            module Inner =
+                open System.Threading.Tasks
+                let g x = task { return x }
+            let f x = task { return x }
+            """)
+        "Task.FromResult(x)"
+
+[<Fact>]
 let ``task wrapping an expression that could throw is not rewritten`` () =
     // task { return e } yields a faulted task on throw; Task.FromResult e throws synchronously
     assertNoSuggestion (

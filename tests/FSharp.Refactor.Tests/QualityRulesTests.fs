@@ -3392,6 +3392,169 @@ let ``without the locals opt-in only test names rewrite`` () =
 
     Assert.Empty(NameQuoting.find false tree sourceText checkResults None)
 
+// ---- FR0182 ShadowedId ----
+
+let private shadowedIdIn (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    ShadowedId.find tree sourceText checkResults
+
+[<Fact>]
+let ``FR0182: a TryGetValue arm's id read once becomes pid`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Generic
+            let specialId (tokens: IDictionary<string, int>) (text: string) : int =
+                match tokens.TryGetValue text with
+                | true, id -> id
+                | _ -> failwith $"the tokenizer has no {text} token"
+            """
+
+    match shadowedIdIn source with
+    | [ s ] ->
+        Assert.Equal(Some "pid", s.NewName)
+        Assert.Equal(2, s.Edits.Length)
+        let patched = applyMigration source s.Edits
+        Assert.Contains("| true, pid -> pid", patched)
+        assertTypechecks "Patched source" patched
+    | other -> failwithf "Expected one FR0182 suggestion, got %A" other
+
+[<Fact>]
+let ``FR0182: a lambda, a for variable, a let and a local function's parameter read once`` () =
+    let source =
+        fsharp
+            """
+            module M
+            let run (xs: int list) =
+                let a = xs |> List.map (fun id -> id + 1)
+                for id in xs do
+                    printfn "%d" id
+                let id = List.length xs
+                let twice id = id * 2
+                twice id, a
+            """
+
+    // the lambda's parameter, the loop's variable, the `let` (read by
+    // `twice id`) and the local function's parameter: each read once
+    let found = shadowedIdIn source
+    Assert.Equal(4, found.Length)
+
+    let patched = found |> List.collect (fun s -> s.Edits) |> applyMigration source
+
+    Assert.Contains("(fun pid -> pid + 1)", patched)
+    Assert.Contains("printfn \"%d\" pid", patched)
+    Assert.Contains("let twice pid = pid * 2", patched)
+    Assert.Contains("twice pid, a", patched)
+    assertTypechecks "Patched source" patched
+
+[<Fact>]
+let ``FR0182: settled code, names callers see, a function and nameof stay`` () =
+    let source =
+        fsharp
+            """
+            module M
+            let id = 3
+            let find (id: int) = id + 1
+            type User(id: int) =
+                member _.Id = id
+                member _.Same(id: int) = id
+            let read (d: System.Collections.Generic.IDictionary<string, int>) =
+                match d.TryGetValue "k" with
+                | true, id -> printfn "%d" id; id
+                | _ -> 0
+            let identity () =
+                let id = fun (x: int) -> x
+                id 4
+            let named () =
+                let id = 5
+                nameof id
+            """
+
+    Assert.Empty(shadowedIdIn source)
+
+[<Fact>]
+let ``FR0182: a scope that already spells pid keeps the note without a fix`` () =
+    let source =
+        fsharp
+            """
+            module M
+            let read (pid: int) (d: System.Collections.Generic.IDictionary<string, int>) =
+                match d.TryGetValue "k" with
+                | true, id -> id + pid
+                | _ -> pid
+            """
+
+    match shadowedIdIn source with
+    | [ s ] ->
+        Assert.Equal(None, s.NewName)
+        Assert.Empty(s.Edits)
+    | other -> failwithf "Expected one FR0182 note, got %A" other
+
+[<Fact>]
+let ``FR0182: a lambda a module-level or member binding is keeps its parameter; a local one does not`` () =
+    let source =
+        fsharp
+            """
+            module M
+            let lookup = fun id -> id + 1
+            let wrapped = (fun (id: int) -> id * 2)
+            type T() =
+                member _.M = fun (id: int) -> id + 3
+            let local (xs: int list) =
+                let inc = fun id -> id + 1
+                List.map inc xs
+            """
+
+    match shadowedIdIn source with
+    | [ s ] ->
+        let patched = applyMigration source s.Edits
+        Assert.Contains("let inc = fun pid -> pid + 1", patched)
+        Assert.Contains("let lookup = fun id -> id + 1", patched)
+        assertTypechecks "Patched source" patched
+    | other -> failwithf "Expected one FR0182 suggestion, got %A" other
+
+[<Fact>]
+let ``FR0182: a let's right-hand side is outside the new name's scope, a sibling binder is not`` () =
+    let source =
+        fsharp
+            """
+            module M
+            let next (pid: int) =
+                let id = pid + 1
+                id * 2
+            let pair () =
+                let id, pid = 1, 2
+                id * 2
+            """
+
+    match shadowedIdIn source |> List.sortBy (fun s -> s.Range.StartLine) with
+    | [ fromOuter; besideSibling ] ->
+        // `let pid = pid + 1` reads the parameter, as `let id = pid + 1` did
+        Assert.Equal(Some "pid", fromOuter.NewName)
+        let patched = applyMigration source fromOuter.Edits
+        Assert.Contains("let pid = pid + 1", patched)
+        Assert.Contains("pid * 2", patched)
+        assertTypechecks "Patched source" patched
+        // `let pid, pid = ...` would bind the name twice
+        Assert.Equal(None, besideSibling.NewName)
+        Assert.Empty(besideSibling.Edits)
+    | other -> failwithf "Expected two FR0182 suggestions, got %A" other
+
+[<Fact>]
+let ``FR0182: an or-pattern binding id in each branch stays`` () =
+    let source =
+        fsharp
+            """
+            module M
+            let pick (c: Choice<int, int>) =
+                match c with
+                | Choice1Of2 id
+                | Choice2Of2 id -> id
+            """
+
+    Assert.Empty(shadowedIdIn source)
+
 // ---- FR0022 new name sources ----
 
 let private duNamesIn (source: string) =

@@ -148,6 +148,28 @@ let ``FR0041: a blocked-account lookup over an int array is swept to Enumerable.
             assertTypechecks "Patched source" patched
         | other -> failwithf "Expected exactly one contains suggestion, got %A" other
 
+[<Fact>]
+let ``FR0041: an open System.Linq inside a nested module does not reach the code outside it`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            module Q =
+                open System.Linq
+                let inner (values: int[]) = Array.contains 15 values
+            let outer (values: int[]) = Array.contains 51 values
+            """
+
+    let patched =
+        vectorizedIn source
+        |> List.sortBy (fun s -> s.Range.StartLine)
+        |> List.rev
+        |> List.fold (fun text s -> applyEdit text s.Range s.ReplacementText.Value) source
+
+    Assert.Contains("let inner (values: int[]) = Enumerable.Contains(values, 15)", patched)
+    Assert.Contains("let outer (values: int[]) = System.Linq.Enumerable.Contains(values, 51)", patched)
+    assertTypechecks "Patched source" patched
+
     // the direct form read the probe before the array: a call probed against
     // a property path would swap the order of two reads
     match

@@ -105,22 +105,6 @@ let private (|NonThrowing|_|) (e: SynExpr) =
     | SynExpr.Const _ -> ValueSome e
     | _ -> ValueNone
 
-/// All `open` targets in the file, as dotted strings.
-let private collectOpens (parseTree: ParsedInput) : Set<string> =
-    let opens = ResizeArray<string>()
-
-    let collector =
-        { new SyntaxCollectorBase() with
-            override _.WalkSynModuleDecl(_path, decl) =
-                match decl with
-                | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
-                    opens.Add(ids |> List.map (fun i -> i.idText) |> String.concat ".")
-                | _ -> ()
-        }
-
-    AstIndex.replay collector parseTree
-    Set.ofSeq opens
-
 /// A name the FR0029 tail wrap generates: runTail, runTail2, runTail3...
 /// Only these are collapsed — a human's own immediately-invoked thunk may
 /// be making a deliberate point.
@@ -257,7 +241,6 @@ let private resolvesToMutable (check: FSharpCheckFileResults option) (source: IS
 /// the file immutable.
 let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let suggestions = ResizeArray<Suggestion>()
-    let opens = collectOpens parseTree
     let mutables = lazy (mutableNames parseTree)
 
     let readOnce (comp: SynExpr) =
@@ -299,7 +282,7 @@ let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (so
                     |> Option.iter (fun comp -> add expr.Range (textOfRange source comp.Range) StripKind.Forwarded)
                 // task { return x }
                 | TaskCe(SynExpr.YieldOrReturn(expr = NonThrowing returned)) when
-                    opens.Contains "System.Threading.Tasks"
+                    AstIndex.opensAt (AstIndex.ofTree parseTree) "System.Threading.Tasks" expr.Range.Start
                     ->
                     add
                         expr.Range

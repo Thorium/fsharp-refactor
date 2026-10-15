@@ -12,7 +12,7 @@
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <PackageId>FSharp.Refactor.Analyzers</PackageId>
     <Description>Functional refactoring suggestions (light bulb quick fixes) for F#, built on FSharp.Analyzers.SDK. Over 130 rules covering correctness, performance, idiom and redundancy; every one is Hint severity, so they never gate a build.</Description>
-    <PackageReleaseNotes>0.8.45: Fixes that add, rename or move a name no longer rebind another one (FR0071, FR0103, FR0150, FR0120, FR0118, FR0012, FR0092, FR0160, FR0133, FR0095, FR0046, FR0181, FR0006, FR0157, FR0172): a name already in scope, rebound before the call or brought in by an `open` holds the fix, or the next free name is taken.
+    <PackageReleaseNotes>0.8.45: New rule FR0182 (idiom, fix): a local `id` read once hides FSharp.Core&apos;s identity function; renamed to `pid`. Fixes that add, rename or move a name no longer rebind another one (FR0071, FR0103, FR0150, FR0120, FR0118, FR0012, FR0092, FR0160, FR0133, FR0095, FR0046, FR0181, FR0006, FR0157, FR0172): a name already in scope, rebound before the call or brought in by an `open` holds the fix, or the next free name is taken. An `open` inside a nested module no longer counts for code outside it (FR0041, FR0139, FR0174, FR0106, FR0005 and the namespace-spelling fixes).
 
  0.8.44:FR0101 gives nested index loops over different collections different element names (both took `item`, the inner one shadowing the outer). FR0164 reads the target runtime: `Dictionary.Remove`/`Clear` pass from .NET Core 3.0, an indexer overwrite and `HashSet.Remove`/`Clear` from .NET 5; on .NET Framework and netstandard all of them are reported. FR0092 leaves a message a test embeds in a longer string.
 
@@ -264,6 +264,7 @@
     <Compile Include="RecTailCall.fs" />
     <Compile Include="CommentDoc.fs" />
     <Compile Include="NameQuoting.fs" />
+    <Compile Include="ShadowedId.fs" />
     <Compile Include="LiterateComment.fs" />
     <Compile Include="EmptyGuid.fs" />
     <Compile Include="LoopInvariant.fs" />

@@ -359,6 +359,7 @@ let private categories =
         "FR0172",
         Category.Idiom,
         "a match arm binding a whole list and reading only itms.[0] / .[1] / .Tail is a cons pattern; an earlier [] arm makes it exact"
+        "FR0182", Category.Idiom, "a local named id, read once, hides FSharp.Core's identity function; it becomes pid"
 
         // --- cosmetic: punctuation and spelling of code
         "FR0013", Category.Cosmetic, "Redundant parentheses around single atomic arguments to a *function*: List.max([4"

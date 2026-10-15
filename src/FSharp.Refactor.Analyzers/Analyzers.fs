@@ -7191,3 +7191,33 @@ let wrappedCatchEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let wrappedCatchCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0181" "WrappedCatch" (fun () ->
         wrappedCatchMessages false ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0182 ShadowedId ----
+
+let private shadowedIdMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    ShadowedId.find parseTree source checkResults
+    |> List.map (fun s ->
+        match s.NewName with
+        | Some name ->
+            hint
+                "FR0182"
+                $"This local 'id' hides FSharp.Core's identity function `id` wherever it is in scope; '{name}' keeps both - renamed at its definition and its one use."
+                s.Range
+                (s.Edits
+                 |> List.map (fun (r, original, replacement) -> fix r original replacement))
+        | None ->
+            hint
+                "FR0182"
+                "This local 'id' hides FSharp.Core's identity function `id` wherever it is in scope; give it another name ('pid' is taken here)."
+                s.Range
+                [])
+
+[<EditorAnalyzer("ShadowedId", "A local named id hides the identity function", HelpBase)>]
+let shadowedIdEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0182" "ShadowedId" (fun () ->
+        whenChecked ctx (shadowedIdMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("ShadowedId", "A local named id hides the identity function", HelpBase)>]
+let shadowedIdCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0182" "ShadowedId" (fun () ->
+        shadowedIdMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)

@@ -157,6 +157,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\RecTailCall.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\CommentDoc.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\NameQuoting.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\ShadowedId.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LiterateComment.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\EmptyGuid.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LoopInvariant.fs" />

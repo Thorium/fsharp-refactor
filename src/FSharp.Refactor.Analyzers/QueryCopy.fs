@@ -619,7 +619,9 @@ let find
             | Some full, Some(:? FSharpMemberOrFunctionOrValue as v) -> OptionModule.enclosingFullName v = full
             | _ -> false
 
-        let linqOpen = opensNamespace source "System.Linq"
+        // the pipeline's rewrite calls Where/Select: System.Linq must be open
+        // where it is written
+        let linqOpenAt (at: pos) = AstIndex.opensAt index "System.Linq" at
 
         let pipelineCandidates =
             [
@@ -695,7 +697,7 @@ let find
                                                 |> List.distinct
                                                 |> String.concat "/"
                                             Fidelity = fidelity
-                                            Fixable = linqOpen
+                                            Fixable = linqOpenAt expr.Range.Start
                                             // the copy stays the last step: a list stays a list
                                             TypeStable = true
                                         }

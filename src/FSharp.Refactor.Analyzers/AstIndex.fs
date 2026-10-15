@@ -566,3 +566,24 @@ let isTestFile (index: Index) (source: ISourceText) =
         | _ -> false)
     || seq { 0 .. source.GetLineCount() - 1 }
        |> Seq.exists (fun l -> testMarker.IsMatch(source.GetLineString l))
+
+/// Is the namespace or module `ns` opened at `pos`? An `open` holds from
+/// where it is written to the end of the module or namespace declaring it,
+/// the modules nested there included; one inside another nested module, or
+/// in a branch `#if` leaves out of the parse, does not reach `pos`.
+let opensAt (index: Index) (ns: string) (pos: pos) =
+    index.Decls
+    |> Array.exists (fun (path, d) ->
+        match d with
+        | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids)); range = r) when
+            (ids |> List.map (fun i -> i.idText) |> String.concat ".") = ns
+            ->
+            Position.posGeq pos r.End
+            && (path
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynModule(SynModuleDecl.NestedModule(range = m)) -> Some m
+                    | SyntaxNode.SynModuleOrNamespace(SynModuleOrNamespace(range = m)) -> Some m
+                    | _ -> None)
+                |> Option.forall (fun container -> Range.rangeContainsPos container pos))
+        | _ -> false)

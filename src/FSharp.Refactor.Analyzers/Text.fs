@@ -927,15 +927,18 @@ let insideQuotedCode (path: SyntaxNode list) =
             id.idText.EndsWith("query", StringComparison.OrdinalIgnoreCase)
         | _ -> false)
 
-/// Does the file `open System` at any top-level line? Textual, cheap and
-/// deliberately exact: `open System.IO` does not bring System.String into
-/// scope, and a fix emitted without the open must spell `System.` out.
+/// Does the file `open System` at top level, a line of its own at column
+/// 0? Textual, cheap and deliberately exact: `open System.IO` does not
+/// bring System.String into scope, and an indented `open System` belongs
+/// to a nested module and reaches nothing outside it. Whatever this misses
+/// spells `System.` out, which resolves either way.
 let opensSystemNamespace (source: ISourceText) =
     seq { 0 .. source.GetLineCount() - 1 }
-    |> Seq.exists (fun l -> source.GetLineString(l).Trim() = "open System")
+    |> Seq.exists (fun l -> source.GetLineString(l).TrimEnd() = "open System")
 
-/// Does the file `open` this exact namespace at any top-level line? The
-/// same textual, deliberately exact test as opensSystemNamespace.
+/// Does the file `open` this exact namespace at ANY line, a nested
+/// module's included? Only for a whole-file stand-down, where an open
+/// anywhere is reason enough; a fix's spelling asks AstIndex.opensAt.
 let opensNamespace (source: ISourceText) (ns: string) =
     seq { 0 .. source.GetLineCount() - 1 }
     |> Seq.exists (fun l -> source.GetLineString(l).Trim() = "open " + ns)

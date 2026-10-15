@@ -99,17 +99,10 @@ let findChecked
                 | _ -> ()
         | _ -> ()
 
-    // an existing open makes the short CultureInfo spelling resolve
-    let globalizationOpened =
-        index.Decls
-        |> Array.exists (fun (_, d) ->
-            match d with
-            | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = [ s; g ]))) ->
-                s.idText = "System" && g.idText = "Globalization"
-            | _ -> false)
-
-    let cultureSpelling (name: string) =
-        if globalizationOpened then
+    // an open in scope where the edit lands makes the short CultureInfo
+    // spelling resolve
+    let cultureSpelling (at: pos) (name: string) =
+        if AstIndex.opensAt index "System.Globalization" at then
             $"CultureInfo.{name}"
         else
             $"System.Globalization.CultureInfo.{name}"
@@ -195,12 +188,14 @@ let findChecked
                                     match arg with
                                     | SynExpr.Paren _ ->
                                         let at = Range.mkRange e.Range.FileName inner.Range.End inner.Range.End
-                                        Some(fun (culture: string) -> at, "", $", {cultureSpelling culture}")
+
+                                        Some(fun (culture: string) ->
+                                            at, "", $", {cultureSpelling e.Range.Start culture}")
                                     | _ ->
                                         let argText = textOfRange source arg.Range
 
                                         Some(fun (culture: string) ->
-                                            arg.Range, argText, $"({argText}, {cultureSpelling culture})")
+                                            arg.Range, argText, $"({argText}, {cultureSpelling e.Range.Start culture})")
 
                             {
                                 Range = e.Range

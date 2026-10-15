@@ -4,6 +4,8 @@ The analyzers package, the `fsharp-refactor` tool and both editor extensions sha
 
 ## 0.8.45
 
+- New rule FR0182 (idiom, fix): a local binding named `id` and read once (`| true, id -> id`) hides FSharp.Core's identity function; it is renamed to `pid` where nothing in its scope spells `pid`.
+- An `open` inside a nested module no longer counts for code outside it: FR0041/FR0139 spell `System.Linq.Enumerable.Contains` there, FR0174 and FR0106 hold their fix, FR0005 leaves `task { return x }`, and the `String`/`CultureInfo`/`Convert` fixes spell their namespace (a fix emitted bare where the open did not reach failed to compile).
 - Fixes that add, rename or move a name no longer rebind another one; each case compiled with a changed meaning or broke the build.
 - FR0071 keeps a binding the loop's bounds, condition or an earlier statement read, and one reading what an enclosing lambda or loop on its line binds.
 - FR0103 keeps a branch that rebinds the subject; FR0150 keeps a `use` whose right-hand side reads a name rebound before the computation.
@@ -11,6 +13,7 @@ The analyzers package, the `fsharp-refactor` tool and both editor extensions sha
 - FR0012 sees primed parameters; FR0092's and FR0160's fresh names skip dotted and script-level reads; FR0181, FR0160 and FR0172 offer nothing when every name is taken.
 - FR0133 skips two names quoting to one; FR0095 counts class `let`s and constructor parameters; FR0046 and FR0006 skip names the file already uses; FR0157 skips a union name an `open` brings in.
 - `--mcp` reports the tool's own version in `initialize` (it answered 0.6.6).
+- Fewer MSBuild calls: a project already restored in this run, with its project file and restore output unchanged since, is not restored again (a second target framework, a re-read referencing project); a bisection step whose files were already built once is not rebuilt.
 
 ## 0.8.44
 

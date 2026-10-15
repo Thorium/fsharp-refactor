@@ -3,7 +3,8 @@
 /// StructOption, FR0003 Composition, FR0072 ExpandWildcard, FR0087 /
 /// FR0088 / FR0089 PatternCleanups, FR0129 MatchGuards, FR0117
 /// MatchArmMerge, FR0110 MissingCases, FR0100 UnimplementedBranch, FR0172
-/// ListHeadPattern and FR0040 RedundantGuard. A shape that needs a union or
+/// ListHeadPattern, FR0182 ShadowedId and FR0040 RedundantGuard. A shape
+/// that needs a union or
 /// a private helper
 /// prints one nested module holding the type and the function, so it is
 /// still one declaration and shrinks as one.
@@ -176,6 +177,14 @@ let private shapes =
             $"let f{i} (xs: int list) =\n    match xs with\n    | itms when itms.Length > {n} -> itms.[0]\n    | _ -> {n}")
         withFree "ArrayHeadArmKept" [ "!FR0172" ] genSmall (fun n i ->
             $"let f{i} (xs: int[]) =\n    match xs with\n    | [||] -> {n}\n    | itms -> itms.[0] + {n}")
+        // FR0182: a local `id` read once, in a TryGetValue arm or a lambda
+        withFree "ShadowedIdArm" [ "FR0182" ] genSmall (fun n i ->
+            $"let f{i} (d: Dictionary<int, int>) (k: int) =\n    match d.TryGetValue k with\n    | true, id -> id + {n}\n    | _ -> {n}")
+        withFree "ShadowedIdLambda" [ "FR0182" ] genSmall (fun n i ->
+            $"let f{i} (xs: int list) = xs |> List.map (fun id -> id * {n + 2})")
+        // FR0182 must stay quiet: a local `id` read in two places is settled
+        withFree "ShadowedIdSettled" [ "!FR0182" ] genSmall (fun n i ->
+            $"let f{i} (d: Dictionary<int, int>) (k: int) =\n    match d.TryGetValue k with\n    | true, id -> id + id + {n}\n    | _ -> {n}")
     ]
 
 let family: Family =
@@ -224,6 +233,10 @@ let family: Family =
 
                     for s in ListHeadPattern.find c.Tree c.Source ->
                         "FR0172", [ edit "FR0172" s.Range s.ReplacementText ]
+
+                    for s in ShadowedId.find c.Tree c.Source c.Check do
+                        if not s.Edits.IsEmpty then
+                            yield "FR0182", [ for r, _, t in s.Edits -> edit "FR0182" r t ]
                 ]
         Notes = fun _ -> []
     }

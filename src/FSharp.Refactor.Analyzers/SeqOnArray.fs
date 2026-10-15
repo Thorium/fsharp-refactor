@@ -207,8 +207,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         elif f.idText = "contains" && vectorisableElements.Contains element then
                             // the second, faster answer, spelled so it
                             // resolves whether or not System.Linq is open
+                            // where it is written
                             let prefix =
-                                if opensNamespace source "System.Linq" then
+                                if AstIndex.opensAt index "System.Linq" expr.Range.Start then
                                     "Enumerable"
                                 else
                                     "System.Linq.Enumerable"

@@ -137,10 +137,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     else
         let index = AstIndex.ofTree parseTree
 
-        // spelled so it resolves whether or not System.Linq is open, as
-        // FR0139 spells its Contains
-        let enumerable =
-            if opensNamespace source "System.Linq" then
+        // spelled so it resolves whether or not System.Linq is open where it
+        // is written, as FR0139 spells its Contains
+        let enumerableAt (at: pos) =
+            if AstIndex.opensAt index "System.Linq" at then
                 "Enumerable"
             else
                 "System.Linq.Enumerable"
@@ -183,7 +183,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             && coreArrayFunction fn
                             && (piped || not (arrText.Contains '.') || inert needle)
                             ->
-                            Some $"{enumerable}.Contains({arrText}, {textOfRange source needle.Range})"
+                            Some
+                                $"{enumerableAt expr.Range.Start}.Contains({arrText}, {textOfRange source needle.Range})"
                         | _ -> None
 
                     {

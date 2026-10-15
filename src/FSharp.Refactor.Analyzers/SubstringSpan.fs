@@ -170,8 +170,7 @@ let private (|ConsumerCall|_|) (e: SynExpr) =
 /// Find Substring calls whose only consumer is a span-capable reader.
 /// Requires typed check results.
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
-    // `AsSpan` is MemoryExtensions': without `open System` it does not resolve
-    if OptionModule.hasErrors check || not (opensNamespace source "System") then
+    if OptionModule.hasErrors check then
         []
     else
         let index = AstIndex.ofTree parseTree
@@ -186,6 +185,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     match stripParens consumerArg with
                     | SynExpr.App(isInfix = false; funcExpr = MethodNamed "Substring" substringIdent; argExpr = _) when
                         isSingleLine expr.Range
+                        // `AsSpan` is MemoryExtensions': without `open System`
+                        // where it is written it does not resolve
+                        && AstIndex.opensAt index "System" expr.Range.Start
                         && isStringSubstring check source substringIdent
                         && hasSpanOverload check source consumerIdent
                         ->

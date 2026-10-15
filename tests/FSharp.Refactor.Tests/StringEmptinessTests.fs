@@ -23,6 +23,20 @@ let private assertPatched (source: string) (expectedReplacement: string) (guarde
 let private assertNoSuggestion (source: string) = Assert.Empty(findIn source)
 
 [<Fact>]
+let ``an open System inside a nested module leaves the qualified spelling outside it`` () =
+    assertPatched
+        (fsharp
+            """
+            module Test
+            module Inner =
+                open System
+                let now () = DateTime.Now
+            let f (x: string) = if isNull x || x = "" then 0 else 1
+            """)
+        "System.String.IsNullOrEmpty x"
+        true
+
+[<Fact>]
 let ``isNull-or-empty becomes IsNullOrEmpty`` () =
     assertPatched
         (fsharp
