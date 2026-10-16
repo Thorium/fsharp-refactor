@@ -5212,6 +5212,169 @@ let ``FR0066: a hole filled from a constant is not a value`` () =
     )
 
 [<Fact>]
+let ``FR0066: a name bound once per function resolves to the binding in scope (SQLProvider's baseQuery)`` () =
+    let sinks (source: string) =
+        let _, sqls, _ = securityIn source
+        sqls |> List.map (fun s -> s.Range.StartLine)
+
+    // every member binds its own constant `baseQuery`; the value goes in a
+    // parameter. Only the one bound to input is a leak
+    Assert.Equal<int list>(
+        [ 12 ],
+        sinks (
+            fsharp
+                """
+                module Test
+                let tables (provider: ISqlProvider) con name =
+                    let baseQuery = "SELECT * FROM INFORMATION_SCHEMA.TABLES"
+                    use com = provider.CreateCommand(con, $"%s{baseQuery} WHERE TABLE_NAME = @table")
+                    com
+                let keys (provider: ISqlProvider) con name =
+                    let baseQuery = "SELECT * FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE"
+                    use com = provider.CreateCommand(con, $"%s{baseQuery} WHERE TABLE_NAME = @table")
+                    com
+                let custom (provider: ISqlProvider) con (input: string) =
+                    let baseQuery = input
+                    use com = provider.CreateCommand(con, $"%s{baseQuery} WHERE TABLE_NAME = @table")
+                    com
+                """
+        )
+    )
+
+    // the enclosing function's parameter is an outer binding the local
+    // constant hides; a lambda argument between the constant and the use, a
+    // primary constructor's parameter, and a rebinding to input are not
+    Assert.Equal<int list>(
+        [ 9; 11; 15 ],
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                let schema = "app"
+                let f (connection: NpgsqlConnection) (query: string) =
+                    let query = "SELECT 1"
+                    new NpgsqlCommand($"{query} WHERE id = @id", connection)
+                let g (connection: NpgsqlConnection) (names: string list) =
+                    let query = "SELECT 1"
+                    names |> List.map (fun query -> new NpgsqlCommand($"{query} WHERE id = @id", connection))
+                type Repo(schema: string) =
+                    member _.Path(connection: NpgsqlConnection) = new NpgsqlCommand($"SET search_path = {schema}", connection)
+                let h (connection: NpgsqlConnection) (input: string) =
+                    let query = "SELECT 1"
+                    let query = query + input
+                    new NpgsqlCommand($"{query} WHERE id = @id", connection)
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0066: a let of the same name in a nested module or a class body hides the module constant`` () =
+    let sinks (source: string) =
+        let _, sqls, _ = securityIn source
+        sqls |> List.map (fun s -> s.Range.StartLine)
+
+    // the sink reads Inner.q and Repo's q, both input; the top-level constant
+    // of the same name is not the one in scope. Outer.Names.typeName is input
+    // too, while a deeper Names.Deep.typeName is a constant
+    // and a script may redefine a top-level name: the later `p` is input
+    Assert.Equal<int list>(
+        [ 7; 11; 18; 21 ],
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                let q = "SELECT 1"
+                module Inner =
+                    let q = System.Console.ReadLine()
+                    let run (connection: NpgsqlConnection) =
+                        new NpgsqlCommand($"{q} WHERE id = @id", connection)
+                type Repo(input: string) =
+                    let q = input
+                    member _.Run(connection: NpgsqlConnection) =
+                        new NpgsqlCommand($"{q} WHERE id = @id", connection)
+                module Names =
+                    module Deep =
+                        let typeName = "varchar"
+                    let typeName = System.Console.ReadLine()
+                module Use =
+                    let cast (connection: NpgsqlConnection) =
+                        new NpgsqlCommand(sprintf "SELECT cast(x as %s)" Names.typeName, connection)
+                let p = "SELECT 1"
+                let p = System.Console.ReadLine()
+                let run (connection: NpgsqlConnection) = new NpgsqlCommand($"{p} WHERE id = @id", connection)
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0066: a let after the text was built is not the name the text read`` () =
+    let sinks (source: string) =
+        let _, sqls, _ = securityIn source
+        sqls |> List.map (fun s -> s.Range.StartLine)
+
+    // `sql` read the parameter `table`; the `let table = "users"` written
+    // after it is in scope at the sink, not where the text was built, so
+    // the text stays dynamic - whether the later let is a sibling or sits
+    // in a nested block around the sink
+    Assert.Equal<int list>(
+        [ 7; 13; 15 ],
+        sinks (
+            fsharp
+                """
+                module Test
+                open Npgsql
+                let load (connection: NpgsqlConnection) (table: string) =
+                    let sql = $"SELECT * FROM {table} WHERE id = @id"
+                    let table = "users"
+                    ignore table
+                    new NpgsqlCommand(sql, connection)
+                let pick (connection: NpgsqlConnection) (table: string) (fast: bool) =
+                    let sql = $"SELECT * FROM {table} WHERE id = @id"
+                    if fast then
+                        let table = "users"
+                        ignore table
+                        new NpgsqlCommand(sql, connection)
+                    else
+                        new NpgsqlCommand(sql, connection)
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0066: a constant folds through sprintf, + and holes, nested names and Module.name`` () =
+    let sinks (source: string) =
+        let _, sqls, _ = securityIn source
+        sqls |> List.map (fun s -> s.Range.StartLine)
+
+    Assert.Equal<int list>(
+        [ 14; 15; 16 ],
+        sinks (
+            fsharp
+                """
+                module Test
+                module Names =
+                    let typeName = "varchar"
+                    let mutable schema = "app"
+                    let computed () = System.Environment.GetEnvironmentVariable "T"
+                let columns (provider: ISqlProvider) con =
+                    let baseQuery = sprintf "SELECT cast(x as %s) FROM t WHERE x = @x" Names.typeName
+                    provider.CreateCommand(con, baseQuery)
+                let joined (provider: ISqlProvider) con =
+                    let select = "SELECT a"
+                    let from = select + " FROM t"
+                    provider.CreateCommand(con, $"{from} WHERE a = @a")
+                let leaks (provider: ISqlProvider) con =
+                    let a = provider.CreateCommand(con, $"SET search_path = {Names.schema}")
+                    let b = provider.CreateCommand(con, sprintf "SELECT %s" (Names.computed ()))
+                    let c = provider.CreateCommand(con, sprintf "SELECT %s" Names.schema)
+                    a, b, c
+                """
+        )
+    )
+
+[<Fact>]
 let ``FR0146: a literal statement with no parameter marker is suspicious, a parametrized one is not`` () =
     let _, sqls, _ =
         securityIn (

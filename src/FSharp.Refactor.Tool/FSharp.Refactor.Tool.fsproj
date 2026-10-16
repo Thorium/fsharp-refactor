@@ -16,7 +16,9 @@
     <ToolCommandName>fsharp-refactor</ToolCommandName>
     <PackageId>fsharp-refactor</PackageId>
     <Description>Applies the FSharp.Refactor analyzers' quick fixes to F# code from the command line. Point it at a project, a script, a solution, a directory or a glob; --dry-run reports without editing. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.</Description>
-    <PackageReleaseNotes>0.8.46: FR0182 checks a lambda&apos;s pattern parameter against the lambda&apos;s body and stays quiet where the scope holds an `#if`. A test file is also recognised by a qualified or non-first test attribute; FR0092 finds a C# test pinning a failure message and leaves the message alone.
+    <PackageReleaseNotes>0.8.47: FR0066 resolves a query text&apos;s names to the binding in scope and folds constants (holes, `+`, sprintf and String.Format of constants, `Module.name`), read where the text was built: a per-member `let baseQuery = "..."` is no finding. Loaded code (an analyzer, source generator, MSBuild task or a driver&apos;s finalizer) crashing on a background thread no longer ends the run: reported once, the run goes on and exits 1; out of memory and the tool&apos;s own failures still stop it.
+
+ 0.8.46: FR0182 checks a lambda&apos;s pattern parameter against the lambda&apos;s body and stays quiet where the scope holds an `#if`. A test file is also recognised by a qualified or non-first test attribute; FR0092 finds a C# test pinning a failure message and leaves the message alone.
 
  0.8.45: New rule FR0182 (idiom, fix): a local `id` read once hides FSharp.Core&apos;s identity function; renamed to `pid`. Fixes that add, rename or move a name no longer rebind another one (FR0071, FR0103, FR0150, FR0120, FR0118, FR0012, FR0092, FR0160, FR0133, FR0095, FR0046, FR0181, FR0006, FR0157, FR0172): a name already in scope, rebound before the call or brought in by an `open` holds the fix, or the next free name is taken. An `open` inside a nested module no longer counts for code outside it (FR0041, FR0139, FR0174, FR0106, FR0005 and the namespace-spelling fixes). `--mcp` reports the tool&apos;s own version in `initialize`. A project restored earlier in the run, unchanged since, is not restored again; a bisection does not rebuild a tree it already built.
 
@@ -24,9 +26,7 @@
 
  0.8.43: Visual Studio extension bundles FsAutoComplete 0.85.3, whose quick fixes are titled by what they write. VS Code extension offers to install or update the `fsautocomplete` tool when Ionide&apos;s is older than 0.85.
 
- 0.8.42: FR0075 counts a window the scope does not show modally (`form.Show()`, `Application.Run form`, a method of its own that shows it) as self-active: a `use` there disposed the window on the spot (C# twin CR0060).
-
- 0.8.41: New rules FR0175 (date format `hh`/`mm`/`MM` mix-ups, fix), FR0176 (date parts from two instants, fix), FR0177 (always-true/false comparison pair), FR0178 (`.Value` in the empty branch), FR0179 (discarded immutable update), FR0180 (`Random` per call to `Random.Shared`, fix), FR0181 (specific catch around a blocking wait). FR0067 covers `Convert.To*` on a string, FR0017 `let _ = asyncCall`, FR0127 credential-named literals; reports mask credential findings. FR0049 accepts a read behind a bounded `Task.WaitAny`. Faster sweeps: files are no longer typechecked twice, and the project-wide use list is built once. `--api-changes` reads a referencing project only when its sources name the declaration.</PackageReleaseNotes>
+ 0.8.42: FR0075 counts a window the scope does not show modally (`form.Show()`, `Application.Run form`, a method of its own that shows it) as self-active: a `use` there disposed the window on the spot (C# twin CR0060).</PackageReleaseNotes>
     <Authors>Tuomas Hietanen</Authors>
     <PackageProjectUrl>https://github.com/Thorium/fsharp-refactor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Thorium/fsharp-refactor</RepositoryUrl>

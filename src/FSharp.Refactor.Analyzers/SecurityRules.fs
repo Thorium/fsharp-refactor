@@ -228,16 +228,10 @@ let rec private appChain (e: SynExpr) =
     | SynExpr.App(isInfix = false; funcExpr = f; argExpr = a) -> appChain f @ [ a ]
     | other -> [ other ]
 
-/// A string expression assembled from VALUES: interpolation with holes,
-/// a `+` chain, or a sprintf/String.Format call — where at least one hole,
-/// operand or argument is not a compile-time constant. `isConstant` says
-/// what counts as one (a literal, or a name bound immutably to one): a
-/// `SET search_path = "{schema}"` whose schema is a module constant is a
-/// statement the author wrote, not one the caller can bend, and there is
-/// no parameter to move the name into anyway.
-let private isDynamicStringWith (isConstant: SynExpr -> bool) (e: SynExpr) =
-    let value (x: SynExpr) = not (isConstant x)
-
+/// The pieces a string is assembled from: an interpolation's holes, a `+`
+/// chain's operands, or a sprintf/String.Format call's arguments (the
+/// format itself is a literal). None for any other expression.
+let private assembledParts (e: SynExpr) =
     let rec operands (x: SynExpr) =
         match stripParens x with
         | Addition(l, r) -> operands l @ operands r
@@ -246,24 +240,37 @@ let private isDynamicStringWith (isConstant: SynExpr -> bool) (e: SynExpr) =
     match stripParens e with
     | SynExpr.InterpolatedString(contents = parts) ->
         parts
-        |> List.exists (fun p ->
+        |> List.choose (fun p ->
             match p with
-            | SynInterpolatedStringPart.FillExpr(expr, _) -> value expr
-            | SynInterpolatedStringPart.String _ -> false)
-    | Addition _ as sum -> operands sum |> List.exists value
+            | SynInterpolatedStringPart.FillExpr(expr, _) -> Some expr
+            | SynInterpolatedStringPart.String _ -> None)
+        |> Some
+    | Addition _ as sum -> Some(operands sum)
     | SynExpr.App(isInfix = false) as app ->
         match appChain app with
-        | SingleIdent f :: _format :: args when f.idText = "sprintf" -> args |> List.exists value
+        | SingleIdent f :: _format :: args when f.idText = "sprintf" -> Some args
         | [ SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); arg ] when
             ids.Length >= 2
             && (List.last ids).idText = "Format"
             && ids.[ids.Length - 2].idText = "String"
             ->
             match stripParens arg with
-            | SynExpr.Tuple(exprs = _format :: args) -> args |> List.exists value
-            | _ -> false
-        | _ -> false
-    | _ -> false
+            | SynExpr.Tuple(exprs = _format :: args) -> Some args
+            | _ -> None
+        | _ -> None
+    | _ -> None
+
+/// A string expression assembled from VALUES: interpolation with holes,
+/// a `+` chain, or a sprintf/String.Format call — where at least one hole,
+/// operand or argument is not a compile-time constant. `isConstant` says
+/// what counts as one (a literal, or a name bound immutably to one): a
+/// `SET search_path = "{schema}"` whose schema is a module constant is a
+/// statement the author wrote, not one the caller can bend, and there is
+/// no parameter to move the name into anyway.
+let private isDynamicStringWith (isConstant: SynExpr -> bool) (e: SynExpr) =
+    match assembledParts e with
+    | Some parts -> parts |> List.exists (isConstant >> not)
+    | None -> false
 
 /// The purely syntactic reading: every hole, operand and argument is a
 /// value, literals apart.
@@ -303,18 +310,6 @@ let find
     let sql = ResizeArray<SqlStringSuggestion>()
     let processSinks = ResizeArray<ProcessSinkSuggestion>()
 
-    // an identifier's right-hand side, one hop: the nearest enclosing
-    // `let x = ...` on the path, else a module-level `let x = ...` of this
-    // file. A function parameter resolves to nothing — the caller is
-    // where the string was built, and the caller's site is the one
-    // reported
-    let localBindingOf (path: SyntaxNode list) (name: string) =
-        path
-        |> List.tryPick (fun node ->
-            match node with
-            | SyntaxNode.SynExpr(LetOrUseE lou) -> lou.Bindings |> List.tryFind (bindsName name)
-            | _ -> None)
-
     let moduleBindingOf (name: string) =
         index.Decls
         |> Array.tryPick (fun (_, decl) ->
@@ -322,68 +317,208 @@ let find
             | SynModuleDecl.Let(bindings = bindings) -> bindings |> List.tryFind (bindsName name)
             | _ -> None)
 
-    let bindingOf (path: SyntaxNode list) (name: string) =
-        match localBindingOf path name with
-        | Some b -> Some b
-        | None -> moduleBindingOf name
+    let binderName (p: SynPat) =
+        match p with
+        | SynPat.Named(ident = SynIdent(ident = ident)) -> Some ident.idText
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ ident ]); argPats = SynArgPats.Pats []) -> Some ident.idText
+        | _ -> None
 
-    let definitionOf path name =
-        bindingOf path name |> Option.map (fun (SynBinding(expr = rhs)) -> rhs)
+    // a lambda's arguments are not in the index's patterns: gather the
+    // names they bind straight from the lambda
+    let rec namesBoundBy (p: SynPat) : (string * range) list =
+        let own = binderName p |> Option.map (fun n -> n, p.Range) |> Option.toList
+
+        let children =
+            match p with
+            | SynPat.Paren(pat = inner)
+            | SynPat.Typed(pat = inner)
+            | SynPat.Attrib(pat = inner) -> [ inner ]
+            | SynPat.As(lhsPat = l; rhsPat = r)
+            | SynPat.Or(lhsPat = l; rhsPat = r)
+            | SynPat.ListCons(lhsPat = l; rhsPat = r) -> [ l; r ]
+            | SynPat.Ands(pats = ps)
+            | SynPat.Tuple(elementPats = ps)
+            | SynPat.ArrayOrList(elementPats = ps) -> ps
+            | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> ps
+            | _ -> []
+
+        own @ List.collect namesBoundBy children
+
+    // the binders of each name in the file, with the range each one scopes
+    // over: a pattern's first non-pattern ancestor - the function binding
+    // whose parameter it is, the match arm, loop or `let!` that introduces
+    // it - and a lambda for its arguments. A value `let` reaches past its own
+    // binding, over the whole container it sits in: the `let ... in` block,
+    // the class body (`type Repo(input) = let q = input`), the module (a
+    // nested module's `let q = input` hides the file's `let q = "SELECT 1"`).
+    // A primary constructor's parameters reach the whole type, not just the
+    // constructor's argument list
+    let bindersByName =
+        lazy
+            (let fromPatterns =
+                index.Pats
+                |> Array.choose (fun (patPath, p) ->
+                    let container (outer: SyntaxNode list) =
+                        match outer with
+                        | SyntaxNode.SynExpr(LetOrUseE _ as letOrUse) :: _ -> Some letOrUse.Range
+                        | SyntaxNode.SynMemberDefn(SynMemberDefn.LetBindings _) :: typeDefn :: _
+                        | SyntaxNode.SynModule(SynModuleDecl.Let _) :: typeDefn :: _ -> Some typeDefn.Range
+                        | _ -> None
+
+                    let scope =
+                        match
+                            patPath
+                            |> List.skipWhile (fun node ->
+                                match node with
+                                | SyntaxNode.SynPat _ -> true
+                                | _ -> false)
+                        with
+                        | SyntaxNode.SynMemberDefn(SynMemberDefn.ImplicitCtor _) :: rest ->
+                            rest |> List.tryHead |> Option.map (fun node -> node.Range)
+                        // a value binding, not a function's parameter
+                        | SyntaxNode.SynBinding(SynBinding(headPat = head)) as binding :: outer when
+                            (match head with
+                             | SynPat.LongIdent(argPats = SynArgPats.Pats(_ :: _)) -> false
+                             | _ -> true)
+                            ->
+                            container outer |> Option.orElse (Some binding.Range)
+                        | node :: _ -> Some node.Range
+                        | [] -> None
+
+                    binderName p |> Option.map (fun n -> n, (p.Range, scope)))
+
+             let fromLambdas =
+                 index.Exprs
+                 |> Array.collect (fun (_, e) ->
+                     match e with
+                     | SynExpr.Lambda(parsedData = Some(args, _)) ->
+                         args
+                         |> List.collect namesBoundBy
+                         |> List.map (fun (n, r) -> n, (r, Some e.Range))
+                         |> List.toArray
+                     | _ -> [||])
+
+             Array.append fromPatterns fromLambdas
+             |> Array.groupBy fst
+             |> Array.map (fun (n, binders) -> n, binders |> Array.map snd)
+             |> Map.ofArray)
+
+    // a use of `name` that `binding` does not reach: another binder of the
+    // same name - a parameter, a lambda or match-arm argument (`let schema =
+    // "app"` at module level and a `schema` parameter in the sink's
+    // function) - scopes over the use, or the use sits in the binding's own
+    // right-hand side, where a non-recursive `let` still reads the outer
+    // name. A `let` of the same name in ANOTHER function scopes over
+    // nothing here: SQLProvider binds `baseQuery` once per member
+    let shadowed (SynBinding(headPat = own) as binding) (useRange: range) (name: string) =
+        Range.rangeContainsRange binding.RangeOfBindingWithRhs useRange
+        || (match bindersByName.Value.TryFind name with
+            | None -> false
+            | Some binders ->
+                binders
+                |> Array.exists (fun (patRange, scope) ->
+                    not (Range.rangeContainsRange own.Range patRange)
+                    && (match scope with
+                        // between the binding and the use; a binder whose
+                        // scope holds the binding too is an outer one it
+                        // hides - unless it comes AFTER the binding and
+                        // before the use, a script's top-level `let q =
+                        // input` redefining the `let q = "SELECT 1"` above
+                        | Some scopeRange ->
+                            let bindingRange = binding.RangeOfBindingWithRhs
+
+                            Range.rangeContainsRange scopeRange useRange
+                            && (not (Range.rangeContainsRange scopeRange bindingRange)
+                                || (Position.posGt patRange.Start bindingRange.End
+                                    && Position.posLt patRange.Start useRange.Start))
+                        | None -> true)))
+
+    // where a binding's right-hand side reads its names: a local `let` from
+    // its enclosing node outward (`let q = q + "x"` reads the outer q), a
+    // module-level one at module level
+    let bindingWithScope (path: SyntaxNode list) (name: string) =
+        let rec local (nodes: SyntaxNode list) =
+            match nodes with
+            | [] -> None
+            | (SyntaxNode.SynExpr(LetOrUseE lou) :: outer) ->
+                match lou.Bindings |> List.tryFind (bindsName name) with
+                | Some b -> Some(b, outer)
+                | None -> local outer
+            | _ :: outer -> local outer
+
+        match local path with
+        | Some found -> Some found
+        | None -> moduleBindingOf name |> Option.map (fun b -> b, [])
 
     // the text expression one hop resolved, with the path its names are
-    // read in: a module-level definition's names are module-level too,
-    // never the sink's locals
+    // read in: the binding's own scope, not the sink's - a `let table =
+    // "users"` between `let sql = $"... {table} ..."` and the sink is not
+    // the `table` the text read; a module-level definition's names are
+    // module-level too, never the sink's locals
     let resolved (path: SyntaxNode list) (e: SynExpr) =
         match stripParens e with
         | SynExpr.Ident id ->
-            match localBindingOf path id.idText with
-            | Some(SynBinding(expr = rhs)) -> stripParens rhs, path
-            | None ->
-                match moduleBindingOf id.idText with
-                | Some(SynBinding(expr = rhs)) -> stripParens rhs, []
-                | None -> e, path
+            match bindingWithScope path id.idText with
+            | Some(SynBinding(expr = rhs) as b, rhsScope) when not (shadowed b id.idRange id.idText) ->
+                stripParens rhs, rhsScope
+            | _ -> e, path
         | other -> other, path
 
-    // a literal, or a name bound IMMUTABLY to one (a `[<Literal>]` is one
-    // such binding) one hop away; `let mutable schema = "public"` is a
-    // value, because a later `schema <- input` makes it one. A function
-    // parameter resolves to nothing and stays a value
-    let rec literalValue (e: SynExpr) =
-        match stripParens e with
-        | SynExpr.Const(SynConst.Unit, _) -> false
-        | SynExpr.Const _ -> true
-        | SynExpr.Typed(expr = inner) -> literalValue inner
-        | _ -> false
+    // `Module.name`: a binding directly in this file's module (or a nested
+    // module) of that name - not one in a module nested deeper, which
+    // `Module.name` does not reach
+    let qualifiedBindingOf (ids: Ident list) =
+        match List.rev ids with
+        | name :: owner :: _ ->
+            let ownedBy (declPath: SyntaxNode list) =
+                declPath
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynModule(SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = lid))) ->
+                        Some((List.last lid).idText = owner.idText)
+                    | SyntaxNode.SynModuleOrNamespace(SynModuleOrNamespace(longId = lid; kind = kind)) ->
+                        Some(kind.IsModule && not lid.IsEmpty && (List.last lid).idText = owner.idText)
+                    | _ -> None)
+                |> Option.defaultValue false
 
-    // a name is a constant only when the file binds it in exactly ONE
-    // pattern — the `let` itself. A parameter, a lambda argument or a
-    // match arm of the same name (`let schema = "app"` at module level and
-    // a `schema` parameter in the sink's function) would otherwise be read
-    // as that `let`, and the hole it fills waved through as text
-    let patternCount =
-        lazy
-            (index.Pats
-             |> Array.choose (fun (_, p) ->
-                 match p with
-                 | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-                 | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-                     Some id.idText
-                 | _ -> None)
-             |> Array.countBy id
-             |> Map.ofArray)
+            index.Decls
+            |> Array.tryPick (fun (declPath, decl) ->
+                match decl with
+                | SynModuleDecl.Let(bindings = bindings) when ownedBy declPath ->
+                    bindings |> List.tryFind (bindsName name.idText)
+                | _ -> None)
+        | _ -> None
 
-    let constantIn path (e: SynExpr) =
-        match stripParens e with
-        | SynExpr.Ident id ->
-            patternCount.Value.TryFind id.idText = Some 1
-            && (match bindingOf path id.idText with
-                | Some(SynBinding(isMutable = false; expr = rhs)) -> literalValue rhs
-                | _ -> false)
-        | other -> literalValue other
+    // a compile-time constant, all the way down: a literal; an
+    // interpolation, `+` chain, sprintf or String.Format whose every hole,
+    // operand and argument is one; or a name bound IMMUTABLY to one - in
+    // scope at the use, or `Module.name`. `let mutable schema = "public"`
+    // is a value, because a later `schema <- input` makes it one; a
+    // function parameter resolves to nothing and stays a value. `depth`
+    // bounds the walk through names
+    let rec constantAt depth path (e: SynExpr) =
+        depth > 0
+        && (match stripParens e with
+            | SynExpr.Const(SynConst.Unit, _) -> false
+            | SynExpr.Const _ -> true
+            | SynExpr.Typed(expr = inner) -> constantAt depth path inner
+            | SynExpr.Ident id ->
+                match bindingWithScope path id.idText with
+                | Some(SynBinding(isMutable = false; expr = rhs) as b, rhsScope) ->
+                    not (shadowed b id.idRange id.idText) && constantAt (depth - 1) rhsScope rhs
+                | _ -> false
+            | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                match qualifiedBindingOf ids with
+                | Some(SynBinding(isMutable = false; expr = rhs)) -> constantAt (depth - 1) [] rhs
+                | _ -> false
+            | other ->
+                match assembledParts other with
+                | Some parts -> parts |> List.forall (constantAt depth path)
+                | None -> false)
 
     let dynamicText path e =
         let text, scope = resolved path e
-        isDynamicStringWith (constantIn scope) text
+        isDynamicStringWith (constantAt 6 scope) text
 
     // a plain-literal DML statement without a single parameter marker
     let unparametrizedText path e =

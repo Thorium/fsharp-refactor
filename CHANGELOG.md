@@ -2,6 +2,11 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.47
+
+- FR0066 resolves the names in a query text to the binding in scope and folds constants all the way down (holes, `+`, `sprintf` and `String.Format` of constants, nested names, `Module.name`): SQLProvider's per-member `let baseQuery = "..."` queries were flagged although their values went in parameters. A name is read where the text was built, not at the sink, so a later `let` of the same name neither hides an injection nor folds it away; a value `let` scopes over its whole container, and a binder between the binding and the use shadows it.
+- Loaded code crashing on a background thread (an analyzer, source generator, MSBuild task, or a database driver's finalizer on the GC thread, as the managed Oracle driver did 43 scripts into a 77-minute run) no longer ends the process: it is reported once per kind and origin, the run goes on, and the tool exits 1 with a summary line since the analysis may be incomplete. An exception with the tool's own code on its stack, one on the main thread, or out of memory still fails loudly. The handler is not installed when the test suite calls into the tool from its own host.
+
 ## 0.8.46
 
 - FR0182 checks a lambda's pattern parameter (`fun (KeyValue(k, id)) -> ...`) against the lambda's body too: a `pid` read there was captured by the rename. It stays quiet where the binding's scope holds an `#if`, whose other branch may read `id`.

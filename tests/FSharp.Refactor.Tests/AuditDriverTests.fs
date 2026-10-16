@@ -765,3 +765,49 @@ let ``files the bisection blames are back on disk, not only in the report`` () =
         Assert.True(after.Length = 0, $"the tree left behind should check clean: %A{after}")
     finally
         cleanup root
+
+/// A thrown exception, caught, so its stack names the code that threw.
+let private thrownBy (work: unit -> unit) =
+    try
+        work ()
+        failwith "expected the work to throw"
+    with ex ->
+        ex
+
+[<Fact>]
+let ``an exception from loaded code on a background thread is survived, ours or the main thread's is not`` () =
+    let mainThread, background = 1, 2
+
+    // a type provider's finalizer: a stack of code the run loaded and none of
+    // ours (here the BCL's own, as the Oracle driver's FileNotFoundException
+    // was). Invoked by reflection, the inner exception's stack stops at the
+    // reflection boundary, before the test's frames
+    let readAllText = typeof<IO.File>.GetMethod("ReadAllText", [| typeof<string> |])
+    let missing = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString())
+
+    let foreign =
+        (thrownBy (fun () -> readAllText.Invoke(null, [| box missing |]) |> ignore)).InnerException
+
+    Assert.Equal(Some "System.Private.CoreLib", Program.foreignBackgroundOrigin mainThread background foreign)
+
+    // the same on the main thread is the run's own failure
+    Assert.Equal(None, Program.foreignBackgroundOrigin mainThread mainThread foreign)
+
+    // a bug of ours fails loudly wherever it is thrown - even inside a BCL
+    // call, where the innermost frame is not ours
+    let ours = thrownBy (fun () -> invalidOp "ours")
+    Assert.Equal(None, Program.foreignBackgroundOrigin mainThread background ours)
+
+    let oursInsideBcl = thrownBy (fun () -> IO.File.ReadAllText missing |> ignore)
+    Assert.Equal(None, Program.foreignBackgroundOrigin mainThread background oursInsideBcl)
+
+    // an exception with no frame to name still counts as foreign off the main thread
+    Assert.Equal(Some "unknown code", Program.foreignBackgroundOrigin mainThread background (exn "never thrown"))
+
+    // out of memory is never survived, whoever threw it
+    Assert.Equal(None, Program.foreignBackgroundOrigin mainThread background (OutOfMemoryException()))
+
+    Assert.Equal(
+        None,
+        Program.foreignBackgroundOrigin mainThread background (TypeInitializationException("T", OutOfMemoryException()))
+    )

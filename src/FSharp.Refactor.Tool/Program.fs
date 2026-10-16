@@ -10661,8 +10661,89 @@ let private runMcp (startupDefines: string list) =
 
     0
 
-[<EntryPoint>]
-let main argv =
+/// A type provider's objects outlive the typecheck that made them, and
+/// their finalizers run on the GC's thread whenever it gets to them. One
+/// that throws there ends the process: no try/with reaches the finalizer
+/// thread. SQLProvider's OracleTests.fsx did exactly that - the managed
+/// Oracle driver's OracleConnection finalizer reads its config through
+/// System.Security.Permissions, which this runtime does not ship - and an
+/// hour-long run over the repository died at whichever script the GC was
+/// on, every target after it never analysed.
+///
+/// Such an exception belongs to the code the run LOADED, not to the run:
+/// it is reported, once per kind and origin, and the run goes on. One thrown
+/// by our own code, or on the main thread, still takes the process down - a
+/// bug of ours fails loudly.
+///
+/// The assembly whose code threw `ex` when the run may survive it: thrown
+/// off the main thread, with none of our code anywhere on its stack (or its
+/// inner exceptions' - a bug of ours that throws inside a BCL call is still
+/// ours). Named by the first frame outside the runtime: a finalizer's
+/// TypeInitializationException is raised by the runtime's class-constructor
+/// machinery, but it is Oracle.ManagedDataAccess that failed. None when the
+/// run must not survive it.
+let internal foreignBackgroundOrigin (mainThread: int) (currentThread: int) (ex: exn) : string option =
+    let assemblies =
+        try
+            Seq.unfold (fun (e: exn) -> if isNull e then None else Some(e, e.InnerException)) ex
+            |> Seq.collect (fun e ->
+                match Diagnostics.StackTrace(e, false).GetFrames() with
+                | null -> Seq.empty
+                | frames ->
+                    frames
+                    |> Seq.choose (fun frame ->
+                        match frame.GetMethod() with
+                        | null -> None
+                        | m -> Some(m.Module.Assembly.GetName().Name)))
+            |> Seq.toList
+        with _ -> // reflection over a half-loaded assembly; fsharpanalyzer: ignore-line FR0055
+            []
+
+    let runtime (name: string) =
+        name = "System.Private.CoreLib" || name.StartsWith "System."
+
+    // out of memory is the process's state, not the thrower's: going on is
+    // not safe whoever threw it
+    if
+        currentThread = mainThread
+        || (ex :? OutOfMemoryException)
+        || (ex.GetBaseException() :? OutOfMemoryException)
+        || assemblies |> List.exists (fun name -> name.StartsWith "FSharp.Refactor")
+    then
+        None
+    else
+        match assemblies |> List.tryFind (runtime >> not) with
+        | Some name -> Some name
+        | None -> assemblies |> List.tryHead |> Option.orElse (Some "unknown code")
+
+/// How many background failures of loaded code this run went on past.
+let private survivedForeignExceptions = ref 0
+
+/// Installed only when this tool IS the process: the test suite calls `main`
+/// in its own host, whose background failures are not ours to swallow.
+let private surviveForeignBackgroundExceptions () =
+    if Reflection.Assembly.GetEntryAssembly() = Reflection.Assembly.GetExecutingAssembly() then
+        let mainThread = Threading.Thread.CurrentThread.ManagedThreadId
+        let reported = Collections.Concurrent.ConcurrentDictionary<string, unit>()
+
+        let handler (ex: exn) =
+            match foreignBackgroundOrigin mainThread Threading.Thread.CurrentThread.ManagedThreadId ex with
+            | None -> false
+            | Some from ->
+                Threading.Interlocked.Increment(&survivedForeignExceptions.contents) |> ignore
+
+                if reported.TryAdd($"{ex.GetType().FullName}|{from}", ()) then
+                    eprintfn
+                        $"  (a background thread of {from} threw {ex.GetType().Name}: {ex.GetBaseException().Message} - ignored; the run goes on, but whatever loaded {from}, typically a type provider, may have analysed incompletely)"
+
+                true
+
+        try
+            Runtime.ExceptionServices.ExceptionHandling.SetUnhandledExceptionHandler(Func<exn, bool> handler)
+        with :? InvalidOperationException -> // a host set one first; it keeps its say
+            ()
+
+let private runMain argv =
     // colour is decided before anything is printed, so --no-color governs
     // even the argument errors below
     let parsed = parseArgs argv
@@ -10783,3 +10864,19 @@ let main argv =
                 printfn $"{findingsAsJson findings baselineSuppressed}"
 
             code
+
+[<EntryPoint>]
+let main argv =
+    surviveForeignBackgroundExceptions ()
+    let code = runMain argv
+
+    // a run that went on past loaded code failing on a background thread
+    // analysed what it could, not everything: exit 1 says so, as a
+    // typecheck given up on does
+    match Threading.Volatile.Read(&survivedForeignExceptions.contents) with
+    | 0 -> code
+    | survived ->
+        eprintfn
+            $"exit 1: {survived} background failure(s) of loaded code were survived (see above) - the analysis may be incomplete"
+
+        if code = 0 then 1 else code
