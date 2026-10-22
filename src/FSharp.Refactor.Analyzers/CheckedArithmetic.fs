@@ -97,7 +97,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         |> Array.exists (fun (_, decl) ->
             match decl with
             | SynModuleDecl.Open(target = SynOpenDeclTarget.ModuleOrNamespace(longId = SynLongIdent(id = ids))) ->
-                ids |> List.exists (fun id -> id.idText = "Checked")
+                ids |> List.exists (fun pid -> pid.idText = "Checked")
             | _ -> false)
 
     if opensChecked then

@@ -247,7 +247,7 @@ let private callbackArguments (opStage: SynExpr) =
 [<TailCall>]
 let rec private sourceRoot (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> ValueSome id.idText
+    | SynExpr.Ident pid -> ValueSome pid.idText
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> ValueSome first.idText
     | SynExpr.DotGet(expr = inner)
     | SynExpr.Paren(expr = inner)
@@ -494,10 +494,10 @@ let private materialisedTypes =
 /// whose enumeration `Seq.toList` ran to completion BEFORE the operation's
 /// callback, and the moved operation would interleave the two.
 let private sourceMaterialised (check: FSharpCheckFileResults option) (source: ISourceText) (sourceExpr: SynExpr) =
-    let typedMaterialised (id: Ident) =
+    let typedMaterialised (pid: Ident) =
         match check with
         | Some c ->
-            match OptionModule.symbolOfIdent c source id with
+            match OptionModule.symbolOfIdent c source pid with
             | Some(:? FSharp.Compiler.Symbols.FSharpMemberOrFunctionOrValue as value) ->
                 (try
                     let t = OptionModule.stripAbbreviations value.FullType
@@ -513,7 +513,7 @@ let private sourceMaterialised (check: FSharpCheckFileResults option) (source: I
     match stripParens sourceExpr with
     | SynExpr.ArrayOrList _
     | SynExpr.ArrayOrListComputed _ -> true
-    | SynExpr.Ident id -> typedMaterialised id
+    | SynExpr.Ident pid -> typedMaterialised pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> typedMaterialised (List.last ids)
     | PipeApp(_, stage) ->
         match headModuleFunc stage with

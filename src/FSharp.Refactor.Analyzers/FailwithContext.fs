@@ -91,9 +91,9 @@ type private Function =
 /// A parameter that can be reported by name.
 let private paramIdent (p: SynPat) =
     match p with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
-    | SynPat.Paren(pat = SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id)))) -> Some id
-    | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))) -> Some id
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
+    | SynPat.Paren(pat = SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = pid)))) -> Some pid
+    | SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = pid))) -> Some pid
     | _ -> None
 
 /// A function binding we could name and quote parameters from. A tuple

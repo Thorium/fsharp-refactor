@@ -116,7 +116,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             let rec headOf (f: SynExpr) =
                                 match f with
                                 | SynExpr.App(isInfix = false; funcExpr = inner) -> headOf inner
-                                | SynExpr.Ident id -> Some id
+                                | SynExpr.Ident pid -> Some pid
                                 | _ -> None
 
                             match e with

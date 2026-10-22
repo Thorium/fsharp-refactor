@@ -71,7 +71,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             let rec assignsSelf (self: string) (e: SynExpr) =
                 match e with
                 | SynExpr.LongIdentSet(SynLongIdent(id = first :: _ :: _), _, _) -> first.idText = self
-                | SynExpr.Set(targetExpr = SynExpr.DotGet(expr = SynExpr.Ident id)) -> id.idText = self
+                | SynExpr.Set(targetExpr = SynExpr.DotGet(expr = SynExpr.Ident pid)) -> pid.idText = self
                 | SynExpr.Sequential(expr1 = a; expr2 = b) -> assignsSelf self a || assignsSelf self b
                 | SynExpr.IfThenElse(thenExpr = t; elseExpr = el) ->
                     assignsSelf self t || (el |> Option.exists (assignsSelf self))

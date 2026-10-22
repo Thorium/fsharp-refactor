@@ -186,9 +186,9 @@ let rec private unwrapped (e: SynExpr) =
 /// plain (possibly dotted, possibly type-applied) name.
 let private headIdent (f: SynExpr) =
     match f with
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
-    | SynExpr.TypeApp(expr = SynExpr.Ident id) -> ValueSome id
+    | SynExpr.TypeApp(expr = SynExpr.Ident pid) -> ValueSome pid
     | SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when not ids.IsEmpty ->
         ValueSome(List.last ids)
     | _ -> ValueNone
@@ -393,22 +393,22 @@ let private collectionInserts = set [ "Add"; "TryAdd"; "Enqueue"; "Push"; "Inser
 /// `Ok x`)? The case wraps the value without taking it.
 let private isUnionCase check source (f: SynExpr) =
     match headIdent f with
-    | ValueSome id ->
-        match symbolAt check source id with
+    | ValueSome pid ->
+        match symbolAt check source pid with
         | Some(:? FSharpUnionCase) -> true
         | _ -> false
     | ValueNone -> false
 
 let private nameOf (e: SynExpr) =
     match headIdent e with
-    | ValueSome id -> Some id.idText
+    | ValueSome pid -> Some pid.idText
     | ValueNone -> None
 
 /// The compiled name of an infix operator's function position
 /// (`op_PipeRight` for `|>`), empty for anything else.
 let private operatorName (op: SynExpr) =
     match headIdent op with
-    | ValueSome id -> id.idText
+    | ValueSome pid -> pid.idText
     | ValueNone -> ""
 
 /// The head of a curried application chain `f a b` = App(App(f, a), b):
@@ -419,14 +419,14 @@ let private operatorName (op: SynExpr) =
 let rec private chainHead (f: SynExpr) (applied: int) =
     match f with
     | SynExpr.App(isInfix = false; funcExpr = g) -> chainHead g (applied + 1)
-    | SynExpr.Ident id -> ValueSome id, true, applied
+    | SynExpr.Ident pid -> ValueSome pid, true, applied
     | _ -> headIdent f, false, applied
 
 let private handed (f: SynExpr) (element: int option) check source =
     match chainHead f 0 with
-    | ValueSome id, _, _ when constructsDisposable check source id -> Adopted
-    | ValueSome id, true, applied -> HandedAt(id.idText, applied, element)
-    | ValueSome id, false, _ -> Handed(Some id.idText)
+    | ValueSome pid, _, _ when constructsDisposable check source pid -> Adopted
+    | ValueSome pid, true, applied -> HandedAt(pid.idText, applied, element)
+    | ValueSome pid, false, _ -> Handed(Some pid.idText)
     | ValueNone, _, _ -> Handed None
 
 /// Walk outward from a mention through the nodes that merely wrap an
@@ -495,8 +495,8 @@ let rec private classifyLoop
         classifyLoop check source holds mention true element rest
     | SyntaxNode.SynExpr(SynExpr.New(targetType = t)) :: _ ->
         match typeIdent t with
-        | ValueSome id when constructsDisposable check source id -> Adopted
-        | ValueSome id -> Handed(Some id.idText)
+        | ValueSome pid when constructsDisposable check source pid -> Adopted
+        | ValueSome pid -> Handed(Some pid.idText)
         | ValueNone -> Handed None
     // `x <- v`: a field, a module value, or a local
     | SyntaxNode.SynExpr(SynExpr.LongIdentSet(longDotId = SynLongIdent(id = [ target ]))) :: _ -> storedIn target
@@ -876,9 +876,9 @@ let private builderDefinesUsing (check: FSharpCheckFileResults) (source: ISource
             |> Option.exists (fun b -> b.HasTypeDefinition && definesUsing b.TypeDefinition))
 
     match headIdent builder with
-    | ValueSome id when usingBuilders.Contains id.idText -> true
-    | ValueSome id ->
-        match symbolAt check source id with
+    | ValueSome pid when usingBuilders.Contains pid.idText -> true
+    | ValueSome pid ->
+        match symbolAt check source pid with
         | Some(:? FSharpMemberOrFunctionOrValue as value) ->
             (try
                 let entity =
@@ -935,8 +935,8 @@ let private holdersOn (index: AstIndex.Index) (path: SyntaxNode list) (at: range
                         match m with
                         | SynMemberDefn.LetBindings(bindings = bindings) ->
                             bindings |> List.collect (fun (SynBinding(headPat = p)) -> patNames p)
-                        | SynMemberDefn.AutoProperty(ident = id) -> [ id.idText ]
-                        | SynMemberDefn.ValField(fieldInfo = SynField(idOpt = Some id)) -> [ id.idText ]
+                        | SynMemberDefn.AutoProperty(ident = pid) -> [ pid.idText ]
+                        | SynMemberDefn.ValField(fieldInfo = SynField(idOpt = Some pid)) -> [ pid.idText ]
                         | _ -> []))
             | _ -> None)
         |> Option.defaultValue []
@@ -1067,7 +1067,7 @@ let rec private shortName (e: SynExpr) =
     match e with
     | SynExpr.Paren(expr = inner)
     | SynExpr.TypeApp(expr = inner) -> shortName inner
-    | SynExpr.Ident id -> id.idText
+    | SynExpr.Ident pid -> pid.idText
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
         ids
         |> List.map (fun i -> i.idText)
@@ -1243,7 +1243,7 @@ let private tokenHandedOn
             | SynExpr.App(isInfix = false; funcExpr = g) -> calleeIdent g
             | SynExpr.Paren(expr = inner)
             | SynExpr.TypeApp(expr = inner) -> calleeIdent inner
-            | SynExpr.Ident id -> Some id
+            | SynExpr.Ident pid -> Some pid
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
             | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
             | _ -> None
@@ -1438,7 +1438,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 AstIndex.exprsWithin index r
                 |> Array.exists (fun (_, e) ->
                     match e with
-                    | SynExpr.Ident id -> names.Contains id.idText
+                    | SynExpr.Ident pid -> names.Contains pid.idText
                     | _ -> false)
 
             not names.IsEmpty
@@ -1532,7 +1532,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             |> Array.exists (fun (path, e) ->
                 not (Range.rangeContainsRange construction e.Range)
                 && (match e with
-                    | SynExpr.Ident id when id.idText = name ->
+                    | SynExpr.Ident pid when pid.idText = name ->
                         inLambda path
                         || isResult e.Range
                         || returnedThrough path
@@ -1567,8 +1567,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // a value reached through the binder can be bound to
         let rec patIdents (p: SynPat) =
             match p with
-            | SynPat.Named(ident = SynIdent(ident = id)) -> [ id ]
-            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> [ id ]
+            | SynPat.Named(ident = SynIdent(ident = pid)) -> [ pid ]
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) -> [ pid ]
             | SynPat.Paren(inner, _)
             | SynPat.Typed(pat = inner)
             | SynPat.Attrib(pat = inner) -> patIdents inner
@@ -1658,7 +1658,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             |> List.filter (fun id ->
                                                 not (tracked.Contains id.idText)
                                                 && not (plainValuedLocal check source id))
-                                            |> List.map (fun id -> id.idText)
+                                            |> List.map (fun pid -> pid.idText)
                                             |> Array.ofList
                                         else
                                             [||])
@@ -1739,7 +1739,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 [
                                     for path, e in mentions do
                                         match e with
-                                        | SynExpr.Ident id ->
+                                        | SynExpr.Ident pid ->
                                             let escape =
                                                 if inLambda path then
                                                     Captured
@@ -1748,7 +1748,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                 else
                                                     classifyLoop check source holders.Contains e.Range false None path
 
-                                            if id.idText = name then
+                                            if pid.idText = name then
                                                 escape
                                             else
                                                 match escape with
@@ -1894,7 +1894,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             |> Array.exists (fun (_, e) ->
                                                 Range.rangeContainsRange body.Range e.Range
                                                 && (match e with
-                                                    | SynExpr.Ident id -> id.idText = f
+                                                    | SynExpr.Ident pid -> pid.idText = f
                                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = callIds)) ->
                                                         (List.last callIds).idText = f
                                                     | _ -> false))
@@ -2059,7 +2059,7 @@ let findEscapingUse
             AstIndex.exprsWithin index r
             |> Array.exists (fun (_, e) ->
                 (match e with
-                 | SynExpr.Ident id -> id.idText = name
+                 | SynExpr.Ident pid -> pid.idText = name
                  | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> first.idText = name
                  | _ -> false))
 
@@ -2102,8 +2102,8 @@ let findEscapingUse
                                         inner.Bindings
                                         |> List.tryPick (fun (SynBinding(headPat = p; expr = r)) ->
                                             match p, r with
-                                            | SynPat.Named(ident = SynIdent(ident = id)),
-                                              BuilderLiteral(builder, body) when id.idText = named.idText ->
+                                            | SynPat.Named(ident = SynIdent(ident = pid)),
+                                              BuilderLiteral(builder, body) when pid.idText = named.idText ->
                                                 Some(builder, body, r)
                                             | _ -> None)
                                     | _ -> None)
@@ -2121,7 +2121,7 @@ let findEscapingUse
                                 AstIndex.exprsWithin index rhs.Range
                                 |> Array.choose (fun (_, e) ->
                                     match e with
-                                    | SynExpr.Ident id -> Some id.idText
+                                    | SynExpr.Ident pid -> Some pid.idText
                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> Some first.idText
                                     | _ -> None)
                                 |> Set.ofArray

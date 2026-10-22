@@ -226,8 +226,8 @@ let private mutableNames (parseTree: ParsedInput) : Set<string> =
 /// an opened module's `let mutable` included).
 let private resolvesToMutable (check: FSharpCheckFileResults option) (source: ISourceText) (e: SynExpr) =
     match check, e with
-    | Some c, SynExpr.Ident id ->
-        match OptionModule.symbolOfIdent c source id with
+    | Some c, SynExpr.Ident pid ->
+        match OptionModule.symbolOfIdent c source pid with
         | Some(:? FSharpMemberOrFunctionOrValue as value) ->
             (try
                 value.IsMutable
@@ -245,8 +245,8 @@ let findWith (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (so
 
     let readOnce (comp: SynExpr) =
         match comp with
-        | SynExpr.Ident id ->
-            not (mutables.Value.Contains id.idText)
+        | SynExpr.Ident pid ->
+            not (mutables.Value.Contains pid.idText)
             && not (resolvesToMutable check source comp)
         | _ -> false
 

@@ -47,7 +47,7 @@ let rec private calleeIdent (e: SynExpr) : Ident voption =
     | SynExpr.App(funcExpr = f) -> calleeIdent f
     | SynExpr.Paren(expr = inner)
     | SynExpr.TypeApp(expr = inner) -> calleeIdent inner
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | _ -> ValueNone

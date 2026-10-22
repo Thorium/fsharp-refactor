@@ -109,7 +109,7 @@ let rec private resultsLoop (acc: SynExpr list) (pending: SynExpr list) =
 let rec private spineLoop (count: int) (e: SynExpr) =
     match e with
     | SynExpr.App(isInfix = false; funcExpr = f) -> spineLoop (count + 1) f
-    | SynExpr.Ident id -> ValueSome(id, count)
+    | SynExpr.Ident pid -> ValueSome(pid, count)
     | _ -> ValueNone
 
 /// Pattern scan of one match clause: Some/None head-ident edits, or None

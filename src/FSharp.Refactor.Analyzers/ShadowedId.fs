@@ -138,8 +138,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 for path, e in index.Exprs do
                     match e with
                     | SynExpr.Lambda(parsedData = Some(pats, _)) when not (lambdaIsSignature path) ->
-                        for id in bindersLoop [] pats do
-                            yield id, [ e.Range ]
+                        for pid in bindersLoop [] pats do
+                            yield pid, [ e.Range ]
                     | SynExpr.For(ident = id) when id.idText = Shadowed -> yield id, [ e.Range ]
                     | _ -> ()
             ]

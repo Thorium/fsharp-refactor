@@ -98,8 +98,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             |> Option.map (fun u -> u.Symbol)
 
         // the dictionary's type, from the last identifier of its spelling
-        let isDictionary (id: Ident) =
-            match symbolOf id with
+        let isDictionary (pid: Ident) =
+            match symbolOf pid with
             | Some(:? FSharpMemberOrFunctionOrValue as mfv) ->
                 (try
                     let t = OptionModule.stripAbbreviations mfv.FullType
@@ -138,7 +138,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let indexerRead (receiverText: string) (key: string) (e: SynExpr) =
             let keyIs (arg: SynExpr) =
                 match stripParens arg with
-                | SynExpr.Ident id -> id.idText = key
+                | SynExpr.Ident pid -> pid.idText = key
                 | _ -> false
 
             match e with
@@ -328,7 +328,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         |> Array.exists (fun (_, e) ->
                             Range.rangeContainsRange body.Range e.Range
                             && (match e with
-                                | SynExpr.Ident id -> touchesName depth [ id ]
+                                | SynExpr.Ident pid -> touchesName depth [ pid ]
                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
                                     [ 1 .. ids.Length ]
                                     |> List.exists (fun n ->
@@ -372,7 +372,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         not ids.IsEmpty && same (List.last ids)
                         ->
                         Some rhs
-                    | SynExpr.Set(targetExpr = SynExpr.Ident id; rhsExpr = rhs) when same id -> Some rhs
+                    | SynExpr.Set(targetExpr = SynExpr.Ident pid; rhsExpr = rhs) when same pid -> Some rhs
                     | _ -> None)
             | _ -> [||]
 
@@ -487,7 +487,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 match stripParens e with
                 | SynExpr.App(isInfix = false; funcExpr = f) -> headIds f
                 | SynExpr.TypeApp(expr = f) -> headIds f
-                | SynExpr.Ident id -> Some [ id ]
+                | SynExpr.Ident pid -> Some [ pid ]
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some ids
                 | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some [ List.last ids ]
                 | _ -> None
@@ -537,7 +537,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 |> Array.exists (fun (_, x) ->
                     Range.rangeContainsRange body.Range x.Range
                     && (match x with
-                        | SynExpr.Ident id -> id.idText = receiverRoot
+                        | SynExpr.Ident pid -> pid.idText = receiverRoot
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> first.idText = receiverRoot
                         | _ -> false))
 
@@ -707,7 +707,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 match stripParens e with
                                 | SynExpr.App(funcExpr = f; isInfix = false) -> head f
                                 | SynExpr.TypeApp(expr = f) -> head f
-                                | SynExpr.Ident id -> Some [ id ]
+                                | SynExpr.Ident pid -> Some [ pid ]
                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some ids
                                 | _ -> None
 
@@ -841,7 +841,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                     let mentioned (e: SynExpr) =
                         match e with
-                        | SynExpr.Ident id -> id.idText = receiver.idText
+                        | SynExpr.Ident pid -> pid.idText = receiver.idText
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> first.idText = receiver.idText
                         | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = first :: _)) ->
                             first.idText = receiver.idText
@@ -1091,7 +1091,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 else
                                     let names =
                                         match inner with
-                                        | SynExpr.Ident id -> Some [ id ]
+                                        | SynExpr.Ident pid -> Some [ pid ]
                                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                                             Some ids
                                         | _ -> None
@@ -1162,8 +1162,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         | (SynExpr.DotGet _ | SynExpr.New _), _ when escapeFree.Value -> Safe
                                         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)), _ ->
                                             ids
-                                            |> List.map (fun id ->
-                                                match resolve [ id ] with
+                                            |> List.map (fun pid ->
+                                                match resolve [ pid ] with
                                                 | Some symbol -> effectOf symbol
                                                 | None -> Safe)
                                             |> combined

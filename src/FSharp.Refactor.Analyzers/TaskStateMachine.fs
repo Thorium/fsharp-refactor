@@ -194,7 +194,7 @@ let private exposedBody (index: AstIndex.Index) (path: SyntaxNode list) =
                     Reach.Exposed
         // `member val Runner = run`: no binding of its own, and the value
         // is a property of the type
-        | SyntaxNode.SynMemberDefn(SynMemberDefn.AutoProperty(ident = id; accessibility = acc)) :: _ ->
+        | SyntaxNode.SynMemberDefn(SynMemberDefn.AutoProperty(ident = pid; accessibility = acc)) :: _ ->
             // the property, or its getter, marked private or internal
             // keeps the value in the file
             let readHidden =
@@ -203,7 +203,7 @@ let private exposedBody (index: AstIndex.Index) (path: SyntaxNode list) =
                 | SynValSigAccess.GetSet(a, g, _) -> hidden a || hidden g
 
             if readHidden then
-                Reach.Confined id.idText
+                Reach.Confined pid.idText
             else
                 Reach.Exposed
         | _ :: rest -> reach rest
@@ -217,9 +217,9 @@ let private exposedBody (index: AstIndex.Index) (path: SyntaxNode list) =
            |> Array.exists (fun (mentionPath, e) ->
                let mentioned =
                    match e with
-                   | SynExpr.Ident id -> id.idText = name
+                   | SynExpr.Ident pid -> pid.idText = name
                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
-                       ids |> List.exists (fun id -> id.idText = name)
+                       ids |> List.exists (fun pid -> pid.idText = name)
                    | _ -> false
 
                mentioned
@@ -384,8 +384,8 @@ let private cannotThrow
                 | SynExpr.New _
                 | SynExpr.Downcast _
                 | SynExpr.InferredDowncast _ -> true
-                | SynExpr.Ident id -> mayThrowNames.Contains id.idText
-                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> mayThrowNames.Contains id.idText
+                | SynExpr.Ident pid -> mayThrowNames.Contains pid.idText
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ pid ])) -> mayThrowNames.Contains pid.idText
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
                 | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                     mayThrowNames.Contains (List.last ids).idText || not (memberCannotThrow ids)
@@ -710,8 +710,8 @@ let find
                 lou.Bindings
                 |> List.choose (fun b ->
                     match b with
-                    | SynBinding(isMutable = true; headPat = SynPat.Named(ident = SynIdent(ident = id))) ->
-                        Some(id.idText, b.RangeOfBindingWithRhs)
+                    | SynBinding(isMutable = true; headPat = SynPat.Named(ident = SynIdent(ident = pid))) ->
+                        Some(pid.idText, b.RangeOfBindingWithRhs)
                     | _ -> None)
                 |> Array.ofList
             | _ -> [||])
@@ -726,7 +726,7 @@ let find
     // this walk does not understand (then nothing may rely on the answer)
     let rec patIdents (p: SynPat) : string list option =
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> Some [ id.idText ]
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> Some [ pid.idText ]
         | SynPat.Wild _ -> Some []
         | SynPat.Typed(pat = inner) -> patIdents inner
         | SynPat.Paren(pat = inner) -> patIdents inner
@@ -739,7 +739,7 @@ let find
                     | Some a, Some c -> Some(a @ c)
                     | _ -> None)
                 (Some [])
-        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> Some [ id.idText ]
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ])) -> Some [ pid.idText ]
         | _ -> None
 
     let comments = commentsWithText parseTree source

@@ -62,7 +62,7 @@ let private tailYieldFroms (body: SynExpr) =
         | SynExpr.App(isInfix = false; funcExpr = f) -> headOf f
         | SynExpr.Paren(expr = inner)
         | SynExpr.TypeApp(expr = inner) -> headOf inner
-        | SynExpr.Ident id -> Some id.idRange
+        | SynExpr.Ident pid -> Some pid.idRange
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some (List.last ids).idRange
         | _ -> None
 

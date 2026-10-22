@@ -254,7 +254,7 @@ let findEqualityChains
                     match e with
                     | SynExpr.IfThenElse(ifExpr = cond; thenExpr = t; elseExpr = Some els) ->
                         match (|IdentEqualsLiteral|_|) source cond with
-                        | ValueSome(op, id, lit) when isSingleLine t.Range -> collect ((op, id, lit, t) :: acc) els
+                        | ValueSome(op, pid, lit) when isSingleLine t.Range -> collect ((op, pid, lit, t) :: acc) els
                         | _ -> None
                     // an else-less trailing if means the chain has NO terminal
                     // else: its text starts with `elif`, which would splice a
@@ -269,7 +269,7 @@ let findEqualityChains
                     let (_, firstId, _, _) = List.head arms
 
                     let sameIdent =
-                        arms |> List.forall (fun (_, id, _, _) -> id.idText = firstId.idText)
+                        arms |> List.forall (fun (_, pid, _, _) -> pid.idText = firstId.idText)
 
                     let literals = arms |> List.map (fun (_, _, lit, _) -> lit)
                     let distinct = (List.distinct literals).Length = literals.Length
@@ -450,7 +450,7 @@ let private isFailureArm (arm: SynExpr) =
         | SynExpr.App(funcExpr = f) -> head f
         | SynExpr.TypeApp(expr = inner)
         | SynExpr.Paren(expr = inner) -> head inner
-        | SynExpr.Ident id -> Some id.idText
+        | SynExpr.Ident pid -> Some pid.idText
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some (List.last ids).idText
         | _ -> None
 

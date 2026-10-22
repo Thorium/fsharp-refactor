@@ -77,8 +77,8 @@ let private fileApi =
 
 let private bindsName (name: string) (SynBinding(headPat = p)) =
     match p with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = name
-    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> id.idText = name
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText = name
+    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) -> pid.idText = name
     | _ -> false
 
 /// `./`, `../`, `../../` — relative-path notation, not a separator.
@@ -161,8 +161,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     let isCompared (path: SyntaxNode list) =
         let comparison (op: SynExpr) =
             match op with
-            | SingleIdent id ->
-                (match id.idText with
+            | SingleIdent pid ->
+                (match pid.idText with
                  | "op_Equality"
                  | "op_Inequality" -> true
                  | _ -> false)
@@ -255,8 +255,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     || operands
                        |> List.exists (fun o ->
                            match o with
-                           | SynExpr.Ident id ->
-                               definitionOf path id.idText
+                           | SynExpr.Ident pid ->
+                               definitionOf path pid.idText
                                |> Option.exists (fun rhs ->
                                    let rhsText = textOfRange source rhs.Range
                                    rhsText.Contains "://" || urlSmell.IsMatch rhsText)

@@ -135,7 +135,7 @@ let private fullNameOf (check: FSharpCheckFileResults) (source: ISourceText) (id
 let private (|CallIdent|_|) (e: SynExpr) =
     match e with
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> ValueSome(List.last ids)
-    | SynExpr.DotGet(longDotId = SynLongIdent(id = [ id ])) -> ValueSome id
+    | SynExpr.DotGet(longDotId = SynLongIdent(id = [ pid ])) -> ValueSome pid
     | _ -> ValueNone
 
 /// `RECV.GetAwaiter()` — the expression whose awaiter is being drained.
@@ -688,8 +688,8 @@ let findWith
                         lou.Bindings
                         |> List.tryPick (fun b ->
                             match b with
-                            | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs) when
-                                id.idText = w.idText
+                            | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = pid)); expr = rhs) when
+                                pid.idText = w.idText
                                 ->
                                 Some(whenAnyCall rhs)
                             | _ -> None)
@@ -844,8 +844,8 @@ let findWith
         let boundToCompleted (recvText: string) (r: range) =
             let namedCompleted (b: SynBinding) =
                 match b with
-                | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs) ->
-                    id.idText = recvText && completedByConstruction rhs
+                | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = pid)); expr = rhs) ->
+                    pid.idText = recvText && completedByConstruction rhs
                 | _ -> false
 
             index.Exprs
@@ -1058,7 +1058,7 @@ let findWith
                 // pattern)
                 let boundedWait =
                     match expr with
-                    | SynExpr.App(isInfix = false; funcExpr = CallIdent id; argExpr = arg) when id.idText = "Wait" ->
+                    | SynExpr.App(isInfix = false; funcExpr = CallIdent pid; argExpr = arg) when pid.idText = "Wait" ->
                         (match arg with
                          | UnitConst -> false
                          | _ -> true)

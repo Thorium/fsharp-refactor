@@ -50,8 +50,8 @@ let private logaryEvents = set [ "eventError"; "eventFatal"; "eventWarn" ]
 [<TailCall>]
 let rec private exceptionNameOf (p: SynPat) =
     match p with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> ValueSome id.idText
-    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = id))) -> ValueSome id.idText
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> ValueSome pid.idText
+    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = pid))) -> ValueSome pid.idText
     | SynPat.Paren(pat = inner) -> exceptionNameOf inner
     | _ -> ValueNone
 
@@ -103,7 +103,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     && (match e with
                         | SynExpr.Lambda(parsedData = Some(pats, _)) ->
                             pats |> List.exists (patBoundNames >> List.contains name)
-                        | SynExpr.For(ident = id) -> id.idText = name
+                        | SynExpr.For(ident = pid) -> pid.idText = name
                         | _ -> false)))
 
         // the exception name of the innermost handler an expression sits in,

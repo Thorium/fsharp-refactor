@@ -231,7 +231,7 @@ let private returnsUnit (check: FSharpCheckFileResults) (source: ISourceText) (b
         | SynExpr.Paren(expr = inner)
         | SynExpr.TypeApp(expr = inner) -> headIdent inner
         | SynExpr.App(isInfix = false; funcExpr = f) -> headIdent f
-        | SynExpr.Ident id -> Some id
+        | SynExpr.Ident pid -> Some pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
         | _ -> None
 

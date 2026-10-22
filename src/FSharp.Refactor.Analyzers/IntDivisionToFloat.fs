@@ -176,7 +176,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SyntaxNode.SynExpr(SynExpr.Paren _) :: rest -> argumentOf rest
                 | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f)) :: _ ->
                     (match f with
-                     | SynExpr.Ident id -> roundings.Contains id.idText
+                     | SynExpr.Ident pid -> roundings.Contains pid.idText
                      | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                          roundings.Contains (List.last ids).idText
                      | _ -> false)

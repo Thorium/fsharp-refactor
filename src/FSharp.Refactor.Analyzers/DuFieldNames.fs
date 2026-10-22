@@ -239,7 +239,7 @@ let rec private walkPatsLoop (record: string -> Observation -> unit) (pending: S
                          elems
                          |> List.map (fun element ->
                              match element with
-                             | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                             | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                              | _ -> None)
 
                      if names |> List.forall Option.isSome then
@@ -302,9 +302,9 @@ let private unionCasesOfSignature (tree: ParsedInput) =
                 for SynTypeDefnSig(typeRepr = repr) in types do
                     match repr with
                     | SynTypeDefnSigRepr.Simple(repr = SynTypeDefnSimpleRepr.Union(unionCases = unionCases)) ->
-                        for SynUnionCase(ident = SynIdent(ident = id); caseType = caseType) in unionCases do
+                        for SynUnionCase(ident = SynIdent(ident = pid); caseType = caseType) in unionCases do
                             match caseType with
-                            | SynUnionCaseKind.Fields fields -> cases[id.idText] <- fields
+                            | SynUnionCaseKind.Fields fields -> cases[pid.idText] <- fields
                             | SynUnionCaseKind.FullType _ -> ()
                     | _ -> ()
             | _ -> ()

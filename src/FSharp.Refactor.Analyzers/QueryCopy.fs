@@ -116,7 +116,7 @@ let rec private unparen (e: SynExpr) =
 let private lambda1 (e: SynExpr) =
     let rec named (p: SynPat) =
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
         | SynPat.Paren(pat = inner)
         | SynPat.Typed(pat = inner) -> named inner
         | _ -> None
@@ -361,9 +361,9 @@ let find
             match unparen e with
             | SynExpr.Const(constant = SynConst.Unit) -> false
             | SynExpr.Const _ -> true
-            | SynExpr.Ident id when id.idText = param.idText -> false
-            | SynExpr.Ident id ->
-                match symbolAt id with
+            | SynExpr.Ident pid when pid.idText = param.idText -> false
+            | SynExpr.Ident pid ->
+                match symbolAt pid with
                 | Some(:? FSharpMemberOrFunctionOrValue as v) ->
                     not v.IsMutable
                     && (v.LiteralValue.IsSome || (v.IsValue && not v.FullType.IsFunctionType))
@@ -390,7 +390,7 @@ let find
             let ownType =
                 match unparen e with
                 | SynExpr.Const _ -> Some None
-                | SynExpr.Ident id -> Some(typeOfName id)
+                | SynExpr.Ident pid -> Some(typeOfName pid)
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                     Some(typeOfName (List.last ids))
                 | _ -> None
@@ -507,7 +507,7 @@ let find
                 let prefix = List.take (ids.Length - 1) ids
                 let prefixRange = Range.unionRanges prefix.Head.idRange (List.last prefix).idRange
                 (Some(List.last prefix), prefixRange), [ List.last ids, arg, e.Range, prefixRange.End ]
-            | SynExpr.Ident id -> (Some id, e.Range), []
+            | SynExpr.Ident pid -> (Some pid, e.Range), []
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                 (Some(List.last ids), e.Range), []
             | e -> (None, e.Range), []
@@ -631,7 +631,7 @@ let find
                         | src, copy :: stages when not stages.IsEmpty ->
                             let srcType =
                                 match unparen src with
-                                | SynExpr.Ident id -> typeOfName id
+                                | SynExpr.Ident pid -> typeOfName pid
                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                                     typeOfName (List.last ids)
                                 | _ -> None

@@ -174,7 +174,7 @@ let rec private pureIdentsLoop
     | e :: rest ->
         match e with
         | SynExpr.Const _ -> pureIdentsLoop acc ops rest
-        | SynExpr.Ident id -> pureIdentsLoop (id :: acc) ops rest
+        | SynExpr.Ident pid -> pureIdentsLoop (pid :: acc) ops rest
         | SynExpr.Paren(expr = inner)
         | SynExpr.Typed(expr = inner) -> pureIdentsLoop acc ops (inner :: rest)
         | SynExpr.Tuple(exprs = exprs) -> pureIdentsLoop acc ops (exprs @ rest)
@@ -266,7 +266,7 @@ let private insertionAnchor (source: ISourceText) (path: SyntaxNode list) (loopE
     let boundBy (e: SynExpr) =
         match e with
         | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.collect patBoundNames
-        | SynExpr.For(ident = id) -> [ id.idText ]
+        | SynExpr.For(ident = pid) -> [ pid.idText ]
         | SynExpr.ForEach(pat = pat) -> patBoundNames pat
         | LetOrUseE lou -> lou.Bindings |> List.collect (fun (SynBinding(headPat = p)) -> patBoundNames p)
         | _ -> []
@@ -365,7 +365,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | SynExpr.LongIdentSet(SynLongIdent(id = firstId :: _), _, _) ->
                 addTo mentionIndex firstId.idText e.Range
                 addTo assignIndex firstId.idText e.Range
-            | SynExpr.Set(targetExpr = SynExpr.Ident id) -> addTo assignIndex id.idText e.Range
+            | SynExpr.Set(targetExpr = SynExpr.Ident pid) -> addTo assignIndex pid.idText e.Range
             | _ -> ()
 
         // is `name` assigned (`<-`) anywhere inside `r`?
@@ -428,7 +428,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         && not (excluded |> Option.exists (fun x -> Range.rangeContainsRange x e.Range))
                     then
                         match e with
-                        | SynExpr.Ident id -> yield! functionAt [ id ]
+                        | SynExpr.Ident pid -> yield! functionAt [ pid ]
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
                         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                             yield! functionAt ids

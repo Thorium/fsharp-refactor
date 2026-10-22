@@ -284,8 +284,8 @@ let private isDynamicString (e: SynExpr) =
 
 let private bindsName (name: string) (SynBinding(headPat = p)) =
     match p with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = name
-    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> id.idText = name
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText = name
+    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) -> pid.idText = name
     | _ -> false
 
 /// Protocol constants known to be broken or deprecated on the wire. A

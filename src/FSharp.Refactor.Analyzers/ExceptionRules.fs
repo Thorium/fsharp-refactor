@@ -45,7 +45,7 @@ let private (|RaisedTypeName|_|) (e: SynExpr) =
     match e with
     | SynExpr.App(isInfix = false; funcExpr = SingleIdent fn; argExpr = arg) when fn.idText = "raise" ->
         match stripParens arg with
-        | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id) -> ValueSome id.idText
+        | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident pid) -> ValueSome pid.idText
         | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
             not ids.IsEmpty
             ->

@@ -302,3 +302,65 @@ let ``a paging or batched query under a loop is one statement per batch, not N+1
             """
 
     Assert.Empty(queriesIn batched)
+
+[<Fact>]
+let ``FR0028: a sub-query the outer query projected into its row is one statement, a row built in memory is not`` () =
+    // the provider translates a sub-query in its own `select` with the row (EF Core refuses an
+    // IQueryable there); a row tuple built in memory, or an entity's IQueryable navigation,
+    // runs one statement per row
+    let scaffold =
+        fsharp
+            """
+            module Test
+            open System.Linq
+            type Person() =
+                member _.Id = 1
+                member _.Orders = [ 3; 4 ].AsQueryable()
+            type Db() =
+                member _.People = [ Person() ].AsQueryable()
+                member _.Orders = [ 3; 4 ].AsQueryable()
+
+            """
+
+    let projected =
+        scaffold
+        + fsharp
+            """
+            let anonymous (db: Db) =
+                for row in query { for p in db.People do
+                                   select {| Id = p.Id; Orders = query { for o in db.Orders do
+                                                                         where (o > p.Id)
+                                                                         select o } |} } do
+                    for o in row.Orders do
+                        printfn "%d %d" row.Id o
+            let tuples (db: Db) =
+                let rows = query { for p in db.People do
+                                   select (p.Id, query { for o in db.Orders do
+                                                         where (o > p.Id)
+                                                         select o }) }
+                for (_, orders) in rows do
+                    for o in orders do
+                        printfn "%d" o
+            """
+
+    Assert.Empty(queriesIn projected)
+
+    let perRow =
+        scaffold
+        + fsharp
+            """
+            let inMemory (db: Db) (ids: int list) =
+                let rows = ids |> List.map (fun i -> i, query { for o in db.Orders do
+                                                                where (o > i)
+                                                                select o })
+                for (_, orders) in rows do
+                    for o in orders do
+                        printfn "%d" o
+            let navigation (db: Db) =
+                for p in db.People do
+                    for o in p.Orders do
+                        printfn "%d" o
+            """
+
+    // `db.Orders` is the List.map callback's own note
+    Assert.Equal<string list>([ "db.Orders"; "orders"; "p.Orders" ], queriesIn perRow |> List.map _.SourceText)

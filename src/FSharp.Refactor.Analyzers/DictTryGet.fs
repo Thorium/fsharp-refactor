@@ -735,12 +735,12 @@ let findGetOrAdd
                         let shadowsTarget (lets: SynBinding list) =
                             let keyNames =
                                 match keyExpr with
-                                | SynExpr.Ident id -> [ id.idText ]
+                                | SynExpr.Ident pid -> [ pid.idText ]
                                 | SynExpr.Tuple(exprs = es) ->
                                     es
                                     |> List.choose (fun e ->
                                         match e with
-                                        | SynExpr.Ident id -> Some id.idText
+                                        | SynExpr.Ident pid -> Some pid.idText
                                         | _ -> None)
                                 | _ -> []
 

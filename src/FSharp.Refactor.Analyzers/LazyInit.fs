@@ -108,7 +108,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     // the `None`/`null` arm of a match on the mutable
     let emptyArmOf (name: string) (e: SynExpr) (assignment: range) =
         match e with
-        | SynExpr.Match(expr = SynExpr.Ident id; clauses = clauses) when id.idText = name ->
+        | SynExpr.Match(expr = SynExpr.Ident pid; clauses = clauses) when pid.idText = name ->
             clauses
             |> List.exists (fun (SynMatchClause(pat = pat; resultExpr = result)) ->
                 Range.rangeContainsRange result.Range assignment

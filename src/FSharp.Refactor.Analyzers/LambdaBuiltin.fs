@@ -34,7 +34,7 @@ type Suggestion =
 [<return: Struct>]
 let private (|PlainName|_|) (pat: SynPat) =
     match pat with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> ValueSome id.idText
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> ValueSome pid.idText
     | _ -> ValueNone
 
 /// `(a, b)` — a two-element tuple of plain names, in either paren style.
@@ -53,7 +53,7 @@ let private (|PlainNamePair|_|) (pat: SynPat) =
 [<return: Struct>]
 let private (|JustIdent|_|) (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> ValueSome id.idText
+    | SynExpr.Ident pid -> ValueSome pid.idText
     | _ -> ValueNone
 
 /// The callee of the application this node sits in, seen through the call's

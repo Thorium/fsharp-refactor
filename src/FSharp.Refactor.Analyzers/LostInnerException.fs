@@ -59,8 +59,8 @@ let isFailureFunction (raised: string) = failureFunctions.Contains raised
 /// it binds none.
 let private binderOf (pat: SynPat) =
     match pat with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = id))) -> Some id.idText
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
+    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = pid))) -> Some pid.idText
     | _ -> None
 
 /// `raise (X(args))` / `raise (X args)` / `raise (new X(args))`: the type's

@@ -175,7 +175,7 @@ let private shadowsListModule (index: AstIndex.Index) =
     |> Array.exists (fun (_, decl) ->
         match decl with
         | SynModuleDecl.NestedModule(moduleInfo = SynComponentInfo(longId = ids)) ->
-            ids |> List.exists (fun id -> id.idText = "List")
+            ids |> List.exists (fun pid -> pid.idText = "List")
         | _ -> false)
 
 let private freshNames (full: string) (baseNames: string list) =
@@ -232,7 +232,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                 inClause
                                 |> Array.choose (fun e ->
                                     match e with
-                                    | SynExpr.Ident id when id.idText = nameText -> Some e.Range
+                                    | SynExpr.Ident pid when pid.idText = nameText -> Some e.Range
                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) when
                                         first.idText = nameText
                                         ->
@@ -242,15 +242,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             // (part, range replaced, occurrence it accounts for)
                             let useOf (e: SynExpr) =
                                 match e with
-                                | SynExpr.DotIndexedGet(objectExpr = SynExpr.Ident id as o; indexArgs = IntLiteral k) when
-                                    id.idText = nameText
+                                | SynExpr.DotIndexedGet(objectExpr = SynExpr.Ident pid as o; indexArgs = IntLiteral k) when
+                                    pid.idText = nameText
                                     ->
                                     partOfIndex k |> ValueOption.map (fun part -> part, e.Range, o.Range)
                                 | SynExpr.App(
                                     flag = ExprAtomicFlag.Atomic
-                                    funcExpr = SynExpr.Ident id as o
+                                    funcExpr = SynExpr.Ident pid as o
                                     argExpr = SynExpr.ArrayOrListComputed(isArray = false; expr = IntLiteral k)) when
-                                    id.idText = nameText
+                                    pid.idText = nameText
                                     ->
                                     partOfIndex k |> ValueOption.map (fun part -> part, e.Range, o.Range)
                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: m :: _)) when
@@ -261,28 +261,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                         part, Range.unionRanges first.idRange m.idRange, e.Range)
                                 | SynExpr.App(
                                     funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
-                                    argExpr = SynExpr.Ident id as o) when
-                                    id.idText = nameText && listModule coreList m f [ "head"; "tail" ]
+                                    argExpr = SynExpr.Ident pid as o) when
+                                    pid.idText = nameText && listModule coreList m f [ "head"; "tail" ]
                                     ->
                                     partOfFunction f.idText |> ValueOption.map (fun part -> part, e.Range, o.Range)
                                 | SynExpr.App(
                                     funcExpr = SynExpr.App(
                                         funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
                                         argExpr = IntLiteral k)
-                                    argExpr = SynExpr.Ident id as o) when
-                                    id.idText = nameText && listModule coreList m f [ "item"; "nth" ]
+                                    argExpr = SynExpr.Ident pid as o) when
+                                    pid.idText = nameText && listModule coreList m f [ "item"; "nth" ]
                                     ->
                                     partOfIndex k |> ValueOption.map (fun part -> part, e.Range, o.Range)
-                                | PipeApp(SynExpr.Ident id as o,
+                                | PipeApp(SynExpr.Ident pid as o,
                                           SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))) when
-                                    id.idText = nameText && listModule coreList m f [ "head"; "tail" ]
+                                    pid.idText = nameText && listModule coreList m f [ "head"; "tail" ]
                                     ->
                                     partOfFunction f.idText |> ValueOption.map (fun part -> part, e.Range, o.Range)
-                                | PipeApp(SynExpr.Ident id as o,
+                                | PipeApp(SynExpr.Ident pid as o,
                                           SynExpr.App(
                                               funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ]))
                                               argExpr = IntLiteral k)) when
-                                    id.idText = nameText && listModule coreList m f [ "item"; "nth" ]
+                                    pid.idText = nameText && listModule coreList m f [ "item"; "nth" ]
                                     ->
                                     partOfIndex k |> ValueOption.map (fun part -> part, e.Range, o.Range)
                                 | _ -> ValueNone
@@ -305,7 +305,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                      within clauseRange p.Range
                                      && not (Range.equals p.Range pat.Range)
                                      && (match p with
-                                         | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = nameText
+                                         | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText = nameText
                                          | _ -> false)))
                                 || (inClause
                                     |> Array.exists (fun e ->
@@ -315,12 +315,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                             (simple
                                              |> List.exists (fun s ->
                                                  match s with
-                                                 | SynSimplePat.Id(ident = id) -> id.idText = nameText
+                                                 | SynSimplePat.Id(ident = pid) -> pid.idText = nameText
                                                  | _ -> false))
                                             || (match parsed with
                                                 | Some(ps, _) -> ps |> List.exists bindsName
                                                 | None -> false)
-                                        | SynExpr.For(ident = id) -> id.idText = nameText
+                                        | SynExpr.For(ident = pid) -> pid.idText = nameText
                                         | SynExpr.ForEach(pat = p) -> bindsName p
                                         | LetOrUseE lou ->
                                             lou.Bindings |> List.exists (fun (SynBinding(headPat = p)) -> bindsName p)

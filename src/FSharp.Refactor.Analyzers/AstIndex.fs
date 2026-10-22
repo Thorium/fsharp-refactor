@@ -453,7 +453,7 @@ let mentionsOf (index: Index) (name: string) : struct (range * bool)[] =
 
                 for _, e in index.Exprs do
                     match e with
-                    | SynExpr.Ident id -> add id false
+                    | SynExpr.Ident pid -> add pid false
                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> add first true
                     | _ -> ()
 

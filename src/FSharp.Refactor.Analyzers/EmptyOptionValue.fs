@@ -103,7 +103,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // the first name of the tested option, wherever the test names it
         let rec rootIdent (e: SynExpr) : Ident voption =
             match stripParens e with
-            | SynExpr.Ident id -> ValueSome id
+            | SynExpr.Ident pid -> ValueSome pid
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = id :: _)) when
                 id.idText <> "Option" && id.idText <> "ValueOption"
                 ->
@@ -119,7 +119,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
         let idsOf (e: SynExpr) =
             match stripParens e with
-            | SynExpr.Ident id -> ValueSome [ id ]
+            | SynExpr.Ident pid -> ValueSome [ pid ]
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome ids
             | _ -> ValueNone
 

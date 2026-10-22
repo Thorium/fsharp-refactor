@@ -89,7 +89,7 @@ let rec private headAndDepth (depth: int) (e: SynExpr) =
     | PipeApp(_, rhs) -> headAndDepth (depth + 1) rhs
     | SynExpr.App(isInfix = false; funcExpr = f) -> headAndDepth (depth + 1) f
     | SynExpr.TypeApp(expr = inner) -> headAndDepth depth inner
-    | SynExpr.Ident id -> ValueSome(id, depth)
+    | SynExpr.Ident pid -> ValueSome(pid, depth)
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids, depth)
     | _ -> ValueNone
@@ -387,7 +387,7 @@ let findUnhandledStart
                 bindings
                 |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
                     match p, rhs with
-                    | SynPat.Named(ident = SynIdent(ident = id)), AsyncLiteral body -> Some(id.idText, body)
+                    | SynPat.Named(ident = SynIdent(ident = pid)), AsyncLiteral body -> Some(pid.idText, body)
                     | SynPat.LongIdent(longDotId = SynLongIdent(id = [ f ])), AsyncLiteral body -> Some(f.idText, body)
                     | _ -> None)
 
@@ -410,7 +410,7 @@ let findUnhandledStart
             | _ ->
                 let rec headName (e: SynExpr) =
                     match stripParens e with
-                    | SynExpr.Ident id -> Some id.idText
+                    | SynExpr.Ident pid -> Some pid.idText
                     | SynExpr.App(isInfix = false; funcExpr = f) -> headName f
                     | _ -> None
 

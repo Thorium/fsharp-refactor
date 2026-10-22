@@ -161,7 +161,7 @@ let findWith
                             casesWithFields <= 1
                             || fields
                                |> List.choose (fun (SynField(idOpt = idOpt; fieldType = t)) ->
-                                   idOpt |> Option.map (fun id -> id.idText, textOfRange source t.Range))
+                                   idOpt |> Option.map (fun pid -> pid.idText, textOfRange source t.Range))
                                |> List.groupBy fst
                                |> List.forall (fun (_, group) ->
                                    if sharedFieldNames then

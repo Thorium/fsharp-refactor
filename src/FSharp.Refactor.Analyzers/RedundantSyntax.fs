@@ -124,7 +124,7 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
             | SynExpr.App(funcExpr = f) -> calleeIdent f
             | SynExpr.TypeApp(expr = inner)
             | SynExpr.Paren(expr = inner) -> calleeIdent inner
-            | SynExpr.Ident id -> Some id
+            | SynExpr.Ident pid -> Some pid
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
             | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
             | _ -> None

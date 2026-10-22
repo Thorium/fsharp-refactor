@@ -81,7 +81,7 @@ let isTaskType (t: FSharpType) =
 [<TailCall>]
 let rec receiverIdent (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> Some id
+    | SynExpr.Ident pid -> Some pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
     | SynExpr.App(funcExpr = f) -> receiverIdent f
@@ -241,8 +241,8 @@ let private blocking site awaitable =
 [<return: Struct>]
 let (|Ignored|_|) (e: SynExpr) =
     match stripParens e with
-    | PipeApp(inner, SynExpr.Ident id) when id.idText = "ignore" -> ValueSome inner
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = inner) when id.idText = "ignore" ->
+    | PipeApp(inner, SynExpr.Ident pid) when pid.idText = "ignore" -> ValueSome inner
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident pid; argExpr = inner) when pid.idText = "ignore" ->
         ValueSome inner
     | _ -> ValueNone
 

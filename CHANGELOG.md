@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.48
+
+- FR0028 no longer flags a sub-query that an outer provider query projected into its row tuple (`for (_, orders) in rows do for o in orders`): the provider translates it with the outer statement, so it is never one query per row.
+
 ## 0.8.47
 
 - FR0066 resolves the names in a query text to the binding in scope and folds constants all the way down (holes, `+`, `sprintf` and `String.Format` of constants, nested names, `Module.name`): SQLProvider's per-member `let baseQuery = "..."` queries were flagged although their values went in parameters. A name is read where the text was built, not at the sink, so a later `let` of the same name neither hides an injection nor folds it away; a value `let` scopes over its whole container, and a binder between the binding and the use shadows it.

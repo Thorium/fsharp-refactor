@@ -2631,7 +2631,7 @@ let stringUnionApiWorld
         File = fileLookup
         // an identifier in a sibling's file: that sibling has been read, or
         // the file would not be in sight
-        SymbolAt = (fun file id -> StringUnion.symbolIn (projectUseIndex project :: siblingIndexes None) file id)
+        SymbolAt = (fun file pid -> StringUnion.symbolIn (projectUseIndex project :: siblingIndexes None) file pid)
         // a sibling's files come after every file of the project: the union
         // belongs beside the project's declaration, never in a caller
         FileOrder =

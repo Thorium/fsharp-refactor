@@ -135,7 +135,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 index.Pats
                 |> Array.choose (fun (_, p) ->
                     match p with
-                    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                    | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                     | _ -> None)
                 |> Array.countBy id
                 |> Map.ofArray
@@ -168,7 +168,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     ids.Length >= 2
                     ->
                     ids.[ids.Length - 2].idText = "TimeSpan"
-                | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id) -> id.idText = "TimeSpan"
+                | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident pid) -> pid.idText = "TimeSpan"
                 | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids))) when not ids.IsEmpty ->
                     (List.last ids).idText = "TimeSpan"
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
@@ -185,8 +185,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             else
                 match stripParens e with
                 | SynExpr.Typed(expr = inner) -> kindOf depth inner
-                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) ->
-                    bindings.TryFind id.idText |> Option.bind (kindOf (depth + 1))
+                | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ pid ])) ->
+                    bindings.TryFind pid.idText |> Option.bind (kindOf (depth + 1))
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
                     let names = ids |> List.map (fun i -> i.idText)
 
@@ -212,7 +212,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match bindings.TryFind names.Head with
                         | Some rhs -> walk (kindOf (depth + 1) rhs) ids.Tail
                         | None -> None
-                | SynExpr.Ident id -> bindings.TryFind id.idText |> Option.bind (kindOf (depth + 1))
+                | SynExpr.Ident pid -> bindings.TryFind pid.idText |> Option.bind (kindOf (depth + 1))
                 // `x.AddDays 1` / `x.Subtract span` as applications
                 | SynExpr.App(
                     isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when

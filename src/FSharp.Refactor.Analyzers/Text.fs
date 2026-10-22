@@ -360,7 +360,7 @@ let rec patBoundNamesLoop (acc: string list) (pending: SynPat list) =
     | p :: rest ->
         let acc, next =
             match p with
-            | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText :: acc, rest
+            | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText :: acc, rest
             | SynPat.Typed(pat = inner)
             | SynPat.Attrib(pat = inner)
             | SynPat.Paren(inner, _) -> acc, inner :: rest
@@ -376,11 +376,11 @@ let rec patBoundNamesLoop (acc: string list) (pending: SynPat list) =
             // `{ Field = p }` binds through its field patterns
             | SynPat.Record(fieldPats = fields) ->
                 acc, (fields |> List.map (fun (f: NamePatPairField) -> f.Pattern)) @ rest
-            | SynPat.OptionalVal(ident = id) -> id.idText :: acc, rest
+            | SynPat.OptionalVal(ident = pid) -> pid.idText :: acc, rest
             // a no-argument lone identifier (the uppercase binder's parse
             // shape) BINDS the name — record it like Named
-            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-                id.idText :: acc, rest
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) ->
+                pid.idText :: acc, rest
             | SynPat.LongIdent(argPats = SynArgPats.Pats ps) -> acc, ps @ rest
             // union-case fields named rather than positional -
             // `SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))` binds
@@ -923,8 +923,8 @@ let insideQuotedCode (path: SyntaxNode list) =
     |> List.exists (fun node ->
         match node with
         | SyntaxNode.SynExpr(SynExpr.Quote _) -> true
-        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.Ident id)) ->
-            id.idText.EndsWith("query", StringComparison.OrdinalIgnoreCase)
+        | SyntaxNode.SynExpr(SynExpr.App(funcExpr = SynExpr.Ident pid)) ->
+            pid.idText.EndsWith("query", StringComparison.OrdinalIgnoreCase)
         | _ -> false)
 
 /// Does the file `open System` at top level, a line of its own at column
@@ -1063,7 +1063,7 @@ let rec private patNamesLoop (acc: string list) (pending: SynPat list) =
     | p :: rest ->
         let acc, next =
             match p with
-            | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText :: acc, rest
+            | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText :: acc, rest
             | SynPat.As(lhsPat = lhs; rhsPat = rhs) -> acc, lhs :: rhs :: rest
             | SynPat.Typed(pat = inner)
             | SynPat.Attrib(pat = inner)
@@ -1083,7 +1083,7 @@ let rec private patNamesLoop (acc: string list) (pending: SynPat list) =
             | SynPat.Record(fieldPats = fields) ->
                 acc, (fields |> List.map (fun (f: NamePatPairField) -> f.Pattern)) @ rest
             | SynPat.ListCons(lhsPat = lhs; rhsPat = rhs) -> acc, lhs :: rhs :: rest
-            | SynPat.OptionalVal(ident = id) -> id.idText :: acc, rest
+            | SynPat.OptionalVal(ident = pid) -> pid.idText :: acc, rest
             | SynPat.LongIdent(argPats = SynArgPats.NamePatPairs(pats = ps)) ->
                 acc, (ps |> List.map (fun (fieldPat: NamePatPairField) -> fieldPat.Pattern)) @ rest
             | _ -> acc, rest

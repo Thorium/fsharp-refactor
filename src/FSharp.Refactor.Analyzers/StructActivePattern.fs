@@ -120,7 +120,7 @@ let findWith
         index.Exprs
         |> Array.exists (fun (_, e) ->
             match e with
-            | SynExpr.Ident id -> id.idText = name
+            | SynExpr.Ident pid -> pid.idText = name
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> not ids.IsEmpty && (List.last ids).idText = name
             | _ -> false)
 

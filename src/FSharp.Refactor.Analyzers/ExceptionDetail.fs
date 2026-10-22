@@ -304,13 +304,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                 if
                                                     typeId.idText = "ReflectionTypeLoadException"
                                                     && (match getTypesIdent (stripParens tried) with
-                                                        | ValueSome id ->
+                                                        | ValueSome pid ->
                                                             // Assembly.GetTypes, not a
                                                             // user method of that name:
                                                             // the fix only typechecks
                                                             // because the result is
                                                             // Type[]
-                                                            (entityMemberOwner id).StartsWith
+                                                            (entityMemberOwner pid).StartsWith
                                                                 "System.Reflection.Assembly"
                                                         | ValueNone -> false)
                                                 then

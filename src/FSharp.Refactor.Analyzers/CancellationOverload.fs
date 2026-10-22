@@ -174,8 +174,8 @@ let private shadowedBefore
         |> Array.exists (fun (_, pat) ->
             let bound =
                 match pat with
-                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
-                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> Some id
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) -> Some pid
                 | _ -> None
 
             match bound with
@@ -231,7 +231,7 @@ let rec private calleeName (e: SynExpr) =
     match e with
     | SynExpr.Paren(expr = inner)
     | SynExpr.TypeApp(expr = inner) -> calleeName inner
-    | SynExpr.Ident id -> id.idText
+    | SynExpr.Ident pid -> pid.idText
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
         ids
         |> List.map (fun i -> i.idText)

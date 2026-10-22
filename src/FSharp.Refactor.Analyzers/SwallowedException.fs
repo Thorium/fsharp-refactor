@@ -84,8 +84,8 @@ let private isCatchAll (pat: SynPat) =
 /// The name a catch-all binds the exception to, if any.
 let private binderOf (pat: SynPat) =
     match pat with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> ValueSome id.idText
-    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = id))) -> ValueSome id.idText
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> ValueSome pid.idText
+    | SynPat.As(rhsPat = SynPat.Named(ident = SynIdent(ident = pid))) -> ValueSome pid.idText
     | _ -> ValueNone
 
 /// A body that substitutes a default-ish value for the exception: a bare
@@ -524,7 +524,7 @@ let private tryParseOffer
 
         let a =
             match arg, check with
-            | SynExpr.Ident id, Some c when unannotatedStringParameter c source id -> $"({a}: string)"
+            | SynExpr.Ident pid, Some c when unannotatedStringParameter c source pid -> $"({a}: string)"
             | SynExpr.Ident _, _
             | SynExpr.Const _, _
             | SynExpr.LongIdent _, _ -> a
@@ -698,8 +698,8 @@ let private enclosingFunction (path: SyntaxNode list) =
             not ids.IsEmpty
             ->
             Some((List.last ids).idText, args |> List.collect patBoundNames)
-        | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)))) ->
-            Some(id.idText, [])
+        | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = pid)))) ->
+            Some(pid.idText, [])
         | _ -> None)
 
 /// The log statement, in the idiom, for an exception bound to `ex`.
@@ -741,7 +741,7 @@ let private logLine (idiom: LogIdiom) (ex: string) (method': string) (parameters
 let private zeroOf (check: FSharpCheckFileResults option) (source: ISourceText) (divisor: SynExpr) =
     let ident =
         match divisor with
-        | SynExpr.Ident id -> Some id
+        | SynExpr.Ident pid -> Some pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
         | _ -> None
 
@@ -1138,7 +1138,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     |> Array.forall (fun (_, e) ->
                                         not (Range.rangeContainsRange tryBody.Range e.Range)
                                         || (match e with
-                                            | SynExpr.Ident id -> ioIdent id
+                                            | SynExpr.Ident pid -> ioIdent pid
                                             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
                                             | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                                                 ioIdent (List.last ids)
@@ -1180,10 +1180,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     // those are in scope only inside that function
                                     let bindsRoot (SynBinding(headPat = p)) =
                                         match p with
-                                        | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = root
+                                        | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText = root
                                         | SynPat.LongIdent(
-                                            longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) ->
-                                            id.idText = root
+                                            longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) ->
+                                            pid.idText = root
                                         | _ -> false
 
                                     let parameters = enclosingFunction path |> Option.map snd |> Option.defaultValue []

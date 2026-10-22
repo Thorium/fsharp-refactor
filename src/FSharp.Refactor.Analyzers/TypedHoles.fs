@@ -153,7 +153,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             if not (typedLead lead leadRange) then
                                 let fillIdent =
                                     match stripParens fill with
-                                    | SynExpr.Ident id -> Some id
+                                    | SynExpr.Ident pid -> Some pid
                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                                         Some(List.last ids)
                                     | _ -> None

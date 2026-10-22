@@ -184,7 +184,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match funcExpr with
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
                             Some(List.last ids)
-                        | SynExpr.DotGet(longDotId = SynLongIdent(id = [ id ])) -> Some id
+                        | SynExpr.DotGet(longDotId = SynLongIdent(id = [ pid ])) -> Some pid
                         | _ -> None
 
                     match methodId with

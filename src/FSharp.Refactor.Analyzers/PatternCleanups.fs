@@ -164,7 +164,7 @@ let find
         | SynExpr.App(isInfix = false; funcExpr = inner) -> unwind inner (applied + 1)
         | SynExpr.Paren(expr = inner)
         | SynExpr.TypeApp(expr = inner) -> unwind inner applied
-        | SynExpr.Ident id -> Some(id, applied)
+        | SynExpr.Ident pid -> Some(pid, applied)
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids, applied)
         | _ -> None

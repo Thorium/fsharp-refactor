@@ -51,9 +51,9 @@ let private isConstant (e: SynExpr) =
 /// Named or a no-argument LongIdent.
 let private valueBinder (p: SynPat) =
     match p with
-    | SynPat.Named(ident = SynIdent(ident = id); accessibility = acc) -> ValueSome(id, acc)
-    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []; accessibility = acc) ->
-        ValueSome(id, acc)
+    | SynPat.Named(ident = SynIdent(ident = pid); accessibility = acc) -> ValueSome(pid, acc)
+    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []; accessibility = acc) ->
+        ValueSome(pid, acc)
     | _ -> ValueNone
 
 /// Names that appear as a bare identifier PATTERN anywhere in the tree.

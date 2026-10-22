@@ -107,7 +107,7 @@ let rec private pipelineRoot (e: SynExpr) =
     match e with
     | PipeApp(inner, _) -> pipelineRoot inner
     | SynExpr.Paren(expr = inner) -> pipelineRoot inner
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | _ -> ValueNone
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
@@ -231,8 +231,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             ]
 
         // the identifier a site enumerates, if it is exactly the parameter
-        let refersTo (symbol: FSharpSymbol) (id: Ident) =
-            match symbolOf id with
+        let refersTo (symbol: FSharpSymbol) (pid: Ident) =
+            match symbolOf pid with
             | Some s -> s.IsEffectivelySameAs symbol
             | None -> false
 

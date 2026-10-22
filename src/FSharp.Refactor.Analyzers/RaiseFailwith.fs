@@ -34,7 +34,7 @@ let private isExceptionPath (ids: Ident list) =
 [<return: Struct>]
 let private (|ExceptionCtor|_|) (e: SynExpr) =
     match e with
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = arg) when isExceptionPath [ id ] ->
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident pid; argExpr = arg) when isExceptionPath [ pid ] ->
         ValueSome arg
     | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = arg) when
         isExceptionPath ids

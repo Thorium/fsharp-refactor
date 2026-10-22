@@ -126,8 +126,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     lou.Bindings
                     |> List.choose (fun b ->
                         match b with
-                        | SynBinding(isMutable = true; headPat = SynPat.Named(ident = SynIdent(ident = id))) ->
-                            Some(id.idText, b.RangeOfBindingWithRhs)
+                        | SynBinding(isMutable = true; headPat = SynPat.Named(ident = SynIdent(ident = pid))) ->
+                            Some(pid.idText, b.RangeOfBindingWithRhs)
                         | _ -> None)
                     |> Array.ofList
                 | _ -> [||])
@@ -317,7 +317,7 @@ let private (|AcquireCall|_|) (source: ISourceText) (e: SynExpr) =
         ->
         let receiverId =
             match stripParens recv with
-            | SynExpr.Ident id -> Some id
+            | SynExpr.Ident pid -> Some pid
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
             | _ -> None
 

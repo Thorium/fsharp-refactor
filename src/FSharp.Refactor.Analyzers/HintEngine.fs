@@ -268,8 +268,8 @@ let rec private collectNamesLoop (acc: ResizeArray<string>) (pending: SynExpr li
     | e :: rest ->
         match e with
         | MetaVar _ -> collectNamesLoop acc rest
-        | SynExpr.Ident id ->
-            acc.Add id.idText
+        | SynExpr.Ident pid ->
+            acc.Add pid.idText
             collectNamesLoop acc rest
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
             acc.Add(identText ids)
@@ -456,7 +456,7 @@ let parseRule (rule: string) : Hint option =
 
                             let headName =
                                 match head with
-                                | SynExpr.Ident id -> Some id.idText
+                                | SynExpr.Ident pid -> Some pid.idText
                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                                     Some (List.last ids).idText
                                 | _ -> None
@@ -476,7 +476,7 @@ let parseRule (rule: string) : Hint option =
                     let rec plainHead (e: SynExpr) =
                         match e with
                         | SynExpr.App(isInfix = false; funcExpr = f) -> plainHead f
-                        | SynExpr.Ident id -> not (id.idText.StartsWith "op_")
+                        | SynExpr.Ident pid -> not (pid.idText.StartsWith "op_")
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                             not ((List.last ids).idText.StartsWith "op_")
                         | _ -> false
@@ -668,7 +668,7 @@ let private resolvedOperandType
 
     let lastIdentOf (e: SynExpr) =
         match e with
-        | SynExpr.Ident id -> ValueSome id
+        | SynExpr.Ident pid -> ValueSome pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
         | _ -> ValueNone
@@ -703,10 +703,10 @@ let private nameResolvesToCore (check: FSharpCheckFileResults) (source: ISourceT
             | SynExpr.ArrayOrList(exprs = es) -> es |> List.collect idents
             | _ -> []
 
-        match idents expr |> List.tryFind (fun (id, _) -> id.idText = last) with
+        match idents expr |> List.tryFind (fun (pid, _) -> pid.idText = last) with
         | None -> false
-        | Some(id, names) ->
-            let r = id.idRange
+        | Some(pid, names) ->
+            let r = pid.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
             try
@@ -1165,7 +1165,7 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
     let r = e.Range
 
     let effectful (ids: Ident list) =
-        ids |> List.exists (fun id -> effectfulCoreNames.Contains id.idText)
+        ids |> List.exists (fun pid -> effectfulCoreNames.Contains pid.idText)
         || (match ids with
             | [ m; op ] -> m.idText = "Array" && inPlaceArrayOps.Contains op.idText
             | _ -> false)
@@ -1217,7 +1217,7 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
                 parameters
                 |> List.choose (fun p ->
                     match p with
-                    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                    | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                     | _ -> None)
                 |> Set.ofList
 
@@ -1286,7 +1286,7 @@ let private isPureFunction (check: FSharpCheckFileResults) (source: ISourceText)
                         match part with
                         | SynInterpolatedStringPart.FillExpr _ -> false
                         | SynInterpolatedStringPart.String _ -> true)
-                | SynExpr.Ident id -> not (effectfulCoreNames.Contains id.idText)
+                | SynExpr.Ident pid -> not (effectfulCoreNames.Contains pid.idText)
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
                 | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) -> not (effectful ids || foreignProperty ids)
                 | _ -> true))

@@ -123,7 +123,7 @@ let private mentionFree (c: Ctx) (r: range) =
 /// the head and args came from.
 let private selfCall (c: Ctx) (isTail: bool) (e: SynExpr) (head: SynExpr) (args: SynExpr list) =
     match head with
-    | SynExpr.Ident id when id.idText = c.Fid.idText ->
+    | SynExpr.Ident pid when pid.idText = c.Fid.idText ->
         if
             isTail
             && args.Length = c.Arity

@@ -197,7 +197,7 @@ let private findIn
 
                     let isIndexIdent (e: SynExpr) =
                         match stripParens e with
-                        | SynExpr.Ident id -> id.idText = i.idText
+                        | SynExpr.Ident pid -> pid.idText = i.idText
                         | _ -> false
 
                     // every `<xs>.[i]` / `<xs>[i]` in the body: its whole range and
@@ -297,7 +297,7 @@ let private findIn
                             inBody e.Range
                             && not (indexedUses |> Array.exists (fun (u, _) -> Range.rangeContainsRange u e.Range))
                             && (match e with
-                                | SynExpr.Ident id -> id.idText = collText
+                                | SynExpr.Ident pid -> pid.idText = collText
                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
                                     ids.Length >= collSegments && identText (List.take collSegments ids) = collText
                                 | _ -> false))
@@ -322,7 +322,7 @@ let private findIn
                                     | LetOrUseE lou ->
                                         lou.Bindings |> List.collect (fun (SynBinding(headPat = p)) -> patNames p)
                                     | SynExpr.ForEach(pat = p) -> patNames p
-                                    | SynExpr.For(ident = id) -> [ id.idText ]
+                                    | SynExpr.For(ident = pid) -> [ pid.idText ]
                                     | SynExpr.Lambda(parsedData = Some(pats, _)) -> pats |> List.collect patNames
                                     | _ -> []
                                 | _ -> [])

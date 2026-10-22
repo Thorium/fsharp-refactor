@@ -62,7 +62,7 @@ let private processWideRoots =
 [<TailCall>]
 let rec private leadingIds (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> [ id.idText ]
+    | SynExpr.Ident pid -> [ pid.idText ]
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> ids |> List.map (fun i -> i.idText)
     | SynExpr.DotGet(expr = inner)
     | SynExpr.Paren(expr = inner)
@@ -84,7 +84,7 @@ let private localEventNames (path: SyntaxNode list) =
             | SynExpr.App(funcExpr = f) -> named f
             | SynExpr.TypeApp(expr = inner) -> named inner
             | SynExpr.Paren(expr = inner) -> named inner
-            | SynExpr.Ident id -> id.idText = "Event"
+            | SynExpr.Ident pid -> pid.idText = "Event"
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                 (List.last ids).idText = "Event"
             | _ -> false
@@ -103,7 +103,7 @@ let private localEventNames (path: SyntaxNode list) =
             lou.Bindings
             |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
                 match p with
-                | SynPat.Named(ident = SynIdent(ident = id)) when constructsEvent rhs -> Some id.idText
+                | SynPat.Named(ident = SynIdent(ident = pid)) when constructsEvent rhs -> Some pid.idText
                 | _ -> None)
         | _ -> [])
     |> Set.ofList
@@ -152,7 +152,7 @@ let private resolvesToSink (check: FSharpCheckFileResults) (source: ISourceText)
 [<TailCall>]
 let rec private receiverRootLoop (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> Some id.idText
+    | SynExpr.Ident pid -> Some pid.idText
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) -> Some first.idText
     | SynExpr.DotGet(expr = inner)
     | SynExpr.Paren(expr = inner) -> receiverRootLoop inner

@@ -323,7 +323,7 @@ GC-lifetime note (no fix): a lambda that captures `this` — directly or through
 
 ### FR0028 — performance
 
-N+1 note (no fix): a `for` over an `IQueryable` nested inside another loop executes one database query per outer iteration; typed-gated so in-memory sequences never fire, and an outer loop batched with `chunkBySize` suppresses the note - whether the chunking sits in the loop header or was bound to a `let` first, which is how it is usually written
+N+1 note (no fix): a `for` over an `IQueryable` nested inside another loop executes one database query per outer iteration; typed-gated so in-memory sequences never fire, and an outer loop batched with `chunkBySize` suppresses the note - whether the chunking sits in the loop header or was bound to a `let` first, which is how it is usually written; a sub-query an outer provider query put in its row tuple (`for (_, orders) in rows do for o in orders`, `rows` a `query { }` or `IQueryable`) is part of the outer statement and stays quiet, while a row tuple built in memory still fires
 
 ### FR0029 — performance
 

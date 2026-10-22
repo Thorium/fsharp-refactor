@@ -40,7 +40,7 @@ open FSharp.Refactor.Text
 /// must bind the name for it to count.
 let rec private wholeExceptionBinders (p: SynPat) : string list =
     match p with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> [ id.idText ]
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> [ pid.idText ]
     | SynPat.As(lhsPat = lhs; rhsPat = rhs) -> wholeExceptionBinders lhs @ wholeExceptionBinders rhs
     | SynPat.Paren(pat = inner)
     | SynPat.Typed(pat = inner)
@@ -123,7 +123,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | SynExpr.MatchLambda(matchClauses = cs)
                     | SynExpr.TryWith(withCases = cs) -> cs |> List.exists (fun (SynMatchClause(pat = p)) -> binds p)
                     | SynExpr.ForEach(pat = p) -> binds p
-                    | SynExpr.For(ident = id) -> id.idText = name
+                    | SynExpr.For(ident = pid) -> pid.idText = name
                     | _ -> false))
 
         // A try-with whose nearest deferring ancestor is a computation

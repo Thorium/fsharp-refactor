@@ -66,7 +66,7 @@ type private Piece =
 let private unannotatedParameters (path: SyntaxNode list) =
     let rec bare (p: SynPat) =
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> [ id.idText ]
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> [ pid.idText ]
         | SynPat.Paren(pat = inner) -> bare inner
         | SynPat.Tuple(elementPats = elements) -> elements |> List.collect bare
         | _ -> []

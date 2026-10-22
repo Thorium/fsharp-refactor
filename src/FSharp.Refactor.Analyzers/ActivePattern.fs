@@ -102,7 +102,7 @@ let private inputParameter
     : string voption =
     let lastIdent =
         match fnExpr with
-        | SynExpr.Ident id -> Some id
+        | SynExpr.Ident pid -> Some pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
         | _ -> None
 

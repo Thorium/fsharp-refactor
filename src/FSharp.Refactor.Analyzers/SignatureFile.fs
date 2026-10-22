@@ -64,7 +64,7 @@ let private valNamed (tree: ParsedInput) (name: string) =
     declarations tree
     |> List.tryPick (fun decl ->
         match decl with
-        | SynModuleSigDecl.Val(valSig = SynValSig(ident = SynIdent(ident = id)) as valSig) when id.idText = name ->
+        | SynModuleSigDecl.Val(valSig = SynValSig(ident = SynIdent(ident = pid)) as valSig) when pid.idText = name ->
             Some valSig
         | _ -> None)
 

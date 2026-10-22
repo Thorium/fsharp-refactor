@@ -330,7 +330,7 @@ let findNamed
 
     let calleeOf (f: SynExpr) =
         match f with
-        | SynExpr.Ident id -> Some id
+        | SynExpr.Ident pid -> Some pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
         | _ -> None
@@ -351,7 +351,7 @@ let findNamed
                     isInfix = true; funcExpr = FSharp.Refactor.Text.IdentName "op_Equality"; argExpr = lhs)
                 argExpr = rhs) ->
                 match FSharp.Refactor.Text.stripParens lhs with
-                | SynExpr.Ident id -> yield! literal id.idText rhs |> Option.toList
+                | SynExpr.Ident pid -> yield! literal pid.idText rhs |> Option.toList
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                     yield! literal (List.last ids).idText rhs |> Option.toList
                 | _ -> ()

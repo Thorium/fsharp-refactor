@@ -95,7 +95,7 @@ let rec private operandIdent (e: SynExpr) =
     match e with
     | SynExpr.Paren(expr = inner)
     | SynExpr.Typed(expr = inner) -> operandIdent inner
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | _ -> ValueNone
@@ -155,7 +155,7 @@ let private applicationOf (e: SynExpr) =
 /// The identifier a callee spells: `f`, `x.M`, `Console.WriteLine`.
 let private calleeIdent (head: SynExpr) =
     match head with
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | _ -> ValueNone
@@ -187,8 +187,8 @@ let private hostileTypeNames
     : Set<string> =
     let typeOfOperand (operand: SynExpr) =
         match operandIdent operand with
-        | ValueSome id ->
-            match OptionModule.symbolOfIdent check source id with
+        | ValueSome pid ->
+            match OptionModule.symbolOfIdent check source pid with
             | Some(:? FSharpMemberOrFunctionOrValue as value) ->
                 (try
                     let t = OptionModule.stripAbbreviations value.FullType

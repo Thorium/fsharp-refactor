@@ -54,7 +54,7 @@ type Suggestion =
 /// The bare identifiers of an `a || b || c` disjunction.
 let rec private orIdents (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> [ id.idText ]
+    | SynExpr.Ident pid -> [ pid.idText ]
     | SynExpr.Paren(expr = inner) -> orIdents inner
     | SynExpr.App(funcExpr = SynExpr.App(funcExpr = SingleIdent op; argExpr = l); argExpr = r) when
         op.idText = "op_BooleanOr"

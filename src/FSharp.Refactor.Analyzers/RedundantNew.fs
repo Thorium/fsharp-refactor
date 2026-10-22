@@ -262,8 +262,8 @@ let private openedValueNames (signatures: Lazy<FSharpAssemblySignature list>) (i
 let private boundValueNames (index: AstIndex.Index) =
     let ofBinding (SynBinding(headPat = pat)) =
         match pat with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> Some id.idText
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ])) -> Some pid.idText
         | _ -> None
 
     [

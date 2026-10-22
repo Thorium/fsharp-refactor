@@ -155,7 +155,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         // `items.Keys`/`items.Values` — the root identifier
         let enumerated (e: SynExpr) =
             match stripParens e with
-            | SynExpr.Ident id -> Some id
+            | SynExpr.Ident pid -> Some pid
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ root; view ])) when
                 view.idText = "Keys" || view.idText = "Values"
                 ->

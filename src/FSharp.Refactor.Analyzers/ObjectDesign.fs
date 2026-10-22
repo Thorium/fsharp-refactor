@@ -179,8 +179,8 @@ let noOwnershipType (check: FSharpCheckFileResults) (source: ISourceText) (ident
 /// nothing. A MemoryStream over its own buffer is not excluded: `use`
 /// there is the idiom and costs nothing.
 let ownsNoResource (check: FSharpCheckFileResults) (source: ISourceText) (rhs: SynExpr) =
-    let isArray (id: Ident) =
-        match symbolAt check source id with
+    let isArray (pid: Ident) =
+        match symbolAt check source pid with
         | Some(:? FSharpMemberOrFunctionOrValue as value) ->
             (try
                 let t = OptionModule.stripAbbreviations value.FullType
@@ -194,7 +194,7 @@ let ownsNoResource (check: FSharpCheckFileResults) (source: ISourceText) (rhs: S
         | SynExpr.Const(SynConst.Unit, _) -> false
         // a capacity: its own buffer
         | SynExpr.Const(SynConst.Int32 _, _) -> false
-        | SynExpr.Ident id -> isArray id
+        | SynExpr.Ident pid -> isArray pid
         | SynExpr.Tuple(exprs = _ :: _ :: _) -> true
         | _ -> true
 
@@ -202,7 +202,7 @@ let ownsNoResource (check: FSharpCheckFileResults) (source: ISourceText) (rhs: S
         match rhs with
         | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = args) when not ids.IsEmpty ->
             (List.last ids).idText, Some args
-        | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident id; argExpr = args) -> id.idText, Some args
+        | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident pid; argExpr = args) -> pid.idText, Some args
         | SynExpr.App(isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)); argExpr = args) when
             not ids.IsEmpty
             ->
@@ -222,7 +222,7 @@ let rec private patNamesLoop (acc: string list) (pending: SynPat list) =
     | p :: rest ->
         let acc, next =
             match p with
-            | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText :: acc, rest
+            | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText :: acc, rest
             | SynPat.Typed(pat = inner)
             | SynPat.Attrib(pat = inner)
             | SynPat.Paren(inner, _) -> acc, inner :: rest
@@ -246,10 +246,10 @@ let private letBoundNames (p: SynPat) : string list =
 /// `new T(...)`, `M.T(...)`.
 let private constructedTypeName (e: SynExpr) =
     match stripParens e with
-    | SynExpr.App(funcExpr = SynExpr.Ident id) -> Some id.idText
+    | SynExpr.App(funcExpr = SynExpr.Ident pid) -> Some pid.idText
     | SynExpr.App(funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when not ids.IsEmpty ->
         Some (List.last ids).idText
-    | SynExpr.App(funcExpr = SynExpr.TypeApp(expr = SynExpr.Ident id)) -> Some id.idText
+    | SynExpr.App(funcExpr = SynExpr.TypeApp(expr = SynExpr.Ident pid)) -> Some pid.idText
     | SynExpr.New(
         targetType = (SynType.LongIdent(SynLongIdent(id = ids)) | SynType.App(
             typeName = SynType.LongIdent(SynLongIdent(id = ids))))) when not ids.IsEmpty -> Some (List.last ids).idText
@@ -294,7 +294,7 @@ let find
                     lou.Bindings
                     |> List.choose (fun (SynBinding(headPat = p; expr = rhs)) ->
                         match p, constructedTypeName rhs with
-                        | SynPat.Named(ident = SynIdent(ident = id)), Some t -> Some(id.idText, t)
+                        | SynPat.Named(ident = SynIdent(ident = pid)), Some t -> Some(pid.idText, t)
                         | _ -> None)
                     |> Array.ofList
                 | _ -> [||])
@@ -305,7 +305,7 @@ let find
             | Some t -> Some t
             | None ->
                 match stripParens e with
-                | SynExpr.Ident id -> Map.tryFind id.idText constructedLocals
+                | SynExpr.Ident pid -> Map.tryFind pid.idText constructedLocals
                 | _ -> None
 
         index.Exprs
@@ -416,8 +416,8 @@ let find
                                                 members
                                                 |> List.tryPick (fun m ->
                                                     match m with
-                                                    | SynMemberDefn.ImplicitCtor(selfIdentifier = Some id) ->
-                                                        Some id.idText
+                                                    | SynMemberDefn.ImplicitCtor(selfIdentifier = Some pid) ->
+                                                        Some pid.idText
                                                     | _ -> None)
                                                 |> Option.defaultValue "this"
 
@@ -463,7 +463,7 @@ let find
                             |> Array.choose (fun (_, e) ->
                                 if disposeBodies |> List.exists (fun r -> Range.rangeContainsRange r e.Range) then
                                     match e with
-                                    | SynExpr.Ident id -> Some id.idText
+                                    | SynExpr.Ident pid -> Some pid.idText
                                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ _; m ])) -> Some m.idText
                                     | _ -> None
                                 else
@@ -646,7 +646,7 @@ let find
                                     operands
                                     |> List.exists (fun operand ->
                                         match stripParens operand with
-                                        | SynExpr.Ident id -> id.idText = fieldName
+                                        | SynExpr.Ident pid -> pid.idText = fieldName
                                         | _ -> false)
                                 | _ -> false
 

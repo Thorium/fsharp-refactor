@@ -210,7 +210,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             let headName =
                 match headPat with
                 | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> (List.last ids).idText
-                | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText
                 | _ -> ""
 
             let partialActivePattern = headName.StartsWith '|' && headName.EndsWith "|_|"

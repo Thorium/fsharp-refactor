@@ -379,7 +379,7 @@ let private applicationIsUnit (check: FSharpCheckFileResults) (source: ISourceTe
         | SynExpr.App(funcExpr = f) -> head f (args + 1)
         | SynExpr.TypeApp(expr = f)
         | SynExpr.Paren(expr = f) -> head f args
-        | SynExpr.Ident id -> Some(id, args)
+        | SynExpr.Ident pid -> Some(pid, args)
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids, args)
         | _ -> None
@@ -396,8 +396,8 @@ let private applicationIsUnit (check: FSharpCheckFileResults) (source: ISourceTe
                 None
 
     match head e 0 with
-    | Some(id, args) ->
-        match symbolAt check source id with
+    | Some(pid, args) ->
+        match symbolAt check source pid with
         | Some u ->
             match u.Symbol with
             | :? FSharpMemberOrFunctionOrValue as v ->
@@ -624,7 +624,7 @@ let private applicationOf (path: SyntaxNode list) (useRange: range) =
 let private headFunction (check: FSharpCheckFileResults) (source: ISourceText) (f: SynExpr) =
     let rec ident (f: SynExpr) =
         match f with
-        | SynExpr.Ident id -> Some id
+        | SynExpr.Ident pid -> Some pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> List.tryLast ids
         | SynExpr.TypeApp(expr = inner)
         | SynExpr.App(isInfix = false; funcExpr = inner) -> ident inner
@@ -670,7 +670,7 @@ let private coreConversion (check: FSharpCheckFileResults) (source: ISourceText)
 let private functionText (f: SynExpr) =
     match f with
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> identText ids
-    | SynExpr.Ident id -> id.idText
+    | SynExpr.Ident pid -> pid.idText
     | _ -> ""
 
 /// Classify a read of the accumulator after its loops. `node` is the
@@ -878,7 +878,7 @@ let private spanTablesOf (index: AstIndex.Index) =
 
             for path, e in index.Exprs do
                 match e with
-                | SynExpr.Ident id -> names.TryAdd(spanKey id.idRange, (path, e)) |> ignore
+                | SynExpr.Ident pid -> names.TryAdd(spanKey pid.idRange, (path, e)) |> ignore
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = first :: _)) ->
                     names.TryAdd(spanKey first.idRange, (path, e)) |> ignore
                 | _ -> ()

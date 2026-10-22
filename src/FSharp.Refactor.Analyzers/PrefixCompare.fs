@@ -85,7 +85,7 @@ let private (|IntLiteral|_|) (e: SynExpr) =
 [<return: Struct>]
 let private (|Receiver|_|) (e: SynExpr) =
     match stripParens e with
-    | SynExpr.Ident id -> ValueSome [ id ]
+    | SynExpr.Ident pid -> ValueSome [ pid ]
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = (_ :: _ as ids))) -> ValueSome ids
     | _ -> ValueNone
 
@@ -234,8 +234,8 @@ let private lengthGuarded (path: SyntaxNode list) (own: range) (receiver: Ident 
 
     let rec patBinds (p: SynPat) =
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> id.idText = root
-        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats []) -> id.idText = root
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> pid.idText = root
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats []) -> pid.idText = root
         | SynPat.Typed(pat = inner)
         | SynPat.Attrib(pat = inner)
         | SynPat.Paren(inner, _) -> patBinds inner
@@ -442,8 +442,8 @@ let find
                      |> Array.filter (fun (_, e) -> Range.rangeContainsRange between e.Range))
 
             // a byref to the receiver, taken anywhere, writes through
-            let byrefStore (id: Ident) =
-                match resolve [ id ] with
+            let byrefStore (pid: Ident) =
+                match resolve [ pid ] with
                 | Some(:? FSharpMemberOrFunctionOrValue as v) -> OptionModule.isByRefLike v.FullType
                 | _ -> false
 
@@ -453,13 +453,13 @@ let find
                     match e with
                     | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = [ id ])) -> isRoot id || byrefStore id
                     | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids)) -> anyRoot ids
-                    | SynExpr.DotSet(targetExpr = SynExpr.Ident id) -> isRoot id
+                    | SynExpr.DotSet(targetExpr = SynExpr.Ident pid) -> isRoot pid
                     | SynExpr.DotSet(longDotId = SynLongIdent(id = ids)) -> anyRoot ids
                     | SynExpr.Set(targetExpr = target) ->
                         (match stripParens target with
                          | SynExpr.Ident id -> isRoot id || byrefStore id
                          | _ -> false)
-                    | SynExpr.AddressOf(expr = SynExpr.Ident id) -> isRoot id
+                    | SynExpr.AddressOf(expr = SynExpr.Ident pid) -> isRoot pid
                     | _ -> false)
 
             // declared inside the binding the cut sits in: a local, which
@@ -494,9 +494,9 @@ let find
                             | SynExpr.DotSet(longDotId = SynLongIdent(id = ids)) -> anyRoot ids
                             | SynExpr.Set(targetExpr = target) ->
                                 (match stripParens target with
-                                 | SynExpr.Ident id -> isRoot id
+                                 | SynExpr.Ident pid -> isRoot pid
                                  | _ -> false)
-                            | SynExpr.AddressOf(expr = SynExpr.Ident id) -> isRoot id
+                            | SynExpr.AddressOf(expr = SynExpr.Ident pid) -> isRoot pid
                             | SynExpr.AddressOf(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
                                 anyRoot ids
                             | _ -> false))
@@ -509,7 +509,7 @@ let find
                     |> Array.choose (fun (_, x) ->
                         if Range.rangeContainsRange r x.Range then
                             match x with
-                            | SynExpr.Ident id -> Some [ id ]
+                            | SynExpr.Ident pid -> Some [ pid ]
                             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some ids
                             | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                                 Some [ List.last ids ]

@@ -42,7 +42,7 @@ type Suggestion =
 /// The ident texts of a bare or dotted identifier expression.
 let private identPath (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> Some [ id.idText ]
+    | SynExpr.Ident pid -> Some [ pid.idText ]
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some(ids |> List.map (fun i -> i.idText))
     | _ -> None
 

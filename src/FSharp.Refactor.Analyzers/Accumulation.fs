@@ -174,7 +174,7 @@ let private isGenericSeqType (t: FSharpType) =
 [<return: Struct>]
 let private (|SourcePathLastIdent|_|) (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | _ -> ValueNone
@@ -233,8 +233,8 @@ let private collectionModule (check: FSharpCheckFileResults) (source: ISourceTex
         op.idText = "op_Range" || op.idText = "op_RangeStep"
         ->
         ValueSome "Seq"
-    | SourcePathLastIdent id -> moduleOfType id
-    | SynExpr.App(funcExpr = SourcePathLastIdent id) -> moduleOfType id
+    | SourcePathLastIdent pid -> moduleOfType pid
+    | SynExpr.App(funcExpr = SourcePathLastIdent pid) -> moduleOfType pid
     | _ -> ValueNone
 
 let private insideLoop (path: SyntaxNode list) =
@@ -563,7 +563,7 @@ let private effectFreeIn (index: AstIndex.Index) (r: range) =
         | SynExpr.TryWith _
         | SynExpr.TryFinally _
         | SynExpr.LetOrUse _ -> false
-        | SynExpr.Ident id -> id.idText <> "ignore"
+        | SynExpr.Ident pid -> pid.idText <> "ignore"
         | _ -> true)
 
 /// Does the predicate CALL only what provably does nothing but compute?

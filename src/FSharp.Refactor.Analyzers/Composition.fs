@@ -211,7 +211,7 @@ let private stageIsPure (check: FSharpCheckFileResults) (source: ISourceText) (s
         | SynExpr.Paren(expr = inner)
         | SynExpr.Typed(expr = inner) -> isAtom inner
         | SynExpr.Tuple(exprs = exprs) -> exprs |> List.forall isAtom
-        | SynExpr.Ident id -> immutable id
+        | SynExpr.Ident pid -> immutable pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> immutablePath ids
         | _ -> false
 
@@ -220,7 +220,7 @@ let private stageIsPure (check: FSharpCheckFileResults) (source: ISourceText) (s
         | SynExpr.App(isInfix = false; funcExpr = funcExpr; argExpr = argExpr) -> isAtom argExpr && headAndArgs funcExpr
         | SynExpr.TypeApp(expr = inner)
         | SynExpr.Paren(expr = inner) -> headAndArgs inner
-        | SynExpr.Ident id -> immutable id
+        | SynExpr.Ident pid -> immutable pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> immutablePath ids
         // `(expr).Method`: the receiver is evaluated once too
         | SynExpr.DotGet(expr = receiver) -> isAtom receiver
@@ -245,7 +245,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             match e with
             | SynExpr.App(funcExpr = f) -> headOf f
             | SynExpr.TypeApp(expr = inner) -> headOf inner
-            | SynExpr.Ident id -> Some id
+            | SynExpr.Ident pid -> Some pid
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
             | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
             | _ -> None
@@ -292,7 +292,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SyntaxNode.SynBinding(SynBinding(headPat = pat)) :: _ ->
                     let rec valueIdent (p: SynPat) =
                         match p with
-                        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                        | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
                         | SynPat.Typed(pat = inner) -> valueIdent inner
                         | SynPat.Paren(pat = inner) -> valueIdent inner
                         | SynPat.LongIdent(longDotId = SynLongIdent(id = ids); argPats = SynArgPats.Pats []) when

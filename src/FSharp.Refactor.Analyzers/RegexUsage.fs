@@ -145,7 +145,7 @@ let private isRegexTypePath (ids: Ident list) =
 [<return: Struct>]
 let private (|RegexConstruction|_|) (e: SynExpr) =
     match e with
-    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ id ])); expr = arg) when id.idText = "Regex" ->
+    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ pid ])); expr = arg) when pid.idText = "Regex" ->
         ValueSome(false, arg)
     | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = ids)); expr = arg) when isRegexTypePath ids ->
         ValueSome(true, arg)
@@ -295,7 +295,7 @@ let private nameFromBinding (decl: SynModuleDecl) =
                 match p with
                 | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                     Some (List.last ids).idText
-                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                 | SynPat.Typed(pat = inner)
                 | SynPat.Attrib(pat = inner)
                 | SynPat.Paren(pat = inner) -> named inner

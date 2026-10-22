@@ -313,7 +313,7 @@ let private mutableFactsOf (index: AstIndex.Index) =
                         |> List.choose (fun (SynBinding(isMutable = isMut; headPat = p)) ->
                             if isMut then
                                 match p with
-                                | SynPat.Named(ident = SynIdent(ident = id)) -> Some(lou.Range, id.idText)
+                                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some(lou.Range, pid.idText)
                                 | _ -> None
                             else
                                 None)
@@ -325,12 +325,12 @@ let private mutableFactsOf (index: AstIndex.Index) =
                 |> Array.choose (fun (_, p) ->
                     match p with
                     | SynPat.Typed(
-                        pat = SynPat.Named(ident = SynIdent(ident = id))
+                        pat = SynPat.Named(ident = SynIdent(ident = pid))
                         targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = tids)))) when
                         not tids.IsEmpty
                         && (let t = (List.last tids).idText in t = "byref" || t = "inref" || t = "outref")
                         ->
-                        Some id.idText
+                        Some pid.idText
                     | _ -> None)
 
             mutableLets, byrefNames
@@ -407,8 +407,8 @@ let private mentionsRecursiveBinder (index: AstIndex.Index) (path: SyntaxNode li
             bindings
             |> List.choose (fun (SynBinding(headPat = p)) ->
                 match p with
-                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> Some id.idText
-                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ])) -> Some pid.idText
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                 | _ -> None))
         |> Set.ofList
 
@@ -699,7 +699,7 @@ let boundBodies (index: AstIndex.Index) : (range * SynExpr * bool)[] =
         fun index ->
             let rec headNames (p: SynPat) =
                 match p with
-                | SynPat.Named(ident = SynIdent(ident = id)) -> [ id.idRange ]
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> [ pid.idRange ]
                 | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                     [ (List.last ids).idRange ]
                 | SynPat.Typed(pat = inner)
@@ -1020,8 +1020,8 @@ let bindingDeclaredAt (index: AstIndex.Index) (value: FSharpMemberOrFunctionOrVa
     match location with
     | None -> None
     | Some loc ->
-        let sitsAt (id: Ident, _) =
-            let r = id.idRange
+        let sitsAt (pid: Ident, _) =
+            let r = pid.idRange
 
             r.StartLine = loc.StartLine
             && r.StartColumn = loc.StartColumn
@@ -1069,7 +1069,7 @@ let callsOnlyCoreWith
                     // the owner is the extended type, the body a user's
                     false
                 elif fullName.StartsWith "Microsoft.FSharp." then
-                    not (ids |> List.exists (fun id -> effectfulCoreNames.Contains id.idText))
+                    not (ids |> List.exists (fun pid -> effectfulCoreNames.Contains pid.idText))
                     // `List.min` throws on an empty list where `Operators.min`
                     // over two values cannot
                     && not (
@@ -1102,7 +1102,7 @@ let callsOnlyCoreWith
     AstIndex.exprsWithin index r
     |> Array.forall (fun (_, e) ->
         match e with
-        | SynExpr.Ident id -> pureIdent [ id ]
+        | SynExpr.Ident pid -> pureIdent [ pid ]
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> pureIdent ids
         // a constructor or an object expression runs arbitrary code
@@ -1168,8 +1168,8 @@ let dottedReadCannotThrow (check: FSharpCheckFileResults) (source: ISourceText) 
 
     let symbolOf (prefix: Ident list) =
         try
-            let id = List.last prefix
-            let r = id.idRange
+            let pid = List.last prefix
+            let r = pid.idRange
             let lineText = source.GetLineString(r.EndLine - 1)
 
             symbolUseAt check (r.EndLine, r.EndColumn, lineText, prefix |> List.map (fun i -> i.idText))
@@ -1270,7 +1270,7 @@ let declarationEvidence (parseTree: ParsedInput) : DeclarationEvidence =
     // the names directly under an annotation: `(x: T)`, `([<A>] x: T)`
     let rec namedUnder (p: SynPat) =
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> annotated.Add(posOf id) |> ignore
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> annotated.Add(posOf pid) |> ignore
         | SynPat.Paren(pat = inner)
         | SynPat.Attrib(pat = inner) -> namedUnder inner
         | _ -> ()
@@ -1297,7 +1297,7 @@ let declarationEvidence (parseTree: ParsedInput) : DeclarationEvidence =
 
     let ofBinding (SynBinding(headPat = headPat) as b) =
         match headPat with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> values.[posOf id] <- b
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> values.[posOf pid] <- b
         | SynPat.LongIdent(longDotId = SynLongIdent(id = [ self; _ ])) -> selfIdents.Add(posOf self) |> ignore
         | _ -> ()
 
@@ -1393,7 +1393,7 @@ let receiverSettled
     : bool =
     let file =
         match ids with
-        | id :: _ -> id.idRange.FileName
+        | pid :: _ -> pid.idRange.FileName
         | [] -> ""
 
     let inRecursiveModule (d: range) =
@@ -1462,7 +1462,7 @@ let receiverSettled
         | SynExpr.Paren(expr = inner)
         | SynExpr.TypeApp(expr = inner) -> rhsSettled depth inner
         | SynExpr.Const _ -> true
-        | SynExpr.Ident id -> pathSettled depth [ id ]
+        | SynExpr.Ident pid -> pathSettled depth [ pid ]
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = path)) -> pathSettled depth path
         | SynExpr.DotGet(expr = target; longDotId = SynLongIdent(id = path)) ->
             rhsSettled depth target && pathSettled depth path

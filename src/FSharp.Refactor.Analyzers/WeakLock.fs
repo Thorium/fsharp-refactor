@@ -89,8 +89,8 @@ let private (|GetTypeCall|_|) (e: SynExpr) =
         ids.Length >= 2 && (List.last ids).idText = "GetType"
         ->
         ValueSome()
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = [ id ])); argExpr = UnitConst) when
-        id.idText = "GetType"
+    | SynExpr.App(isInfix = false; funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = [ pid ])); argExpr = UnitConst) when
+        pid.idText = "GetType"
         ->
         ValueSome()
     | _ -> ValueNone
@@ -115,8 +115,8 @@ let private moduleBindingOf (index: AstIndex.Index) (moduleRange: range option) 
             bindings
             |> List.tryPick (fun (SynBinding(headPat = p)) ->
                 match p with
-                | SynPat.Named(ident = SynIdent(ident = id)) when id.idText = name -> Some decl.Range
-                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) when id.idText = name -> Some decl.Range
+                | SynPat.Named(ident = SynIdent(ident = pid)) when pid.idText = name -> Some decl.Range
+                | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ])) when pid.idText = name -> Some decl.Range
                 | _ -> None)
         | _ -> None)
 
@@ -131,7 +131,7 @@ let private enclosingModuleLet (path: SyntaxNode list) =
                 bindings
                 |> List.tryPick (fun (SynBinding(headPat = p)) ->
                     match p with
-                    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                    | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                     | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                         Some (List.last ids).idText
                     | _ -> None)
@@ -176,8 +176,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             && (m.idText = "Out" || m.idText = "Error" || m.idText = "In")
                             ->
                             Some(WeakKind.SharedSingleton $"Console.{m.idText}")
-                        | SynExpr.Ident id when resolvesToString check source id -> Some WeakKind.StringValue
-                        | SynExpr.Ident id when resolvesToSelf check source id -> Some WeakKind.SelfObject
+                        | SynExpr.Ident pid when resolvesToString check source pid -> Some WeakKind.StringValue
+                        | SynExpr.Ident pid when resolvesToSelf check source pid -> Some WeakKind.SelfObject
                         | _ -> None
 
                     match weak with

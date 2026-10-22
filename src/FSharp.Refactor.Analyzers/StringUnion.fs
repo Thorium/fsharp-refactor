@@ -446,11 +446,11 @@ let private nodeAt (index: AstIndex.Index) (r: range) =
     index.Exprs
     |> Array.tryFind (fun (_, e) ->
         match e with
-        | SynExpr.Ident id -> sameSpan id.idRange r
+        | SynExpr.Ident pid -> sameSpan pid.idRange r
         // a field read `r.Field` is reported over the whole path; a value
         // inside one over its own identifier
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
-            sameSpan e.Range r || ids |> List.exists (fun id -> sameSpan id.idRange r)
+            sameSpan e.Range r || ids |> List.exists (fun pid -> sameSpan pid.idRange r)
         | _ -> false)
 
 /// Does a record field use at this range name the field in a construction
@@ -461,7 +461,7 @@ let private nodeAt (index: AstIndex.Index) (r: range) =
 /// see through.
 let private namesFieldInRecord (index: AstIndex.Index) (r: range) =
     let named (ids: Ident list) =
-        ids |> List.exists (fun id -> sameSpan id.idRange r)
+        ids |> List.exists (fun pid -> sameSpan pid.idRange r)
 
     index.Exprs
     |> Array.exists (fun (_, e) ->
@@ -483,7 +483,7 @@ let private patAt (index: AstIndex.Index) (r: range) =
     index.Pats
     |> Array.tryFind (fun (_, p) ->
         match p with
-        | SynPat.Named(ident = SynIdent(ident = id)) -> sameSpan id.idRange r
+        | SynPat.Named(ident = SynIdent(ident = pid)) -> sameSpan pid.idRange r
         | _ -> false)
 
 /// The binding whose head pattern holds this definition, with the binding's
@@ -583,7 +583,7 @@ let rec private applicationHead (f: SynExpr) (n: int) : (Ident * int) option =
     | SynExpr.App(isInfix = false; funcExpr = inner) -> applicationHead inner (n + 1)
     | SynExpr.TypeApp(expr = inner)
     | SynExpr.Paren(expr = inner) -> applicationHead inner n
-    | SynExpr.Ident id -> Some(id, n)
+    | SynExpr.Ident pid -> Some(pid, n)
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some(List.last ids, n)
     | _ -> None
 
@@ -724,8 +724,8 @@ let private constants (index: AstIndex.Index) : (string * Ident) list =
             |> List.choose (fun b ->
                 match b with
                 | SynBinding(
-                    headPat = SynPat.Named(ident = SynIdent(ident = id))
-                    expr = SynExpr.Const(SynConst.String(text = text), _)) -> Some(text, id)
+                    headPat = SynPat.Named(ident = SynIdent(ident = pid))
+                    expr = SynExpr.Const(SynConst.String(text = text), _)) -> Some(text, pid)
                 | _ -> None)
         | _ -> [])
 
@@ -735,13 +735,13 @@ let private constants (index: AstIndex.Index) : (string * Ident) list =
 /// `let kind = "file"` would resolve to the wrong text by name).
 let private constantAt (index: AstIndex.Index) (declaration: range) : (string * Ident) option =
     constants index
-    |> List.tryFind (fun (_, id) -> Range.rangeContainsRange id.idRange declaration)
+    |> List.tryFind (fun (_, pid) -> Range.rangeContainsRange pid.idRange declaration)
 
 /// The module-level constants spelling a name: the shadowing bug's
 /// candidates, where FCS resolves the pattern to a fresh local and only the
 /// name says which constant the author meant.
 let private constantsNamed (index: AstIndex.Index) (name: string) : (string * Ident) list =
-    constants index |> List.filter (fun (_, id) -> id.idText = name)
+    constants index |> List.filter (fun (_, pid) -> pid.idText = name)
 
 /// Does the module-level constant carry `[<Literal>]`?
 let private constantIsLiteral (index: AstIndex.Index) (constIdent: Ident) =
@@ -752,8 +752,8 @@ let private constantIsLiteral (index: AstIndex.Index) (constIdent: Ident) =
             bindings
             |> List.exists (fun b ->
                 match b with
-                | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); attributes = attrs) when
-                    sameSpan id.idRange constIdent.idRange
+                | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = pid)); attributes = attrs) when
+                    sameSpan pid.idRange constIdent.idRange
                     ->
                     hasAttributeNamed "Literal" attrs
                 | _ -> false)
@@ -903,7 +903,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
             | LetOrUseE lou when not lou.IsBang -> go lou.Body
             | SynExpr.App(isInfix = false; funcExpr = SingleIdent ctor; argExpr = arg) when this.IsCoreCase(file, ctor) ->
                 if this.IsOkCase(file, ctor) then [ Nothing ] else go arg
-            | SingleIdent id when this.IsCoreCase(file, id) -> [ Nothing ]
+            | SingleIdent pid when this.IsCoreCase(file, pid) -> [ Nothing ]
             | SynExpr.Ident id
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> this.ValueSource(file, id, e.Range)
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> this.ValueSource(file, List.last ids, e.Range)
@@ -972,13 +972,13 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     ->
                     let rec named (p: SynPat) =
                         match p with
-                        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                        | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
                         | SynPat.Paren(pat = inner)
                         | SynPat.Typed(pat = inner) -> named inner
                         | _ -> None
 
                     named args.[position]
-                    |> Option.bind (fun id -> world.SymbolAt d.Range.FileName id)
+                    |> Option.bind (fun pid -> world.SymbolAt d.Range.FileName pid)
                     |> Option.bind (fun u -> slotOf u.Symbol)
                 | _ -> None
 
@@ -1109,13 +1109,13 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
         | SyntaxNode.SynBinding(SynBinding(headPat = head; expr = body)) :: _ when sameSpan body.Range node.Range ->
             let rec named (p: SynPat) =
                 match p with
-                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
                 | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) -> List.tryLast ids
                 | SynPat.Paren(pat = inner)
                 | SynPat.Typed(pat = inner) -> named inner
                 | _ -> None
 
-            match named head |> Option.bind (fun id -> world.SymbolAt file id) with
+            match named head |> Option.bind (fun pid -> world.SymbolAt file pid) with
             | Some u ->
                 match slotOf u.Symbol with
                 | Some slot -> ToSlot slot
@@ -1209,7 +1209,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
             match e with
             | SynExpr.App(isInfix = false; funcExpr = inner; argExpr = a) -> parts inner (a :: args)
             | SynExpr.TypeApp(expr = inner) -> parts inner args
-            | SingleIdent id -> Some(id, args)
+            | SingleIdent pid -> Some(pid, args)
             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some(List.last ids, args)
             | _ -> None
 
@@ -1268,8 +1268,8 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
         match other with
         | SynExpr.Const(SynConst.String(text = text), r) -> Compare(file, r, text)
         | SynExpr.Paren(expr = SynExpr.Const(SynConst.String(text = text), r)) -> Compare(file, r, text)
-        | SingleIdent id ->
-            match this.ConstantOf(file, id) with
+        | SingleIdent pid ->
+            match this.ConstantOf(file, pid) with
             | Some(text, _) -> Compare(file, other.Range, text)
             | None -> OpenSink "a comparison with a non-literal"
         | _ -> OpenSink "a comparison with a non-literal"
@@ -1315,7 +1315,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                                     | SynPat.Record(fieldPats = fps) ->
                                         fps
                                         |> List.exists (fun (NamePatPairField(fieldName = SynLongIdent(id = fids))) ->
-                                            fids |> List.exists (fun id -> sameSpan id.idRange u.Range))
+                                            fids |> List.exists (fun pid -> sameSpan pid.idRange u.Range))
                                     | _ -> false)
 
                             if inPattern then [ OpenSource "a record pattern" ] else [])
@@ -1332,14 +1332,14 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     | Some(SynBinding(headPat = head; expr = body), _) ->
                         let rec named (p: SynPat) =
                             match p with
-                            | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                            | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
                             | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) -> List.tryLast ids
                             | SynPat.Paren(pat = inner)
                             | SynPat.Typed(pat = inner) -> named inner
                             | _ -> None
 
                         match named head with
-                        | Some id when sameSpan id.idRange def.Range ->
+                        | Some pid when sameSpan pid.idRange def.Range ->
                             // the binding's own name: a value or a function
                             if slot.Kind = "return" then
                                 exits body |> List.collect (fun e -> this.Classify(file, e))
@@ -1354,7 +1354,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
 
                                 let rec plain (p: SynPat) =
                                     match p with
-                                    | SynPat.Named(ident = SynIdent(ident = id)) -> sameSpan id.idRange def.Range
+                                    | SynPat.Named(ident = SynIdent(ident = pid)) -> sameSpan pid.idRange def.Range
                                     | SynPat.Paren(pat = inner)
                                     | SynPat.Typed(pat = inner) -> plain inner
                                     | _ -> false
@@ -1373,7 +1373,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                         | Some(SynExpr.Match(expr = subject), SynMatchClause(pat = p)) ->
                             let rec unwrapped (p: SynPat) =
                                 match p with
-                                | SynPat.Named(ident = SynIdent(ident = id)) -> sameSpan id.idRange def.Range
+                                | SynPat.Named(ident = SynIdent(ident = pid)) -> sameSpan pid.idRange def.Range
                                 | SynPat.Paren(pat = inner) -> unwrapped inner
                                 | SynPat.LongIdent(
                                     longDotId = SynLongIdent(id = [ ctor ]); argPats = SynArgPats.Pats [ inner ]) ->
@@ -1448,9 +1448,9 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                                 // other member is the string's
                                 let after =
                                     ids
-                                    |> List.skipWhile (fun id -> not (sameSpan id.idRange u.Range))
+                                    |> List.skipWhile (fun pid -> not (sameSpan pid.idRange u.Range))
                                     |> List.tail
-                                    |> List.map (fun id -> id.idText)
+                                    |> List.map (fun pid -> pid.idText)
 
                                 if after = [ "ToString" ] then
                                     [ Print ]
@@ -1498,7 +1498,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                     let rec argument (p: SynPat) =
                         match p with
                         | SynPat.Paren(pat = SynPat.Const(SynConst.Unit, _)) -> Some "()"
-                        | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
+                        | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
                         | SynPat.Paren(pat = inner)
                         | SynPat.Typed(pat = inner) -> argument inner
                         | _ -> None
@@ -1548,9 +1548,9 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                             consumers
                             |> List.tryPick (fun (cf, m) ->
                                 match m with
-                                | SynExpr.Match(expr = SynExpr.Ident id) when
+                                | SynExpr.Match(expr = SynExpr.Ident pid) when
                                     cf = file
-                                    && id.idText = name
+                                    && pid.idText = name
                                     && Range.rangeContainsRange binding.RangeOfBindingWithRhs m.Range
                                     ->
                                     catchAlls
@@ -1795,8 +1795,8 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                         // a live one has no spelling on the union (`nullPattern`)
                         | SynPat.Null _ -> catchAll None false
                         | SynPat.Paren(pat = SynPat.Null _) -> catchAll None false
-                        | SynPat.Named(ident = SynIdent(ident = id)) ->
-                            match world.SymbolAt file id with
+                        | SynPat.Named(ident = SynIdent(ident = pid)) ->
+                            match world.SymbolAt file pid with
                             | Some u -> catchAll (Some u.Symbol) false
                             | None -> [ OpenArm "a pattern that does not resolve" ]
                         | _ -> read inner
@@ -1909,7 +1909,7 @@ let private closure (analysis: Analysis) (start: Slot) : Component =
 [<TailCall>]
 let rec private stringTypeIn (t: SynType) : SynType option =
     match t with
-    | SynType.LongIdent(SynLongIdent(id = [ id ])) when id.idText = "string" -> Some t
+    | SynType.LongIdent(SynLongIdent(id = [ pid ])) when pid.idText = "string" -> Some t
     | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)); typeArgs = [ arg ]) when
         (match List.tryLast ids with
          | Some last ->
@@ -2088,9 +2088,9 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                     // the union's name, from the subject
                     let subjectName =
                         match subject with
-                        | SynExpr.Ident id -> Some id.idText
+                        | SynExpr.Ident pid -> Some pid.idText
                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> Some (List.last ids).idText
-                        | SynExpr.App _ -> applicationHead subject 0 |> Option.map (fun (id, _) -> id.idText)
+                        | SynExpr.App _ -> applicationHead subject 0 |> Option.map (fun (pid, _) -> pid.idText)
                         | _ -> None
 
                     let armLiteralTexts =
@@ -2186,9 +2186,9 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                         args |> List.exists names
                                                         ->
                                                         (match f with
-                                                         | SynExpr.Ident id -> reflective id.idText
+                                                         | SynExpr.Ident pid -> reflective pid.idText
                                                          | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
-                                                             ids |> List.exists (fun id -> reflective id.idText)
+                                                             ids |> List.exists (fun pid -> reflective pid.idText)
                                                          | _ -> true)
                                                     | _ -> false))
 
@@ -2227,13 +2227,13 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
 
                                         let reflectiveHead (e: SynExpr) =
                                             match e with
-                                            | SynExpr.Ident id -> reflective id.idText
+                                            | SynExpr.Ident pid -> reflective pid.idText
                                             | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
-                                                ids |> List.exists (fun id -> reflective id.idText)
-                                            | SynExpr.TypeApp(expr = SynExpr.Ident id) -> reflective id.idText
+                                                ids |> List.exists (fun pid -> reflective pid.idText)
+                                            | SynExpr.TypeApp(expr = SynExpr.Ident pid) -> reflective pid.idText
                                             | SynExpr.TypeApp(
                                                 expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) ->
-                                                ids |> List.exists (fun id -> reflective id.idText)
+                                                ids |> List.exists (fun pid -> reflective pid.idText)
                                             | _ -> false
 
                                         // the argument's parts: a tuple's elements, a paren's inside
@@ -2244,16 +2244,16 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                             | _ -> [ e ]
 
                                         let ofRecordType (file: string) (e: SynExpr) =
-                                            let id =
+                                            let pid =
                                                 match e with
-                                                | SynExpr.Ident id -> Some id
+                                                | SynExpr.Ident pid -> Some pid
                                                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
                                                     List.tryLast ids
                                                 | _ -> None
 
                                             // a value's own type, a function's or property's result,
                                             // a field's type: what the expression IS
-                                            match id |> Option.bind (world.SymbolAt file) with
+                                            match pid |> Option.bind (world.SymbolAt file) with
                                             | Some u ->
                                                 (match u.Symbol with
                                                  | :? FSharpMemberOrFunctionOrValue as v ->
@@ -2381,7 +2381,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
 
                                     let rec observer (e: SynExpr) =
                                         match e with
-                                        | SynExpr.Ident id -> observerName id.idText
+                                        | SynExpr.Ident pid -> observerName pid.idText
                                         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) -> observerPath ids
                                         | SynExpr.TypeApp(expr = inner)
                                         | SynExpr.Paren(expr = inner) -> observer inner
@@ -2444,7 +2444,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                         ->
                                                         [ (ids.[ids.Length - 2]).idRange ]
                                                     | SynExpr.DotGet(expr = x; longDotId = SynLongIdent(id = ids)) when
-                                                        ids |> List.exists (fun id -> observerName id.idText)
+                                                        ids |> List.exists (fun pid -> observerName pid.idText)
                                                         ->
                                                         [ x.Range ]
                                                     | _ -> [])
@@ -2452,8 +2452,8 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                             let within (r: range) =
                                                 observed |> List.exists (fun o -> Range.rangeContainsRange o r)
 
-                                            let holdsRecord (id: Ident) =
-                                                match world.SymbolAt file id with
+                                            let holdsRecord (pid: Ident) =
+                                                match world.SymbolAt file pid with
                                                 | Some u ->
                                                     match u.Symbol with
                                                     | :? FSharpMemberOrFunctionOrValue as v ->
@@ -2477,7 +2477,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
                                                        // the path's value is its last name's; a
                                                        // `r.ToString` names `r` on its own
-                                                       ids |> List.exists (fun id -> within id.idRange)
+                                                       ids |> List.exists (fun pid -> within pid.idRange)
                                                        && (holdsRecord (List.last ids)
                                                            || (ids.Length > 1
                                                                && observerName (List.last ids).idText
@@ -2645,7 +2645,7 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                     allLiterals
                                     |> List.tryPick (fun (t, via) ->
                                         match via with
-                                        | Some(_, id) when t = text -> Some(pascal id.idText)
+                                        | Some(_, pid) when t = text -> Some(pascal pid.idText)
                                         | _ -> None)
 
                                 text,
@@ -2917,10 +2917,10 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                                         recordFields = fields)) ->
                                                                     fields
                                                                     |> List.tryPick
-                                                                        (fun (SynField(fieldType = t; idOpt = id)) ->
-                                                                            match id with
-                                                                            | Some id when
-                                                                                sameSpan id.idRange declRange
+                                                                        (fun (SynField(fieldType = t; idOpt = pid)) ->
+                                                                            match pid with
+                                                                            | Some pid when
+                                                                                sameSpan pid.idRange declRange
                                                                                 ->
                                                                                 Some t
                                                                             | _ -> None)

@@ -14,6 +14,9 @@
 ///     System.Linq.IQueryable — plain sequences and lists never fire
 ///   - an outer loop whose source involves `chunkBySize` is intentional
 ///     batching and suppresses the note
+///   - a sub-query an outer provider query projected into its row tuple
+///     (`for (_, orders) in rows do for o in orders`) is part of the outer
+///     statement
 ///   - the file must have no type errors
 module FSharp.Refactor.QueryInLoop
 
@@ -52,7 +55,7 @@ let private isQueryableType (t: FSharpType) =
 [<return: Struct>]
 let private (|SourcePathLastIdent|_|) (e: SynExpr) =
     match e with
-    | SynExpr.Ident id -> ValueSome id
+    | SynExpr.Ident pid -> ValueSome pid
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> ValueSome(List.last ids)
     | _ -> ValueNone
@@ -106,7 +109,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         r
 
                 match pat with
-                | SynPat.Named(ident = SynIdent(ident = id)) when mentionsChunking range -> Some id.idText
+                | SynPat.Named(ident = SynIdent(ident = pid)) when mentionsChunking range -> Some pid.idText
                 | _ -> None
 
             Set.union
@@ -126,7 +129,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let enumeratesChunks (e: SynExpr) =
             mentionsChunking e.Range
             || (match e with
-                | SynExpr.Ident id -> chunkedNames.Contains id.idText
+                | SynExpr.Ident pid -> chunkedNames.Contains pid.idText
                 | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
                     chunkedNames.Contains (List.last ids).idText
                 | _ -> false)
@@ -201,6 +204,30 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             q.idText.EndsWith("query", System.StringComparison.OrdinalIgnoreCase)
                         | _ -> false
 
+                    // `for (_, orders) in <provider query> do for o in orders`: a sub-query the
+                    // query's own `select` put in the row tuple is part of the outer statement
+                    // (EF Core refuses an IQueryable there), not one per row
+                    let projectedByProvider =
+                        let rec tuplePattern (p: SynPat) =
+                            match p with
+                            | SynPat.Paren(pat = inner)
+                            | SynPat.Typed(pat = inner) -> tuplePattern inner
+                            | SynPat.Tuple _ -> true
+                            | _ -> false
+
+                        match stripParens enumExpr with
+                        | SynExpr.Ident name ->
+                            path
+                            |> List.tryPick (fun node ->
+                                match node with
+                                | SyntaxNode.SynExpr(SynExpr.ForEach(pat = p; enumExpr = outer)) when
+                                    List.contains name.idText (patNames p)
+                                    ->
+                                    Some(p, outer)
+                                | _ -> None)
+                            |> Option.exists (fun (p, outer) -> tuplePattern p && outerIsQueryable outer)
+                        | _ -> false
+
                     let translatedJoin =
                         insideQuotedCode path
                         && (path
@@ -248,6 +275,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         && not intentionalBatching
                         && not translatedJoin
                         && not paginated
+                        && not projectedByProvider
                         && resolvesToQueryable check source sourceId
                     then
                         {

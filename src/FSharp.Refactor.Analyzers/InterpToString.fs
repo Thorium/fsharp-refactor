@@ -75,8 +75,8 @@ let private provenString (check: FSharpCheckFileResults) (source: ISourceText) (
 
     // the resolved symbol's type names no FormattableString; unresolved,
     // or not a value, proves nothing
-    let typedPlainly (id: Ident) =
-        match symbolAt id with
+    let typedPlainly (pid: Ident) =
+        match symbolAt pid with
         | Some symbolUse ->
             match symbolUse.Symbol with
             | :? FSharpMemberOrFunctionOrValue as v ->
@@ -92,7 +92,7 @@ let private provenString (check: FSharpCheckFileResults) (source: ISourceText) (
         | SynExpr.App(funcExpr = f) -> calleeIdent f
         | SynExpr.TypeApp(expr = inner)
         | SynExpr.Paren(expr = inner) -> calleeIdent inner
-        | SynExpr.Ident id -> Some id
+        | SynExpr.Ident pid -> Some pid
         | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
         | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
         | _ -> None
@@ -113,7 +113,7 @@ let private provenString (check: FSharpCheckFileResults) (source: ISourceText) (
 
             let rec headIdent (p: SynPat) =
                 match p with
-                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid
                 | SynPat.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> Some(List.last ids)
                 | SynPat.Typed(pat = inner; targetType = t) when annotationPlain t -> headIdent inner
                 | SynPat.Paren(inner, _) -> headIdent inner
@@ -121,13 +121,13 @@ let private provenString (check: FSharpCheckFileResults) (source: ISourceText) (
 
             returnPlain
             && (match headIdent headPat with
-                | Some id -> typedPlainly id
+                | Some pid -> typedPlainly pid
                 | None -> false)
         | SyntaxNode.SynExpr e :: rest ->
             match e with
             | SynExpr.App(funcExpr = callee) ->
                 (match calleeIdent callee with
-                 | Some id -> typedPlainly id
+                 | Some pid -> typedPlainly pid
                  | None -> false)
                 && walk rest
             | SynExpr.Typed(targetType = t) -> annotationPlain t && walk rest

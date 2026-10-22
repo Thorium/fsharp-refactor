@@ -82,8 +82,8 @@ type HeadSuggestion =
 
 let private bindingName (SynBinding(headPat = pat)) =
     match pat with
-    | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); argPats = SynArgPats.Pats _) -> Some id.idText
+    | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
+    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); argPats = SynArgPats.Pats _) -> Some pid.idText
     | _ -> None
 
 /// The identifiers a binding is USED by. An active pattern's definition
@@ -371,8 +371,8 @@ let private leansOnParameters
             pats
             |> List.choose (fun p ->
                 match p with
-                | SynPat.Named(ident = SynIdent(ident = id)) -> Some id.idText
-                | SynPat.Paren(SynPat.Named(ident = SynIdent(ident = id)), _) -> Some id.idText
+                | SynPat.Named(ident = SynIdent(ident = pid)) -> Some pid.idText
+                | SynPat.Paren(SynPat.Named(ident = SynIdent(ident = pid)), _) -> Some pid.idText
                 | _ -> None)
             |> Set.ofList
         | _ -> Set.empty
@@ -391,7 +391,7 @@ let private leansOnParameters
     // parameters fails with "Lookup on object of indeterminate type". The
     // annotated header names
     // the group's own type and costs nothing
-    let memberLeans (id: Ident) (_: Ident) = bare.Contains id.idText
+    let memberLeans (pid: Ident) (_: Ident) = bare.Contains pid.idText
 
     not bare.IsEmpty
     && AstIndex.exprsWithin index body.Range
@@ -401,10 +401,10 @@ let private leansOnParameters
                | SynExpr.TypeTest(expr = SynExpr.Ident id)
                | SynExpr.Downcast(expr = SynExpr.Ident id)
                | SynExpr.DotIndexedGet(objectExpr = SynExpr.Ident id) -> bare.Contains id.idText
-               | SynExpr.DotGet(expr = SynExpr.Ident id; longDotId = SynLongIdent(id = m :: _)) -> memberLeans id m
-               | SynExpr.LongIdent(longDotId = SynLongIdent(id = id :: m :: _)) -> memberLeans id m
-               | SynExpr.Match(expr = SynExpr.Ident id; clauses = clauses) ->
-                   bare.Contains id.idText && clauses |> List.exists isInstClause
+               | SynExpr.DotGet(expr = SynExpr.Ident pid; longDotId = SynLongIdent(id = m :: _)) -> memberLeans pid m
+               | SynExpr.LongIdent(longDotId = SynLongIdent(id = pid :: m :: _)) -> memberLeans pid m
+               | SynExpr.Match(expr = SynExpr.Ident pid; clauses = clauses) ->
+                   bare.Contains pid.idText && clauses |> List.exists isInstClause
                | _ -> false))
 
 /// The member's header line with every plain parameter annotated with the

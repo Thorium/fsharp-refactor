@@ -265,8 +265,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         yield! ofArguments e.Range arguments |> Option.toList
                     | SynExpr.App(
                         isInfix = false
-                        funcExpr = SynExpr.Ident id
-                        argExpr = SynExpr.Paren(expr = SynExpr.Tuple(exprs = arguments))) when isDateName [ id ] ->
+                        funcExpr = SynExpr.Ident pid
+                        argExpr = SynExpr.Paren(expr = SynExpr.Tuple(exprs = arguments))) when isDateName [ pid ] ->
                         yield! ofArguments e.Range arguments |> Option.toList
                     | SynExpr.New(
                         targetType = SynType.LongIdent(SynLongIdent(id = ids))

@@ -109,8 +109,8 @@ let find
 
         let binderOf (p: SynPat) =
             match p with
-            | SynPat.Named(ident = SynIdent(ident = id); accessibility = acc) -> Some(id, acc)
-            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ]); accessibility = acc) -> Some(id, acc)
+            | SynPat.Named(ident = SynIdent(ident = pid); accessibility = acc) -> Some(pid, acc)
+            | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ]); accessibility = acc) -> Some(pid, acc)
             | _ -> None
 
         // (binder, quoted, mustProveInFile): local and file-private names
@@ -182,7 +182,7 @@ let find
             candidates
             |> List.groupBy (fun (_, quoted, _, _) -> quoted)
             |> List.filter (fun (quoted, group) ->
-                (group |> List.distinctBy (fun (id: Ident, _, _, _) -> id.idText) |> List.length) = 1
+                (group |> List.distinctBy (fun (pid: Ident, _, _, _) -> pid.idText) |> List.length) = 1
                 && not (fileText.Value.Contains $"``{quoted}``"))
             |> List.map fst
             |> Set.ofList

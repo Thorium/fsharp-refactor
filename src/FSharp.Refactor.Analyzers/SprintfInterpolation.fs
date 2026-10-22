@@ -76,7 +76,7 @@ let rec private spineHead (e: SynExpr) =
 let private appliesPlainFunction (check: FSharpCheckFileResults) (source: ISourceText) (app: SynExpr) =
     let idents =
         match spineHead app with
-        | ValueSome(SynExpr.Ident id) -> [ id ]
+        | ValueSome(SynExpr.Ident pid) -> [ pid ]
         | ValueSome(SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) -> ids
         | _ -> []
 

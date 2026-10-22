@@ -447,7 +447,7 @@ let find
                             for p in pats do
                                 for name in patBoundNames p do
                                     yield name, e.Range
-                        | SynExpr.For(ident = id) -> yield id.idText, e.Range
+                        | SynExpr.For(ident = pid) -> yield pid.idText, e.Range
                         | _ -> ()
                  ]
                  |> List.groupBy fst
@@ -998,14 +998,14 @@ let find
                 for _, e in index.Exprs do
                     match e with
                     | SynExpr.LongIdent(longDotId = SynLongIdent(id = head :: _ :: _)) -> yield head
-                    | SynExpr.Ident id -> yield id
-                    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ id ]))) -> yield id
-                    | SynExpr.New(targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = [ id ])))) ->
-                        yield id
+                    | SynExpr.Ident pid -> yield pid
+                    | SynExpr.New(targetType = SynType.LongIdent(SynLongIdent(id = [ pid ]))) -> yield pid
+                    | SynExpr.New(targetType = SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = [ pid ])))) ->
+                        yield pid
                     | _ -> ()
                 for _, t in index.Types do
                     match t with
-                    | SynType.LongIdent(SynLongIdent(id = [ id ])) -> yield id
+                    | SynType.LongIdent(SynLongIdent(id = [ pid ])) -> yield pid
                     | _ -> ()
                 // a bare name the file MATCHES on: `| Active ->` resolves to
                 // whichever union case of that name the nearest open brings,
@@ -1015,8 +1015,8 @@ let find
                 // which resolvesOutsideTo reads as no clash
                 for _, p in index.Pats do
                     match p with
-                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> yield id
-                    | SynPat.Named(ident = SynIdent(ident = id)) -> yield id
+                    | SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ])) -> yield pid
+                    | SynPat.Named(ident = SynIdent(ident = pid)) -> yield pid
                     | _ -> ()
             ]
 
@@ -1306,8 +1306,8 @@ let find
             // binding is visible in the first uses it covers
             let usedForElse () =
                 unqualifiedUses
-                |> List.filter (fun id -> arriving.Contains id.idText)
-                |> List.groupBy (fun id -> id.idText)
+                |> List.filter (fun pid -> arriving.Contains pid.idText)
+                |> List.groupBy (fun pid -> pid.idText)
                 |> List.choose (fun (name, ids) ->
                     ids
                     |> List.truncate 3
