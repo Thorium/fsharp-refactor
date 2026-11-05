@@ -4783,6 +4783,173 @@ let ``FR0070: a record over 32 bytes, or one implementing an interface, stays a 
 
     Assert.Single structs |> ignore
 
+[<Theory>]
+[<InlineData("CompletionSettings")>]
+[<InlineData("RetryOptions")>]
+[<InlineData("Point")>]
+let ``FR0070: a type's name is no reason either way`` (name: string) =
+    let _, structs, _ =
+        structHintsWithApiChangesIn (
+            fsharp
+                $"""
+                module Test
+                type {name} = {{ X: int; Y: int }}
+                """
+        )
+
+    Assert.Single structs |> ignore
+
+[<Fact>]
+let ``FR0070: a record given to a parameter that takes reference types only stays a class`` () =
+    let typed (source: string) =
+        let tree, sourceText, check = parseAndCheck source
+        let _, structs, _ = StructHints.findWith (Some check) false tree sourceText
+        structs
+
+    // a function
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private keep<'T when 'T : not struct> (value: 'T) = ignore value
+                let private run (p: P) = keep p
+                """
+        )
+    )
+
+    // a .NET method: where T : class
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private run (p: P) =
+                    let mutable slot = p
+                    System.Threading.Volatile.Write(&slot, p)
+                """
+        )
+    )
+
+    // a record literal, as Services.TryAddSingleton({ Settings.Days = 1 }) gives it
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private keep<'T when 'T : not struct> (value: 'T) = ignore value
+                let private run () = keep ({ X = 1; Y = 2 })
+                """
+        )
+    )
+
+    // a copy of a record, and through a type annotation
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private keep<'T when 'T : not struct> (value: 'T) = ignore value
+                let private run (p: P) = keep { p with X = 1 }
+                """
+        )
+    )
+
+    // named as a type argument, with no value given
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private register<'T when 'T : not struct> () = ()
+                let private run () = register<P> ()
+                """
+        )
+    )
+
+    // named in a type that takes reference types only, as IOptions<T> does
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                type private Holder<'T when 'T : not struct> = { Value: 'T }
+                let private held (holder: Holder<P>) = holder.Value.X
+                """
+        )
+    )
+
+    // an extension method, called on its receiver, as AddSingleton is
+    Assert.Empty(
+        typed (
+            fsharp
+                """
+                module Test
+                open System.Runtime.CompilerServices
+                [<Extension>]
+                type private Registry =
+                    [<Extension>]
+                    static member Keep<'T when 'T : not struct>(services: string, value: 'T) = ignore (services, value)
+                type private P = { X: int; Y: int }
+                let private run (p: P) = "services".Keep p
+                """
+        )
+    )
+
+    // a generic parameter that takes anything is no reason
+    Assert.Single(
+        typed (
+            fsharp
+                """
+                module Test
+                type private P = { X: int; Y: int }
+                let private keep<'T> (value: 'T) = ignore value
+                let private run (p: P) = keep p
+                """
+        )
+    )
+    |> ignore
+
+[<Fact>]
+let ``FR0070: uses outside the file decide, as the host reports them`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            type private Unrelated = { A: int }
+            type OutsideProbe = { X: int; Y: int }
+            let private first (u: Unrelated) = u.A
+            """
+
+    let probe (answer: ProjectSources.OutsideStructUse) =
+        ProjectSources.configureStructUses (
+            Some(fun shortName fullName isPublic ->
+                if shortName = "OutsideProbe" then
+                    Assert.Equal("Test.OutsideProbe", fullName)
+                    Assert.True isPublic
+                    answer
+                else
+                    ProjectSources.OutsideStructUse.Clear)
+        )
+
+        try
+            let tree, sourceText, check = parseAndCheck source
+            let _, structs, _ = StructHints.findWith (Some check) true tree sourceText
+            structs |> List.tryFind (fun s -> s.TypeName = "OutsideProbe")
+        finally
+            ProjectSources.configureStructUses None
+
+    Assert.True((probe ProjectSources.OutsideStructUse.Clear).Value.Fix.IsSome)
+    Assert.True((probe ProjectSources.OutsideStructUse.Hostile).IsNone)
+    // the advice stands, and the edit waits
+    Assert.True((probe ProjectSources.OutsideStructUse.Unreadable).Value.Fix.IsNone)
+
 [<Fact>]
 let ``FR0070: a record the file boxes, locks or null-tests stays a class`` () =
     let typed (source: string) =

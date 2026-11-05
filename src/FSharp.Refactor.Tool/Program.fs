@@ -4681,6 +4681,79 @@ let private findSiblingCallSites
             Unreadable = (fun () -> loaded |> Seq.filter (fun (_, _, info) -> not info.Errors.IsEmpty) |> Seq.length)
         }
 
+/// What FR0016 and FR0070 can't see from one file: the project's other files and, for a public type under
+/// --api-changes, the projects that reference it. Each file is scanned once and only if it spells the type's name, and a
+/// sibling is read only then too, so a pass with no candidate costs nothing. One pass's worth of truth: edits move the
+/// positions these answers rest on.
+let private structUsesElsewhere
+    (checker: FSharpChecker)
+    (options: FSharpProjectOptions)
+    (siblings: LazySiblings option)
+    =
+    let gate = obj ()
+    let scanned = Dictionary<string, Set<string>>(StringComparer.OrdinalIgnoreCase)
+
+    let keyOf (file: string) (line: int) (column: int) =
+        Path.GetFullPath(file).ToLowerInvariant(), line, column
+
+    let lookup (uses: FSharpSymbolUse[]) =
+        let byEnd =
+            uses
+            |> Array.groupBy (fun u -> keyOf u.Range.FileName u.Range.EndLine u.Range.EndColumn)
+            |> dict
+
+        fun (pid: Ident) ->
+            match byEnd.TryGetValue(keyOf pid.idRange.FileName pid.idRange.EndLine pid.idRange.EndColumn) with
+            | true, found -> found |> Array.map _.Symbol |> List.ofArray
+            | false, _ -> []
+
+    let ownLookup =
+        lazy (lookup ((checkProject checker options).GetAllUsesOfAllSymbols()))
+
+    let spells (name: string) (source: ISourceText) =
+        source.GetSubTextString(0, source.Length).Contains(name, StringComparison.Ordinal)
+
+    let hostileIn (file: string) (tree: ParsedInput) (symbolsAt: Ident -> FSharpSymbol list) =
+        match scanned.TryGetValue file with
+        | true, names -> names
+        | false, _ ->
+            let names = StructUses.hostileNamesIn symbolsAt (AstIndex.ofTree tree)
+            scanned.[file] <- names
+            names
+
+    fun (shortName: string) (fullName: string) (isPublic: bool) ->
+        lock gate (fun () ->
+            let inOwnFiles =
+                options.SourceFiles
+                |> Array.exists (fun file ->
+                    not (file.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
+                    && (match ProjectSources.tryParse file with
+                        | Some(tree, source) when spells shortName source ->
+                            (hostileIn file tree ownLookup.Value).Contains fullName
+                        | _ -> false))
+
+            if inOwnFiles then
+                ProjectSources.OutsideStructUse.Hostile
+            else
+                match siblings with
+                | Some siblings when isPublic ->
+                    siblings.Ensure(Some(shortName, None))
+                    let atSibling = lookup (siblings.ReadUses() |> List.toArray |> Array.collect snd)
+
+                    let inSiblings =
+                        siblings.Current().Contexts
+                        |> List.exists (fun (file, context) ->
+                            spells shortName context.Source
+                            && (hostileIn file context.ParseTree atSibling).Contains fullName)
+
+                    if inSiblings then
+                        ProjectSources.OutsideStructUse.Hostile
+                    elif siblings.Unreadable() > 0 then
+                        ProjectSources.OutsideStructUse.Unreadable
+                    else
+                        ProjectSources.OutsideStructUse.Clear
+                | _ -> ProjectSources.OutsideStructUse.Clear)
+
 /// The linkers alone, for the channel the ANALYZERS read: the FR0069,
 /// FR0093 and FR0049 migrations reshape `internal` declarations
 /// project-wide, and a project compiling this project's sources directly
@@ -8815,6 +8888,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         else
             ProjectSources.configureOutside None []
 
+        // set per pass, for this compilation alone
+        ProjectSources.configureStructUses None
+
         // every sweepable source already swept by an earlier compilation of
         // this run (same defines, or directive-free): the sweep will visit
         // zero files, so the project typecheck buys nothing. Only while the
@@ -9152,6 +9228,22 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             while pass < opts.MaxPasses && lastApplied <> 0 do
                 pass <- pass + 1
                 ProjectSources.invalidate ()
+
+                ProjectSources.configureStructUses (
+                    Some(
+                        structUsesElsewhere
+                            checker
+                            options
+                            (if opts.ApiChanges && onlyFile.IsNone then
+                                 Some(
+                                     findSiblingCallSites checker opts.Target options (fun sibling ->
+                                         optionsFor checker opts.ParseOnly "" (Target.Project(sibling, None)))
+                                 )
+                             else
+                                 None)
+                    )
+                )
+
                 printfn $"pass {pass}:"
 
                 let applied, changedFiles =

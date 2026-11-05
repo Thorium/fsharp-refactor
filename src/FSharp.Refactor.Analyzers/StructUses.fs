@@ -17,7 +17,12 @@
 ///     name or a dotted path, and follows the implicit boxing too: a value
 ///     handed to a parameter typed `obj` (`Console.WriteLine p`), to
 ///     `string`/`hash`, or to a `%A`/`%O` hole of the printf family. A
-///     `Unchecked.defaultof<T>` names the type.
+///     `Unchecked.defaultof<T>` names the type. So does anything that takes
+///     reference types only (`where T : class`, F#'s `not struct`), as
+///     `AddSingleton`, `IOptions<T>` and `Volatile.Write` do, whether it is
+///     given a value or named a type argument: the call stops compiling.
+///     The same scan reads the project's other files and, under
+///     `--api-changes`, the sibling projects (see ProjectSources).
 ///
 /// Without check results only the size cap and the type-named shapes apply;
 /// the parse-only callers (the property suite) see exactly that.
@@ -176,31 +181,108 @@ let private defaultofNames (index: AstIndex.Index) : Set<string> =
         | _ -> None)
     |> Set.ofArray
 
-/// The full names of every type whose value the file boxes, locks,
-/// null-tests or hands to an `obj` parameter. Read once per file: the
-/// callers ask about each candidate type, and a scan per candidate would make
-/// the rules quadratic in the file size.
-let private hostileTypeNames
-    (check: FSharpCheckFileResults)
-    (index: AstIndex.Index)
-    (source: ISourceText)
-    : Set<string> =
-    let typeOfOperand (operand: SynExpr) =
-        match operandIdent operand with
-        | ValueSome pid ->
-            match OptionModule.symbolOfIdent check source pid with
-            | Some(:? FSharpMemberOrFunctionOrValue as value) ->
-                (try
-                    let t = OptionModule.stripAbbreviations value.FullType
+/// Does this generic parameter take reference types only (`where T : class`, F#'s `not struct`)?
+let private takesReferenceTypesOnly (parameter: FSharpGenericParameter) =
+    parameter.Constraints |> Seq.exists _.IsReferenceTypeConstraint
 
-                    if t.HasTypeDefinition then
-                        t.TypeDefinition.TryFullName
-                    else
-                        None
-                 with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                     None)
-            | _ -> None
-        | ValueNone -> None
+/// The full names of every type whose value a file boxes, locks, null-tests or hands to an `obj` parameter, or that goes
+/// where reference types only are taken: given as an argument, or named as a type argument. `symbolsAt` answers what an
+/// identifier resolved to, so this reads a file of this compilation and one of a sibling project alike.
+let hostileNamesIn (symbolsAt: Ident -> FSharpSymbol list) (index: AstIndex.Index) : Set<string> =
+    let methodAt (pid: Ident) =
+        symbolsAt pid
+        |> List.tryPick (fun symbol ->
+            match symbol with
+            | :? FSharpMemberOrFunctionOrValue as mfv -> Some mfv
+            | _ -> None)
+
+    let rec typeOfOperand (operand: SynExpr) =
+        match stripParens operand with
+        | SynExpr.Typed(expr = inner) -> typeOfOperand inner
+        | SynExpr.Record(copyInfo = Some(copied, _)) -> typeOfOperand copied
+        // a record literal names its type through its fields
+        | SynExpr.Record(recordFields = SynExprRecordField(fieldName = (SynLongIdent(id = ids), _)) :: _) when
+            not ids.IsEmpty
+            ->
+            symbolsAt (List.last ids)
+            |> List.tryPick (fun symbol ->
+                match symbol with
+                | :? FSharpField as field -> field.DeclaringEntity |> Option.bind _.TryFullName
+                | _ -> None)
+        | plain ->
+            match operandIdent plain with
+            | ValueSome pid ->
+                match methodAt pid with
+                | Some value ->
+                    (try
+                        let t = OptionModule.stripAbbreviations value.FullType
+
+                        if t.HasTypeDefinition then
+                            t.TypeDefinition.TryFullName
+                        else
+                            None
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         None)
+                | None -> None
+            | ValueNone -> None
+
+    /// Can `typeOfOperand` read this at all? Without one, the callee's typed lookup finds nothing to report.
+    let readable (operand: SynExpr) =
+        match stripParens operand with
+        | SynExpr.Record _ -> true
+        | plain -> (operandIdent plain).IsSome
+
+    let entityNameOf (t: SynType) =
+        match t with
+        | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty ->
+            symbolsAt (List.last ids)
+            |> List.tryPick (fun symbol ->
+                match symbol with
+                | :? FSharpEntity as entity -> entity.TryFullName
+                | _ -> None)
+        | _ -> None
+
+    /// The type arguments that sit where reference types only are taken. A type's own parameters can come before a method's,
+    /// so the two lists line up from the end.
+    let namedInReferenceOnly (parameters: FSharpGenericParameter list) (arguments: SynType list) =
+        if parameters.Length < arguments.Length then
+            []
+        else
+            List.zip (List.skip (parameters.Length - arguments.Length) parameters) arguments
+            |> List.choose (fun (parameter, argument) ->
+                if takesReferenceTypesOnly parameter then
+                    entityNameOf argument
+                else
+                    None)
+
+    let namedInExpression (e: SynExpr) =
+        match e with
+        | SynExpr.TypeApp(expr = callee; typeArgs = arguments) ->
+            match calleeIdent callee with
+            | ValueSome pid ->
+                match methodAt pid with
+                | Some mfv ->
+                    (try
+                        namedInReferenceOnly (List.ofSeq mfv.GenericParameters) arguments
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         [])
+                | None -> []
+            | ValueNone -> []
+        | _ -> []
+
+    let namedInType (t: SynType) =
+        match t with
+        | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)); typeArgs = arguments) when not ids.IsEmpty ->
+            symbolsAt (List.last ids)
+            |> List.collect (fun symbol ->
+                match symbol with
+                | :? FSharpEntity as entity ->
+                    (try
+                        namedInReferenceOnly (List.ofSeq entity.GenericParameters) arguments
+                     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                         [])
+                | _ -> [])
+        | _ -> []
 
     // the implicit boxing: a value handed to a parameter typed `obj`
     // (`Console.WriteLine p`, `String.Format("{0}", p)`, `x.Equals p`), to
@@ -209,6 +291,13 @@ let private hostileTypeNames
         try
             let t = OptionModule.stripAbbreviations t
             t.HasTypeDefinition && t.TypeDefinition.TryFullName = Some "System.Object"
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+
+    let referenceTypesOnly (t: FSharpType) =
+        try
+            t.IsGenericParameter
+            && t.GenericParameter.Constraints |> Seq.exists _.IsReferenceTypeConstraint
         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
             false
 
@@ -226,23 +315,23 @@ let private hostileTypeNames
                 ->
                 List.tail args
             | ValueSome callee when callee.idText = "string" || callee.idText = "hash" -> args
-            // only a plain name among the arguments (or a tuple's elements)
-            // has a type `typeOfOperand` reads: without one, the callee's
-            // typed lookup - one per application of the file - finds nothing
+            // a name or a record literal among the arguments (or a tuple's
+            // elements) has a type `typeOfOperand` reads: without one, the
+            // callee's typed lookup - one per application of the file - finds nothing
             | ValueSome _ when
                 not (
                     args
                     |> List.exists (fun a ->
-                        (operandIdent a).IsSome
+                        readable a
                         || (match stripParens a with
-                            | SynExpr.Tuple(exprs = es) -> es |> List.exists (fun x -> (operandIdent x).IsSome)
+                            | SynExpr.Tuple(exprs = es) -> es |> List.exists readable
                             | _ -> false))
                 )
                 ->
                 []
             | ValueSome callee ->
-                match OptionModule.symbolOfIdent check source callee with
-                | Some(:? FSharpMemberOrFunctionOrValue as mfv) ->
+                match methodAt callee with
+                | Some mfv ->
                     (try
                         let groups = mfv.CurriedParameterGroups |> Seq.map List.ofSeq |> List.ofSeq
 
@@ -265,17 +354,26 @@ let private hostileTypeNames
 
                         pairs
                         |> List.choose (fun (parameter, actual) ->
-                            if objParameter parameter.Type then Some actual else None)
+                            if objParameter parameter.Type || referenceTypesOnly parameter.Type then
+                                Some actual
+                            else
+                                None)
                      with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
                          [])
-                | _ -> []
+                | None -> []
             | ValueNone -> []
         | _ -> []
 
-    index.Exprs
-    |> Seq.collect (fun (_, e) -> hostileOperands e @ boxedAtCall e)
-    |> Seq.choose typeOfOperand
-    |> Set.ofSeq
+    Set.unionMany
+        [
+            index.Exprs
+            |> Seq.collect (fun (_, e) -> hostileOperands e @ boxedAtCall e)
+            |> Seq.choose typeOfOperand
+            |> Set.ofSeq
+
+            index.Exprs |> Seq.collect (snd >> namedInExpression) |> Set.ofSeq
+            index.Types |> Seq.collect (snd >> namedInType) |> Set.ofSeq
+        ]
 
 let private defaultofCache =
     System.Runtime.CompilerServices.ConditionalWeakTable<AstIndex.Index, Set<string>>()
@@ -283,8 +381,21 @@ let private defaultofCache =
 let private hostileCache =
     System.Runtime.CompilerServices.ConditionalWeakTable<FSharpCheckFileResults, Set<string>>()
 
+/// How the type declared by `typeIdent` is used outside this file, as far as the host can tell.
+let outsideUse (check: FSharpCheckFileResults option) (source: ISourceText) (typeIdent: Ident) =
+    match check with
+    | None -> ProjectSources.OutsideStructUse.Clear
+    | Some check ->
+        match OptionModule.symbolOfIdent check source typeIdent with
+        | Some(:? FSharpEntity as entity) when not entity.Accessibility.IsPrivate ->
+            match entity.TryFullName with
+            | Some fullName -> ProjectSources.outsideStructUse typeIdent.idText fullName entity.Accessibility.IsPublic
+            | None -> ProjectSources.OutsideStructUse.Clear
+        | _ -> ProjectSources.OutsideStructUse.Clear
+
 /// Is a value of the type declared by `typeIdent` boxed, locked,
-/// null-tested or defaulted anywhere in the file?
+/// null-tested or defaulted anywhere in the file, or used in a way
+/// a struct can't take outside it?
 let hostileUse
     (check: FSharpCheckFileResults option)
     (index: AstIndex.Index)
@@ -299,6 +410,16 @@ let hostileUse
             | Some(:? FSharpEntity as entity) ->
                 match entity.TryFullName with
                 | Some fullName ->
-                    hostileCache.GetValue(check, (fun check -> hostileTypeNames check index source)).Contains fullName
+                    hostileCache
+                        .GetValue(
+                            check,
+                            fun check ->
+                                hostileNamesIn
+                                    (fun pid -> OptionModule.symbolOfIdent check source pid |> Option.toList)
+                                    index
+                        )
+                        .Contains
+                        fullName
                 | None -> false
             | _ -> false)
+    || outsideUse check source typeIdent = ProjectSources.OutsideStructUse.Hostile

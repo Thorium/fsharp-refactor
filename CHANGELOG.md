@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.49
+
+- FR0016 and FR0070 read what takes reference types only (`where T : class`), whether given a value, a record literal or a type argument, in the file, the project's other files and, under `--api-changes`, the projects that reference the type: `[<Struct>]` stopped `TryAddSingleton` compiling. A project that can't be read keeps FR0070's advice and withholds the edit.
+
 ## 0.8.48
 
 - New rule FR0183 (correctness, note): a header that may hold a secret goes to wherever a redirect points, because .NET keeps every header but `Authorization`. A literal name such as `PLAID-SECRET` or `X-Auth-Token` counts, as does a name a helper is passed. A file that sets `AllowAutoRedirect` to false is quiet.

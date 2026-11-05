@@ -154,3 +154,30 @@ let outsideUsesOf (symbol: FSharpSymbol) : FSharpSymbolUse[] =
 let isUnreadable (path: string) =
     not unreadable.IsEmpty
     && unreadable.Contains(System.IO.Path.GetFullPath(path).ToLowerInvariant())
+
+// ---- Struct-hostile uses outside the file ----
+
+/// How a type is used outside its own file, for a rule that would make it a struct.
+[<Struct; RequireQualifiedAccess>]
+type OutsideStructUse =
+    | Clear
+    /// Boxed, locked, null-tested, or given to something that takes reference types only.
+    | Hostile
+    /// A project that can see the type could not be read, so its uses are not known.
+    | Unreadable
+
+let mutable private structUses: (string -> string -> bool -> OutsideStructUse) option =
+    None
+
+/// Install the host's answer for the CURRENT compilation: the type's short name, its full name and whether it is
+/// public. Pass None to uninstall. Editors install nothing, and see only the file.
+let configureStructUses (answer: (string -> string -> bool -> OutsideStructUse) option) = structUses <- answer
+
+let outsideStructUse (shortName: string) (fullName: string) (isPublic: bool) =
+    match structUses with
+    | None -> OutsideStructUse.Clear
+    | Some answer ->
+        try
+            answer shortName fullName isPublic
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            OutsideStructUse.Unreadable

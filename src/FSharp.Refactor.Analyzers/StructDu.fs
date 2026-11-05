@@ -192,6 +192,8 @@ let private unionsThat
                     && Visibility.isInScopeWithSignatureEdits allowApiChanges path [ typeAccess ]
                     && qualifies cases
                     && not (StructUses.hostileUse check index.Value source typeName)
+                    && StructUses.outsideUse check source typeName
+                       <> ProjectSources.OutsideStructUse.Unreadable
                     ->
                     // below any XML doc, so the attribute sits
                     // against the type it marks

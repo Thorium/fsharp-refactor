@@ -16,7 +16,9 @@
     <ToolCommandName>fsharp-refactor</ToolCommandName>
     <PackageId>fsharp-refactor</PackageId>
     <Description>Applies the FSharp.Refactor analyzers' quick fixes to F# code from the command line. Point it at a project, a script, a solution, a directory or a glob; --dry-run reports without editing. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.</Description>
-    <PackageReleaseNotes>0.8.48: New rules FR0183 and FR0184 (off by default): secrets and clients a redirect exposes. New rule FR0185 (off by default): unions with no fields can be structs. FR0016, FR0070, FR0130, FR0131, FR0011, FR0033, FR0026 and FR0132 read past harmless attributes. FR0118 leaves shared and detached work, comparisons and overloads with another return type alone; FR0152 ignores unrelated removals.
+    <PackageReleaseNotes>0.8.49: FR0016 and FR0070 read what takes reference types only (a value, a record literal or a type argument given to it), in the project&apos;s other files and, under --api-changes, the projects referencing the type: [&lt;Struct&gt;] stopped TryAddSingleton compiling.
+
+ 0.8.48: New rules FR0183 and FR0184 (off by default): secrets and clients a redirect exposes. New rule FR0185 (off by default): unions with no fields can be structs. FR0016, FR0070, FR0130, FR0131, FR0011, FR0033, FR0026 and FR0132 read past harmless attributes. FR0118 leaves shared and detached work, comparisons and overloads with another return type alone; FR0152 ignores unrelated removals.
 
  0.8.47: FR0066 resolves a query text&apos;s names to the binding in scope and folds constants (holes, `+`, sprintf and String.Format of constants, `Module.name`), read where the text was built: a per-member `let baseQuery = "..."` is no finding. Loaded code (an analyzer, source generator, MSBuild task or a driver&apos;s finalizer) crashing on a background thread no longer ends the run: reported once, the run goes on and exits 1; out of memory and the tool&apos;s own failures still stop it.
 
@@ -24,9 +26,7 @@
 
  0.8.45: New rule FR0182 (idiom, fix): a local `id` read once hides FSharp.Core&apos;s identity function; renamed to `pid`. Fixes that add, rename or move a name no longer rebind another one (FR0071, FR0103, FR0150, FR0120, FR0118, FR0012, FR0092, FR0160, FR0133, FR0095, FR0046, FR0181, FR0006, FR0157, FR0172): a name already in scope, rebound before the call or brought in by an `open` holds the fix, or the next free name is taken. An `open` inside a nested module no longer counts for code outside it (FR0041, FR0139, FR0174, FR0106, FR0005 and the namespace-spelling fixes). `--mcp` reports the tool&apos;s own version in `initialize`. A project restored earlier in the run, unchanged since, is not restored again; a bisection does not rebuild a tree it already built.
 
- 0.8.44:FR0101 gives nested index loops over different collections different element names (both took `item`, the inner one shadowing the outer). FR0164 reads the target runtime: `Dictionary.Remove`/`Clear` pass from .NET Core 3.0, an indexer overwrite and `HashSet.Remove`/`Clear` from .NET 5; on .NET Framework and netstandard all of them are reported. FR0092 leaves a message a test embeds in a longer string.
-
- 0.8.43: Visual Studio extension bundles FsAutoComplete 0.85.3, whose quick fixes are titled by what they write. VS Code extension offers to install or update the `fsautocomplete` tool when Ionide&apos;s is older than 0.85.</PackageReleaseNotes>
+ 0.8.44:FR0101 gives nested index loops over different collections different element names (both took `item`, the inner one shadowing the outer). FR0164 reads the target runtime: `Dictionary.Remove`/`Clear` pass from .NET Core 3.0, an indexer overwrite and `HashSet.Remove`/`Clear` from .NET 5; on .NET Framework and netstandard all of them are reported. FR0092 leaves a message a test embeds in a longer string.</PackageReleaseNotes>
     <Authors>Tuomas Hietanen</Authors>
     <PackageProjectUrl>https://github.com/Thorium/fsharp-refactor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Thorium/fsharp-refactor</RepositoryUrl>

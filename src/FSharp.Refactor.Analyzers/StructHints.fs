@@ -176,6 +176,7 @@ let private isStructField (t: SynType) =
             true
         | _ -> false)
 
+
 /// Find all three hint kinds. The check results, where the caller has them,
 /// veto a record the file boxes, locks or null-tests (StructUses.hostileUse);
 /// the rest is parse-only.
@@ -315,6 +316,9 @@ let findWith
                             | SynTypeDefnLeadingKeyword.Type kwRange when
                                 SignatureFile.acceptsStruct attrs
                                 && not (fieldsReadInQuotation fieldNames)
+                                // a project that can see it could not be read: advice, not an edit
+                                && StructUses.outsideUse check source (List.last typeIds)
+                                   <> ProjectSources.OutsideStructUse.Unreadable
                                 && (source.GetLineString(kwRange.StartLine - 1))
                                     .Substring(0, kwRange.StartColumn)
                                     .Trim()
