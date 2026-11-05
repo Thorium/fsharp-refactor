@@ -154,6 +154,9 @@ let private shapes =
         // FR0118 must stay quiet: the loop steps a local built with the token
         withFree "TokenObservedThroughLocal" [ "!FR0118" ] genSmall (fun n i ->
             $"let f{i} (ct: CancellationToken) = task {{\n    let step () = Task.Delay({n + 1}, ct)\n    let mutable i = 0\n    while i < {n + 1} do\n        do! step ()\n        i <- i + 1\n    return i\n}}")
+        // FR0118 must stay quiet: a lazy's value is shared between callers
+        withFree "TokenNoneInLazy" [ "!FR0118" ] genSmall (fun n i ->
+            $"let f{i} (ct: CancellationToken) =\n    lazy\n        task {{\n            do! Task.Delay({n}, CancellationToken.None)\n            do! Task.Delay({n})\n            return {n}\n        }}")
         // FR0119: a blocking read bound on the spine of a task
         fixed' "ReadLineInTask" [ "FR0119" ] (fun i ->
             $"let f{i} (reader: TextReader) = task {{\n    let line = reader.ReadLine()\n    return line\n}}")

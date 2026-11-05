@@ -4,7 +4,21 @@ The analyzers package, the `fsharp-refactor` tool and both editor extensions sha
 
 ## 0.8.48
 
+- New rule FR0183 (correctness, note): a header that may hold a secret goes to wherever a redirect points, because .NET keeps every header but `Authorization`. A literal name such as `PLAID-SECRET` or `X-Auth-Token` counts, as does a name a helper is passed. A file that sets `AllowAutoRedirect` to false is quiet.
+- New rule FR0184 (correctness, note, off by default): any request maker that follows redirects, in a file that never turns them off.
+- New rule FR0185 (idiom, fix, off by default): a union with no fields can carry `[<Struct>]`. It can't be null, but saves no allocation, since those cases are shared objects.
+- FR0016 allows `RequireQualifiedAccess`, `NoComparison` and `NoEquality` on the union, and on its companion .fsi.
+- FR0183 reads a `[<Literal>]`, an enum, `HeaderNames`, `name = ...` and a local bound to a literal as the header's name. FR0183 and FR0184 count only code that sets `AllowAutoRedirect` to false, not a comment, string or comparison. FR0184 resolves only the names a maker can have, instead of every application in the file.
+- Attributes that say nothing of the rewrite no longer stop it: FR0070 (`RequireQualifiedAccess`, `NoComparison`, `NoEquality`), FR0130, FR0131, FR0011 (`Obsolete`, `EditorBrowsable`, `CompiledName`), FR0033 (those, `MethodImpl` and the debugger attributes). FR0132 puts the doc above the attributes. FR0026 carries attributes on the whole property over to its `member val`.
+- FR0118 follows a nested computation expression out to the work that holds it. FR0152 isn't quieted by a `Remove` on a string or a list.
 - FR0028 no longer flags a sub-query that an outer provider query projected into its row tuple (`for (_, orders) in rows do for o in orders`): the provider translates it with the outer statement, so it is never one query per row.
+- FR0118 leaves shared work alone: inside a `lazy`, a `Lazy` constructor or the arguments of `GetOrAdd`/`AddOrUpdate` it no longer swaps `CancellationToken.None` for the caller's token, fills in an omitted one or adds a loop check, each of which let one caller's cancellation fail every caller of that value.
+- FR0118 keeps a `CancellationToken.None` on work that is not waited for (`|> ignore`, a store), the rule its omitted-token fix already followed.
+- FR0118 leaves `ContinueWith`, `ContinueWhenAll` and `ContinueWhenAny` alone, waited for or not, with a `CancellationToken.None` or no token: their overloads with a scheduler or options demand a token, and that token decides whether the continuation runs.
+- FR0118 reads `let!` and `use!` as waiting, as documented: `let! s = client.GetStringAsync(url)` never received the token. A bang inside work left running (`task { ... } |> ignore`, `async { ... } |> Async.Start`) counts as not waited for.
+- FR0118 takes a token overload only with the same return type: a `ValueTask` sibling such as `ReadLineAsync(ct)` broke `|> Async.AwaitTask` and `Task` returns.
+- FR0118 no longer rewrites `CancellationToken.None` in a comparison, `Equals`, or an argument whose parameter takes no token (`Some`, `defaultArg`), which made `ct = ct`. A named `cancellationToken = CancellationToken.None` is read as the call's argument, and `Async.Start`/`StartImmediate` are left alone.
+- FR0152 stays quiet when the binding or type holding the dictionary removes from it (`TryRemove`, `Remove`, also through a cast to `ICollection<KeyValuePair<_, _>>`), or when the dictionary is handed on or a removal has no receiver name, so the scan cannot tell.
 
 ## 0.8.47
 

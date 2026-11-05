@@ -195,12 +195,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SynModuleDecl.Let(isRecursive = true; bindings = [ binding ]) ->
                     match binding with
                     | SynBinding(
-                        attributes = []
+                        attributes = attributes
                         isInline = false
                         headPat = SynPat.LongIdent(
                             longDotId = SynLongIdent(id = [ fid ]); argPats = SynArgPats.Pats pats)
                         expr = body
-                        trivia = trivia) when not (pats.IsEmpty || hasByrefParameter source pats) ->
+                        trivia = trivia) when
+                        onlyAttributesNamed informationalAttributes attributes
+                        && not (pats.IsEmpty || hasByrefParameter source pats)
+                        ->
                         // `let rec f acc = function ...` compiles as one more
                         // curried parameter; its clause bodies ARE the tail
                         let arity, tailBodies, guardsAndScrutinees =

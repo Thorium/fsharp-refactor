@@ -313,7 +313,7 @@ let findWith
                         let attributeFix =
                             match defnTrivia.LeadingKeyword with
                             | SynTypeDefnLeadingKeyword.Type kwRange when
-                                attrs.IsEmpty
+                                SignatureFile.acceptsStruct attrs
                                 && not (fieldsReadInQuotation fieldNames)
                                 && (source.GetLineString(kwRange.StartLine - 1))
                                     .Substring(0, kwRange.StartColumn)

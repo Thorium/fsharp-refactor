@@ -21,14 +21,25 @@
 ///     the token is already cancelled)
 ///   - the token's name is not rebound (`for ct in ...`, `let ct = ...`)
 ///     inside the binding ahead of the call: `ct` there may be anything
+///   - the call is not SHARED WORK made under the token's binding: not in a
+///     `lazy`, a `Lazy` constructor or the arguments of `GetOrAdd` /
+///     `AddOrUpdate`. Their value goes to every caller, so one caller's
+///     token there fails the others when that caller cancels
+///   - the call does not SCHEDULE work: not `Task.Run`, `StartNew`,
+///     `ContinueWith`, `ContinueWhenAll` or `ContinueWhenAny`, waited for or
+///     not, whose token decides whether the work runs at all
+///
+/// A `CancellationToken.None` argument is replaced under the same gates,
+/// and only where the work it starts is waited for: `|> ignore`, a bare
+/// statement or a store detaches that work from the caller on purpose.
 ///
 /// The loop note (findUnobservedLoops): a loop awaiting inside, under the
 /// token's binding, that never mentions the token — nor a local built
 /// with it (`let enumerator = source.GetAsyncEnumerator ct`) — cannot be
 /// cancelled. Outside `async { }` only, which observes the token at every
 /// bind by itself; quiet where the fix above already hands the token to a
-/// call in the loop, and inside cleanup (finally, with handlers, Register
-/// callbacks) or under a rebinding of the token's name.
+/// call in the loop, inside cleanup (finally, with handlers, Register
+/// callbacks) or shared work, and under a rebinding of the token's name.
 module FSharp.Refactor.CancellationOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -102,16 +113,24 @@ let private parameterShapes (displayContext: FSharpDisplayContext) (mfv: FSharpM
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         None
 
-/// Task.Run and Task.Factory.StartNew take the token as a SCHEDULING
+/// Task.Run, Task.Factory.StartNew and the continuations (ContinueWith,
+/// ContinueWhenAll, ContinueWhenAny) take the token as a SCHEDULING
 /// condition, not as an operation to interrupt: with an already-cancelled
 /// token the delegate never runs at all, so the side effects in its body
 /// silently never happen — binding a listening socket, say, or completing
-/// a cell. An I/O method's token only cancels the
-/// call it was passed to; these two change whether the work starts, and
-/// that is the author's decision.
+/// a cell, or a continuation's cleanup. An I/O method's token only cancels the
+/// call it was passed to; these change whether the work starts, and that is
+/// the author's decision. The overloads with a scheduler or options demand a
+/// token, so a `None` there is also how the call reaches them.
 let private schedulesDelegate (mfv: FSharpMemberOrFunctionOrValue) =
-    (mfv.DisplayName = "Run" || mfv.DisplayName = "StartNew")
-    && (OptionModule.enclosingFullName mfv).StartsWith "System.Threading.Tasks.Task"
+    ((mfv.DisplayName = "Run"
+      || mfv.DisplayName = "StartNew"
+      || mfv.DisplayName = "ContinueWith"
+      || mfv.DisplayName = "ContinueWhenAll"
+      || mfv.DisplayName = "ContinueWhenAny")
+     && (OptionModule.enclosingFullName mfv).StartsWith "System.Threading.Tasks.Task")
+    || ((mfv.DisplayName = "Start" || mfv.DisplayName = "StartImmediate")
+        && (OptionModule.enclosingFullName mfv).StartsWith "Microsoft.FSharp.Control.FSharpAsync")
 
 /// The CLEANUP zones of a file: every `finally` block, every `with`
 /// handler, and the callbacks handed to a CancellationToken's `Register`
@@ -148,6 +167,50 @@ let private cleanupZones (index: AstIndex.Index) (source: ISourceText) (check: F
 
             if onToken then [| args.Range |] else [||]
         | _ -> [||])
+
+/// The last name of a callee (`Lazy`, `GetOrAdd`), through parens and type
+/// applications; empty for anything else.
+[<TailCall>]
+let rec private lastCalleeName (e: SynExpr) =
+    match e with
+    | SynExpr.Paren(expr = inner)
+    | SynExpr.TypeApp(expr = inner) -> lastCalleeName inner
+    | SynExpr.Ident pid
+    | CallIdent pid -> pid.idText
+    | _ -> ""
+
+let private isLazyType (t: SynType) =
+    match t with
+    | SynType.App(typeName = SynType.LongIdent(SynLongIdent(id = ids)))
+    | SynType.LongIdent(SynLongIdent(id = ids)) when not ids.IsEmpty -> (List.last ids).idText = "Lazy"
+    | _ -> false
+
+/// The SHARED-WORK zones of a file: a `lazy` body, the arguments of a `Lazy`
+/// constructor, and the arguments of `GetOrAdd`/`AddOrUpdate`. What runs there
+/// produces one value for every caller. With a caller's token in it, that
+/// caller cancelling fails the others too, for as long as the value is held;
+/// a `CancellationToken.None` there keeps the work independent of any one
+/// caller. A synchronous factory would be safe (it throws and stores nothing),
+/// but telling it apart needs the value's type, so it is refused with the rest.
+let private sharedWorkZones (index: AstIndex.Index) =
+    index.Exprs
+    |> Array.choose (fun (_, e) ->
+        match e with
+        | SynExpr.Lazy(expr = body) -> Some body.Range
+        | SynExpr.New(targetType = t; expr = args) when isLazyType t -> Some args.Range
+        | SynExpr.App(isInfix = false; funcExpr = callee; argExpr = args) ->
+            match lastCalleeName callee with
+            | "Lazy"
+            | "GetOrAdd"
+            | "AddOrUpdate" -> Some args.Range
+            | _ -> None
+        | _ -> None)
+
+/// Is `r` in shared work made under the token's binding? A binding inside the
+/// zone receives its own token, which the value's other callers never see.
+let private inSharedWork (zones: range[]) (bindingRange: range) (r: range) =
+    zones
+    |> Array.exists (fun z -> Range.rangeContainsRange z r && Range.rangeContainsRange bindingRange z)
 
 /// Is the token's NAME rebound between its parameter and `r` — `[ for ct
 /// in names -> ... ]`, a `let ct = ...`, a lambda or match variable — so
@@ -241,11 +304,77 @@ let rec private calleeName (e: SynExpr) =
         |> String.concat "."
     | _ -> ""
 
+/// The head of an application spine: `f` of `f a b`.
+[<TailCall>]
+let rec private spineHead (e: SynExpr) =
+    match e with
+    | SynExpr.App(funcExpr = f) -> spineHead f
+    | _ -> e
+
 let private isPipe (op: SynExpr) =
     match op with
     | SynExpr.Ident id
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> id.idText = "op_PipeRight"
     | _ -> false
+
+let private isEquals (op: SynExpr) =
+    match op with
+    | SynExpr.Ident id
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> id.idText = "op_Equality"
+    | _ -> false
+
+/// Is what sits at `r` left running: `|> ignore`, `|> Async.Start`, a bare
+/// statement, a store, or the same around a `Task.Run` of it? Anything this
+/// can't read isn't.
+let rec private leftRunning (r: range) (path: SyntaxNode list) =
+    let consumer (name: string) (outer: range) (rest: SyntaxNode list) =
+        match name with
+        | "ignore"
+        | "Async.Start"
+        | "Async.StartImmediate" -> true
+        | "Task.Run"
+        | "Factory.StartNew"
+        | "Async.StartAsTask"
+        | "Async.StartImmediateAsTask"
+        | "Async.AwaitTask"
+        | "Async.Ignore" -> leftRunning outer rest
+        | _ -> false
+
+    match path with
+    | SyntaxNode.SynExpr(SynExpr.Paren(range = outer) | SynExpr.Typed(range = outer) | SynExpr.Tuple(range = outer) | SynExpr.Lambda(
+        range = outer)) :: rest -> leftRunning outer rest
+    | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op; argExpr = a)) :: SyntaxNode.SynExpr(SynExpr.App(
+        isInfix = false; argExpr = callee; range = outer)) :: rest when isPipe op && a.Range = r ->
+        consumer (calleeName callee) outer rest
+    | SyntaxNode.SynExpr(SynExpr.App(isInfix = false; funcExpr = f; argExpr = a; range = outer)) :: rest when
+        Range.rangeContainsRange a.Range r
+        ->
+        consumer (calleeName f) outer rest
+    | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a)) :: _ -> a.Range = r
+    | SyntaxNode.SynExpr(SynExpr.Set _ | SynExpr.DotSet _ | SynExpr.LongIdentSet _) :: _ -> true
+    | _ -> false
+
+/// Is the nearest computation expression around these ancestors left running?
+/// A bang inside it waits only for that expression, not for the caller.
+[<TailCall>]
+let rec private inWorkLeftRunning (path: SyntaxNode list) =
+    match path with
+    // awaited by the expression around it: what happens to that one decides
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: SyntaxNode.SynExpr(SynExpr.App _) :: (SyntaxNode.SynExpr(SynExpr.DoBang _ | SynExpr.YieldOrReturnFrom _ | SynExpr.MatchBang _) :: above) ->
+        inWorkLeftRunning above
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: SyntaxNode.SynExpr(SynExpr.App _) :: (SyntaxNode.SynExpr(LetOrUseE lou) :: above) when
+        lou.IsBang
+        ->
+        inWorkLeftRunning above
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: SyntaxNode.SynExpr(SynExpr.App _) :: (SyntaxNode.SynBinding _ :: SyntaxNode.SynExpr(LetOrUseE lou) :: above) when
+        lou.IsBang
+        ->
+        inWorkLeftRunning above
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: SyntaxNode.SynExpr(SynExpr.App(range = outer)) :: rest ->
+        leftRunning outer rest
+    | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: _ -> false
+    | _ :: rest -> inWorkLeftRunning rest
+    | [] -> false
 
 /// Is the work a call starts (at `r`, `path` its ancestors, nearest first)
 /// waited for, here or by the caller - `do!`/`let!`/`return!`/`match!`,
@@ -286,7 +415,8 @@ let rec private waitedFor (index: AstIndex.Index) (depth: int) (r: range) (path:
     match path with
     | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr) | SynExpr.Tuple(range = pr) | SynExpr.ArrayOrList(
         range = pr) | SynExpr.ArrayOrListComputed(range = pr)) :: rest -> waitedFor index depth pr rest
-    | SyntaxNode.SynExpr(SynExpr.DoBang _ | SynExpr.YieldOrReturnFrom _ | SynExpr.MatchBang _) :: _ -> true
+    | SyntaxNode.SynExpr(SynExpr.DoBang _ | SynExpr.YieldOrReturnFrom _ | SynExpr.MatchBang _) :: rest ->
+        not (inWorkLeftRunning rest)
     // `.Result`, `.Wait()`, `.GetAwaiter().GetResult()`
     | SyntaxNode.SynExpr(SynExpr.DotGet(expr = e; longDotId = SynLongIdent(id = first :: _))) :: _ when e.Range = r ->
         first.idText = "Result" || first.idText = "Wait" || first.idText = "GetAwaiter"
@@ -322,9 +452,12 @@ let rec private waitedFor (index: AstIndex.Index) (depth: int) (r: range) (path:
     | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = c; range = ir)) :: rest when c.Range <> r ->
         waitedFor index depth ir rest
     | SyntaxNode.SynMatchClause _ :: SyntaxNode.SynExpr m :: rest -> waitedFor index depth m.Range rest
+    // `let! x = call`: the walker gives a bang's right-hand side the `let!` as parent
+    | SyntaxNode.SynExpr(LetOrUseE lou) :: rest when lou.IsBang && not (Range.rangeContainsRange lou.Body.Range r) ->
+        not (inWorkLeftRunning rest)
     | SyntaxNode.SynBinding(SynBinding(headPat = headPat)) :: rest ->
         match rest with
-        | SyntaxNode.SynExpr(LetOrUseE lou) :: _ when lou.IsBang -> true
+        | SyntaxNode.SynExpr(LetOrUseE lou) :: above when lou.IsBang -> not (inWorkLeftRunning above)
         | SyntaxNode.SynExpr(LetOrUseE lou) :: _ ->
             // `let t = client.SendAsync m` then `do! t`: the local's uses decide
             match headPat with
@@ -394,6 +527,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let inCleanup (callRange: range) =
             cleanupRanges |> Array.exists (fun z -> Range.rangeContainsRange z callRange)
 
+        let sharedZones = sharedWorkZones index
+
         let lambdaParams =
             lambdaParamsNamed index (tokenParams |> List.map (fun (name, _, _) -> name) |> Set.ofList)
 
@@ -406,6 +541,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             match inScope |> List.map (fun (name, _, _) -> name) |> List.distinct with
             | [ name ] when
                 not (inCleanup callRange)
+                && not (
+                    inScope
+                    |> List.exists (fun (_, bindingRange, _) -> inSharedWork sharedZones bindingRange callRange)
+                )
                 // `ct` at the call must still BE the parameter
                 && not (
                     inScope
@@ -474,6 +613,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                     && (match parameterShapes symbolUse.DisplayContext m with
                                                         | Some mps when mps.Length = arity + 1 ->
                                                             List.truncate arity mps = ps
+                                                            // a `ValueTask` sibling doesn't fit `Async.AwaitTask` or a `Task` return
+                                                            && m.ReturnParameter.Type.Format symbolUse.DisplayContext = mfv.ReturnParameter.Type.Format symbolUse.DisplayContext
                                                             && (m.CurriedParameterGroups
                                                                 |> Seq.collect id
                                                                 |> Seq.tryLast
@@ -509,7 +650,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         // to the closing parenthesis: `, ct`
                                         // appended bare joins its BODY as a
                                         // tuple —
-                                        // `ContinueWith(fun (_: Task) -> (), ct)`
+                                        // `Then(fun (_: Task) -> (), ct)`
                                         // returns `unit * CancellationToken`.
                                         // Such an argument is wrapped first
                                         let lastElement =
@@ -564,29 +705,102 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | Some token ->
                         // only as an argument: replacing a stored binding's
                         // RHS would rewrite intent this scan cannot see
-                        let enclosingCall =
+                        let callHolding (r: range) =
                             index.Exprs
-                            |> Array.tryPick (fun (_, e) ->
+                            |> Array.tryPick (fun (callPath, e) ->
                                 match e with
                                 | SynExpr.App(funcExpr = callee; argExpr = a) when
-                                    Range.equals a.Range expr.Range
+                                    Range.equals a.Range r
                                     || (match a with
                                         | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) ->
-                                            es |> List.exists (fun x -> Range.equals x.Range expr.Range)
-                                        | SynExpr.Paren(expr = inner) -> Range.equals inner.Range expr.Range
+                                            es |> List.exists (fun x -> Range.equals x.Range r)
+                                        | SynExpr.Paren(expr = inner) -> Range.equals inner.Range r
                                         | _ -> false)
                                     ->
-                                    Some callee
+                                    Some(callPath, e, callee)
                                 | _ -> None)
+
+                        let parametersOf (mfv: FSharpMemberOrFunctionOrValue) =
+                            try
+                                mfv.CurriedParameterGroups |> Seq.collect id |> List.ofSeq
+                            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                []
+
+                        let takesParameterNamed (callee: SynExpr) (name: string) =
+                            match spineHead callee with
+                            | SynExpr.Ident calleeId
+                            | CallIdent calleeId ->
+                                match resolveMember calleeId with
+                                | Some(_, mfv) -> parametersOf mfv |> List.exists (fun p -> p.Name = Some name)
+                                | None -> false
+                            | _ -> false
+
+                        // `M(cancellationToken = None)` is an argument of M; `x = None` is an operand, not an argument
+                        let enclosingCall =
+                            match callHolding expr.Range with
+                            | Some(_, comparison, SynExpr.App(isInfix = true; funcExpr = op; argExpr = SynExpr.Ident named)) when
+                                isEquals op
+                                ->
+                                match callHolding comparison.Range with
+                                | Some(_, _, callee) as call when takesParameterNamed callee named.idText -> call
+                                | _ -> None
+                            | Some(_, _, SynExpr.App(isInfix = true; funcExpr = op)) when not (isPipe op) -> None
+                            | Some(_, SynExpr.App(isInfix = true; funcExpr = op), _) when not (isPipe op) -> None
+                            | call -> call
 
                         let isArgument = enclosingCall.IsSome
 
-                        // an explicit None on Task.Run / StartNew is the
-                        // author choosing to always start the work
+                        // the function at the head of `f a b`, or the member
+                        // of `x.M(a, b)`; a function value resolves to no
+                        // pending return, and keeps the fix
+                        let calleeSymbol =
+                            enclosingCall
+                            |> Option.bind (fun (_, _, callee) ->
+                                match spineHead callee with
+                                | SynExpr.Ident calleeId
+                                | CallIdent calleeId -> resolveMember calleeId
+                                | _ -> None)
+
+                        // the callee's parameter holds a token: `Some None`,
+                        // `defaultArg o None` and `x.Equals None` keep their value
+                        let takesToken =
+                            let isTokenParameter (p: FSharpParameter) =
+                                isCancellationToken p.Type
+                                || (p.IsOptionalArg
+                                    && p.Type.GenericArguments.Count = 1
+                                    && isCancellationToken p.Type.GenericArguments[0])
+
+                            let constructsUnionCase (callee: SynExpr) =
+                                match spineHead callee with
+                                | SynExpr.Ident id ->
+                                    let lineText = source.GetLineString(id.idRange.EndLine - 1)
+
+                                    match
+                                        OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
+                                    with
+                                    | Some symbolUse -> symbolUse.Symbol :? FSharpUnionCase
+                                    | None -> false
+                                | _ -> false
+
+                            match enclosingCall, calleeSymbol with
+                            | _, Some(_, mfv) ->
+                                let parameters = parametersOf mfv
+                                mfv.DisplayName <> "Equals" && (parameters.IsEmpty || parameters |> List.exists isTokenParameter)
+                            | Some(_, _, callee), None -> not (constructsUnionCase callee)
+                            | None, None -> false
+
+                        // an explicit None on Task.Run / StartNew / a
+                        // continuation is the author choosing to always start
+                        // the work
                         let schedulesWork =
-                            match enclosingCall with
-                            | Some(CallIdent calleeId) ->
-                                resolveMember calleeId |> Option.exists (fun (_, mfv) -> schedulesDelegate mfv)
+                            calleeSymbol |> Option.exists (fun (_, mfv) -> schedulesDelegate mfv)
+
+                        // so is one on work left running: `|> ignore`, a bare
+                        // statement, a store other callers read
+                        let detached =
+                            match enclosingCall, calleeSymbol with
+                            | Some(callPath, call, _), Some(_, mfv) ->
+                                returnsPending mfv && not (waitedFor index 0 call.Range callPath)
                             | _ -> false
 
                         let typedGate =
@@ -611,7 +825,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 | _ -> false
                             | None -> false
 
-                        if isArgument && typedGate && not schedulesWork then
+                        if isArgument && takesToken && typedGate && not schedulesWork && not detached then
                             {
                                 Range = expr.Range
                                 Original = textOfRange source expr.Range
@@ -678,6 +892,8 @@ let findUnobservedLoopsWith
         let lambdaParams =
             lambdaParamsNamed index (tokenParams |> List.map (fun (name, _, _) -> name) |> Set.ofList)
 
+        let sharedZones = sharedWorkZones index
+
         // the one token in scope, as `find` reads it
         let tokenFor (r: range) =
             let inScope =
@@ -686,7 +902,12 @@ let findUnobservedLoopsWith
 
             match inScope |> List.map (fun (name, _, _) -> name) |> List.distinct with
             | [ name ] when
+                // a check there would let one caller fail the value's others
                 not (
+                    inScope
+                    |> List.exists (fun (_, bindingRange, _) -> inSharedWork sharedZones bindingRange r)
+                )
+                && not (
                     inScope
                     |> List.exists (fun (n, bindingRange, paramId) ->
                         shadowedBefore index lambdaParams n paramId bindingRange r)

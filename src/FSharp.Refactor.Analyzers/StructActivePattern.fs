@@ -130,13 +130,14 @@ let findWith
                 match decl with
                 | SynModuleDecl.Let(
                     bindings = [ SynBinding(
-                                     attributes = []
+                                     attributes = bindingAttributes
                                      returnInfo = None
                                      accessibility = bindingAccess
                                      headPat = SynPat.LongIdent(
                                          longDotId = SynLongIdent(id = [ nameIdent ]); accessibility = patAccess)
                                      expr = body) ]) when
                     isPartialActivePatternName nameIdent.idText
+                    && onlyAttributesNamed informationalAttributes bindingAttributes
                     // `let private (|P|_|)` parses its modifier onto the
                     // pattern, not the binding — check both
                     // named, not plain: a signature file may write

@@ -89,7 +89,8 @@ let private (|GetTypeCall|_|) (e: SynExpr) =
         ids.Length >= 2 && (List.last ids).idText = "GetType"
         ->
         ValueSome()
-    | SynExpr.App(isInfix = false; funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = [ pid ])); argExpr = UnitConst) when
+    | SynExpr.App(
+        isInfix = false; funcExpr = SynExpr.DotGet(longDotId = SynLongIdent(id = [ pid ])); argExpr = UnitConst) when
         pid.idText = "GetType"
         ->
         ValueSome()

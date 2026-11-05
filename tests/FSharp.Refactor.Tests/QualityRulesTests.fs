@@ -3810,18 +3810,23 @@ let ``a computed write escapes the envelope`` () =
     | other -> failwithf "Expected the computed-write bail, got %A" other
 
 [<Fact>]
-let ``an attributed binding keeps its comment where it is`` () =
-    // the /// would land between the attribute and the let — FS3520 territory
-    Assert.Empty(
-        commentDocIn (
-            fsharp
-                """
-                module M
-                [<System.Obsolete>]
-                let rate r = r * 2 // monthly figure
-                """
-        )
-    )
+let ``an attributed binding gets its doc above the attribute`` () =
+    // between the attribute and the let, the /// would draw FS3520
+    let source =
+        fsharp
+            """
+            module M
+            [<System.Obsolete>]
+            let rate r = r * 2 // monthly figure
+            """
+
+    let s = Assert.Single(commentDocIn source)
+
+    let insertedAt =
+        s.Edits
+        |> List.pick (fun (r, original, _) -> if original = "" then Some r.StartLine else None)
+
+    Assert.Equal(2, insertedAt)
 
 [<Fact>]
 let ``a user-defined DateTime type never migrates`` () =
@@ -6549,6 +6554,21 @@ let ``FR0151: an ordinary exception handler is not this rule's business`` () =
     Assert.Empty(exceptionDetailIn source)
 
 [<Fact>]
+let ``FR0152: a Remove on a string or a list says nothing of the cache`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Threading.Tasks
+            open System.Collections.Concurrent
+            let cache = ConcurrentDictionary<string, Task<int>>()
+            let get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))
+            let trimmed (s: string) = s.Trim().Remove(0, 1)
+            """
+
+    Assert.Single(cachedFailureIn source) |> ignore
+
+[<Fact>]
 let ``FR0152: GetOrAdd caching a Task is reported`` () =
     let source =
         fsharp
@@ -6577,6 +6597,175 @@ let ``FR0152: a plain value cache is fine`` () =
             """
 
     Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0152: a cache removing its entry through ICollection is not reported`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            open System.Collections.Generic
+            open System.Threading.Tasks
+            type KeyCache() =
+                let fetches = ConcurrentDictionary<string, Lazy<Task<int>>>()
+                let forget (key: string) (fetch: Lazy<Task<int>>) =
+                    (fetches :> ICollection<KeyValuePair<_, _>>).Remove(KeyValuePair(key, fetch)) |> ignore
+                member _.Get(key: string) =
+                    let mine = ref Unchecked.defaultof<Lazy<Task<int>>>
+                    mine.Value <-
+                        lazy
+                            task {
+                                try
+                                    return 1
+                                finally
+                                    forget key mine.Value
+                            }
+                    fetches.GetOrAdd(key, mine.Value).Value
+            """
+
+    Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0152: a TryRemove or Remove on the same dictionary silences it, however it is spelled`` () =
+    for removal in
+        [
+            "cache.TryRemove(k) |> ignore"
+            "k |> cache.TryRemove |> ignore"
+            "cache.TryRemove(KeyValuePair(k, Task.FromResult 1)) |> ignore"
+            "(cache :> IDictionary<_, _>).Remove(k) |> ignore"
+            "(cache).TryRemove(k) |> ignore"
+        ] do
+        let source =
+            $"module M\nopen System.Collections.Concurrent\nopen System.Collections.Generic\nopen System.Threading.Tasks\nlet cache = ConcurrentDictionary<string, Task<int>>()\nlet get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))\nlet evict (k: string) = {removal}\n"
+
+        Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0152: a local dictionary's removal in the same binding counts`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            open System.Threading.Tasks
+            let memoize (f: string -> Task<int>) =
+                let cache = ConcurrentDictionary<string, Task<int>>()
+                fun (k: string) ->
+                    let t = cache.GetOrAdd(k, f)
+                    if t.IsFaulted then
+                        cache.TryRemove(k) |> ignore
+                    t
+            """
+
+    Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0152: a removal from another dictionary does not count`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            open System.Threading.Tasks
+            let cache = ConcurrentDictionary<string, Task<int>>()
+            let other = ConcurrentDictionary<string, int>()
+            let get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))
+            let evict (k: string) = other.TryRemove(k) |> ignore
+            """
+
+    match cachedFailureIn source with
+    | [ s ] -> Assert.Equal("Task", s.ValueKind)
+    | other -> failwithf "Expected one cached-failure suggestion, got %A" other
+
+[<Fact>]
+let ``FR0152: a same-named dictionary of another type or parameter does not count`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            open System.Threading.Tasks
+            type Evicting() =
+                let cache = ConcurrentDictionary<string, Task<int>>()
+                member _.Get(k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))
+                member _.Evict(k: string) = cache.TryRemove(k) |> ignore
+            type Keeping() =
+                let cache = ConcurrentDictionary<string, Task<int>>()
+                member _.Get(k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 2))
+            let get (cache: ConcurrentDictionary<string, Task<int>>) (k: string) =
+                cache.GetOrAdd(k, (fun _ -> Task.FromResult 3))
+            let evict (cache: ConcurrentDictionary<string, Task<int>>) (k: string) =
+                cache.TryRemove(k) |> ignore
+            """
+
+    let lines = cachedFailureIn source |> List.map (fun s -> s.Range.StartLine)
+    Assert.Equal<int list>([ 10; 12 ], lines)
+
+[<Fact>]
+let ``FR0152: a module-level dictionary removed by a function outside the type counts`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            open System.Threading.Tasks
+            let cache = ConcurrentDictionary<string, Task<int>>()
+            type Reader() =
+                member _.Get(k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))
+            let evict (k: string) = cache.TryRemove(k) |> ignore
+            """
+
+    Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0152: refuses when the dictionary is handed on or a removal has no name`` () =
+    for line in
+        [
+            "let exposed () = cache"
+            "let view = cache :> IDictionary<_, _>"
+            "let passed (k: string) = evict cache k"
+            "let unknown (k: string) = (pick ()).TryRemove(k) |> ignore"
+        ] do
+        let source =
+            $"module M\nopen System.Collections.Concurrent\nopen System.Collections.Generic\nopen System.Threading.Tasks\nlet cache = ConcurrentDictionary<string, Task<int>>()\nlet pick () = ConcurrentDictionary<string, Task<int>>()\nlet evict (d: ConcurrentDictionary<string, Task<int>>) (k: string) = ignore d\nlet get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))\n{line}\n"
+
+        Assert.Empty(cachedFailureIn source)
+
+[<Fact>]
+let ``FR0152: reading the dictionary's entries still reports`` () =
+    let source =
+        fsharp
+            """
+            module M
+            open System.Collections.Concurrent
+            open System.Threading.Tasks
+            let cache = ConcurrentDictionary<string, Task<int>>()
+            let get (k: string) = cache.GetOrAdd(k, (fun _ -> Task.FromResult 1))
+            let read (k: string) = cache[k]
+            let old (k: string) = cache.[k]
+            let count () = cache.Count
+            let keys () =
+                [
+                    for kv in cache do
+                        kv.Key
+                ]
+            """
+
+    Assert.Single(cachedFailureIn source) |> ignore
+
+[<Fact>]
+let ``FR0152: a GetOrAdd on an unnamed dictionary reports unless the file removes from anything`` () =
+    let head =
+        "module M\nopen System.Collections.Concurrent\nopen System.Threading.Tasks\nlet pick () = ConcurrentDictionary<string, Task<int>>()\nlet get (k: string) = (pick ()).GetOrAdd(k, (fun _ -> Task.FromResult 1))\n"
+
+    Assert.Single(cachedFailureIn head) |> ignore
+
+    let evicting =
+        head
+        + "let other = ConcurrentDictionary<string, int>()\nlet evict (k: string) = other.TryRemove(k) |> ignore\n"
+
+    Assert.Empty(cachedFailureIn evicting)
 
 [<Fact>]
 let ``FR0151: a handler already reading Types is left alone`` () =

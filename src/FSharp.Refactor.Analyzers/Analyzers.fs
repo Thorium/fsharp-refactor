@@ -1933,6 +1933,45 @@ let structDuCliAnalyzer (ctx: CliContext) : Async<Message list> =
             ctx.ParseFileResults.ParseTree
             ctx.SourceText)
 
+// ---- FR0185 FieldsFreeStructDu ----
+
+let private fieldsFreeStructDuMessages
+    (check: FSharpCheckFileResults option)
+    (scopeOpen: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Message list =
+    widened scopeOpen (fun scope ->
+        StructDu.findFieldsFree check scope parseTree source
+        |> List.map (fun s ->
+            hint
+                "FR0185"
+                (sprintf
+                    "Union '%s' has no fields, so [<Struct>] saves no allocation (its cases are shared objects), but its value can't be null and it matches small unions marked that way."
+                    s.TypeName)
+                s.InsertRange
+                (fix s.InsertRange "" s.InsertText
+                 :: (s.SignatureEdits
+                     |> List.map (fun (r, original, replacement) -> fix r original replacement)))))
+
+[<EditorAnalyzer("FieldsFreeStructDu", "Mark unions with no fields with Struct", HelpBase)>]
+let fieldsFreeStructDuEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0185" "FieldsFreeStructDu" (fun () ->
+        fieldsFreeStructDuMessages
+            ctx.CheckFileResults
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
+
+[<CliAnalyzer("FieldsFreeStructDu", "Mark unions with no fields with Struct", HelpBase)>]
+let fieldsFreeStructDuCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0185" "FieldsFreeStructDu" (fun () ->
+        fieldsFreeStructDuMessages
+            (Some ctx.CheckFileResults)
+            (shapeScopeOpen ctx.FileName ctx.ProjectOptions)
+            ctx.ParseFileResults.ParseTree
+            ctx.SourceText)
+
 // ---- FR0022 DuFieldNames ----
 
 let private duFieldNamesMessages (scopeOpen: bool) (parseTree: ParsedInput) (source: ISourceText) : Message list =
@@ -6542,6 +6581,53 @@ let droppedTimerEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
 let droppedTimerCliAnalyzer (ctx: CliContext) : Async<Message list> =
     whenEnabled ctx.FileName "FR0163" "DroppedTimer" (fun () ->
         droppedTimerMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0183 SecretHeaderRedirect ----
+
+let private secretHeaderMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    RedirectExposure.findSecretHeaders parseTree source checkResults
+    |> List.map (fun s ->
+        let header =
+            match s.Name with
+            | ValueSome name -> $"The {name} header"
+            | ValueNone -> "This header, whose name comes from elsewhere,"
+
+        hint
+            "FR0183"
+            $"{header} goes to wherever a redirect points: .NET follows redirects by default and drops only Authorization. Use a client with AllowAutoRedirect = false and treat a 3xx as a failure; if the caller supplies the HttpClient, tell callers to."
+            s.Range
+            [])
+
+[<EditorAnalyzer("SecretHeaderRedirect", "A header that may hold a secret goes to wherever a redirect points", HelpBase)>]
+let secretHeaderEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0183" "SecretHeaderRedirect" (fun () ->
+        whenChecked ctx (secretHeaderMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("SecretHeaderRedirect", "A header that may hold a secret goes to wherever a redirect points", HelpBase)>]
+let secretHeaderCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0183" "SecretHeaderRedirect" (fun () ->
+        secretHeaderMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
+
+// ---- FR0184 RedirectFollowingClient ----
+
+let private followingClientMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
+    RedirectExposure.findFollowingClients parseTree source checkResults
+    |> List.map (fun s ->
+        hint
+            "FR0184"
+            $"This {s.Maker} follows redirects, which send the body on a 307 and custom headers on any redirect to whatever host one names. If it sends secrets or personal data, set AllowAutoRedirect = false and treat a 3xx as a failure."
+            s.Range
+            [])
+
+[<EditorAnalyzer("RedirectFollowingClient", "A request maker follows redirects to any host", HelpBase)>]
+let followingClientEditorAnalyzer (ctx: EditorContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0184" "RedirectFollowingClient" (fun () ->
+        whenChecked ctx (followingClientMessages ctx.ParseFileResults.ParseTree ctx.SourceText))
+
+[<CliAnalyzer("RedirectFollowingClient", "A request maker follows redirects to any host", HelpBase)>]
+let followingClientCliAnalyzer (ctx: CliContext) : Async<Message list> =
+    whenEnabled ctx.FileName "FR0184" "RedirectFollowingClient" (fun () ->
+        followingClientMessages ctx.ParseFileResults.ParseTree ctx.SourceText ctx.CheckFileResults)
 
 // ---- FR0164 EnumerationMutation ----
 

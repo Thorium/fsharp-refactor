@@ -116,12 +116,12 @@ let findWith
                     match binding with
                     | SynBinding(
                         accessibility = access
-                        attributes = []
+                        attributes = attributes
                         isMutable = false
                         isInline = false
                         headPat = pat
                         expr = rhs
-                        trivia = trivia) when isConstant rhs ->
+                        trivia = trivia) when onlyAttributesNamed informationalAttributes attributes && isConstant rhs ->
                         match valueBinder pat with
                         | ValueSome(id, patAccess) when
                             Visibility.isInScopeWithSignatureEdits allowApiChanges path [ access; patAccess ]

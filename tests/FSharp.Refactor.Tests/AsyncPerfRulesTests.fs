@@ -2102,15 +2102,18 @@ let ``a call already passing the token is left alone`` () =
 
 [<Fact>]
 let ``a trailing lambda argument is wrapped before the token is appended`` () =
-    // `ContinueWith(fun (_: Task) -> (), ct)` would make the lambda
+    // `Then(fun (_: Task) -> (), ct)` would make the lambda
     // return `unit * CancellationToken`
     let source =
         fsharp
             """
             open System.Threading
             open System.Threading.Tasks
-            let f (ct: CancellationToken) (t: Task) = task {
-                do! t.ContinueWith(fun (_: Task) -> ())
+            type Chain() =
+                member _.Then(step: Task -> unit) : Task = Task.CompletedTask
+                member _.Then(step: Task -> unit, token: CancellationToken) : Task = Task.CompletedTask
+            let f (ct: CancellationToken) (chain: Chain) = task {
+                do! chain.Then(fun (_: Task) -> ())
                 return 1
             }
             """
@@ -2118,7 +2121,7 @@ let ``a trailing lambda argument is wrapped before the token is appended`` () =
     match cancellationIn source with
     | [ s ] ->
         let patched = applyEdit source s.Range s.Replacement
-        Assert.Contains("t.ContinueWith((fun (_: Task) -> ()), ct)", patched)
+        Assert.Contains("chain.Then((fun (_: Task) -> ()), ct)", patched)
         assertTypechecks "Patched source" patched
     | other -> failwithf "Expected one token suggestion, got %A" other
 
@@ -3987,6 +3990,351 @@ let ``FR0118: an explicit None on Task.Run is the author's choice`` () =
         )
     )
 
+// ---- FR0118 shared work ----
+
+[<Fact>]
+let ``FR0118: an explicit None inside a lazy shared between callers stays`` () =
+    // with ct here, one caller cancelling fails every caller of the same Lazy
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Collections.Concurrent
+                open System.Threading
+                open System.Threading.Tasks
+                let fetchKey (key: string) (token: CancellationToken) : Task<int> = Task.FromResult key.Length
+                type KeyCache() =
+                    let fetches = ConcurrentDictionary<string, Lazy<Task<int>>>()
+                    member _.GetAsync(key: string, ct: CancellationToken) =
+                        ct.ThrowIfCancellationRequested()
+                        let mine = ref Unchecked.defaultof<Lazy<Task<int>>>
+                        mine.Value <-
+                            lazy
+                                task {
+                                    let! n = fetchKey key CancellationToken.None
+                                    return n
+                                }
+                        fetches.GetOrAdd(key, mine.Value).Value
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: an explicit None on a continuation stays, waited for or not`` () =
+    // the overloads taking a scheduler or options demand a token, so the None
+    // is how the call reaches them; a cancelled token also skips the body
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let viaScheduler (t: Task) (ct: CancellationToken) = task {
+                    do! t.ContinueWith((fun (_: Task) -> ()), CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default)
+                }
+                let viaToken (t: Task) (ct: CancellationToken) = task {
+                    do! t.ContinueWith((fun (_: Task) -> ()), CancellationToken.None)
+                }
+                let typed (t: Task<int>) (ct: CancellationToken) = task {
+                    let! n = t.ContinueWith((fun (a: Task<int>) -> a.Result + 1), CancellationToken.None)
+                    return n
+                }
+                let viaFactory (ts: Task[]) (ct: CancellationToken) = task {
+                    do! Task.Factory.ContinueWhenAll(ts, (fun (_: Task[]) -> ()), CancellationToken.None)
+                }
+                let viaFirst (ts: Task[]) (ct: CancellationToken) = task {
+                    do! Task.Factory.ContinueWhenAny(ts, (fun (_: Task) -> ()), CancellationToken.None)
+                }
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: an omitted token on a continuation stays omitted, waited for or not`` () =
+    // with ct, a cancelled caller never runs the continuation's body
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let plain (t: Task) (ct: CancellationToken) = task {
+                    do! t.ContinueWith(fun (_: Task) -> ())
+                }
+                let typed (t: Task<int>) (ct: CancellationToken) = task {
+                    let! n = t.ContinueWith(fun (a: Task<int>) -> a.Result + 1)
+                    return n
+                }
+                let viaFactory (ts: Task[]) (ct: CancellationToken) = task {
+                    do! Task.Factory.ContinueWhenAll(ts, (fun (_: Task[]) -> ()))
+                }
+                let viaFirst (ts: Task[]) (ct: CancellationToken) = task {
+                    do! Task.Factory.ContinueWhenAny(ts, (fun (_: Task) -> ()))
+                }
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: a ContinueWith of another type gets the token, explicit None or omitted`` () =
+    let source =
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            type Chain() =
+                member _.ContinueWith(step: int) : Task = Task.CompletedTask
+                member _.ContinueWith(step: int, token: CancellationToken) : Task = Task.CompletedTask
+            let replaced (chain: Chain) (ct: CancellationToken) = task {
+                do! chain.ContinueWith(1, CancellationToken.None)
+            }
+            let appended (chain: Chain) (ct: CancellationToken) = task {
+                do! chain.ContinueWith(1)
+            }
+            """
+
+    match cancellationIn source with
+    | [ _; _ ] as found ->
+        Assert.Contains(found, (fun s -> s.Kind = CancellationOverload.TokenGap.NonePassed))
+        Assert.Contains(found, (fun s -> s.Kind <> CancellationOverload.TokenGap.NonePassed))
+
+        found
+        |> List.iter (fun s -> assertTypechecks "Patched source" (applyEdit source s.Range s.Replacement))
+    | other -> failwithf "Expected two token suggestions, got %A" other
+
+[<Fact>]
+let ``FR0118: the same None outside the lazy is replaced`` () =
+    let source =
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let fetchKey (key: string) (token: CancellationToken) : Task<int> = Task.FromResult key.Length
+            let get (key: string) (ct: CancellationToken) =
+                let held = lazy 1
+                task {
+                    let! n = fetchKey key CancellationToken.None
+                    return n + held.Value
+                }
+            """
+
+    match cancellationIn source with
+    | [ s ] ->
+        Assert.Equal(CancellationOverload.TokenGap.NonePassed, s.Kind)
+        Assert.Equal("ct", s.Replacement)
+        assertTypechecks "Patched source" (applyEdit source s.Range s.Replacement)
+    | other -> failwithf "Expected one token suggestion, got %A" other
+
+[<Fact>]
+let ``FR0118: an omitted token inside a lazy is not filled in`` () =
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let get (ct: CancellationToken) =
+                    lazy
+                        task {
+                            do! Task.Delay(100)
+                            return 1
+                        }
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: a loop inside a lazy gets no cancellation check`` () =
+    Assert.Empty(
+        unobservedLoopsIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                let get (ct: CancellationToken) (next: unit -> Task<int>) =
+                    lazy
+                        task {
+                            let mutable total = 0
+                            while total < 3 do
+                                let! v = next ()
+                                total <- total + v
+                            return total
+                        }
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: the Lazy constructors are shared work too`` () =
+    for construct in [ "Lazy<Task<int>>"; "new Lazy<Task<int>>"; "System.Lazy<Task<int>>" ] do
+        Assert.Empty(
+            cancellationIn (
+                fsharp
+                    $$"""
+                    open System
+                    open System.Threading
+                    open System.Threading.Tasks
+                    let get (ct: CancellationToken) =
+                        {{construct}}(fun () ->
+                            task {
+                                do! Task.Delay(100, CancellationToken.None)
+                                do! Task.Delay(100)
+                                return 1
+                            })
+                    """
+            )
+        )
+
+[<Fact>]
+let ``FR0118: a task-valued GetOrAdd or AddOrUpdate factory keeps its None and gains no token`` () =
+    // the dictionary hands the same task to every later caller
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Collections.Concurrent
+                open System.Threading
+                open System.Threading.Tasks
+                let cache = ConcurrentDictionary<string, Task<int>>()
+                let get (key: string) (ct: CancellationToken) =
+                    cache.GetOrAdd(
+                        key,
+                        fun _ ->
+                            task {
+                                do! Task.Delay(100, CancellationToken.None)
+                                do! Task.Delay(100)
+                                return 1
+                            }
+                    )
+                let update (key: string) (ct: CancellationToken) =
+                    cache.AddOrUpdate(
+                        key,
+                        (fun _ ->
+                            task {
+                                do! Task.Delay(100, CancellationToken.None)
+                                do! Task.Delay(100)
+                                return 1
+                            }),
+                        (fun _ old -> old)
+                    )
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: a token bound inside the lazy belongs to that function and is still passed`` () =
+    let source =
+        fsharp
+            """
+            open System.Threading
+            open System.Threading.Tasks
+            let shared =
+                lazy
+                    let pause (ct: CancellationToken) =
+                        task {
+                            do! Task.Delay(100)
+                            return 1
+                        }
+                    pause CancellationToken.None
+            """
+
+    match cancellationIn source with
+    | [ s ] ->
+        Assert.Equal(CancellationOverload.TokenGap.Omitted, s.Kind)
+        assertTypechecks "Patched source" (applyEdit source s.Range s.Replacement)
+    | other -> failwithf "Expected one token suggestion, got %A" other
+
+[<Fact>]
+let ``FR0118: an explicit None on work left running or stored stays`` () =
+    for statement in
+        [
+            "Task.Delay(100, CancellationToken.None) |> ignore"
+            "Task.Delay(100, CancellationToken.None) |> ignore\n    ()"
+            "pending[key] <- Task.Delay(100, CancellationToken.None)"
+            "pending.TryAdd(key, Task.Delay(100, CancellationToken.None)) |> ignore"
+            "let running = Task.Delay(100, CancellationToken.None)\n    ignore running"
+        ] do
+        Assert.Empty(
+            cancellationIn (
+                $"open System.Collections.Concurrent\nopen System.Threading\nopen System.Threading.Tasks\nlet pending = ConcurrentDictionary<string, Task>()\nlet start (key: string) (ct: CancellationToken) =\n    {statement}\n"
+            )
+        )
+
+[<Fact>]
+let ``FR0118: let!, use!, match! and return! wait, for both the omitted token and an explicit None`` () =
+    let source =
+        fsharp
+            """
+            open System.IO
+            open System.Threading
+            open System.Threading.Tasks
+            type Bus() =
+                member _.SendAsync(m: string) : Task<int> = Task.FromResult 1
+                member _.SendAsync(m: string, ct: CancellationToken) : Task<int> = Task.FromResult 1
+                member _.OpenAsync(m: string) : Task<MemoryStream> = Task.FromResult(new MemoryStream())
+                member _.OpenAsync(m: string, ct: CancellationToken) : Task<MemoryStream> = Task.FromResult(new MemoryStream())
+            let omitted (bus: Bus) (ct: CancellationToken) = task {
+                let! a = bus.SendAsync("let")
+                use! s = bus.OpenAsync("use")
+                match! bus.SendAsync("match") with
+                | 0 -> return! bus.SendAsync("return")
+                | _ -> return a + int s.Length
+            }
+            let passed (bus: Bus) (ct: CancellationToken) = task {
+                let! a = bus.SendAsync("let", CancellationToken.None)
+                use! s = bus.OpenAsync("use", CancellationToken.None)
+                match! bus.SendAsync("match", CancellationToken.None) with
+                | 0 -> return! bus.SendAsync("return", CancellationToken.None)
+                | _ -> return a + int s.Length
+            }
+            """
+
+    let fired = cancellationIn source
+
+    let count kind =
+        fired |> List.filter (fun s -> s.Kind = kind) |> List.length
+
+    Assert.Equal(4, count CancellationOverload.TokenGap.Omitted)
+    Assert.Equal(4, count CancellationOverload.TokenGap.NonePassed)
+
+[<Fact>]
+let ``FR0118: a call after a let! is still read on its own`` () =
+    // the bang's parent role covers its right-hand side, not what follows it
+    Assert.Empty(
+        cancellationIn (
+            fsharp
+                """
+                open System.Threading
+                open System.Threading.Tasks
+                type Bus() =
+                    member _.SendAsync(m: string) : Task = Task.CompletedTask
+                    member _.SendAsync(m: string, ct: CancellationToken) : Task = Task.CompletedTask
+                let send (bus: Bus) (ct: CancellationToken) (ready: Task<int>) = task {
+                    let! _ = ready
+                    bus.SendAsync("fire") |> ignore
+                }
+                """
+        )
+    )
+
+[<Fact>]
+let ``FR0118: an explicit None on work that is waited for or on a synchronous call is replaced`` () =
+    for body in
+        [
+            "Task.Delay(100, CancellationToken.None)"
+            "task {\n        do! Task.Delay(100, CancellationToken.None)\n    }"
+            "task {\n        let running = Task.Delay(100, CancellationToken.None)\n        do! running\n    }"
+            "Task.Delay(100, CancellationToken.None) |> Async.AwaitTask |> Async.RunSynchronously"
+            "gate.Wait(CancellationToken.None)"
+        ] do
+        match
+            cancellationIn (
+                $"open System.Threading\nopen System.Threading.Tasks\nlet start (gate: SemaphoreSlim) (ct: CancellationToken) =\n    {body}\n"
+            )
+        with
+        | [ s ] -> Assert.Equal(CancellationOverload.TokenGap.NonePassed, s.Kind)
+        | other -> failwithf "Expected one token suggestion for %s, got %A" body other
+
 
 // ---- FR0119 AwaitableOverload: Dispose has no awaitable twin ----
 
@@ -5020,6 +5368,143 @@ let ``FR0049 taskify keeps a GetResult drain whose caller is async`` () =
                 """
         )
     )
+
+// ---- FR0118 CancellationOverload: overload return types, work left running, operands ----
+
+[<Fact>]
+let ``FR0118 doesn't take an overload that returns something else`` () =
+    // ReadLineAsync(ct) is a ValueTask, which Async.AwaitTask doesn't take
+    let source =
+        fsharp
+            """
+            open System.IO
+            open System.Threading
+            let f (r: TextReader) (ct: CancellationToken) =
+                async {
+                    let! l = r.ReadLineAsync() |> Async.AwaitTask
+                    return l
+                }
+            """
+
+    Assert.Empty(cancellationIn source)
+
+[<Fact>]
+let ``FR0118 gives no token to a bang inside work left running`` () =
+    for shape in
+        [
+            "task { let! s = c.GetStringAsync(u)\n                       printfn \"%s\" s } |> ignore"
+            "backgroundTask { do! c.GetStringAsync(u) |> Task.ignore } |> ignore"
+            "async { let! s = c.GetStringAsync(u) |> Async.AwaitTask\n                        printfn \"%s\" s } |> Async.Start"
+            "Task.Run<string>(fun () -> task { let! s = c.GetStringAsync(u)\n                                                  return s }) |> ignore"
+            "task { let! s = task { let! x = c.GetStringAsync(u)\n                                  return x }\n                       printfn \"%s\" s } |> ignore"
+        ] do
+        let source =
+            fsharp
+                $"""
+                open System.Net.Http
+                open System.Threading
+                open System.Threading.Tasks
+                module Task =
+                    let ignore (t: Task<string>) = t :> Task
+                let f (c: HttpClient) (u: string) (ct: CancellationToken) =
+                    {shape}
+                """
+
+        Assert.Empty(cancellationIn source)
+
+[<Fact>]
+let ``FR0118 still gives the token to a bang in work the caller gets`` () =
+    let source =
+        fsharp
+            """
+            open System.Net.Http
+            open System.Threading
+            let f (c: HttpClient) (u: string) (ct: CancellationToken) =
+                task {
+                    let! s = c.GetStringAsync(u)
+                    return s
+                }
+            """
+
+    Assert.Single(cancellationIn source) |> ignore
+
+[<Fact>]
+let ``FR0118 leaves CancellationToken.None where it's a value, not a token handed on`` () =
+    for shape in
+        [
+            "if ct = CancellationToken.None then 1 else 2"
+            "if CancellationToken.None = ct then 1 else 2"
+            "if ct <> CancellationToken.None then 1 else 2"
+            "if ct.Equals(CancellationToken.None) then 1 else 2"
+            "if (Some CancellationToken.None).IsSome then 1 else 2"
+            "(defaultArg o CancellationToken.None).GetHashCode()"
+            "printfn \"%b\" (other = CancellationToken.None); 1"
+        ] do
+        let source =
+            fsharp
+                $"""
+                open System.Threading
+                let f (o: CancellationToken option) (other: CancellationToken) (ct: CancellationToken) =
+                    {shape}
+                """
+
+        Assert.Empty(cancellationIn source)
+
+[<Fact>]
+let ``FR0118 keeps a named CancellationToken.None on work that starts or is left running`` () =
+    for shape in
+        [
+            "t.ContinueWith((fun (_: Task) -> ()), cancellationToken = CancellationToken.None)"
+            "Task.Run(w, cancellationToken = CancellationToken.None)"
+            "c.SendAsync(m, cancellationToken = CancellationToken.None) |> ignore"
+            "Async.StartAsTask(a, cancellationToken = CancellationToken.None) |> ignore"
+        ] do
+        let source =
+            fsharp
+                $"""
+                open System
+                open System.Net.Http
+                open System.Threading
+                open System.Threading.Tasks
+                let f (t: Task) (w: Action) (c: HttpClient) (m: HttpRequestMessage) (a: Async<int>) (ct: CancellationToken) =
+                    {shape}
+                """
+
+        Assert.Empty(cancellationIn source)
+
+[<Fact>]
+let ``FR0118 replaces a named CancellationToken.None on work that is waited for`` () =
+    let source =
+        fsharp
+            """
+            open System.Net.Http
+            open System.Threading
+            let f (c: HttpClient) (m: HttpRequestMessage) (ct: CancellationToken) =
+                task {
+                    let! r = c.SendAsync(m, cancellationToken = CancellationToken.None)
+                    return r
+                }
+            """
+
+    Assert.Single(cancellationIn source) |> ignore
+
+[<Fact>]
+let ``FR0118 leaves Async.Start and Async.StartImmediate alone`` () =
+    for shape in
+        [
+            "Async.Start(w, CancellationToken.None)"
+            "Async.StartImmediate(w, CancellationToken.None)"
+            "Async.Start w"
+        ] do
+        let source =
+            fsharp
+                $"""
+                open System.Threading
+                let f (w: Async<unit>) (ct: CancellationToken) =
+                    {shape}
+                """
+
+        Assert.Empty(cancellationIn source)
 
 // ---- FR0118 CancellationOverload: cleanup callbacks, handlers, shadowed names ----
 

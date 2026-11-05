@@ -153,6 +153,11 @@ let renameEdits (declaredPrivately: bool) (reading: Reading) (name: string) (rep
 /// `type`. A type the signature declares with attributes of its own is
 /// left alone — it may already be a struct, or carry something this edit
 /// must not sit beside — and the fix is withheld.
+/// Can a type with these attributes take `[<Struct>]`? These say nothing of how it is stored. Any other may
+/// (`ReferenceEquality`, `AllowNullLiteral`, `Struct` itself), so it holds the type back.
+let acceptsStruct (attributes: SynAttributes) =
+    onlyAttributesNamed [ "RequireQualifiedAccess"; "NoComparison"; "NoEquality" ] attributes
+
 let structEdits (declaredPrivately: bool) (reading: Reading) (typeName: string) : Edit list voption =
     match reading with
     | _ when declaredPrivately -> ValueSome []
@@ -162,7 +167,7 @@ let structEdits (declaredPrivately: bool) (reading: Reading) (typeName: string) 
         match typeNamed tree typeName with
         | None -> ValueSome []
         | Some(SynTypeDefnSig(typeInfo = SynComponentInfo(attributes = attributes); trivia = trivia)) ->
-            if not attributes.IsEmpty then
+            if not (acceptsStruct attributes) then
                 ValueNone
             else
                 match trivia.LeadingKeyword with

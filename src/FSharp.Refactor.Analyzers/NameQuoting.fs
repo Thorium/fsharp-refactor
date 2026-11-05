@@ -182,7 +182,11 @@ let find
             candidates
             |> List.groupBy (fun (_, quoted, _, _) -> quoted)
             |> List.filter (fun (quoted, group) ->
-                (group |> List.distinctBy (fun (pid: Ident, _, _, _) -> pid.idText) |> List.length) = 1
+                (group
+                 |> List.distinctBy (fun (pid: Ident, _, _, _) -> pid.idText)
+                 |> List.length)
+                    =
+                    1
                 && not (fileText.Value.Contains $"``{quoted}``"))
             |> List.map fst
             |> Set.ofList

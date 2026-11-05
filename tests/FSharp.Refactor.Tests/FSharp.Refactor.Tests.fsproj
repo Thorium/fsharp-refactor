@@ -103,6 +103,8 @@
     <Compile Include="QualifiedNamesScopeTests.fs" />
     <Compile Include="AuditMiscTests.fs" />
     <Compile Include="HazardRulesTests.fs" />
+    <Compile Include="RedirectExposureTests.fs" />
+    <Compile Include="AttributeGuardTests.fs" />
     <Compile Include="GithubIssueTests.fs" />
     <Compile Include="DefinesTests.fs" />
     <Compile Include="DateRulesTests.fs" />

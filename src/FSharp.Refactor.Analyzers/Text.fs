@@ -441,6 +441,22 @@ let hasAttributeNamed (name: string) (attrs: SynAttributes) =
                 t = name || t = name + "Attribute"
             | _ -> false))
 
+/// Does an attribute list carry only these attributes (short names, with or without the suffix)? Rules that rewrite a
+/// declaration read an attribute they don't know as a reason to leave it alone.
+let onlyAttributesNamed (names: string list) (attrs: SynAttributes) =
+    attrs
+    |> List.forall (fun attrList ->
+        attrList.Attributes
+        |> List.forall (fun a ->
+            match a.TypeName with
+            | SynLongIdent(id = ids) when not ids.IsEmpty ->
+                let t = (List.last ids).idText
+                names |> List.exists (fun name -> t = name || t = name + "Attribute")
+            | _ -> false))
+
+/// Attributes that say nothing of what a value or function is, so that a fix may leave them where they are.
+let informationalAttributes = [ "Obsolete"; "EditorBrowsable"; "CompiledName" ]
+
 /// Member names of the computation-expression builder protocol. A type
 /// carrying two or more of these is a CE builder, and F# requires builder
 /// members to be instance members (the builder is a value).

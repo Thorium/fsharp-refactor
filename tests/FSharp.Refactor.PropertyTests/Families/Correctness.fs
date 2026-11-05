@@ -191,6 +191,24 @@ let private shapes =
         // FR0181 must stay quiet: the aggregate is handled
         withFree "AggregateCaught" [ "!FR0181" ] genSmall (fun n i ->
             $"let wait{i} (work: Task) =\n    try\n        work.Wait()\n        {n}\n    with\n    | :? AggregateException -> {n + 1}\n    | :? InvalidOperationException -> {n + 2}")
+        // FR0183: a secret in a custom header goes wherever a redirect points
+        withFree "SecretHeader" [ "FR0183" ] genSmall (fun n i ->
+            $"let f{i} (secret: string) =
+    use request = new System.Net.Http.HttpRequestMessage()
+    request.Headers.Add(\"X-Api-Key\", secret)
+    {n}")
+        // FR0183 must stay quiet: .NET drops Authorization on a redirect
+        withFree "AuthorizationHeader" [ "!FR0183" ] genSmall (fun n i ->
+            $"let f{i} (secret: string) =
+    use request = new System.Net.Http.HttpRequestMessage()
+    request.Headers.Add(\"Authorization\", secret)
+    {n}")
+        // FR0184: a client that follows redirects
+        withFree "FollowingClient" [ "FR0184" ] genSmall (fun n i ->
+            $"let f{i} () =
+    use client = new System.Net.Http.HttpClient()
+    client.BaseAddress |> ignore
+    {n}")
         // FR0163: a threading timer dropped into ignore
         withFree "DroppedTimer" [ "FR0163" ] genSmall (fun n i ->
             $"let f{i} (tick: obj -> unit) =\n    new Timer(TimerCallback tick, null, 0, {n + 1}) |> ignore\n    {n}")
@@ -248,6 +266,9 @@ let private shapes =
         // FR0152: GetOrAdd over a Lazy-valued cache
         withFree "CachedLazy" [ "FR0152" ] genSmall (fun n i ->
             $"let f{i} (cache: System.Collections.Concurrent.ConcurrentDictionary<string, Lazy<int>>) (k: string) =\n    cache.GetOrAdd(k, (fun _ -> lazy {n}))")
+        // FR0152 must stay quiet: the same binding removes the faulted entry
+        withFree "CachedTaskEvicted" [ "!FR0152" ] genSmall (fun n i ->
+            $"let f{i} (cache: System.Collections.Concurrent.ConcurrentDictionary<string, Task<int>>) (k: string) =\n    let t = cache.GetOrAdd(k, (fun _ -> Task.FromResult {n}))\n    if t.IsFaulted then\n        cache.TryRemove(k) |> ignore\n    t")
         // FR0045: equality against NaN in its spellings
         withFree
             "NaNEquality"
@@ -421,5 +442,7 @@ let family: Family =
                     for s in EmptyOptionValue.find c.Tree c.Source c.Check -> "FR0178", s.Range
                     for s in DiscardedUpdate.find c.Tree c.Source c.Check -> "FR0179", s.Range
                     for s in WrappedCatch.find c.Tree c.Source c.Check -> "FR0181", s.Range
+                    for s in RedirectExposure.findSecretHeaders c.Tree c.Source c.Check -> "FR0183", s.Range
+                    for s in RedirectExposure.findFollowingClients c.Tree c.Source c.Check -> "FR0184", s.Range
                 ]
     }

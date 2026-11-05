@@ -321,9 +321,18 @@ let private categories =
         "FR0179",
         Category.Correctness,
         "an update of a Map, Set or immutable collection handed to ignore changes nothing"
+        "FR0183",
+        Category.Correctness,
+        "a header that may hold a secret is added where redirects are followed, which carry it to another host"
+        "FR0184",
+        Category.Correctness,
+        "a request maker follows redirects, which carry the body and custom headers to another host"
         "FR0181",
         Category.Correctness,
         "a specific handler around Task.Wait/Result misses the task's exception, which arrives in an AggregateException"
+        "FR0185",
+        Category.Idiom,
+        "a union with no fields can carry [<Struct>]: its value can't be null, though it saves no allocation"
         "FR0073",
         Category.Idiom,
         "let! x = comp whose binder exists only to be matched collapses to match! comp with (F# 4.5+)"
@@ -485,6 +494,8 @@ let advisory =
             "FR0169"
             "FR0178"
             "FR0179"
+            "FR0183"
+            "FR0184"
         ]
 
 /// The rules worth looking at first — a likely defect too costly to hold

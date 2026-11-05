@@ -139,6 +139,7 @@
     <Compile Include="..\FSharp.Refactor.Analyzers\StructPropertyMutation.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\LazyInit.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DroppedTimer.fs" />
+    <Compile Include="..\FSharp.Refactor.Analyzers\RedirectExposure.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\EnumerationMutation.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DateTimeKindMix.fs" />
     <Compile Include="..\FSharp.Refactor.Analyzers\DateFormat.fs" />

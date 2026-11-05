@@ -15,6 +15,9 @@ let private shapes =
         // FR0016: a private union of struct payloads
         withFree "PrivateUnionOfStructs" [ "FR0016" ] (Gen.elements [ "float"; "int"; "int64"; "decimal" ]) (fun t i ->
             $"type private Shape{i} =\n    | Circle{i} of radius: {t}\n    | Square{i} of side: {t}")
+        // FR0185: a private union with no fields, more cases than FR0016 takes
+        withFree "PrivateFieldsFreeUnion" [ "FR0185" ] (Gen.elements [ "Once"; "Weekly"; "Monthly" ]) (fun name i ->
+            $"[<RequireQualifiedAccess>]\ntype private Frequency{i} =\n    | {name}\n    | Second{i}\n    | Third{i}\n    | Fourth{i}")
         // FR0022: the names a match site gives the case's fields
         withFree "MatchSiteNames" [ "FR0022" ] (Gen.zip genWord genWord) (fun (a, b) i ->
             $"type private Order{i} =\n    | Line{i} of int * decimal\n    | Total{i} of decimal\n\nlet private f{i} (o: Order{i}) =\n    match o with\n    | Line{i}({a}, {b}) -> decimal {a} * {b}\n    | Total{i} t -> t")
@@ -52,6 +55,8 @@ let family: Family =
                 [
                     for s in StructDu.find (Visibility.apiChangesAllowed ()) c.Tree c.Source ->
                         "FR0016", [ edit "FR0016" s.InsertRange s.InsertText ]
+                    for s in StructDu.findFieldsFree (Some c.Check) (Visibility.apiChangesAllowed ()) c.Tree c.Source ->
+                        "FR0185", [ edit "FR0185" s.InsertRange s.InsertText ]
                     for s in DuFieldNames.find (Visibility.apiChangesAllowed ()) c.Tree c.Source ->
                         "FR0022", [ for r, _, t in s.Edits -> edit "FR0022" r t ]
                     for s in MatchBangRule.findWhileBang c.Tree c.Source ->

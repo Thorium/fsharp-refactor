@@ -92,12 +92,18 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                             && (match getTrivia.LeadingKeyword with
                                 | SynLeadingKeyword.Member _ -> true
                                 | _ -> false)
-                            // the rewrite replaces memberDefn.Range wholesale,
-                            // and that range INCLUDES the attribute list — an
-                            // [<Obsolete>] or [<JsonIgnore>] would silently
-                            // vanish, and the result still compiles
-                            && getAttrs |> List.forall (fun a -> a.Attributes.IsEmpty)
-                            && setAttrs |> List.forall (fun a -> a.Attributes.IsEmpty)
+                            // the rewrite replaces memberDefn.Range wholesale, and
+                            // that range INCLUDES the attribute list, so the attributes
+                            // are carried over. That reads only those on the whole
+                            // property, above its keyword: one on an accessor alone
+                            // has no place on a `member val`
+                            && List.length getAttrs = List.length setAttrs
+                            && List.forall2
+                                (fun (a: SynAttributeList) (b: SynAttributeList) ->
+                                    textOfRange source a.Range = textOfRange source b.Range
+                                    && Position.posLt a.Range.End getTrivia.LeadingKeyword.Range.Start)
+                                getAttrs
+                                setAttrs
                             ->
                             let backingName =
                                 match stripParens getBody with
@@ -155,9 +161,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                             (Position.mkPos letMember.Range.StartLine 0)
                                             (Position.mkPos (letMember.Range.StartLine + 1) 0)
 
+                                    // the attributes and what separates them from `member`
+                                    let attributes =
+                                        textOfRange
+                                            source
+                                            (Range.mkRange file memberDefn.Range.Start getTrivia.LeadingKeyword.Range.Start)
+
                                     let replacement =
                                         sprintf
-                                            "member val %s = %s with get, set"
+                                            "%smember val %s = %s with get, set"
+                                            attributes
                                             getProp.idText
                                             (textOfRange source init.Range)
 

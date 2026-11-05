@@ -136,6 +136,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         else
             None
 
+    /// Where a doc above the declaration and its attributes goes.
+    let aboveAttributes (attributes: SynAttributes) (keyword: range) =
+        match attributes with
+        | first :: _ when first.Range.StartLine < keyword.StartLine -> first.Range
+        | _ -> keyword
+
     let valueAccess (p: SynPat) =
         match p with
         | SynPat.Named(accessibility = acc)
@@ -146,17 +152,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
         if not comments.IsEmpty then
             for path, decl in index.Decls do
                 match decl with
-                // attributes = []: the insert lands at the keyword line, and a
-                // /// between an attribute line and its declaration draws the
-                // FS3520 misplaced-doc warning
+                // the insert lands above any attributes: a /// between an attribute
+                // line and its declaration draws the FS3520 misplaced-doc warning
                 | SynModuleDecl.Let(
                     bindings = [ SynBinding(
-                                     xmlDoc = xd; attributes = []; accessibility = acc; headPat = pat; trivia = btrivia) ]) when
+                                     xmlDoc = xd; attributes = battrs; accessibility = acc; headPat = pat; trivia = btrivia) ]) when
                     xd.IsEmpty && not (Visibility.isConfined path [ acc; valueAccess pat ])
                     ->
                     // the comment sits at the end of the HEADER line — the
                     // line the `let` keyword starts
-                    match promote "binding" btrivia.LeadingKeyword.Range btrivia.LeadingKeyword.Range.StartLine with
+                    match promote "binding" (aboveAttributes battrs btrivia.LeadingKeyword.Range) btrivia.LeadingKeyword.Range.StartLine with
                     | Some s -> s
                     | None -> ()
                 | SynModuleDecl.Types(typeDefns = defns) ->
@@ -165,9 +170,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
                         match ttrivia.LeadingKeyword with
                         | SynTypeDefnLeadingKeyword.Type kwRange when
-                            xd.IsEmpty && tattrs.IsEmpty && not (Visibility.isConfined path [ acc ])
+                            xd.IsEmpty && not (Visibility.isConfined path [ acc ])
                             ->
-                            match promote "type" kwRange kwRange.StartLine with
+                            match promote "type" (aboveAttributes tattrs kwRange) kwRange.StartLine with
                             | Some s -> s
                             | None -> ()
                         | _ -> ()

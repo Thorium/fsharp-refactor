@@ -15,7 +15,8 @@
 ///
 /// Safety rules (struct DUs have real language constraints, so only clearly
 /// safe unions are suggested):
-///   - module-level, attribute-free type definition with 2–3 cases
+///   - module-level type definition with 2–3 cases, and no attribute but those
+///     that say nothing of its storage (SignatureFile.acceptsStruct)
 ///   - private/internal, or nested in a private/internal module, unless
 ///     API changes were allowed
 ///   - every case field's type is a whitelisted small immutable value type
@@ -29,6 +30,11 @@
 ///     union's field names must be unique across its cases), and even then
 ///     the same type in both (FS3585); the language version comes from the
 ///     project, so the parse-only entry holds every name to one case
+///
+/// FR0185 (idiom, off by default) marks a union with no fields at all, of two
+/// cases or more. It saves nothing per value, because those cases are shared
+/// objects; what it gives is a value that can't be null, and the same form as
+/// a code base's other small unions.
 module FSharp.Refactor.StructDu
 
 open System
@@ -87,14 +93,75 @@ let private isSmallValueType (t: SynType) =
     | SynType.LongIdent(SynLongIdent(id = ids)) -> smallValueTypes.Contains (List.last ids).idText
     | _ -> false
 
-/// Find small module-level unions that can carry [<Struct>]. The check
-/// results, where the caller has them, veto a union the file boxes, locks or
-/// null-tests (StructUses.hostileUse); without them only the size cap and
-/// the type-named shapes apply. `sharedFieldNames` says the project's
-/// language version is F# 9 or later, where cases may share a field name.
-let findWith
+/// Is this a small union of small value types that a struct can hold?
+/// `sharedFieldNames` says the project's language version is F# 9 or later,
+/// where cases may share a field name.
+let private holdsSmallValues (sharedFieldNames: bool) (source: ISourceText) (cases: SynUnionCase list) =
+    let caseFields =
+        cases
+        |> List.map (fun (SynUnionCase(caseType = caseType)) ->
+            match caseType with
+            | SynUnionCaseKind.Fields fields -> Some fields
+            | SynUnionCaseKind.FullType _ -> None)
+
+    match List.fold (fun acc f -> Option.map2 (fun a b -> b :: a) acc f) (Some []) caseFields with
+    | Some allFields when cases.Length >= 2 && cases.Length <= 3 ->
+        let fieldLists = List.rev allFields
+        let fields = List.concat fieldLists
+
+        let allSmall =
+            fields
+            |> List.forall (fun (SynField(fieldType = t; isMutable = m)) -> not m && isSmallValueType t)
+
+        let casesWithFields =
+            fieldLists |> List.filter (fun fs -> not fs.IsEmpty) |> List.length
+
+        let allNamed = fields |> List.forall (fun (SynField(idOpt = idOpt)) -> idOpt.IsSome)
+
+        let namingOk = casesWithFields <= 1 || allNamed
+
+        // FS3585: in a struct DU, same-named fields across
+        // cases must also agree on TYPE — `A of value: float`
+        // plus `B of value: int` refuses to compile once the
+        // attribute lands. Spelled-type comparison suffices:
+        // the small-value whitelist keeps types to plain names
+        //
+        // and before F# 9 they may not share a name at all
+        // (FS3204): `A of value: int | B of value: int`
+        let sameNameSameType =
+            casesWithFields <= 1
+            || fields
+               |> List.choose (fun (SynField(idOpt = idOpt; fieldType = t)) ->
+                   idOpt |> Option.map (fun pid -> pid.idText, textOfRange source t.Range))
+               |> List.groupBy fst
+               |> List.forall (fun (_, group) ->
+                   if sharedFieldNames then
+                       group |> List.map snd |> List.distinct |> List.length <= 1
+                   else
+                       group.Length <= 1)
+
+        // every case's fields sit side by side in a struct union
+        // (no overlap), so the cap is over all of them
+        let fitsInline =
+            StructUses.fitsInline (fields |> List.map (fun (SynField(fieldType = t)) -> t))
+
+        not fields.IsEmpty && allSmall && namingOk && sameNameSameType && fitsInline
+    | _ -> false
+
+let private hasNoFields (cases: SynUnionCase list) =
+    cases.Length >= 2
+    && cases
+       |> List.forall (fun (SynUnionCase(caseType = caseType)) ->
+           match caseType with
+           | SynUnionCaseKind.Fields [] -> true
+           | _ -> false)
+
+/// The module-level unions `qualifies` picks that can carry [<Struct>]. The
+/// check results, where the caller has them, veto a union the file boxes, locks
+/// or null-tests (StructUses.hostileUse).
+let private unionsThat
+    (qualifies: SynUnionCase list -> bool)
     (check: FSharpCheckFileResults option)
-    (sharedFieldNames: bool)
     (allowApiChanges: bool)
     (parseTree: ParsedInput)
     (source: ISourceText)
@@ -114,99 +181,63 @@ let findWith
                 | SynModuleDecl.Types(
                     typeDefns = [ SynTypeDefn(
                                       typeInfo = SynComponentInfo(
-                                          attributes = []; longId = [ typeName ]; accessibility = typeAccess)
+                                          attributes = attributes; longId = [ typeName ]; accessibility = typeAccess)
                                       typeRepr = SynTypeDefnRepr.Simple(
                                           simpleRepr = SynTypeDefnSimpleRepr.Union(unionCases = cases); range = _)
                                       members = []) ]) when
-                    cases.Length >= 2
-                    && cases.Length <= 3
+                    SignatureFile.acceptsStruct attributes
                     // only the TYPE's own visibility counts: a private
                     // representation still leaves a public class-vs-struct
                     // type visible to consumers
                     && Visibility.isInScopeWithSignatureEdits allowApiChanges path [ typeAccess ]
+                    && qualifies cases
+                    && not (StructUses.hostileUse check index.Value source typeName)
                     ->
-                    let caseFields =
-                        cases
-                        |> List.map (fun (SynUnionCase(caseType = caseType)) ->
-                            match caseType with
-                            | SynUnionCaseKind.Fields fields -> Some fields
-                            | SynUnionCaseKind.FullType _ -> None)
+                    // below any XML doc, so the attribute sits
+                    // against the type it marks
+                    let insertPos = attributeInsertPos source decl.Range
+                    let indent = String(' ', insertPos.Column)
 
-                    match List.fold (fun acc f -> Option.map2 (fun a b -> b :: a) acc f) (Some []) caseFields with
-                    | None -> ()
-                    | Some allFields ->
-                        let fieldLists = List.rev allFields
-                        let fields = List.concat fieldLists
+                    let declaredPrivately = Visibility.isPrivate path [ typeAccess ]
 
-                        let allSmall =
-                            fields
-                            |> List.forall (fun (SynField(fieldType = t; isMutable = m)) -> not m && isSmallValueType t)
-
-                        let casesWithFields =
-                            fieldLists |> List.filter (fun fs -> not fs.IsEmpty) |> List.length
-
-                        let allNamed = fields |> List.forall (fun (SynField(idOpt = idOpt)) -> idOpt.IsSome)
-
-                        let namingOk = casesWithFields <= 1 || allNamed
-
-                        // FS3585: in a struct DU, same-named fields across
-                        // cases must also agree on TYPE — `A of value: float`
-                        // plus `B of value: int` refuses to compile once the
-                        // attribute lands. Spelled-type comparison suffices:
-                        // the small-value whitelist keeps types to plain names
-                        //
-                        // and before F# 9 they may not share a name at all
-                        // (FS3204): `A of value: int | B of value: int`
-                        let sameNameSameType =
-                            casesWithFields <= 1
-                            || fields
-                               |> List.choose (fun (SynField(idOpt = idOpt; fieldType = t)) ->
-                                   idOpt |> Option.map (fun pid -> pid.idText, textOfRange source t.Range))
-                               |> List.groupBy fst
-                               |> List.forall (fun (_, group) ->
-                                   if sharedFieldNames then
-                                       group |> List.map snd |> List.distinct |> List.length <= 1
-                                   else
-                                       group.Length <= 1)
-
-                        // every case's fields sit side by side in a struct union
-                        // (no overlap), so the cap is over all of them
-                        let fitsInline =
-                            StructUses.fitsInline (fields |> List.map (fun (SynField(fieldType = t)) -> t))
-
-                        if
-                            not fields.IsEmpty
-                            && allSmall
-                            && namingOk
-                            && sameNameSameType
-                            && fitsInline
-                            && not (StructUses.hostileUse check index.Value source typeName)
-                        then
-                            // below any XML doc, so the attribute sits
-                            // against the type it marks
-                            let insertPos = attributeInsertPos source decl.Range
-                            let indent = String(' ', insertPos.Column)
-
-                            let declaredPrivately = Visibility.isPrivate path [ typeAccess ]
-
-                            match SignatureFile.structEdits declaredPrivately signature typeName.idText with
-                            | ValueSome signatureEdits ->
-                                suggestions.Add
-                                    {
-                                        TypeName = typeName.idText
-                                        InsertRange = Range.mkRange decl.Range.FileName insertPos insertPos
-                                        InsertText = "[<Struct>]\n" + indent
-                                        SignatureEdits = signatureEdits
-                                    }
-                            | ValueNone -> ()
+                    match SignatureFile.structEdits declaredPrivately signature typeName.idText with
+                    | ValueSome signatureEdits ->
+                        suggestions.Add
+                            {
+                                TypeName = typeName.idText
+                                InsertRange = Range.mkRange decl.Range.FileName insertPos insertPos
+                                InsertText = "[<Struct>]\n" + indent
+                                SignatureEdits = signatureEdits
+                            }
+                    | ValueNone -> ()
                 | _ -> ()
         }
 
     AstIndex.replay collector parseTree
     List.ofSeq suggestions
 
+/// FR0016. Without check results only the size cap and the type-named shapes
+/// apply.
+let findWith
+    (check: FSharpCheckFileResults option)
+    (sharedFieldNames: bool)
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Suggestion list =
+    unionsThat (holdsSmallValues sharedFieldNames source) check allowApiChanges parseTree source
+
 /// `findWith` without check results or a language version: the parse-only
 /// entry, which cannot know F# 9 is on and so holds every field name to
 /// one case.
 let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
     findWith None false allowApiChanges parseTree source
+
+/// FR0185: unions with no fields, however many cases they have.
+let findFieldsFree
+    (check: FSharpCheckFileResults option)
+    (allowApiChanges: bool)
+    (parseTree: ParsedInput)
+    (source: ISourceText)
+    : Suggestion list =
+    unionsThat hasNoFields check allowApiChanges parseTree source

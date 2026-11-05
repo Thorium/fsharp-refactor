@@ -145,6 +145,12 @@ let parse (json: string) : Map<string, bool> =
 ///   along unchanged rather than removing. The observation is worth
 ///   having on demand; volunteered on every run it is noise about a
 ///   rewrite that often will not pay. An opt-in, not a default.
+///   FR0184 (a request maker that follows redirects) fires on most HTTP
+///   code, and downloads and public pages are fine as they are. It's for a
+///   code base that sends secrets or personal data. An opt-in, not a default.
+///   FR0185 (a union with no fields) saves no allocation, because its cases
+///   are shared objects. Whether every such union is a struct is a house
+///   style, and these unions are common. An opt-in, not a default.
 ///   FR0019 (Equals without GetHashCode) duplicates the compiler: FS0346
 ///   warns on every shape the rule can find, and F# records and unions
 ///   get both for free. An opt-in, not a default.
@@ -163,6 +169,10 @@ let private defaultOff =
             "generativeloop"
             "fr0019"
             "equalshashcode"
+            "fr0184"
+            "redirectfollowingclient"
+            "fr0185"
+            "fieldsfreestructdu"
         ]
 // FR0130 and FR0133 are deliberately not listed: both are on by default,
 // and a repository that finds either churn turns it off in

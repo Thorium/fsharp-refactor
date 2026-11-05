@@ -1715,3 +1715,122 @@ let ``FR0015: an open below the declaration does not license a bare Regex above 
     with
     | [ s ] -> Assert.NotEmpty s.Edits
     | other -> failwithf "Expected one hoist with a fix, got %A" other
+
+// ---- FR0016 attributes and FR0185 FieldsFreeStructDu ----
+
+let private fieldsFreeIn (allowApiChanges: bool) (source: string) =
+    let tree, sourceText, checkResults = parseAndCheck source
+    StructDu.findFieldsFree (Some checkResults) allowApiChanges tree sourceText
+
+let private assertTakesStruct (suggestions: StructDu.Suggestion list) (source: string) =
+    match suggestions with
+    | [ s ] ->
+        let patched = applyEdit source s.InsertRange s.InsertText
+        Assert.Contains("[<Struct>]", patched)
+        assertTypechecks "Patched source" patched
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0016: an attribute that says nothing of storage doesn't stop it`` () =
+    for attribute in
+        [
+            "RequireQualifiedAccess"
+            "RequireQualifiedAccessAttribute"
+            "NoComparison"
+            "NoComparison; NoEquality"
+        ] do
+        let source =
+            fsharp
+                $"""
+                module Test
+                [<{attribute}>]
+                type private Shape =
+                    | Circle of radius: float
+                    | Square of side: float
+                """
+
+        assertTakesStruct (structDuIn source) source
+
+[<Fact>]
+let ``FR0016: any other attribute holds the union back`` () =
+    for attribute in [ "Struct"; "ReferenceEquality"; "RequireQualifiedAccess; ReferenceEquality"; "System.Obsolete" ] do
+        let source =
+            fsharp
+                $"""
+                module Test
+                [<{attribute}>]
+                type private Shape =
+                    | Circle of radius: float
+                    | Square of side: float
+                """
+
+        Assert.Empty(structDuIn source)
+
+[<Fact>]
+let ``FR0016: a union with no fields isn't its business`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            type private Mode =
+                | On
+                | Off
+            """
+
+    Assert.Empty(structDuIn source)
+
+[<Fact>]
+let ``FR0185: a union with no fields takes the attribute, with any number of cases`` () =
+    for cases in [ [ "Once"; "Weekly" ]; [ "Once"; "Weekly"; "Fortnightly"; "Monthly" ] ] do
+        let lines = cases |> List.map (fun case -> $"    | {case}") |> String.concat "\n"
+        let source = $"module Test\n[<RequireQualifiedAccess>]\ntype private Frequency =\n    /// One payment on the first date.\n{lines.TrimStart()}\n"
+        assertTakesStruct (fieldsFreeIn false source) source
+
+[<Fact>]
+let ``FR0185: a public union waits for API changes, like FR0016`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            [<RequireQualifiedAccess>]
+            type Frequency =
+                /// One payment on the first date.
+                | Once
+                | Weekly
+            """
+
+    Assert.Empty(fieldsFreeIn false source)
+    assertTakesStruct (fieldsFreeIn true source) source
+
+[<Fact>]
+let ``FR0185: fields, one case or a boxed value hold it back`` () =
+    for source in
+        [
+            fsharp
+                """
+                module Test
+                type private Mode =
+                    | On of level: int
+                    | Off
+                """
+            fsharp
+                """
+                module Test
+                type private Mode =
+                    | Only
+                """
+            fsharp
+                """
+                module Test
+                type private Mode =
+                    | On
+                    | Off
+                let private held (mode: Mode) = box mode
+                """
+        ] do
+        Assert.Empty(fieldsFreeIn false source)
+
+[<Fact>]
+let ``FR0185 is off by default`` () =
+    Assert.False(Configuration.isEnabledIn Map.empty "FR0185" "FieldsFreeStructDu")
+    Assert.True(Configuration.isEnabledIn (Map.ofList [ "fr0185", true ]) "FR0185" "FieldsFreeStructDu")

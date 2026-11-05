@@ -195,9 +195,31 @@ let ``static type-level mutable never assigned is flagged`` () =
     | other -> failwithf "Expected exactly one static mutable suggestion, got %A" other
 
 [<Fact>]
-let ``an attributed accessor keeps its shape`` () =
+let ``an attribute on the property stays on it`` () =
     // the member-val rewrite replaces the member's whole range, which
-    // includes the attribute list — [<Obsolete>] would silently vanish
+    // includes the attribute list, so it is carried over
+    assertAutoProp
+        (fsharp
+            """
+            module Test
+            type Person() =
+                let mutable name = ""
+                [<System.Obsolete "use X">]
+                member this.Name
+                    with get () = name
+                    and set v = name <- v
+            """)
+        (fsharp
+            """
+            module Test
+            type Person() =
+                [<System.Obsolete "use X">]
+                member val Name = "" with get, set
+            """)
+
+[<Fact>]
+let ``an attribute on one accessor keeps its shape`` () =
+    // a `member val` has no accessor to put it on
     Assert.Empty(
         autoPropIn (
             fsharp
@@ -205,9 +227,8 @@ let ``an attributed accessor keeps its shape`` () =
                 module Test
                 type Person() =
                     let mutable name = ""
-                    [<System.Obsolete "use X">]
                     member this.Name
-                        with get () = name
+                        with [<System.Obsolete "use X">] get () = name
                         and set v = name <- v
                 """
         )
