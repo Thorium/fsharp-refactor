@@ -261,13 +261,14 @@ let findSecretHeaders
                     | _ -> ()
             ]
 
-let private makerNamesRegex = Regex @"\btype\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:HttpClient|HttpClientHandler|SocketsHttpHandler|WebClient)\b"
+let private makerNamesRegex =
+    Regex @"\btype\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:HttpClient|HttpClientHandler|SocketsHttpHandler|WebClient)\b"
+
 /// What a maker can be called in this file, its abbreviations included: resolving a symbol costs time
 /// that grows with the file, so only these names are resolved.
 let private makerNames (text: string) =
     let abbreviated =
-        makerNamesRegex.Matches text
-        |> Seq.map (fun found -> found.Groups[1].Value)
+        makerNamesRegex.Matches text |> Seq.map (fun found -> found.Groups[1].Value)
 
     set [ "HttpClient"; "HttpClientHandler"; "SocketsHttpHandler"; "WebClient" ]
     |> Set.union (set abbreviated)
