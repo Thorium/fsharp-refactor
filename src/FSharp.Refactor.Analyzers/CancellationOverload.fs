@@ -614,7 +614,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                                         | Some mps when mps.Length = arity + 1 ->
                                                             List.truncate arity mps = ps
                                                             // a `ValueTask` sibling doesn't fit `Async.AwaitTask` or a `Task` return
-                                                            && m.ReturnParameter.Type.Format symbolUse.DisplayContext = mfv.ReturnParameter.Type.Format symbolUse.DisplayContext
+                                                            && m.ReturnParameter.Type.Format symbolUse.DisplayContext =
+                                                                mfv.ReturnParameter.Type.Format
+                                                                    symbolUse.DisplayContext
                                                             && (m.CurriedParameterGroups
                                                                 |> Seq.collect id
                                                                 |> Seq.tryLast
@@ -738,7 +740,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         // `M(cancellationToken = None)` is an argument of M; `x = None` is an operand, not an argument
                         let enclosingCall =
                             match callHolding expr.Range with
-                            | Some(_, comparison, SynExpr.App(isInfix = true; funcExpr = op; argExpr = SynExpr.Ident named)) when
+                            | Some(_,
+                                   comparison,
+                                   SynExpr.App(isInfix = true; funcExpr = op; argExpr = SynExpr.Ident named)) when
                                 isEquals op
                                 ->
                                 match callHolding comparison.Range with
@@ -776,7 +780,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     let lineText = source.GetLineString(id.idRange.EndLine - 1)
 
                                     match
-                                        OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
+                                        OptionModule.symbolUseAt
+                                            check
+                                            (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
                                     with
                                     | Some symbolUse -> symbolUse.Symbol :? FSharpUnionCase
                                     | None -> false
@@ -785,7 +791,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             match enclosingCall, calleeSymbol with
                             | _, Some(_, mfv) ->
                                 let parameters = parametersOf mfv
-                                mfv.DisplayName <> "Equals" && (parameters.IsEmpty || parameters |> List.exists isTokenParameter)
+
+                                mfv.DisplayName <> "Equals"
+                                && (parameters.IsEmpty || parameters |> List.exists isTokenParameter)
                             | Some(_, _, callee), None -> not (constructsUnionCase callee)
                             | None, None -> false
 

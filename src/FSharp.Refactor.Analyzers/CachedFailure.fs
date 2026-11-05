@@ -165,7 +165,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 let lineText = source.GetLineString(name.idRange.EndLine - 1)
 
                 match
-                    OptionModule.symbolUseAt check (name.idRange.EndLine, name.idRange.EndColumn, lineText, [ name.idText ])
+                    OptionModule.symbolUseAt
+                        check
+                        (name.idRange.EndLine, name.idRange.EndColumn, lineText, [ name.idText ])
                 with
                 | Some symbolUse ->
                     match symbolUse.Symbol with

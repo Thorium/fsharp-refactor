@@ -156,12 +156,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                 // line and its declaration draws the FS3520 misplaced-doc warning
                 | SynModuleDecl.Let(
                     bindings = [ SynBinding(
-                                     xmlDoc = xd; attributes = battrs; accessibility = acc; headPat = pat; trivia = btrivia) ]) when
+                                     xmlDoc = xd
+                                     attributes = battrs
+                                     accessibility = acc
+                                     headPat = pat
+                                     trivia = btrivia) ]) when
                     xd.IsEmpty && not (Visibility.isConfined path [ acc; valueAccess pat ])
                     ->
                     // the comment sits at the end of the HEADER line — the
                     // line the `let` keyword starts
-                    match promote "binding" (aboveAttributes battrs btrivia.LeadingKeyword.Range) btrivia.LeadingKeyword.Range.StartLine with
+                    match
+                        promote
+                            "binding"
+                            (aboveAttributes battrs btrivia.LeadingKeyword.Range)
+                            btrivia.LeadingKeyword.Range.StartLine
+                    with
                     | Some s -> s
                     | None -> ()
                 | SynModuleDecl.Types(typeDefns = defns) ->

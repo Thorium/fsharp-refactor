@@ -165,7 +165,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                                     let attributes =
                                         textOfRange
                                             source
-                                            (Range.mkRange file memberDefn.Range.Start getTrivia.LeadingKeyword.Range.Start)
+                                            (Range.mkRange
+                                                file
+                                                memberDefn.Range.Start
+                                                getTrivia.LeadingKeyword.Range.Start)
 
                                     let replacement =
                                         sprintf

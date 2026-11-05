@@ -76,9 +76,13 @@ let private redirectsOff (index: Lazy<AstIndex.Index>) (source: ISourceText) =
            | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids); expr = value)
            | SynExpr.DotSet(longDotId = SynLongIdent(id = ids); rhsExpr = value) -> namesAllow ids && isFalse value
            | SynExpr.App(
-               funcExpr = SynExpr.App(isInfix = true; funcExpr = (SynExpr.Ident op | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ]))); argExpr = SynExpr.Ident named)
+               funcExpr = SynExpr.App(
+                   isInfix = true
+                   funcExpr = (SynExpr.Ident op | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])))
+                   argExpr = SynExpr.Ident named)
                argExpr = value) when op.idText = "op_Equality" ->
-               (named.idText = "AllowAutoRedirect" && isFalse value) || named.idText = "customizeHttpRequest"
+               (named.idText = "AllowAutoRedirect" && isFalse value)
+               || named.idText = "customizeHttpRequest"
            | _ -> false)
 
 let private secretWords =
@@ -160,8 +164,7 @@ let private nameArgument (arg: SynExpr) =
                 isInfix = true
                 funcExpr = (SynExpr.Ident op | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])))
                 argExpr = SynExpr.Ident named)
-            argExpr = value) when op.idText = "op_Equality" && named.idText = "name" ->
-            Some value
+            argExpr = value) when op.idText = "op_Equality" && named.idText = "name" -> Some value
         | _ -> None
 
     match stripParens arg with
@@ -246,21 +249,24 @@ let findSecretHeaders
                                 | None -> false)
                             ->
                             match headerName check source index name with
-                            | HeaderName.Known known when holdsSecret known -> yield { Range = e.Range; Name = ValueSome known }
+                            | HeaderName.Known known when holdsSecret known ->
+                                yield
+                                    {
+                                        Range = e.Range
+                                        Name = ValueSome known
+                                    }
                             | HeaderName.Elsewhere -> yield { Range = e.Range; Name = ValueNone }
                             | _ -> ()
                         | _ -> ()
                     | _ -> ()
             ]
 
+let private makerNamesRegex = Regex @"\btype\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:HttpClient|HttpClientHandler|SocketsHttpHandler|WebClient)\b"
 /// What a maker can be called in this file, its abbreviations included: resolving a symbol costs time
 /// that grows with the file, so only these names are resolved.
 let private makerNames (text: string) =
     let abbreviated =
-        Regex.Matches(
-            text,
-            @"\btype\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:HttpClient|HttpClientHandler|SocketsHttpHandler|WebClient)\b"
-        )
+        makerNamesRegex.Matches text
         |> Seq.map (fun found -> found.Groups[1].Value)
 
     set [ "HttpClient"; "HttpClientHandler"; "SocketsHttpHandler"; "WebClient" ]

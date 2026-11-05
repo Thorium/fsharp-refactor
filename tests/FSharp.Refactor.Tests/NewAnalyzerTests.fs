@@ -1753,7 +1753,13 @@ let ``FR0016: an attribute that says nothing of storage doesn't stop it`` () =
 
 [<Fact>]
 let ``FR0016: any other attribute holds the union back`` () =
-    for attribute in [ "Struct"; "ReferenceEquality"; "RequireQualifiedAccess; ReferenceEquality"; "System.Obsolete" ] do
+    for attribute in
+        [
+            "Struct"
+            "ReferenceEquality"
+            "RequireQualifiedAccess; ReferenceEquality"
+            "System.Obsolete"
+        ] do
         let source =
             fsharp
                 $"""
@@ -1783,7 +1789,10 @@ let ``FR0016: a union with no fields isn't its business`` () =
 let ``FR0185: a union with no fields takes the attribute, with any number of cases`` () =
     for cases in [ [ "Once"; "Weekly" ]; [ "Once"; "Weekly"; "Fortnightly"; "Monthly" ] ] do
         let lines = cases |> List.map (fun case -> $"    | {case}") |> String.concat "\n"
-        let source = $"module Test\n[<RequireQualifiedAccess>]\ntype private Frequency =\n    /// One payment on the first date.\n{lines.TrimStart()}\n"
+
+        let source =
+            $"module Test\n[<RequireQualifiedAccess>]\ntype private Frequency =\n    /// One payment on the first date.\n{lines.TrimStart()}\n"
+
         assertTakesStruct (fieldsFreeIn false source) source
 
 [<Fact>]

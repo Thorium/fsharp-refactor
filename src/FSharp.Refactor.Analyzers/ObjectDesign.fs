@@ -860,7 +860,8 @@ let find
                             // instance-ness is part of its protocol. These
                             // say nothing to a framework
                             && onlyAttributesNamed
-                                (informationalAttributes @ [ "MethodImpl"; "DebuggerStepThrough"; "DebuggerHidden"; "DebuggerNonUserCode" ])
+                                (informationalAttributes
+                                 @ [ "MethodImpl"; "DebuggerStepThrough"; "DebuggerHidden"; "DebuggerNonUserCode" ])
                                 attrs
                             // an inline member is a compile-time template
                             // (a no-op mirror of a shape); a stub body

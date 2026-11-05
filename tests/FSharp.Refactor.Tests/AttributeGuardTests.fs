@@ -91,7 +91,13 @@ let ``FR0130 reads past an attribute that says nothing of the value`` () =
             """
 
     let tree, sourceText = parse source
-    let s = List.exactlyOne (LiteralConst.findWith (fun _ -> false) true tree sourceText |> List.filter (fun s -> s.Name = "limit"))
+
+    let s =
+        List.exactlyOne (
+            LiteralConst.findWith (fun _ -> false) true tree sourceText
+            |> List.filter (fun s -> s.Name = "limit")
+        )
+
     let r, text = s.Fix
     assertTypechecks "Patched source" (applyEdit source r text)
 
@@ -169,5 +175,4 @@ let ``FR0033 reads past an attribute no framework dispatches on`` () =
     Assert.NotEmpty(staticsOn "System.Obsolete \"old\"")
 
 [<Fact>]
-let ``FR0033 leaves a member a framework may dispatch on`` () =
-    Assert.Empty(staticsOn "Run")
+let ``FR0033 leaves a member a framework may dispatch on`` () = Assert.Empty(staticsOn "Run")
