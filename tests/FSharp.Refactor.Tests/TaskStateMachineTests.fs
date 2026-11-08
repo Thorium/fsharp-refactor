@@ -1483,6 +1483,71 @@ let ``a use inside the branch blocks the hoist`` () =
     )
 
 [<Fact>]
+let ``the elif links after an awaiting arm are no branch of their own`` () =
+    // an elif is parsed as an if nested in the arm before it, so the links
+    // after an awaiting arm looked like a clean branch, and `return` landed
+    // in front of the `elif` keyword: "Unexpected keyword 'elif'". Seen on
+    // CompanyDueDiligence's HTTP status chains (2026-11-08)
+    let source =
+        fsharp
+            """
+            module Test
+            let f (status: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+
+                    if status = 401 then
+                        return Error "refused"
+                    elif status = 200 then
+                        let! body = System.Threading.Tasks.Task.FromResult "b"
+                        return Ok(body + string x)
+                    elif status >= 500 then
+                        return Error "unavailable"
+                    elif status >= 300 then
+                        return Error "redirect"
+                    else
+                        return Error "other"
+                }
+            """
+
+    Assert.Empty(
+        adviceIn source
+        |> List.filter (fun s ->
+            match s.Kind with
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+    )
+
+[<Fact>]
+let ``an elif chain with no awaiting arm hoists whole`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            let f (status: int) =
+                task {
+                    let! x = System.Threading.Tasks.Task.FromResult 1
+
+                    if status = 401 then
+                        return Error "refused"
+                    elif status >= 500 then
+                        return Error "unavailable"
+                    else
+                        return Ok x
+                }
+            """
+
+    let hoists =
+        adviceIn source
+        |> editsOfKind (function
+            | TaskStateMachine.AdviceKind.HoistReturn _ -> true
+            | _ -> false)
+
+    Assert.NotEmpty hoists
+    let patched = applyEdits source hoists
+    assertTypechecks "Patched source" patched
+
+[<Fact>]
 let ``a use ahead of the branch still hoists - it stays CE code`` () =
     let source =
         fsharp

@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.50
+
+- FR0029's return hoist no longer takes the `elif` links after an awaiting arm as a branch of their own: it put `return` in front of the `elif` keyword, which didn't compile, and the build check rolled the edit back.
+
 ## 0.8.49
 
 - FR0016 and FR0070 read what takes reference types only (`where T : class`), whether given a value, a record literal or a type argument, in the file, the project's other files and, under `--api-changes`, the projects that reference the type: `[<Struct>]` stopped `TryAddSingleton` compiling. A project that can't be read keeps FR0070's advice and withholds the edit.

@@ -896,12 +896,24 @@ let find
 
                 // the OUTERMOST hoistable branches: stop descending once one
                 // qualifies, so a branch and its own child are never both
-                // rewritten
+                // rewritten. An elif link is the rest of a chain, nested in
+                // the arm before it: it starts at the `elif` keyword, no
+                // expression of its own, so it is searched but never a site
+                let isElif (e: SynExpr) =
+                    match e with
+                    | SynExpr.IfThenElse(trivia = trivia) -> trivia.IsElif
+                    | _ -> false
+
                 let rec hoistSites (e: SynExpr) =
                     match branchResults e with
                     | None -> []
                     | Some arms ->
-                        match (if containsBang e.Range then None else leafReturns e) with
+                        match
+                            (if containsBang e.Range || isElif e then
+                                 None
+                             else
+                                 leafReturns e)
+                        with
                         | Some starts when
                             not (spansDirective source e.Range)
                             && not (directiveFollows source e.Range)
