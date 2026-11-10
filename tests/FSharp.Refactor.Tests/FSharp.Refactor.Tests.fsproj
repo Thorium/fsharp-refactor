@@ -90,6 +90,8 @@
     <Compile Include="AuditSemanticBTests.fs" />
     <Compile Include="AuditGuardsBTests.fs" />
     <Compile Include="AuditToolTests.fs" />
+    <Compile Include="ReleaseAuditToolTests.fs" />
+    <Compile Include="McpServerTests.fs" />
     <Compile Include="AuditCompileBreakTests.fs" />
     <Compile Include="AuditUseBinding2Tests.fs" />
     <Compile Include="AuditExprTreeTests.fs" />

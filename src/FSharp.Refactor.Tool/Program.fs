@@ -40,11 +40,14 @@
 ///     --categories correctness only apply rules of these kinds
 ///     --dry-run                report what would be applied, change nothing
 ///     --api-changes            also apply CROSS-FILE fixes (rules that
-///                              rewrite call sites of internal symbols
-///                              across the project); without it those
-///                              fixes are held back and counted. Public
-///                              symbols are never rewritten: their callers
-///                              can live outside the checked project
+///                              rewrite call sites of internal and public
+///                              symbols across the project and the
+///                              projects of the run that reference it);
+///                              without it those fixes are held back and
+///                              counted. A public symbol changes only when
+///                              every project of the run that references
+///                              it typechecks; callers outside the run are
+///                              not seen
 ///     --no-if-defs             never emit #if/#else/#endif pairs for
 ///                              capability fixes on multi-targeted
 ///                              projects; fixes stay plain and the final
@@ -373,11 +376,13 @@ OPTIONS
                         only under #if A reads as a consumer of the published
                         package. Projects keep their own DEBUG, TRACE and
                         DefineConstants; the config's "defines" adds more
-  --api-changes         also apply cross-file fixes that change internal
-                        signatures, rewriting call sites project-wide. Held
-                        back and merely counted without this. Public
-                        signatures are never rewritten: their callers can
-                        live outside the checked project
+  --api-changes         also apply cross-file fixes that change internal and
+                        public signatures, rewriting call sites project-wide
+                        and in the projects of the run that reference it.
+                        Held back and merely counted without this. Callers
+                        outside the run are not seen and not rewritten, so
+                        leave it off for a library others consume. A test
+                        project gets it without the flag: nothing calls it
   --no-color            plain output, even on a colour-capable terminal.
                         NO_COLOR=1 and TERM=dumb do the same, and a piped or
                         redirected stream is never coloured either way
@@ -389,8 +394,8 @@ OPTIONS
                         what CI turns into inline annotations), .html (a
                         self-contained page) or .csv. Pairs with --dry-run
   --parse-only          no MSBuild, no reference resolution: sources come
-                        straight from the fsproj and only the 56 of 116
-                        analyzers that never consult the typechecker run.
+                        straight from the fsproj and only the analyzers that
+                        never consult the typechecker run, about a third.
                         NOT a substitute for a real run: what survives is
                         skewed the wrong way — roughly a quarter of the
                         correctness rules and a quarter of the performance
@@ -425,7 +430,13 @@ OPTIONS
                         into the current directory, or into <what> when that
                         is a directory. Never overwrites an existing one
   --mcp                 serve analyze/list_rules as an MCP server over
-                        stdio, keeping the typechecker warm between calls
+                        stdio, keeping the typechecker warm between calls.
+                        The server works in <what>, a directory, or in the
+                        current one: a call's target lies inside it and
+                        nothing outside it is written. With --dry-run no
+                        call applies anything. --define and --jobs hold
+                        for every call; the other options belong to a run
+                        and are refused
   --max-passes <n>      fix-then-reanalyse iterations (default 5)
   --version, -v         print the version being invoked and stop
   --help, -h, /?        this text
@@ -459,6 +470,8 @@ let rec private parseArgsLoop opts args =
         // one digit short, sweeps the whole project, matches nothing, and
         // reports zero findings as though the code were clean
         match parsed |> Set.filter (RuleCatalog.known.Contains >> not) |> Set.toList with
+        // no code at all (`--codes ""`, `--codes ,`) is the same silence
+        | [] when parsed.IsEmpty -> Error "--codes names no rule code. --rules lists every code."
         | [] ->
             parseArgsLoop
                 { opts with
@@ -492,9 +505,10 @@ let rec private parseArgsLoop opts args =
     | "--no-color" :: rest -> parseArgsLoop { opts with NoColor = true } rest
     | "--api-changes" :: rest -> parseArgsLoop { opts with ApiChanges = true } rest
     | "--no-if-defs" :: rest -> parseArgsLoop { opts with NoIfDefs = true } rest
-    | "--report" :: file :: rest -> parseArgsLoop { opts with Report = Some file } rest
+    | "--report" :: file :: rest when not (file.StartsWith '-') -> parseArgsLoop { opts with Report = Some file } rest
     | "--parse-only" :: rest -> parseArgsLoop { opts with ParseOnly = true } rest
-    | "--baseline" :: file :: rest -> parseArgsLoop { opts with Baseline = Some file } rest
+    | "--baseline" :: file :: rest when not (file.StartsWith '-') ->
+        parseArgsLoop { opts with Baseline = Some file } rest
     | "--fail-on-findings" :: rest -> parseArgsLoop { opts with FailOnFindings = true } rest
     | "--honor-suppressions" :: rest -> parseArgsLoop { opts with HonorSuppressions = true } rest
     // --notes on|off|only: on lists the notes inline, only lists nothing
@@ -561,8 +575,10 @@ let rec private parseArgsLoop opts args =
         |> List.contains flag
         ->
         Error $"'{flag}' needs a value after it"
-    // `--define --dry-run`: the next token is a flag, not a symbol
-    | "--define" :: _ -> Error "'--define' needs a value after it"
+    // `--define --dry-run`, `--report --dry-run`: the next token is a flag,
+    // not a value. Taken as one, `--report --dry-run` wrote a report named
+    // `--dry-run` and applied the fixes
+    | ("--define" | "--report" | "--baseline" as flag) :: _ -> Error $"'{flag}' needs a value after it"
     | unknown :: _ -> Error $"Unknown argument '{unknown}'"
 
 /// One `--define` value added to the options, then the rest parsed.
@@ -629,6 +645,11 @@ let private parseArgs (argv: string[]) =
         }
         (List.ofArray argv)
     |> Result.map applyCategories
+    |> Result.bind (fun opts ->
+        // a run of no rule reports nothing, which reads as a clean tree
+        match opts.Codes with
+        | Some codes when codes.IsEmpty -> Error "--codes and --categories together leave no rule to run."
+        | _ -> Ok opts)
 
 /// The stderr line runProcessIn writes for a child stopped at its time cap
 /// begins with this, so that a classifier (stoppedAtTimeCap) tests for the
@@ -2117,12 +2138,48 @@ let internal originalBytes =
 let internal keepOriginalBytes (path: string) (bytes: byte array) =
     lock originalBytes (fun () -> originalBytes.TryAdd(Path.GetFullPath path, bytes) |> ignore)
 
+/// Held for every write of a source, and by an interrupt while it puts the
+/// compilation in progress back: once interrupted, nothing more is written.
+let private writeGate = obj ()
+
+let mutable private interrupted = false
+
+/// A run in a resident host (the MCP server, the test host) starts writable.
+let internal clearInterrupt () =
+    lock writeGate (fun () -> interrupted <- false)
+
+/// Is `path` the directory `root` or inside it? By the paths as they are
+/// written, `..` resolved: a link inside the root that leads out of it is
+/// not followed.
+let private isUnder (root: string) (path: string) =
+    let comparison =
+        if Path.DirectorySeparatorChar = '\\' then
+            StringComparison.OrdinalIgnoreCase
+        else
+            StringComparison.Ordinal
+
+    let rootFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath root)
+    let separator = string Path.DirectorySeparatorChar
+    // a drive root keeps its separator
+    let prefix =
+        if rootFull.EndsWith(separator, StringComparison.Ordinal) then
+            rootFull
+        else
+            rootFull + separator
+
+    let full = Path.GetFullPath path
+    full.Equals(rootFull, comparison) || full.StartsWith(prefix, comparison)
+
+/// The directory an MCP server was started for, while it serves: no source
+/// outside it is written, whatever compilation a call reaches (a linked
+/// file, a `#load`, a sibling project). None for a command-line run, which
+/// writes where its target leads.
+let mutable private writeRoot: string option = None
+
 /// Write a source file back in the encoding it had when the run first
 /// saw it - or, when `text` is exactly that original's text, as its
-/// original bytes.
-let private writeSource (path: string) (text: string) =
-    awaitSpeculation ()
-
+/// original bytes. For the caller that holds the gate.
+let private writeSourceNow (path: string) (text: string) =
     let original =
         lock originalBytes (fun () ->
             match originalBytes.TryGetValue(Path.GetFullPath path) with
@@ -2142,6 +2199,26 @@ let private writeSource (path: string) (text: string) =
     | Some bytes when decodeSource bytes = text -> File.WriteAllBytes(path, bytes)
     | Some bytes -> File.WriteAllText(path, text, fst (sourceEncoding bytes))
     | None -> File.WriteAllText(path, text, encodingOf path)
+
+/// Every write of a source by the run: after the speculative check, under
+/// the gate, and never once the run was interrupted.
+let private writeSource (path: string) (text: string) =
+    awaitSpeculation ()
+
+    lock writeGate (fun () ->
+        if interrupted then
+            raise (OperationCanceledException "the run was interrupted; nothing more is written")
+
+        match writeRoot with
+        | Some root when not (isUnder root path) ->
+            // ends the compilation's work: its files go back (restoringOnFailure)
+            raise (
+                UnauthorizedAccessException
+                    $"{path} is outside the server's root {root}, and nothing outside it is written"
+            )
+        | _ -> ()
+
+        writeSourceNow path text)
 
 /// Set for the run by executeRun. In --parse-only mode nothing resolves,
 /// so only PARSE-phase diagnostics are meaningful: a fix that spells a
@@ -2506,12 +2583,14 @@ let internal recordExtra (file: string) (before: string) =
     let full = Path.GetFullPath file
     runOriginals.TryAdd(full, before) |> ignore
 
-    if
-        snapshotFiles.Count > 0
-        && not (snapshotFiles.Contains full)
-        && not (extraSnapshot.ContainsKey full)
-    then
-        extraSnapshot.[full] <- before
+    // locked: an interrupt reads it from its own thread
+    lock extraSnapshot (fun () ->
+        if
+            snapshotFiles.Count > 0
+            && not (snapshotFiles.Contains full)
+            && not (extraSnapshot.ContainsKey full)
+        then
+            extraSnapshot.[full] <- before)
 
 /// Files of a LINKED compilation — another project's own sources, edited
 /// by the api pass because that project compiles this one's files directly
@@ -7267,23 +7346,6 @@ let private targetOf (path: string) =
 /// a project or script directly, every project in a solution, everything a
 /// glob matches, or — for a directory — the solution or projects inside it.
 let private resolveTargets (raw: string) : Result<Target list, string> =
-    let expandGlob (pattern: string) =
-        let normalized = pattern.Replace('\\', '/')
-        let starIndex = normalized.IndexOf '*'
-
-        let root =
-            let head = normalized.Substring(0, starIndex)
-            let slash = head.LastIndexOf '/'
-
-            if slash >= 0 then head.Substring(0, slash) else "."
-
-        let leaf = Path.GetFileName normalized
-
-        if Directory.Exists root then
-            FileWalk.files leaf root |> List.ofSeq
-        else
-            []
-
     let rec fromDirectory (dir: string) =
         let solutionsIn (d: string) =
             [
@@ -7369,7 +7431,7 @@ let private resolveTargets (raw: string) : Result<Target list, string> =
             projects @ scripts
 
     if raw.Contains '*' || raw.Contains '?' then
-        match expandGlob raw |> List.choose targetOf with
+        match FileWalk.glob raw |> List.choose targetOf with
         | [] -> Error $"'{raw}' matched no .fsproj or .fsx files."
         | targets -> Ok targets
     elif Directory.Exists raw then
@@ -7897,13 +7959,18 @@ let internal judgeAgainstBaseline
                 else
                     Introduced remaining
 
+/// The snapshot of the compilation in progress, from takeSnapshot until its
+/// work ends: what a failure or an interrupt puts back.
+let mutable private activeSnapshot: Map<string, string> = Map.empty
+
 /// The source files as they stand, so one framework's pass can be undone
 /// if it turns out to have broken another's. Starts the record of files
 /// written outside it afresh: an empty `files` is "no snapshot", and then
 /// nothing outside it is kept either.
 let internal takeSnapshot (files: string array) =
-    snapshotFiles.Clear()
-    extraSnapshot.Clear()
+    lock extraSnapshot (fun () ->
+        snapshotFiles.Clear()
+        extraSnapshot.Clear())
 
     let snapshot =
         files
@@ -7918,29 +7985,95 @@ let internal takeSnapshot (files: string array) =
             | :? UnauthorizedAccessException -> None)
         |> Map.ofArray
 
-    for KeyValue(path, text) in snapshot do
-        let full = Path.GetFullPath path
-        snapshotFiles.Add full |> ignore
-        runOriginals.TryAdd(full, text) |> ignore
+    lock extraSnapshot (fun () ->
+        for KeyValue(path, text) in snapshot do
+            let full = Path.GetFullPath path
+            snapshotFiles.Add full |> ignore
+            runOriginals.TryAdd(full, text) |> ignore)
 
+    activeSnapshot <- snapshot
     snapshot
 
-/// Put back every file that changed since the snapshot — and every file
-/// the run wrote outside it since; returns how many.
-let internal restoreSnapshot (snapshot: Map<string, string>) =
+/// Put back, through `write`, every file that changed since the snapshot —
+/// and every file the run wrote outside it since; returns how many. A file
+/// that cannot be put back is named: it stays as the run left it.
+let private putBackThrough (write: string -> string -> unit) (snapshot: Map<string, string>) =
     let putBack (path: string, original: string) =
         try
             if readSource path <> original then
-                writeSource path original
+                write path original
                 1
             else
                 0
         with
         | :? IOException
-        | :? UnauthorizedAccessException -> 0
+        | :? UnauthorizedAccessException as e ->
+            eprintfn $"  (could not put back {path}: {e.Message})"
+            0
 
-    (snapshot |> Map.toSeq |> Seq.sumBy putBack)
-    + (extraSnapshot |> Seq.sumBy (fun kv -> putBack (kv.Key, kv.Value)))
+    let outside =
+        lock extraSnapshot (fun () -> extraSnapshot |> Seq.map (fun kv -> kv.Key, kv.Value) |> List.ofSeq)
+
+    (snapshot |> Map.toSeq |> Seq.sumBy putBack) + (outside |> List.sumBy putBack)
+
+/// Put back every file that changed since the snapshot — and every file
+/// the run wrote outside it since; returns how many.
+let internal restoreSnapshot (snapshot: Map<string, string>) = putBackThrough writeSource snapshot
+
+/// The compilation's work is over, verified or put back: nothing of it is
+/// left for a failure or an interrupt to put back.
+let private releaseSnapshot () =
+    lock extraSnapshot (fun () ->
+        snapshotFiles.Clear()
+        extraSnapshot.Clear())
+
+    activeSnapshot <- Map.empty
+
+/// Ctrl+C: nothing more is written, and the files the compilation in
+/// progress changed go back, since nothing has verified them; returns how
+/// many. The compilations finished before it keep their fixes.
+let internal putBackOnInterrupt () =
+    lock writeGate (fun () ->
+        interrupted <- true
+        let restored = putBackThrough writeSourceNow activeSnapshot
+        releaseSnapshot ()
+        restored)
+
+/// `work` on one target. A failure that ends it early puts back the files
+/// of the compilation in progress, which nothing has verified: a source
+/// that cannot be written or read (read-only, locked) costs the target
+/// like a typecheck given up on, and anything else goes on to end the run.
+let internal restoringOnFailure (work: unit -> int) : int =
+    let putBack () =
+        let restored = restoreSnapshot activeSnapshot
+        releaseSnapshot ()
+        restored
+
+    try
+        let code = work ()
+        releaseSnapshot ()
+        code
+    with
+    | :? TimeoutException ->
+        // restoreOnTimeout put the files back already
+        releaseSnapshot ()
+        reraise ()
+    | :? IOException
+    | :? UnauthorizedAccessException as e ->
+        let restored = putBack ()
+
+        eprintfn
+            $"  ({e.Message}; the {restored} file(s) this compilation had changed were put back unverified, and it was skipped)"
+
+        lock exitReasons (fun () -> exitReasons.Add $"a file could not be written or read: {e.Message}")
+        1
+    | _ ->
+        let restored = putBack ()
+
+        if restored > 0 then
+            eprintfn $"  (the run failed; the {restored} file(s) this compilation had changed were put back unverified)"
+
+        reraise ()
 
 /// `work` — a pass, its verification, the end-of-run recount — with a
 /// typecheck given up on (checkWithin's TimeoutException) putting back
@@ -8767,6 +8900,17 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             else
                 opts
 
+        // a single file was named: only that file is edited, so the reshapes
+        // that reach its callers in other files stay off, flag or test
+        // project alike
+        let apiChangesAsked = opts.ApiChanges
+
+        let opts =
+            if onlyFile.IsSome then
+                { opts with ApiChanges = false }
+            else
+                opts
+
         // the C# and VB projects referencing this one: no F# check sees
         // what they link to, so they are built with the verification — or,
         // where they cannot be built, the public surface is held for them.
@@ -9118,10 +9262,21 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
                 eprintfn $"  {d.FileName}({d.StartLine},{d.StartColumn}): {d.Message}"
 
             failed $"has {baselineErrors} error(s) before any fix, so it was not analysed"
+        // the project found for a named file only mentions a file of that
+        // name (`Utils.fs` inside `StringUtils.fs`): a sweep of none of its
+        // sources would read as a clean file
+        elif
+            onlyFile
+            |> Option.exists (fun only ->
+                options.SourceFiles
+                |> Array.exists (fun f -> String.Equals(Path.GetFullPath f, only, StringComparison.OrdinalIgnoreCase))
+                |> not)
+        then
+            failed "does not compile the file that was named, so nothing was analysed"
         else
             // asking for one file and getting edits in its callers would be
             // a surprise, and that is exactly what the cross-file rules do
-            if opts.ApiChanges && onlyFile.IsSome then
+            if apiChangesAsked && onlyFile.IsSome then
                 Out.skip "  (api pass skipped: a single file was named, and these fixes edit call sites elsewhere)"
 
             // Everything the run actually wrote, across the api-changes
@@ -9928,6 +10083,21 @@ let private registerFileFloors (targets: Target list) =
 /// report. The checker comes from the caller so a resident host (--mcp)
 /// can keep it — and every reference assembly FCS has parsed — warm
 /// between calls.
+/// Why a `--report` path cannot be written, when its directory is missing
+/// or the path is no path.
+let private unwritableReport (report: string) : string option =
+    try
+        let directory = Path.GetDirectoryName(Path.GetFullPath report)
+
+        if Directory.Exists directory then
+            None
+        else
+            Some $"--report: the directory {directory} does not exist"
+    with
+    | :? ArgumentException
+    | :? NotSupportedException
+    | :? PathTooLongException -> Some $"--report: '{report}' is not a usable path"
+
 let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     // replaced after a typecheck that never returned (checkWithin): the
     // abandoned check still holds the old checker's locks and caches, and
@@ -9936,10 +10106,37 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
 
     // before anything can start an MSBuild: resolving the targets may
     RunDefines.set opts.Defines
-    // a restore of an earlier run says nothing about this one's tree
+    // a restore of an earlier run says nothing about this one's tree, and
+    // neither does a file it put back or a project's frameworks as it
+    // listed them: a resident host runs again on a tree edited since
     restoresDone.Clear()
+    putBackFiles.Clear()
+    listedFrameworks.Clear()
 
-    match resolveTargets opts.Target with
+    // the report is written after a compilation's work: a path that cannot
+    // take it is refused before any
+    let resolved =
+        match opts.Report |> Option.bind unwritableReport with
+        | Some problem -> Error problem
+        | None ->
+            // The analyzers read a config that is no JSON as no config at
+            // all. A run would then apply the rules it turns off and edit
+            // the paths it ignores, so the run is refused instead.
+            resolveTargets opts.Target
+            |> Result.bind (fun targets ->
+                targets
+                |> List.map (fun t ->
+                    match t with
+                    | Target.Project(path, _)
+                    | Target.Script path -> path)
+                |> List.distinctBy (fun path -> Path.GetDirectoryName(Path.GetFullPath path).ToLowerInvariant())
+                |> List.tryPick Configuration.problemFor
+                |> Option.map (fun (config, problem) ->
+                    Error
+                        $"{config} cannot be read: {problem} Fix it first: without it the run would apply the rules it turns off and edit the paths it ignores.")
+                |> Option.defaultValue (Ok targets))
+
+    match resolved with
     | Error message ->
         eprintfn $"{message}"
         2
@@ -10040,6 +10237,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         runBuildFailures <- 0
         runAnalyzerFailures <- 0
         lock exitReasons exitReasons.Clear
+        clearInterrupt ()
         runCompilations <- 0
         honorAllSuppressions <- opts.HonorSuppressions
         parseOnlyRun <- opts.ParseOnly
@@ -10197,10 +10395,27 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
             max code (otherConfigurationPass checker target)
 
         try
+            // a report that cannot be written (locked, the disk full) fails
+            // the run without ending it: the fixes on disk are verified
+            let reportFailed = ref false
+
             let writeReportNow () =
                 match opts.Report with
                 | Some reportPath ->
-                    writeReport reportPath opts.Target (lock reportedFindings (fun () -> List.ofSeq reportedFindings))
+                    try
+                        writeReport
+                            reportPath
+                            opts.Target
+                            (lock reportedFindings (fun () -> List.ofSeq reportedFindings))
+
+                        reportFailed.Value <- false
+                    with
+                    | :? IOException
+                    | :? UnauthorizedAccessException as e ->
+                        if not reportFailed.Value then
+                            eprintfn $"  (could not write the report {reportPath}: {e.Message})"
+
+                        reportFailed.Value <- true
                 | None -> ()
 
             // a many-target run rewrites the report after every target, so
@@ -10212,7 +10427,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
                     // this target, not the run: the rest still get their turn
                     let code =
                         try
-                            runOne target
+                            restoringOnFailure (fun () -> runOne target)
                         with :? TimeoutException as t ->
                             eprintfn $"  ({t.Message}; this compilation was skipped)"
                             checkerRef.Value <- FSharpChecker.Create(keepAssemblyContents = false)
@@ -10241,11 +10456,18 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
             // run, whatever the counts below say
             let exitCode = if runAnalyzerFailures > 0 then max exitCode 1 else exitCode
 
-            match opts.Report with
-            | Some reportPath ->
-                writeReportNow ()
-                printfn $"{reportedFindings.Count} finding(s) written to {reportPath}"
-            | None -> ()
+            let exitCode =
+                match opts.Report with
+                | Some reportPath ->
+                    writeReportNow ()
+
+                    if reportFailed.Value then
+                        lock exitReasons (fun () -> exitReasons.Add $"the report {reportPath} could not be written")
+                        max exitCode 1
+                    else
+                        printfn $"{reportedFindings.Count} finding(s) written to {reportPath}"
+                        exitCode
+                | None -> exitCode
 
             let heldNotes = lock heldNoteCounts (fun () -> heldNoteCounts |> List.ofSeq)
 
@@ -10470,16 +10692,80 @@ let inline private (|IsNullOrWhiteSpace|_|) (input: string) =
     else
         ValueNone
 
+/// What a server holds every call to, from its own command line:
+/// `fsharp-refactor [directory] --mcp [--dry-run] [--define ...] [--jobs n]`.
+type private McpLimits =
+    {
+        /// The directory the server works in: the one it was given, else
+        /// the one it was started in. A call's target lies inside it, and
+        /// so does everything a call writes. A client is an agent acting on
+        /// what it read, and a server that analyses any path it is handed
+        /// builds, and with `apply` rewrites, any tree on the machine.
+        Root: string
+        /// `--dry-run`: no call applies anything.
+        ReadOnly: bool
+        /// `--define`: symbols every call keeps (a call's `defines` adds to them).
+        Defines: string list
+        Jobs: int
+    }
+
+/// The server's limits from its command line, or why the line is refused:
+/// a root that is no directory, or a flag that belongs to a run and would
+/// be ignored here, where it reads as honoured.
+let private mcpLimits (opts: Options) : Result<McpLimits, string> =
+    let ignored =
+        [
+            "--codes", opts.ExplicitCodes.IsSome
+            "--categories", opts.Categories.IsSome
+            "--api-changes", opts.ApiChanges
+            "--no-if-defs", opts.NoIfDefs
+            "--report", opts.Report.IsSome
+            "--parse-only", opts.ParseOnly
+            "--baseline", opts.Baseline.IsSome
+            "--fail-on-findings", opts.FailOnFindings
+            "--honor-suppressions", opts.HonorSuppressions
+            "--notes", opts.Notes || opts.NotesOnly
+            "--format", opts.Json
+            "--framework", opts.Framework <> ""
+            "--max-passes", opts.MaxPasses <> 5
+        ]
+        |> List.filter snd
+        |> List.map fst
+
+    if not ignored.IsEmpty then
+        let listed = String.concat ", " ignored
+
+        Error
+            $"--mcp serves many runs, and {listed} would have no effect on them. The server takes a directory, --dry-run (it then applies nothing), --define and --jobs; an analyze call names its own codes, categories and parseOnly."
+    elif opts.Target <> "" && not (Directory.Exists opts.Target) then
+        Error
+            $"--mcp takes the DIRECTORY the server may work in; '{opts.Target}' is not one. Without one it is the current directory."
+    else
+        Ok
+            {
+                Root =
+                    Path.GetFullPath(
+                        if opts.Target = "" then
+                            Directory.GetCurrentDirectory()
+                        else
+                            opts.Target
+                    )
+                // `--notes only` implies a dry run, and is refused above
+                ReadOnly = opts.DryRun
+                Defines = opts.Defines
+                Jobs = opts.Jobs
+            }
+
 /// --mcp: a minimal MCP server over stdio — newline-delimited JSON-RPC
 /// 2.0, no extra dependencies, and one warm FSharpChecker across every
 /// call, which is the entire point: the first analyze pays the reference
 /// parse, the rest answer from a hot cache. Progress prose is diverted to
-/// stderr so the protocol stream stays clean.
-/// `startupDefines`: the server's own `--define` symbols, which every
-/// analyze call keeps (a call's `defines` adds to them).
-let private runMcp (startupDefines: string list) =
+/// stderr so the protocol stream stays clean. Every call is held to the
+/// server's limits.
+let private runMcp (limits: McpLimits) =
     let protocolOut = Console.Out
     Console.SetOut Console.Error
+    writeRoot <- Some limits.Root
 
     let checker = FSharpChecker.Create(keepAssemblyContents = false)
 
@@ -10510,7 +10796,7 @@ let private runMcp (startupDefines: string list) =
                                     "name", box "analyze"
                                     "description",
                                     box
-                                        "Analyze an F# project, script or directory with fsharp-refactor. Dry-run by default: reports findings without editing. Set apply=true to write the fixes (build-verified). Returns findings as JSON with stable fingerprints and source snippets."
+                                        "Analyze an F# project, script or directory with fsharp-refactor, inside the directory this server was started for. Dry-run by default: reports findings without editing. Set apply=true to write the fixes (build-verified); a server started with --dry-run refuses it. Returns findings as JSON with stable fingerprints and source snippets."
                                     "inputSchema",
                                     box (
                                         dict
@@ -10527,7 +10813,7 @@ let private runMcp (startupDefines: string list) =
                                                                         "type", box "string"
                                                                         "description",
                                                                         box
-                                                                            "fsproj, fsx, sln, directory or glob to analyze"
+                                                                            "fsproj, fsx, sln, directory or glob to analyze, inside the server's root; a relative path is relative to it"
                                                                     ]
                                                             )
                                                             "codes",
@@ -10604,9 +10890,28 @@ let private runMcp (startupDefines: string list) =
             | true, v -> v.ValueKind = JsonValueKind.True
             | _ -> false
 
-        match getString "target" with
+        // the target as a full path inside the root; a relative one is
+        // relative to the root, not to wherever the process stands
+        let inRoot (target: string) : Result<string, string> =
+            try
+                let full = Path.GetFullPath(target, limits.Root)
+
+                if isUnder limits.Root full then
+                    Ok full
+                else
+                    Error
+                        $"'{target}' is outside this server's root {limits.Root}. Start the server for the directory it may work in: fsharp-refactor <directory> --mcp"
+            with
+            | :? ArgumentException
+            | :? NotSupportedException
+            | :? PathTooLongException -> Error $"'{target}' is not a usable path"
+
+        match getString "target" |> Option.map inRoot with
         | None -> Error "analyze needs a 'target'"
-        | Some target ->
+        | Some(Error refusal) -> Error refusal
+        | Some(Ok _) when limits.ReadOnly && getBool "apply" ->
+            Error "this server was started with --dry-run and applies nothing; call analyze without apply"
+        | Some(Ok target) ->
 
             let callDefines =
                 match getString "defines" with
@@ -10614,30 +10919,28 @@ let private runMcp (startupDefines: string list) =
                 | Some value when String.IsNullOrWhiteSpace value -> Ok []
                 | Some value -> RunDefines.parse value
 
-            match parseArgs [| target |], callDefines with
+            // codes and categories go through the command line's own parser:
+            // a mistyped or empty one is an error there, where a filter built
+            // here matched nothing and answered zero findings
+            let filterArgs =
+                [ "--codes", getString "codes"; "--categories", getString "categories" ]
+                |> List.collect (fun (flag, value) ->
+                    match value with
+                    | Some value -> [ flag; value ]
+                    | None -> [])
+
+            match parseArgs (Array.ofList (target :: filterArgs)), callDefines with
             | Error message, _
             | _, Error message -> Error message
             | Ok baseOpts, Ok callDefines ->
-
-                let codes =
-                    getString "codes"
-                    |> Option.map (fun s ->
-                        s.Split ',' |> Array.map (fun c -> c.Trim().ToUpperInvariant()) |> Set.ofArray)
-
-                let categories =
-                    getString "categories"
-                    |> Option.map (fun s -> s.Split ',' |> Array.choose RuleCatalog.parse |> Set.ofArray)
 
                 let opts =
                     { baseOpts with
                         DryRun = not (getBool "apply")
                         ParseOnly = getBool "parseOnly"
-                        Defines = startupDefines @ callDefines
-                        Codes = codes
-                        ExplicitCodes = codes
-                        Categories = categories
+                        Defines = limits.Defines @ callDefines
+                        Jobs = limits.Jobs
                     }
-                    |> applyCategories
 
                 lock reportedFindings (fun () ->
                     reportedFindings.Clear()
@@ -10654,6 +10957,9 @@ let private runMcp (startupDefines: string list) =
                     dict
                         [
                             "exitCode", box exitCode
+                            // why the exit code is not 0: without it a project that
+                            // did not build reads as zero findings
+                            "exitReasons", box (lock exitReasons (fun () -> List.ofSeq exitReasons))
                             "applied", box (not opts.DryRun)
                             "findingCount", box findings.Length
                             "findings", box (findingsPayload findings)
@@ -10708,21 +11014,25 @@ let private runMcp (startupDefines: string list) =
             | "ping" -> respond idJson "{}"
             | "tools/list" -> respond idJson toolsJson
             | "tools/call" ->
+                let noArguments () = JsonDocument.Parse("{}").RootElement
+
                 let name, args =
                     match params_ with
-                    | Some p ->
+                    | Some p when p.ValueKind = JsonValueKind.Object ->
                         let n =
                             match p.TryGetProperty "name" with
-                            | true, v -> v.GetString()
+                            | true, v when v.ValueKind = JsonValueKind.String -> v.GetString()
                             | _ -> ""
 
                         let a =
                             match p.TryGetProperty "arguments" with
-                            | true, v -> v
-                            | _ -> JsonDocument.Parse("{}").RootElement
+                            | true, v when v.ValueKind = JsonValueKind.Object -> v
+                            | _ -> noArguments ()
 
                         n, a
-                    | None -> "", JsonDocument.Parse("{}").RootElement
+                    // params that are no object, a name that is no string:
+                    // answered as an unknown tool, not thrown out of the loop
+                    | _ -> "", noArguments ()
 
                 match name with
                 | "list_rules" ->
@@ -10752,6 +11062,17 @@ let private runMcp (startupDefines: string list) =
             | _ -> ()
 
     0
+
+/// The server from its limits to the end of its input, leaving the process
+/// as it found it: a host that runs it in-process (the tests) goes on after.
+let private serveMcp (limits: McpLimits) =
+    let out = Console.Out
+
+    try
+        runMcp limits
+    finally
+        writeRoot <- None
+        Console.SetOut out
 
 /// A type provider's objects outlive the typecheck that made them, and
 /// their finalizers run on the GC's thread whenever it gets to them. One
@@ -10835,6 +11156,24 @@ let private surviveForeignBackgroundExceptions () =
         with :? InvalidOperationException -> // a host set one first; it keeps its say
             ()
 
+/// Ctrl+C ends the run with the compilation in progress put back (see
+/// putBackOnInterrupt) instead of leaving its unverified fixes on disk.
+/// Installed only when this tool IS the process, as the handler above.
+let private putBackOnCtrlC () =
+    if Reflection.Assembly.GetEntryAssembly() = Reflection.Assembly.GetExecutingAssembly() then
+        Console.CancelKeyPress.Add(fun args ->
+            // the process stays alive while the files go back
+            args.Cancel <- true
+            let restored = putBackOnInterrupt ()
+
+            if restored > 0 then
+                eprintfn
+                    $"interrupted: the {restored} file(s) the compilation in progress had changed were put back unverified"
+            else
+                eprintfn "interrupted"
+
+            exit 130)
+
 let private runMain argv =
     // colour is decided before anything is printed, so --no-color governs
     // even the argument errors below
@@ -10914,7 +11253,12 @@ let private runMain argv =
                 | :? UnauthorizedAccessException as e ->
                     eprintfn $"Could not write {path}: {e.Message}"
                     1
-    | Ok opts when opts.Mcp -> runMcp opts.Defines
+    | Ok opts when opts.Mcp ->
+        match mcpLimits opts with
+        | Ok limits -> serveMcp limits
+        | Error message ->
+            eprintfn $"{message}"
+            2
     // no arguments at all is a question, not a mistake: show the help
     | Ok opts when opts.Target = "" ->
         printfn $"{helpText}"
@@ -10960,6 +11304,7 @@ let private runMain argv =
 [<EntryPoint>]
 let main argv =
     surviveForeignBackgroundExceptions ()
+    putBackOnCtrlC ()
     let code = runMain argv
 
     // a run that went on past loaded code failing on a background thread

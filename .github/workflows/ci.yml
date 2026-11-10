@@ -94,6 +94,48 @@ jobs:
           dotnet pack src/FSharp.Refactor.Analyzers -c Release -o artifacts
           dotnet pack src/FSharp.Refactor.Tool -c Release -o artifacts
 
+      # an Exe, because a class library's bin never receives package
+      # dependencies: the package must bring none, neither into bin nor into
+      # the consumer's dependency graph
+      - name: Consume the analyzer package by PackageReference
+        shell: bash
+        run: |
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          cat > Consumer.fsproj <<'XML'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net10.0</TargetFramework>
+              <RestoreSources>$GITHUB_WORKSPACE/artifacts;https://api.nuget.org/v3/index.json</RestoreSources>
+            </PropertyGroup>
+            <ItemGroup>
+              <Compile Include="Program.fs" />
+              <PackageReference Include="FSharp.Refactor.Analyzers" Version="*" PrivateAssets="all" />
+            </ItemGroup>
+          </Project>
+          XML
+          sed -i "s|\$GITHUB_WORKSPACE|$GITHUB_WORKSPACE|" Consumer.fsproj
+          printf 'module Program\nlet isEmpty (xs: int list) = List.length xs = 0\n[<EntryPoint>]\nlet main _ = if isEmpty [] then 0 else 1\n' > Program.fs
+          dotnet build
+          ! ls bin/Debug/net10.0 | grep -i -E "compiler|analyzers|refactor"
+          ! grep -i -E "FSharp.Compiler.Service|FSharp.Analyzers.SDK|FSharp.Refactor" bin/Debug/net10.0/Consumer.deps.json
+
+      # the package as its hosts see it: one build per folder, and the CLI of
+      # that folder's SDK loads it without skipping an assembly (a skip is
+      # exit -3, findings or not). Launched like the linter above.
+      - name: Load the packed analyzers through their hosts
+        shell: bash
+        run: |
+          mkdir -p /tmp/pkg && unzip -q artifacts/FSharp.Refactor.Analyzers.*.nupkg -d /tmp/pkg
+          cd /tmp/consumer
+          for pair in "0.41.0:fs" "0.37.2:fs-sdk0.37"; do
+            version=${pair%%:*}; folder=${pair##*:}
+            dotnet tool install fsharp-analyzers --version $version --tool-path /tmp/host-$version
+            CLI=$(find /tmp/host-$version -name FSharp.Analyzers.Cli.dll | head -1)
+            dotnet exec --roll-forward LatestMajor "$CLI" --project Consumer.fsproj --analyzers-path /tmp/pkg/analyzers/dotnet/$folder --code-root . --report $folder.sarif
+            grep -c '"ruleId": *"FR0010"' $folder.sarif
+          done
+
       - name: Upload package artifact
         uses: actions/upload-artifact@v7
         with:

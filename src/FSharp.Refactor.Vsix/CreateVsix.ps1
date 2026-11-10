@@ -15,7 +15,7 @@ $repo = Resolve-Path (Join-Path $here "..\..")
 dotnet build $here -c $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# the analyzers the sidecar loads: build both SDK flavors
+# the analyzers the sidecar loads: one build per supported analyzer SDK
 dotnet build (Join-Path $repo "src\FSharp.Refactor.Analyzers") -c $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -43,6 +43,15 @@ $analyzerDir = Join-Path $staging "analyzers"
 New-Item -ItemType Directory -Force $analyzerDir | Out-Null
 Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers\bin\$Configuration\net8.0\FSharp.Refactor.Analyzers.dll") $analyzerDir
 Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers.Ionide\bin\$Configuration\net8.0\FSharp.Refactor.Analyzers.Ionide.dll") $analyzerDir
+Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers.Sdk41\bin\$Configuration\net10.0\FSharp.Refactor.Analyzers.Sdk41.dll") $analyzerDir
+
+# the analyzer SDK each staged build was compiled against, as major.minor:
+# FsAutoComplete loads a build only when both match its own SDK
+$shippedSdks = Get-ChildItem -Path (Join-Path $repo "src") -Filter "FSharp.Refactor.Analyzers*.fsproj" -Recurse |
+    ForEach-Object {
+        $pin = [regex]::Match([IO.File]::ReadAllText($_.FullName), 'FSharp\.Analyzers\.SDK" Version="(\d+)\.(\d+)')
+        if ($pin.Success) { "$($pin.Groups[1].Value).$($pin.Groups[2].Value)" }
+    } | Sort-Object -Unique
 
 Copy-Item (Join-Path $repo "LICENSE") $staging
 Copy-Item (Join-Path $repo "icon.png") $staging
@@ -81,9 +90,15 @@ if (-not $NoFsac) {
     if ($fsacVersion -lt [version]"0.85.0") {
         throw "fsautocomplete $fsacVersion is older than 0.85.0; run: dotnet tool update -g fsautocomplete"
     }
+    # a sidecar on an analyzer SDK no staged build matches loads none of them
+    $fsacSdk = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $payload "FSharp.Analyzers.SDK.dll")).Version
+    $fsacSdkText = "$($fsacSdk.Major).$($fsacSdk.Minor)"
+    if ($shippedSdks -notcontains $fsacSdkText) {
+        throw "fsautocomplete $fsacVersion runs FSharp.Analyzers.SDK $fsacSdkText; the analyzers are built for $($shippedSdks -join ', '). Add a build for it or bundle a matching fsautocomplete."
+    }
 
     Copy-Item -Recurse -LiteralPath $payload (Join-Path $staging "fsac")
-    Write-Host "Bundled FsAutoComplete from $payload"
+    Write-Host "Bundled FsAutoComplete $fsacVersion (analyzer SDK $fsacSdkText) from $payload"
 }
 
 # the packaged manifest is the PROCESSED form: VS's own build strips the

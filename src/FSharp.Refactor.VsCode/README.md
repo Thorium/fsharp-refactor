@@ -13,18 +13,26 @@ And IDE light bulbs while you type
 <img width="1010" height="302" alt="image" src="https://github.com/user-attachments/assets/e8a2e72a-3096-4963-824a-3f6a91a085b9" />
 
 
-150+ functional refactoring hints with one-click quick fixes for F#,
+Functional refactoring hints with one-click quick fixes for F#,
 delivered through Ionide.
 
 VS Code has no analyzer concept of its own — F# analyzers load through
 Ionide → FsAutoComplete → FSharp.Analyzers.SDK, from the directories the
 `FSharp.analyzersPath` setting names. This extension bundles the
-FSharp.Refactor analyzer assemblies (both SDK builds: FsAutoComplete
-loads the one matching its own SDK version and skips the other) and, on
-first activation, **asks** to append its analyzers directory to that
-setting and turn `FSharp.enableAnalyzers` on. Decline and it stays out of
-your settings; the `FSharp.Refactor: Wire analyzers into Ionide` command
-re-offers it any time, and the `Remove` command undoes it.
+FSharp.Refactor analyzer assemblies (one build per supported analyzer SDK:
+0.35, 0.37 and 0.41, which covers FsAutoComplete up to 0.86 and so Ionide
+7 and 8; FsAutoComplete loads the one matching its own SDK and skips the
+rest) and, on first activation, **asks** to append its analyzers directory
+to that setting, after Ionide's own default folders, and turn
+`FSharp.enableAnalyzers` on. Decline and it stays out of your settings;
+the `FSharp.Refactor: Wire analyzers into Ionide` command re-offers it any
+time, and the `Remove` command undoes it. VS Code runs nothing on
+uninstall, so run `Remove` before uninstalling the extension: the entry
+would otherwise stay in your user settings, pointing at a deleted folder.
+
+When Ionide runs an FsAutoComplete on an analyzer SDK none of the bundled
+builds targets, the extension says so once, the Status command shows it,
+and it never points Ionide at such an FsAutoComplete itself.
 
 After wiring and a window reload, open any F# file: suggestions appear as
 `Hint`-severity squiggles with `FR`-prefixed codes, each carrying a
@@ -56,7 +64,9 @@ Six more commands:
 - `FSharp.Refactor: Run the tool on this workspace` — the light bulbs fix
   one finding at a time; this runs the sweep. Picks a solution or project
   of the workspace, then `Report only` (`--dry-run`), `Apply fixes`, or
-  `Apply fixes with --api-changes`, in the integrated terminal. Every pass
+  `Apply fixes with --api-changes`, in the integrated terminal. A run that
+  writes asks to save unsaved editors first: the tool works on the files on
+  disk. Every pass
   the tool applies is build-verified and rolled back on error, as on the
   command line; it offers to install the tool when it is missing.
 - `FSharp.Refactor: Run the tool with --api-changes` — the same sweep with

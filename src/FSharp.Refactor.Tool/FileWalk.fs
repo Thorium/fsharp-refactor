@@ -113,3 +113,73 @@ let filesNoting (pattern: string) (root: string) (skipped: string -> unit) : str
 /// Files matching `pattern` anywhere under `root`; a directory the walk
 /// cannot read is skipped without a word (see `filesNoting`).
 let files (pattern: string) (root: string) : string seq = filesNoting pattern root ignore
+
+/// The files a glob matches, the walk's pruned directories left out. `*`
+/// and `?` stay inside one path segment and `**` spans any number of
+/// directories, so the directories a pattern names are the ones searched:
+/// `src/App*/*.fsproj` is the projects of the `App…` folders, not every
+/// project under `src`. The walk starts at the part before the first
+/// wildcard.
+let glob (pattern: string) : string list =
+    let normalized = pattern.Replace('\\', '/')
+    let wildcard = normalized.IndexOfAny [| '*'; '?' |]
+
+    if wildcard < 0 then
+        if File.Exists pattern then [ pattern ] else []
+    else
+        let slash = normalized.LastIndexOf('/', wildcard)
+
+        let root =
+            if slash > 0 then normalized.Substring(0, slash)
+            elif slash = 0 then "/"
+            else "."
+
+        let segments = normalized.Substring(slash + 1).Split '/'
+
+        let segmentPattern (segment: string) =
+            segment
+            |> String.collect (fun c ->
+                match c with
+                | '*' -> "[^/]*"
+                | '?' -> "[^/]"
+                | plain -> Text.RegularExpressions.Regex.Escape(string plain))
+
+        let relative =
+            segments
+            |> Array.mapi (fun i segment ->
+                let last = i = segments.Length - 1
+
+                match segment with
+                | "**" when last -> ".*"
+                | "**" -> "(?:[^/]+/)*"
+                | name when last -> segmentPattern name
+                | name -> segmentPattern name + "/")
+            |> String.concat ""
+
+        // a file system that ignores case matches a pattern the same way
+        let options =
+            if Path.DirectorySeparatorChar = '\\' then
+                Text.RegularExpressions.RegexOptions.IgnoreCase
+            else
+                Text.RegularExpressions.RegexOptions.None
+
+        let matches =
+            Text.RegularExpressions.Regex(
+                $"^{relative}$",
+                options ||| Text.RegularExpressions.RegexOptions.CultureInvariant
+            )
+
+        let leaf =
+            match Array.last segments with
+            | "**" -> "*"
+            | name -> name
+
+        if Directory.Exists root then
+            let rootFull = Path.GetFullPath root
+
+            files leaf root
+            |> Seq.filter (fun file ->
+                matches.IsMatch(Path.GetRelativePath(rootFull, Path.GetFullPath file).Replace('\\', '/')))
+            |> List.ofSeq
+        else
+            []

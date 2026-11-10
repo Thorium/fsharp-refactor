@@ -729,6 +729,13 @@ let directiveRegionsOf (path: string) : DirectiveRegion list option =
                         match directive with
                         | ConditionalDirectiveTrivia.If(condition, r) ->
                             open'.Push(r.StartLine, namesInCondition condition)
+#if ANALYZERS_SDK_0_41
+                        // FCS 43.12.4 (analyzer SDK 0.41): an `#elif` tests more names in the region it sits in
+                        | ConditionalDirectiveTrivia.Elif(condition, _) ->
+                            if open'.Count > 0 then
+                                let start, names = open'.Pop()
+                                open'.Push(start, names @ namesInCondition condition)
+#endif
                         | ConditionalDirectiveTrivia.Else _ -> ()
                         | ConditionalDirectiveTrivia.EndIf r ->
                             if open'.Count > 0 then

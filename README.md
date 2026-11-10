@@ -9,7 +9,8 @@ The tool clarifies the (agent-generated or old) code's intent, reduces non-alpha
 - command-line tool that applies them in bulk.
 
 Suggestions are `Hint` severity: they mark an opportunity, not a defect, and
-never gate your build.
+never gate your build. The [priority rules](#refactorings), which point at
+likely defects, show as warnings in the editor.
 
 This project is the big brother of [CSharp.Refactor](https://github.com/Thorium/csharp-refactor)
 
@@ -22,7 +23,8 @@ The tool is fully offline: AI has been used to make it, but it doesn't use AI.
 ## Quick start
 
 Nothing to configure - the tool reads your project, reports what it would
-change, and only edits when you tell it to:
+change, and only edits when you tell it to. The tool runs on the .NET 10
+SDK; the projects it works on can target any framework:
 
 ```bash
 dotnet tool install --global fsharp-refactor
@@ -78,7 +80,7 @@ Examples:
 | Redundancy | `[<SerializableAttribute>]` | `[<Serializable>]` |
 | Diagnostics | `failwith "Error"` | `failwith $"Error, calling f with x: {x}"` |
 
-A spread of what the 150-odd rules do - the full list is in
+A spread of what the rules do - the full list is in
 [Refactorings](#refactorings):
 
 ## Editor and CI setup
@@ -110,7 +112,7 @@ then point Ionide at the restored analyzers in `.vscode/settings.json`:
 {
   "FSharp.enableAnalyzers": true,
   "FSharp.analyzersPath": [
-    "~/.nuget/packages/fsharp.refactor.analyzers/<version>/analyzers/dotnet/fs"
+    "~/.nuget/packages/fsharp.refactor.analyzers/<version>/analyzers/dotnet"
   ]
 }
 ```
@@ -123,17 +125,27 @@ appear as `Hint`-severity diagnostics with a light-bulb one-click fix.
 
 FsAutoComplete 0.85+ titles each fix by what it writes (`Fix FR0136 →
 Guid.NewGuid()`); an older one says only `Fix FR0136`. Ionide bundles its
-own FsAutoComplete; to run a newer one, `dotnet tool install -g
+own FsAutoComplete; to run another one, `dotnet tool install -g
 fsautocomplete` and set `FSharp.fsac.netCoreDllPath` to its
 `fsautocomplete.dll` (the extension above offers to do both).
 
-The package ships the analyzers built against TWO FSharp.Analyzers.SDK
-versions side by side - `FSharp.Refactor.Analyzers.Ionide.dll` for SDK
-0.35.0 (what stock Ionide's FsAutoComplete bundles, 7.31.x and earlier)
-and `FSharp.Refactor.Analyzers.dll` for SDK 0.37.2 (the CLI, and
-FsAutoComplete 0.84+). The SDK loads only the assembly matching its own
-version and logs a skip line for the other, so every host picks the one
-it can use and no configuration choice is needed.
+#### Supported hosts
+
+FSharp.Analyzers.SDK loads an analyzer assembly only when it was built
+against the SDK's own major.minor version, so the package ships one build
+per supported SDK, each in a folder of its own:
+
+| Folder in the package | SDK | Hosts |
+|---|---|---|
+| `analyzers/dotnet/fs` | 0.41 | FsAutoComplete 0.86 (Ionide 8), `fsharp-analyzers` 0.41 |
+| `analyzers/dotnet/fs-sdk0.37` | 0.37 | FsAutoComplete 0.84-0.85, `fsharp-analyzers` 0.37 |
+| `analyzers/dotnet/fs-sdk0.35` | 0.35 | FsAutoComplete 0.83 (Ionide 7.31) and earlier |
+
+An editor pointed at `analyzers/dotnet` finds all three, loads the one its
+SDK matches and logs a skip line for the others. The `fsharp-analyzers`
+CLI exits non-zero when it skips an assembly, so point it at the one
+folder for its version. A host on an SDK not listed here loads nothing
+until the package gains a build for it.
 
 **If no suggestions appear**, open Output -> "F# Language Service": it
 names the analyzer dlls it scanned and how many analyzers loaded, and a
@@ -146,24 +158,25 @@ Install the
 [FSharp.Refactor Visual Studio extension](src/FSharp.Refactor.Vsix/README.md)
 ([user-facing overview](src/FSharp.Refactor.Vsix/MarketplaceOverview.md)):
 squiggles and `Ctrl+.` quick fixes in full Visual Studio, analyzed
-through an FsAutoComplete sidecar. One prerequisite:
-`dotnet tool install -g fsautocomplete`.
+through an FsAutoComplete sidecar the extension bundles.
 
 ### CLI / CI
 
 ```bash
-dotnet tool install --global fsharp-analyzers
+dotnet tool install --global fsharp-analyzers --version "0.41.*"
 fsharp-analyzers --project src/YourProject.fsproj --analyzers-path ~/.nuget/packages/fsharp.refactor.analyzers/<version>/analyzers/dotnet/fs --code-root . --report analysis.sarif
 ```
 
 `fsharp-analyzers` is the analyzer HOST, and it is the dotnet tool you
-install. This package is not a tool: it is a library of analyzer assemblies
+install, at a version from the [supported hosts](#supported-hosts) table:
+an unpinned install takes the newest, which may be ahead of the package.
+This package is not a tool: it is a library of analyzer assemblies
 the host loads, so it is passed as a directory rather than installed. That
 directory sits in the NuGet cache because an analyzer package deliberately
-has no `lib/` folder and is marked a development dependency - a
-`PackageReference` therefore puts nothing in your `bin`, and after a restore,
-the cache is where the assemblies live. `--analyzers-path` takes any folder
-holding them and searches it recursively.
+has no `lib/` folder, declares no dependencies and is marked a development
+dependency - a `PackageReference` therefore puts nothing in your `bin`, and
+after a restore, the cache is where the assemblies live. `--analyzers-path`
+takes any folder holding them and searches it recursively.
 
 The CLI only REPORTS; it never edits your files, which is what you want in
 CI (SARIF output works in GitHub code scanning). To apply the fixes, use our
@@ -217,12 +230,12 @@ but silences the analyzer for everyone.
 | `--baseline <sarif>` | The ratchet: findings whose fingerprints appear in this earlier `--report` output are neither reported nor fixed - only what is NEW surfaces. Fingerprints hash the rule code, file name and normalized surrounding source, so they survive line shifts, other edits in the file, and different checkouts. Triage once, ratchet forever. |
 | `--fail-on-findings` | Exit 3 when any finding survives the filters - the hard CI gate. The full exit contract: 0 clean, 1 analysis or apply failure, 2 usage error, 3 findings (only with this flag). |
 | `--notes [on|off|only]` | `--notes` (or `--notes on`) lists fix-less advisory notes inline; `--notes only` is the review pass described next.  By default a run prints its FIXES - the product - and ends with one per-category note count (`41 advisory note(s) held: …`); SARIF (`--report`) and `--format json` always carry the notes in full, which is where CI and agents read them. |
-| `--notes only` | A review pass: every rule runs, only the findings WITHOUT a fix are listed inline, and nothing is written. That is the 33 advisory rules (an em dash in [Rules.md](Rules.md)'s fix column) plus the cases where a fixing rule can only advise. `fsharp-refactor src/Your.fsproj --notes only --report notes.html` writes them as a page. |
+| `--notes only` | A review pass: every rule runs, only the findings WITHOUT a fix are listed inline, and nothing is written. That is the advisory rules (an em dash in [Rules.md](Rules.md)'s fix column) plus the cases where a fixing rule can only advise. `fsharp-refactor src/Your.fsproj --notes only --report notes.html` writes them as a page. |
 | `--format json` | Machine-readable stdout: progress prose moves to stderr and the run's findings leave as one JSON document (code, severity, fixable, position, message, fingerprint, source snippet). The default output stays human-readable. |
 | `--rules` | Print the rule catalog - code, category, enabled-by-default (honors `--format json`). |
 | `--create-config` | Write a `fsharprefactor.json` of this build's defaults - every rule, every run-level key, one comment each - into the current directory, or into `<what>` when that is a directory. It changes nothing until you edit it, and never overwrites an existing config. |
-| `--mcp` | Serve the tool as an MCP server over stdio (newline-delimited JSON-RPC, no extra dependencies): tools `analyze` (target, codes/categories, parseOnly, apply) and `list_rules`. One warm typechecker lives across calls, so the first analyze pays the reference parse and the rest answer from a hot cache - the economics agent loops need. |
-| `--parse-only` | For a codebase that cannot COMPILE on this machine - a type provider needing its database, references that cannot restore. No MSBuild, no reference resolution: sources come straight from the fsproj's `<Compile>` items, and only the 58 of 119 analyzers that never consult the typechecker run (the typed rules are excluded outright, not trusted to self-silence). **It is not a substitute for a real run, and what survives is skewed the wrong way**: measured across the corpus, roughly a quarter of the correctness rules and a quarter of the performance rules still fire, against three quarters of the cosmetic ones - so a clean `--parse-only` says very little, and says least about the things worth knowing. Findings lost run to 38% on a typed-heavy codebase and under 10% on one the cosmetic rules dominate. Safety shifts accordingly: instead of a build, the gate is that a pass must not RAISE the compilation's error count over its baseline, and the usual parse-level protections (comment guard, overlap holds) still apply. Limitations: `#if` branches behind conditional or computed `DefineConstants` are not parsed, wildcard `<Compile>` globs are refused, and multi-framework passes collapse to one. Review the diff - the all-frameworks build arbiter is exactly what this mode does without. |
+| `--mcp` | Serve the tool as an MCP server over stdio (newline-delimited JSON-RPC, no extra dependencies): tools `analyze` (target, codes/categories, parseOnly, apply) and `list_rules`. One warm typechecker lives across calls, so the first analyze pays the reference parse and the rest answer from a hot cache - the economics agent loops need. The server works inside one directory: `fsharp-refactor <directory> --mcp`, or the directory it is started in. A call's target must lie inside it (a relative target is relative to it), and an `apply` writes nothing outside it: a compilation whose fixes reach a file outside, such as a linked source or a `#load`, is put back whole and reported. `--mcp --dry-run` is a server that applies nothing; `--define` and `--jobs` hold for every call, and any other option is refused, since it would be ignored. Analysing a project still builds it, which runs its MSBuild logic, so the directory should be a tree you trust. |
+| `--parse-only` | For a codebase that cannot COMPILE on this machine - a type provider needing its database, references that cannot restore. No MSBuild, no reference resolution: sources come straight from the fsproj's `<Compile>` items, and only the analyzers that never consult the typechecker run, about a third of them (the typed rules are excluded outright, not trusted to self-silence). **It is not a substitute for a real run, and what survives is skewed the wrong way**: measured across the corpus, roughly a quarter of the correctness rules and a quarter of the performance rules still fire, against three quarters of the cosmetic ones - so a clean `--parse-only` says very little, and says least about the things worth knowing. Findings lost run to 38% on a typed-heavy codebase and under 10% on one the cosmetic rules dominate. Safety shifts accordingly: instead of a build, the gate is that a pass must not RAISE the compilation's error count over its baseline, and the usual parse-level protections (comment guard, overlap holds) still apply. Limitations: `#if` branches behind conditional or computed `DefineConstants` are not parsed, wildcard `<Compile>` globs are refused, and multi-framework passes collapse to one. Review the diff - the all-frameworks build arbiter is exactly what this mode does without. |
 
 ### CI setup (SARIF)
 
@@ -244,6 +257,8 @@ change), a stable fingerprint, and the run's invocation record:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x     # the tool runs on .NET 10
       - run: dotnet tool install --global fsharp-refactor
       - run: fsharp-refactor src/Your.fsproj --dry-run --report findings.sarif
       - uses: github/codeql-action/upload-sarif@v3
@@ -277,8 +292,8 @@ pointed at, so one invocation - and one FCS typecheck, the expensive
 part - can run this package together with others built on the same
 SDK, all findings landing in one report. With
 [G-Research's analyzers](https://github.com/G-Research/fsharp-analyzers),
-whose current release pins the same `FSharp.Analyzers.SDK` as this
-package (0.37.2):
+at a release on the same `FSharp.Analyzers.SDK` minor as the folder you
+pass from this package (see [Supported hosts](#supported-hosts)):
 
 ```bash
 fsharp-analyzers --project src/Your.fsproj \
@@ -292,8 +307,8 @@ Rule codes are disjoint (`FR*` here, `GRA*` there), and the
 too - the machinery lives in the shared SDK, not in any one package.
 
 The SDK is strict about version agreement between the host and every
-analyzer assembly it loads; a mismatch means analyzers silently fail
-to load rather than erroring loudly. The day the two packages pin
+analyzer assembly it loads; a mismatched assembly is skipped with a log
+line, and the CLI exits non-zero for it. The day the two packages pin
 different SDK minors, fall back to separate CI jobs - each producing
 its own SARIF and uploading under its own `category:` (code scanning
 keeps the streams apart) - at the cost of typechecking the project
@@ -520,8 +535,10 @@ Roadmap based on ["F# refactoring possibilities"](https://www.slideshare.net/Tho
 Rules can be disabled per repository with an optional `fsharprefactor.json`,
 searched upward from each analyzed file, stopping at the repository root (the
 nearest file wins). Keys are rule codes or analyzer names, case-insensitive;
-a malformed file fails open so it can never break the editor. Comments and
-trailing commas are tolerated.
+a malformed file fails open in the editor, so it can never break it, and
+the `fsharp-refactor` tool refuses to run on one: read as no config, it would
+apply the rules the file turns off. Comments and trailing commas are
+tolerated.
 
 `fsharp-refactor --create-config` writes one for you: every rule this build
 knows at its current default, every run-level key at its own default, one
@@ -672,9 +689,11 @@ matches anywhere in the normalized path; an entry containing `*` is a
 glob - `*` stays within a segment, `**` crosses them (`*.g.fs`,
 `src/generated/**`). Ignored files are neither analyzed nor even
 type-checked by the apply tool's sweep - on a paket-heavy solution that
-is a lot of vendored source nobody wants "fixed". Files opening with the
-conventional `// <auto-generated>` marker are skipped automatically
-wherever they sit, as is everything under `obj/`.
+is a lot of vendored source nobody wants "fixed". A generated file is
+skipped automatically wherever it sits: one whose header comment (above the
+first declaration) says `<auto-generated>`, "generated by" or "do not edit",
+one carrying `[<GeneratedCode>]` or `[<CompilerGenerated>]` near its top, an
+fslex/fsyacc output, and everything under `obj/`.
 
 Individual findings can be silenced in place with the F# analyzer SDK's
 own suppression comments - the same ones editors honor, so one comment
@@ -813,7 +832,9 @@ performance lever on large codebases. Internally all analyzers share one
 memoized AST traversal per file version, so the editor pays for a single
 walk per keystroke regardless of how many rules are active.
 
-Every rule defaults to enabled except two:
+Every rule defaults to enabled except the few whose row in
+[Rules.md](Rules.md) has an empty Enabled cell, each for a reason of its
+own. Two of them:
 
 - FR0099 (line-ending semicolons) lexes every file containing one and
   rarely finds anything - cost out of proportion to a cosmetic default.
@@ -822,7 +843,7 @@ Every rule defaults to enabled except two:
   its benchmark pair. Nice to read, costs to run; opt in when that trade
   suits the codebase.
 
-Turn either on with `"FR0099": true` / `"FR0002": true`, or ask
+Turn one on with its code (`"FR0099": true`, `"FR0002": true`), or ask
 explicitly: the apply tool treats `--codes FR0002` as outranking both the
 default-off status and a config disable - naming a rule is an ask. A
 `--categories` filter deliberately is not one: `--categories idiom` runs
@@ -876,9 +897,12 @@ Or from the CLI:
 fsharp-analyzers --project YourProject.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net8.0 --code-root .
 ```
 
-Note: analyzers must be built against an FSharp.Compiler.Service compatible with
-the host FsAutoComplete. This project currently pins FSharp.Analyzers.SDK 0.37.2
-(FCS 43.12.201). See the SDK's version-pairing table when updating.
+Note: a host loads only analyzers built against its own FSharp.Analyzers.SDK
+major.minor. The main project pins SDK 0.37.2 (FCS 43.12.201), which is what
+the tool and the tests run; `FSharp.Refactor.Analyzers.Sdk41` and
+`FSharp.Refactor.Analyzers.Ionide` compile the same sources against SDK 0.41
+and 0.35 (see [Supported hosts](#supported-hosts)). A new SDK minor needs a
+project of its own beside them.
 
 ## Building and testing
 

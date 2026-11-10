@@ -1,9 +1,10 @@
 // VS Code has no analyzer concept of its own: F# analyzers load through
 // Ionide -> FsAutoComplete -> FSharp.Analyzers.SDK, from the directories
 // the `FSharp.analyzersPath` setting names. This extension bundles the
-// FSharp.Refactor analyzer assemblies (BOTH SDK builds — FSAC loads the
-// one matching its own SDK version and skips the other) and, with the
-// user's consent, appends its own analyzers directory to that setting.
+// FSharp.Refactor analyzer assemblies (one build per supported analyzer
+// SDK — FSAC loads the one matching its own SDK's major.minor and skips
+// the rest) and, with the user's consent, appends its own analyzers
+// directory to that setting.
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -32,6 +33,16 @@ function globalAnalyzersPath(): string[] {
     return vscode.workspace.getConfiguration(SECTION).inspect<string[]>('analyzersPath')?.globalValue ?? [];
 }
 
+/// Ionide's own default folders (`packages/Analyzers`, `analyzers`). A
+/// user-scope array replaces the default instead of adding to it, so the
+/// first entry written there has to carry the defaults along, or every
+/// workspace relying on them loses its own analyzers.
+function defaultAnalyzersPath(): string[] {
+    return vscode.workspace.getConfiguration(SECTION).inspect<string[]>('analyzersPath')?.defaultValue ?? [];
+}
+
+const sameEntries = (a: string[], b: string[]) => a.length === b.length && a.every((p, i) => p === b[i]);
+
 async function promptReload(message: string): Promise<void> {
     const pick = await vscode.window.showInformationMessage(message, 'Reload Window');
     if (pick === 'Reload Window') {
@@ -44,8 +55,10 @@ async function wire(context: vscode.ExtensionContext, interactive: boolean): Pro
     const dir = analyzersDir(context);
     const current = globalAnalyzersPath();
 
-    // replace entries from older versions of this extension, keep the rest
-    const kept = current.filter(p => !p.includes(PATH_MARKER));
+    // replace entries from older versions of this extension, keep the rest;
+    // with nothing else in the user value, the rest is Ionide's default
+    const others = current.filter(p => !p.includes(PATH_MARKER));
+    const kept = others.length > 0 ? others : defaultAnalyzersPath();
     const wired = current.includes(dir);
     const enabled = config.get<boolean>('enableAnalyzers') ?? false;
 
@@ -75,7 +88,9 @@ async function unwire(context: vscode.ExtensionContext): Promise<void> {
         return;
     }
 
-    await config.update('analyzersPath', kept.length > 0 ? kept : undefined, vscode.ConfigurationTarget.Global);
+    // what is left is Ionide's default, or nothing: the setting goes back to unset
+    const restored = kept.length > 0 && !sameEntries(kept, defaultAnalyzersPath()) ? kept : undefined;
+    await config.update('analyzersPath', restored, vscode.ConfigurationTarget.Global);
     // leave enableAnalyzers alone: the user may have other analyzers
     await context.globalState.update(DECLINED_KEY, true);
     await promptReload('FSharp.Refactor analyzers removed from Ionide settings. Reload to apply?');
@@ -214,6 +229,47 @@ async function effectiveFsac(): Promise<Fsac> {
 
 const titlesDescriptive = (v: Version | undefined) => v !== undefined && compareVersions(v, FSAC_TITLES) >= 0;
 
+// ---- FsAutoComplete: which analyzer build it can load ----
+//
+// FSharp.Analyzers.SDK loads an analyzer assembly only when it was built
+// against the SDK's own major.minor, and FsAutoComplete only logs the skip.
+// An FsAutoComplete on an SDK none of the bundled builds targets shows no
+// suggestion at all, so the extension never points Ionide at one and says
+// so when Ionide runs one.
+
+/// The analyzer SDK an FsAutoComplete runs, as major.minor, from the
+/// deps.json beside its dll; undefined when that cannot be read.
+function fsacSdkOf(dll: string | undefined): string | undefined {
+    if (!dll) {
+        return undefined;
+    }
+
+    try {
+        const deps = fs.readFileSync(path.join(path.dirname(dll), 'fsautocomplete.deps.json'), 'utf8');
+        const m = /"FSharp\.Analyzers\.SDK\/(\d+)\.(\d+)/.exec(deps);
+        return m ? `${m[1]}.${m[2]}` : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/// The analyzer SDKs the bundled builds target, stamped into package.json
+/// by the packaging script from the builds' own project files.
+function bundledSdks(context: vscode.ExtensionContext): string[] {
+    const pkg = context.extension.packageJSON as { fsharpRefactorBuild?: { sdks?: string } };
+    return (pkg.fsharpRefactorBuild?.sdks ?? '').split(/[,\s]+/).filter(s => s.length > 0);
+}
+
+/// False only when both sides are known and no bundled build matches.
+function sdkLoads(context: vscode.ExtensionContext, dll: string | undefined): boolean {
+    const sdk = fsacSdkOf(dll);
+    const bundled = bundledSdks(context);
+    return sdk === undefined || bundled.length === 0 || bundled.includes(sdk);
+}
+
+const noBuildFor = (context: vscode.ExtensionContext, dll: string | undefined) =>
+    `it runs FSharp.Analyzers.SDK ${fsacSdkOf(dll)}, and this extension's analyzers are built for ${bundledSdks(context).join(', ')}`;
+
 function globalFsacSetting(): string {
     return vscode.workspace.getConfiguration(SECTION).inspect<string>('fsac.netCoreDllPath')?.globalValue ?? '';
 }
@@ -260,6 +316,13 @@ async function useNewerFsac(context: vscode.ExtensionContext): Promise<void> {
         return;
     }
 
+    if (!sdkLoads(context, newest.dll)) {
+        vscode.window.showErrorMessage(
+            `FSharp.Refactor: the fsautocomplete tool ${showVersion(newest.version)} was left unused: ${noBuildFor(context, newest.dll)}. Update this extension, or install a matching fsautocomplete.`
+        );
+        return;
+    }
+
     await setGlobalFsac(newest.dll);
     await context.globalState.update(FSAC_DECLINED_KEY, undefined);
     await promptReload(`FSharp.Refactor: Ionide now runs FsAutoComplete ${showVersion(newest.version)}. Reload to restart it?`);
@@ -300,7 +363,12 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
         const bundledDll = ionide ? fsacDllIn(vscode.Uri.joinPath(ionide.extensionUri, 'bin').fsPath) : undefined;
         const bundled = bundledDll ? await fsacVersionOf(bundledDll) : undefined;
 
-        if (bundled && titlesDescriptive(bundled) && (!newest || compareVersions(bundled, newest.version) >= 0)) {
+        if (
+            bundled &&
+            titlesDescriptive(bundled) &&
+            sdkLoads(context, bundledDll) &&
+            (!newest || compareVersions(bundled, newest.version) >= 0)
+        ) {
             await setGlobalFsac(undefined);
             await promptReload(
                 `FSharp.Refactor: Ionide's own FsAutoComplete (${showVersion(bundled)}) now titles fixes by what they write; switched back to it. Reload?`
@@ -308,6 +376,7 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
         } else if (
             newest &&
             normPath(newest.dll) !== normPath(setting) &&
+            sdkLoads(context, newest.dll) &&
             (!fs.existsSync(setting) || titlesDescriptive(newest.version))
         ) {
             await setGlobalFsac(newest.dll);
@@ -349,6 +418,27 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
     } else if (pick === 'Not now') {
         await context.globalState.update(FSAC_DECLINED_KEY, true);
     }
+}
+
+const SDK_WARNED_KEY = 'fsharpRefactor.sdkWarned';
+
+/// Say so, once per FsAutoComplete, when the one Ionide runs can load none
+/// of the bundled builds: the skip is otherwise only a log line.
+async function warnUnloadable(context: vscode.ExtensionContext): Promise<void> {
+    const fsac = await effectiveFsac();
+    if (sdkLoads(context, fsac.dll)) {
+        return;
+    }
+
+    const seen = `${showVersion(fsac.version)} ${fsacSdkOf(fsac.dll)}`;
+    if (context.globalState.get<string>(SDK_WARNED_KEY) === seen) {
+        return;
+    }
+
+    await context.globalState.update(SDK_WARNED_KEY, seen);
+    vscode.window.showWarningMessage(
+        `FSharp.Refactor: no suggestions will show. Ionide runs FsAutoComplete ${showVersion(fsac.version)}: ${noBuildFor(context, fsac.dll)}. Update this extension.`
+    );
 }
 
 // the extension shipped under this id before it moved publishers; both
@@ -433,6 +523,7 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
             ? `${fsac.dll ?? `${fsac.setting} (NO fsautocomplete.dll there)`} (FSharp.fsac.netCoreDllPath)`
             : `${fsac.dll ?? '(not found)'} (bundled with Ionide)`;
     const titles = titlesDescriptive(fsac.version);
+    const loads = sdkLoads(context, fsac.dll);
     const stale = paths.filter(p => p.includes(PATH_MARKER) && p !== dir);
     const tool = await toolVersion();
 
@@ -443,6 +534,9 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
         `Wired into Ionide: ${paths.includes(dir) ? 'yes' : 'NO'}; FSharp.enableAnalyzers: ${enabled}`,
         ...(stale.length > 0 ? [`  stale entries from older versions: ${stale.join(', ')}`] : []),
         `Ionide ${ionideVersion ?? '(not installed)'}; FsAutoComplete ${showVersion(fsac.version)}: ${fsacWhere}`,
+        loads
+            ? `  analyzer SDK ${fsacSdkOf(fsac.dll) ?? '(unknown)'}; builds bundled for ${bundledSdks(context).join(', ') || '(unknown)'}`
+            : `  NO ANALYZERS LOAD: ${noBuildFor(context, fsac.dll)}`,
         titles
             ? '  quick-fix titles say what each fix writes'
             : `  quick-fix titles say only "Fix FR…" (needs FsAutoComplete ${showVersion(FSAC_TITLES)}+: run "FSharp.Refactor: Use FsAutoComplete ${showVersion(FSAC_TITLES)}+")`,
@@ -460,6 +554,7 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
     const problems = [
         ...(paths.includes(dir) && enabled ? [] : ['analyzers not wired']),
         ...(stale.length > 0 ? ['stale entries'] : []),
+        ...(loads ? [] : ["FsAutoComplete's analyzer SDK has no matching build"]),
         ...(titles ? [] : ['fix titles show only the code']),
         ...(tool ? [] : ['tool not installed']),
     ];
@@ -533,10 +628,32 @@ async function ensureTool(): Promise<boolean> {
     return false;
 }
 
+/// The tool reads and rewrites the files on disk: an unsaved editor is
+/// analysed as it was last saved, and saving it afterwards overwrites the
+/// fix or loses the edit. A run that writes saves everything first, asked.
+async function savedForWriting(): Promise<boolean> {
+    const dirty = vscode.workspace.textDocuments.filter(d => d.isDirty && !d.isUntitled).length;
+    if (dirty === 0) {
+        return true;
+    }
+
+    const pick = await vscode.window.showWarningMessage(
+        `FSharp.Refactor rewrites files on disk, and ${dirty} open file(s) have unsaved changes.`,
+        { modal: true },
+        'Save all and run'
+    );
+
+    return pick === 'Save all and run' && (await vscode.workspace.saveAll(false));
+}
+
 /// Send one tool invocation to the integrated terminal.
 async function invoke(args: string): Promise<void> {
     const target = await pickTarget();
     if (!target || !(await ensureTool())) {
+        return;
+    }
+
+    if (!args.includes('--dry-run') && !(await savedForWriting())) {
         return;
     }
 
@@ -763,6 +880,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // the titles only matter once the analyzers run at all
     if (globalAnalyzersPath().includes(analyzersDir(context))) {
         await checkFsac(context);
+        await warnUnloadable(context);
     }
 }
 
@@ -788,7 +906,7 @@ async function wireOnActivation(context: vscode.ExtensionContext): Promise<void>
 
     // settings are the user's — ask before touching them
     const pick = await vscode.window.showInformationMessage(
-        'FSharp.Refactor: wire its refactoring analyzers into Ionide? (updates the global FSharp.analyzersPath setting)',
+        'FSharp.Refactor: wire its refactoring analyzers into Ionide? (updates the global FSharp.analyzersPath and FSharp.enableAnalyzers settings)',
         'Wire it up',
         'Not now'
     );

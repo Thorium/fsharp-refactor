@@ -2,12 +2,13 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <!-- the SAME analyzers compiled against FSharp.Analyzers.SDK 0.35.0 —
-         the version stock Ionide's FsAutoComplete bundles. The SDK loads
-         only analyzers built against its own version and skips the rest,
-         so the package ships BOTH assemblies side by side and every host
-         picks the one it can use. Distinct assembly name so the two can
-         live in one folder. -->
+    <!-- the SAME analyzers compiled against FSharp.Analyzers.SDK 0.35.0:
+         FsAutoComplete 0.83 and earlier (Ionide 7.31 and earlier). The SDK
+         loads only analyzers built against its own major.minor, so the
+         package ships one build per supported SDK, each in a folder of its
+         own; this one is analyzers/dotnet/fs-sdk0.35. Distinct assembly
+         name so an editor pointed at all the builds loads no two assemblies
+         of one name. -->
     <AssemblyName>FSharp.Refactor.Analyzers.Ionide</AssemblyName>
     <DefineConstants>$(DefineConstants);ANALYZERS_SDK_0_35</DefineConstants>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
