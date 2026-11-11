@@ -156,9 +156,10 @@ let glob (pattern: string) : string list =
                 | name -> segmentPattern name + "/")
             |> String.concat ""
 
-        // a file system that ignores case matches a pattern the same way
+        // a file system that ignores case matches a pattern the same way:
+        // Windows and macOS, as the file name patterns of .NET itself
         let options =
-            if Path.DirectorySeparatorChar = '\\' then
+            if OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() then
                 Text.RegularExpressions.RegexOptions.IgnoreCase
             else
                 Text.RegularExpressions.RegexOptions.None

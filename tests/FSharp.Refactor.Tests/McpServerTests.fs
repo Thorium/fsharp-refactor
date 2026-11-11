@@ -201,6 +201,50 @@ let ``an apply writes inside the root only: a compilation reaching a file outsid
         cleanup parent
 
 [<Fact>]
+let ``a call refused before any work answers with its own reason, not the last call's`` () =
+    let parent = tempRoot "fsref-mcp-parent-"
+
+    try
+        let root = Path.Combine(parent, "root")
+        let shared = Path.Combine(parent, "shared")
+        let broken = Path.Combine(root, "broken")
+        Directory.CreateDirectory shared |> ignore
+        Directory.CreateDirectory(Path.Combine(broken, ".git")) |> ignore
+        File.WriteAllText(Path.Combine(shared, "Lib.fsx"), fixable)
+        let reaching = Path.Combine(root, "main.fsx")
+
+        File.WriteAllText(reaching, "#load \"../shared/Lib.fsx\"\nlet none (xs: string list) = List.length xs = 0\n")
+
+        // a config that is no JSON: the run is refused before any work
+        let refused = Path.Combine(broken, "probe.fsx")
+        File.WriteAllText(refused, fixable)
+
+        File.WriteAllText(
+            Path.Combine(broken, FSharp.Refactor.Configuration.ConfigFileName),
+            "{ \"FR0010\": false \"x\": 1 }"
+        )
+
+        let _, answers, _ =
+            serve [ root; "--mcp" ] [ analyzeRequest 1 reaching true; analyzeRequest 2 refused true ]
+
+        let reasons (body: JsonElement) =
+            body.GetProperty("exitReasons").EnumerateArray()
+            |> Seq.map _.GetString()
+            |> String.concat "; "
+
+        match answers |> List.map read with
+        | [ Ok first; Ok second ] ->
+            Assert.Contains("outside", reasons first)
+            Assert.Equal(2, second.GetProperty("exitCode").GetInt32())
+            Assert.DoesNotContain("outside", reasons second)
+            Assert.Contains("cannot be read", reasons second)
+        | other -> failwithf "answered %A" other
+
+        Assert.Equal(fixable, File.ReadAllText refused)
+    finally
+        cleanup parent
+
+[<Fact>]
 let ``a flag the server would ignore, or a root that is no directory, is a usage error`` () =
     let root = tempRoot "fsref-mcp-root-"
 

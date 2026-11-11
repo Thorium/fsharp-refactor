@@ -8029,15 +8029,45 @@ let private releaseSnapshot () =
 
     activeSnapshot <- Map.empty
 
+/// One compilation's `work`, start to end. Once it returns, its fixes are
+/// verified or put back already, so a failure or an interrupt before the
+/// next compilation's snapshot leaves them.
+let internal endingCompilation (work: unit -> int) : int =
+    let code = work ()
+    releaseSnapshot ()
+    code
+
 /// Ctrl+C: nothing more is written, and the files the compilation in
 /// progress changed go back, since nothing has verified them; returns how
 /// many. The compilations finished before it keep their fixes.
-let internal putBackOnInterrupt () =
+/// `say` hears the count while the gate is held: the run's next write, and
+/// the end it brings (endingOnInterrupt), wait for it.
+let internal putBackOnInterruptSaying (say: int -> unit) =
     lock writeGate (fun () ->
         interrupted <- true
         let restored = putBackThrough writeSourceNow activeSnapshot
         releaseSnapshot ()
+        say restored
         restored)
+
+let internal putBackOnInterrupt () = putBackOnInterruptSaying ignore
+
+/// The run's exit code, and 130 when the write an interrupt refused ended
+/// it: the files are back and said so by then, and the exception is no
+/// failure to report.
+let internal endingOnInterrupt (run: unit -> int) : int =
+    let refusedWrite (e: exn) =
+        match e with
+        | :? OperationCanceledException -> true
+        | :? AggregateException as several ->
+            several.Flatten().InnerExceptions
+            |> Seq.forall (fun inner -> inner :? OperationCanceledException)
+        | _ -> false
+
+    try
+        run ()
+    with e when refusedWrite e && lock writeGate (fun () -> interrupted) ->
+        130
 
 /// `work` on one target. A failure that ends it early puts back the files
 /// of the compilation in progress, which nothing has verified: a source
@@ -10112,6 +10142,9 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     restoresDone.Clear()
     putBackFiles.Clear()
     listedFrameworks.Clear()
+    // before a refusal below can end the run: a resident host answers with
+    // this run's reasons, a refused one included
+    lock exitReasons exitReasons.Clear
 
     // the report is written after a compilation's work: a path that cannot
     // take it is refused before any
@@ -10139,6 +10172,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     match resolved with
     | Error message ->
         eprintfn $"{message}"
+        lock exitReasons (fun () -> exitReasons.Add message)
         2
     | Ok targets ->
         let targets = orderNarrowestFirst targets
@@ -10236,7 +10270,6 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         runTotalApplied <- 0
         runBuildFailures <- 0
         runAnalyzerFailures <- 0
-        lock exitReasons exitReasons.Clear
         clearInterrupt ()
         runCompilations <- 0
         honorAllSuppressions <- opts.HonorSuppressions
@@ -10251,6 +10284,11 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
             reportedKeys.Clear())
 
         printedNotes.Clear()
+
+        // a target is several compilations when it has several frameworks or
+        // build configurations, and each one ends on its own
+        let runTarget checker opts showHeader target =
+            endingCompilation (fun () -> runTarget checker opts showHeader target)
 
         // A multi-targeted project is really several compilations: each
         // framework activates its own #if branches, and code behind
@@ -11164,13 +11202,14 @@ let private putBackOnCtrlC () =
         Console.CancelKeyPress.Add(fun args ->
             // the process stays alive while the files go back
             args.Cancel <- true
-            let restored = putBackOnInterrupt ()
 
-            if restored > 0 then
-                eprintfn
-                    $"interrupted: the {restored} file(s) the compilation in progress had changed were put back unverified"
-            else
-                eprintfn "interrupted"
+            putBackOnInterruptSaying (fun restored ->
+                if restored > 0 then
+                    eprintfn
+                        $"interrupted: the {restored} file(s) the compilation in progress had changed were put back unverified"
+                else
+                    eprintfn "interrupted")
+            |> ignore
 
             exit 130)
 
@@ -11305,7 +11344,7 @@ let private runMain argv =
 let main argv =
     surviveForeignBackgroundExceptions ()
     putBackOnCtrlC ()
-    let code = runMain argv
+    let code = endingOnInterrupt (fun () -> runMain argv)
 
     // a run that went on past loaded code failing on a background thread
     // analysed what it could, not everything: exit 1 says so, as a

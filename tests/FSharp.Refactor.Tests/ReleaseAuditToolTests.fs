@@ -109,6 +109,45 @@ let ``a target that finishes keeps its fixes, and a later interrupt leaves them`
         Program.takeSnapshot [||] |> ignore
         cleanup root
 
+[<Fact>]
+let ``a compilation that finishes keeps its fixes when the next one fails before its snapshot`` () =
+    let root = tempRoot "fsref-release-fail-"
+
+    try
+        let own, sibling = rewrittenPair root
+
+        // one target, two frameworks: the first pass returns, the second
+        // fails before it has snapshotted anything
+        let code, _ =
+            withStderr (fun () ->
+                Program.restoringOnFailure (fun () ->
+                    Program.endingCompilation (fun () -> 0) |> ignore
+                    raise (UnauthorizedAccessException "Access to Other.fs is denied.")))
+
+        Assert.Equal(1, code)
+        Assert.Equal("let add (a: int) (b: int) = a + b\n", File.ReadAllText own)
+        Assert.Equal("let three () = Lib.add 1 2\n", File.ReadAllText sibling)
+    finally
+        Program.takeSnapshot [||] |> ignore
+        lock Program.exitReasons Program.exitReasons.Clear
+        cleanup root
+
+[<Fact>]
+let ``a compilation that finishes keeps its fixes when an interrupt comes before the next one's snapshot`` () =
+    let root = tempRoot "fsref-release-interrupt-"
+
+    try
+        let own, sibling = rewrittenPair root
+
+        Assert.Equal(0, Program.endingCompilation (fun () -> 0))
+        Assert.Equal(0, Program.putBackOnInterrupt ())
+        Assert.Equal("let add (a: int) (b: int) = a + b\n", File.ReadAllText own)
+        Assert.Equal("let three () = Lib.add 1 2\n", File.ReadAllText sibling)
+    finally
+        Program.clearInterrupt ()
+        Program.takeSnapshot [||] |> ignore
+        cleanup root
+
 // ---- Ctrl+C ----
 
 [<Fact>]
@@ -133,6 +172,51 @@ let ``an interrupt puts the compilation in progress back and nothing is written 
         Program.clearInterrupt ()
         Program.takeSnapshot [||] |> ignore
         cleanup root
+
+[<Fact>]
+let ``an interrupt says what it put back before the run can go on`` () =
+    let root = tempRoot "fsref-release-interrupt-"
+
+    try
+        let own, sibling = rewrittenPair root
+        let said = ref -1
+
+        Assert.Equal(2, Program.putBackOnInterruptSaying (fun restored -> said.Value <- restored))
+        Assert.Equal(2, said.Value)
+        assertOriginals own sibling
+    finally
+        Program.clearInterrupt ()
+        Program.takeSnapshot [||] |> ignore
+        cleanup root
+
+[<Fact>]
+let ``a write refused after an interrupt ends the run with 130, not with its exception`` () =
+    try
+        Program.putBackOnInterrupt () |> ignore
+
+        Assert.Equal(
+            130,
+            Program.endingOnInterrupt (fun () -> raise (OperationCanceledException "nothing more is written"))
+        )
+
+        // out of a parallel pass
+        Assert.Equal(
+            130,
+            Program.endingOnInterrupt (fun () ->
+                raise (AggregateException(OperationCanceledException "nothing more is written")))
+        )
+
+        Program.clearInterrupt ()
+        Assert.Equal(3, Program.endingOnInterrupt (fun () -> 3))
+
+        // a cancellation no interrupt caused is the run's own failure
+        Assert.Throws<OperationCanceledException>(fun () ->
+            Program.endingOnInterrupt (fun () -> raise (OperationCanceledException "a timeout"))
+            |> ignore)
+        |> ignore
+    finally
+        Program.clearInterrupt ()
+        Program.takeSnapshot [||] |> ignore
 
 // ---- refused before any work ----
 
@@ -205,6 +289,33 @@ let ``a config that is no JSON refuses the run, where the analyzers alone read i
 
         File.WriteAllText(config, "{ \"FR0010\": false, \"ignorePaths\": [] }")
         Assert.True((FSharp.Refactor.Configuration.problemFor script).IsNone)
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a config with no JSON in it sets nothing, so it refuses nothing`` () =
+    let root = tempRoot "fsref-release-config-"
+
+    try
+        Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
+        let script = Path.Combine(root, "probe.fsx")
+        let config = Path.Combine(root, FSharp.Refactor.Configuration.ConfigFileName)
+        File.WriteAllText(script, "let isEmpty (xs: int list) = List.length xs = 0\n")
+
+        for content in [ ""; "  \r\n"; "// nothing yet\n"; "// nothing yet"; "/* nothing yet */\n" ] do
+            File.WriteAllText(config, content)
+            Assert.True((FSharp.Refactor.Configuration.problemFor script).IsNone, $"refused: '{content}'")
+
+        let code, said =
+            withStderr (fun () -> Program.main [| script; "--dry-run"; "--no-color" |])
+
+        Assert.DoesNotContain("cannot be read", said)
+        Assert.Equal(0, code)
+
+        // text that is no comment is still no config
+        for content in [ "rules"; "12"; "tru"; "/* never closed"; "// a comment\n{ \"FR0010\": " ] do
+            File.WriteAllText(config, content)
+            Assert.True((FSharp.Refactor.Configuration.problemFor script).IsSome, $"accepted: '{content}'")
     finally
         cleanup root
 

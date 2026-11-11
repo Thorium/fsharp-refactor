@@ -104,7 +104,9 @@ async function unwire(context: vscode.ExtensionContext): Promise<void> {
 // fsautocomplete dotnet global tool.
 
 const FSAC_NEEDED: Version = [0, 86, 0];
-const FSAC_DECLINED_KEY = 'fsharpRefactor.fsacDeclined';
+// the answer to the offer for FSAC_NEEDED: a "no" to an offer for another
+// version answered another question
+const FSAC_DECLINED_KEY = `fsharpRefactor.fsacDeclined.${FSAC_NEEDED.join('.')}`;
 
 type Version = [number, number, number];
 
@@ -380,9 +382,14 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
             await promptReload(
                 `FSharp.Refactor: the fsautocomplete tool moved to ${showVersion(newest.version)}; Ionide re-pointed. Reload to restart it?`
             );
-        } else if (!newest && !fs.existsSync(setting)) {
+        } else if (!fs.existsSync(setting)) {
+            // a path with no FsAutoComplete behind it leaves Ionide with none
             await setGlobalFsac(undefined);
-            await promptReload('FSharp.Refactor: the fsautocomplete tool is gone; Ionide is back on its bundled one. Reload?');
+            await promptReload(
+                newest
+                    ? `FSharp.Refactor: the fsautocomplete tool moved to ${showVersion(newest.version)}, left unused: ${noBuildFor(context, newest.dll)}. Ionide is back on its bundled one. Reload?`
+                    : 'FSharp.Refactor: the fsautocomplete tool is gone; Ionide is back on its bundled one. Reload?'
+            );
         }
         return;
     }

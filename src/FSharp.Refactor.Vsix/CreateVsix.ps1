@@ -86,8 +86,14 @@ if (-not $NoFsac) {
         $toolDir = Join-Path $here "obj\fsac-tool"
         # update installs when the tool is missing, and moves an older one on
         dotnet tool update fsautocomplete --tool-path $toolDir
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $updateExit = $LASTEXITCODE
         $payload = Find-FsacPayload (Join-Path $toolDir ".store\fsautocomplete")
+        # no feed to update from: the copy an earlier packaging installed
+        # does, when it runs the analyzers' SDK
+        if ($updateExit -ne 0) {
+            if (-not $payload -or (Get-FsacSdk $payload) -ne $shippedSdk) { exit $updateExit }
+            Write-Warning "dotnet tool update fsautocomplete failed; bundling the copy already in $toolDir"
+        }
     }
     if (-not $payload) { throw "fsautocomplete payload not found; pass -NoFsac to package without it" }
     $fsacVersion = [version](Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $payload))))
