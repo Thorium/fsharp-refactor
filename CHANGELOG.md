@@ -2,6 +2,13 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.52
+
+- One analyzers build, for FSharp.Analyzers.SDK 0.41 on .NET 10 (FsAutoComplete 0.86+, Ionide 8+, `fsharp-analyzers` 0.41), in `analyzers/dotnet/fs`. The SDK 0.37 and 0.35 builds are gone: 0.8.51 is the last release for Ionide 7, FsAutoComplete 0.85 and earlier, and `fsharp-analyzers` 0.37 and earlier.
+- The tool and the tests run the shipped build: FSharp.Compiler.Service 43.12.402 instead of 43.12.201.
+- VS Code extension: when Ionide runs an FsAutoComplete older than 0.86, offers to point it at the `fsautocomplete` tool, and `Use FsAutoComplete 0.86+` replaces `Use FsAutoComplete 0.85+`.
+- Visual Studio extension: bundles FsAutoComplete 0.86 or later.
+
 ## 0.8.51
 
 - A build for FSharp.Analyzers.SDK 0.41 (FsAutoComplete 0.86, Ionide 8, `fsharp-analyzers` 0.41): those hosts loaded neither of the two builds shipped. Each build has a folder of its own in the package (`analyzers/dotnet/fs` for 0.41, `fs-sdk0.37`, `fs-sdk0.35`), so the `fsharp-analyzers` CLI no longer exits -3 over the build it skipped.

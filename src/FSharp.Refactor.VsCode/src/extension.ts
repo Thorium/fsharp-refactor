@@ -1,10 +1,9 @@
 // VS Code has no analyzer concept of its own: F# analyzers load through
 // Ionide -> FsAutoComplete -> FSharp.Analyzers.SDK, from the directories
 // the `FSharp.analyzersPath` setting names. This extension bundles the
-// FSharp.Refactor analyzer assemblies (one build per supported analyzer
-// SDK — FSAC loads the one matching its own SDK's major.minor and skips
-// the rest) and, with the user's consent, appends its own analyzers
-// directory to that setting.
+// FSharp.Refactor analyzers (built for one analyzer SDK; FSAC loads them
+// only when its own SDK has the same major.minor) and, with the user's
+// consent, appends its own analyzers directory to that setting.
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -96,16 +95,15 @@ async function unwire(context: vscode.ExtensionContext): Promise<void> {
     await promptReload('FSharp.Refactor analyzers removed from Ionide settings. Reload to apply?');
 }
 
-// ---- FsAutoComplete: the quick-fix titles ----
+// ---- FsAutoComplete: the version the analyzers need ----
 //
-// FsAutoComplete 0.85.0 titles an analyzer quick fix with the code it
-// writes (`Fix FR0136 → Guid.NewGuid()`); every earlier one says only
-// `Fix FR0136`, so a fix and its alternative read the same in the menu.
-// Ionide bundles its own FsAutoComplete and may lag behind; the
+// The analyzers are built for FSharp.Analyzers.SDK 0.41, which
+// FsAutoComplete 0.86.0 and later run. Ionide bundles its own
+// FsAutoComplete (Ionide 7: 0.85 and earlier); the
 // `FSharp.fsac.netCoreDllPath` setting points it at another one, here the
 // fsautocomplete dotnet global tool.
 
-const FSAC_TITLES: Version = [0, 85, 0];
+const FSAC_NEEDED: Version = [0, 86, 0];
 const FSAC_DECLINED_KEY = 'fsharpRefactor.fsacDeclined';
 
 type Version = [number, number, number];
@@ -227,15 +225,14 @@ async function effectiveFsac(): Promise<Fsac> {
     return { source: 'bundled', dll, version: dll ? await fsacVersionOf(dll) : undefined };
 }
 
-const titlesDescriptive = (v: Version | undefined) => v !== undefined && compareVersions(v, FSAC_TITLES) >= 0;
+const newEnough = (v: Version | undefined) => v !== undefined && compareVersions(v, FSAC_NEEDED) >= 0;
 
-// ---- FsAutoComplete: which analyzer build it can load ----
+// ---- FsAutoComplete: whether it can load the analyzers ----
 //
 // FSharp.Analyzers.SDK loads an analyzer assembly only when it was built
 // against the SDK's own major.minor, and FsAutoComplete only logs the skip.
-// An FsAutoComplete on an SDK none of the bundled builds targets shows no
-// suggestion at all, so the extension never points Ionide at one and says
-// so when Ionide runs one.
+// An FsAutoComplete on another SDK shows no suggestion at all, so the
+// extension never points Ionide at one and says so when Ionide runs one.
 
 /// The analyzer SDK an FsAutoComplete runs, as major.minor, from the
 /// deps.json beside its dll; undefined when that cannot be read.
@@ -253,8 +250,8 @@ function fsacSdkOf(dll: string | undefined): string | undefined {
     }
 }
 
-/// The analyzer SDKs the bundled builds target, stamped into package.json
-/// by the packaging script from the builds' own project files.
+/// The analyzer SDKs the bundled analyzers target, stamped into
+/// package.json by the packaging script from the project file.
 function bundledSdks(context: vscode.ExtensionContext): string[] {
     const pkg = context.extension.packageJSON as { fsharpRefactorBuild?: { sdks?: string } };
     return (pkg.fsharpRefactorBuild?.sdks ?? '').split(/[,\s]+/).filter(s => s.length > 0);
@@ -300,7 +297,7 @@ function updateFsacTool(): Thenable<string | undefined> {
 async function useNewerFsac(context: vscode.ExtensionContext): Promise<void> {
     let newest = await newestStoreFsac();
 
-    if (!newest || !titlesDescriptive(newest.version)) {
+    if (!newest || !newEnough(newest.version)) {
         const failure = await updateFsacTool();
         if (failure) {
             vscode.window.showErrorMessage(`FSharp.Refactor: installing fsautocomplete failed: ${failure}`);
@@ -309,9 +306,9 @@ async function useNewerFsac(context: vscode.ExtensionContext): Promise<void> {
         newest = await newestStoreFsac();
     }
 
-    if (!newest || !titlesDescriptive(newest.version)) {
+    if (!newest || !newEnough(newest.version)) {
         vscode.window.showErrorMessage(
-            `FSharp.Refactor: the fsautocomplete tool is ${showVersion(newest?.version)}; descriptive fix titles need ${showVersion(FSAC_TITLES)} or later.`
+            `FSharp.Refactor: the fsautocomplete tool is ${showVersion(newest?.version)}; the analyzers need ${showVersion(FSAC_NEEDED)} or later.`
         );
         return;
     }
@@ -349,7 +346,7 @@ async function useBundledFsac(context: vscode.ExtensionContext): Promise<void> {
 /// On activation: keep a tool-store path alive across `dotnet tool update`
 /// (which deletes the old version's folder), hand back to Ionide's own
 /// FsAutoComplete once that is as new, and otherwise offer — once — to get
-/// one whose fix titles say what the fix writes.
+/// one that loads the analyzers.
 async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
     const setting = globalFsacSetting();
 
@@ -365,19 +362,19 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
 
         if (
             bundled &&
-            titlesDescriptive(bundled) &&
+            newEnough(bundled) &&
             sdkLoads(context, bundledDll) &&
             (!newest || compareVersions(bundled, newest.version) >= 0)
         ) {
             await setGlobalFsac(undefined);
             await promptReload(
-                `FSharp.Refactor: Ionide's own FsAutoComplete (${showVersion(bundled)}) now titles fixes by what they write; switched back to it. Reload?`
+                `FSharp.Refactor: Ionide's own FsAutoComplete (${showVersion(bundled)}) now loads the analyzers; switched back to it. Reload?`
             );
         } else if (
             newest &&
             normPath(newest.dll) !== normPath(setting) &&
             sdkLoads(context, newest.dll) &&
-            (!fs.existsSync(setting) || titlesDescriptive(newest.version))
+            (!fs.existsSync(setting) || newEnough(newest.version))
         ) {
             await setGlobalFsac(newest.dll);
             await promptReload(
@@ -395,16 +392,16 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
     }
 
     const current = await effectiveFsac();
-    if (current.source !== 'bundled' || titlesDescriptive(current.version) || current.dll === undefined) {
+    if (current.source !== 'bundled' || newEnough(current.version) || current.dll === undefined) {
         return;
     }
 
     const newest = await newestStoreFsac();
-    const ready = newest !== undefined && titlesDescriptive(newest.version);
+    const ready = newest !== undefined && newEnough(newest.version);
 
     const pick = await vscode.window.showInformationMessage(
-        `FSharp.Refactor: Ionide's FsAutoComplete ${showVersion(current.version)} titles every quick fix just "Fix FR…"; ` +
-            `${showVersion(FSAC_TITLES)}+ shows what each fix writes. ` +
+        `FSharp.Refactor: Ionide's FsAutoComplete ${showVersion(current.version)} loads none of the analyzers; ` +
+            `they need ${showVersion(FSAC_NEEDED)}+ (bundled with Ionide 8). ` +
             (ready
                 ? `Point Ionide at the installed fsautocomplete tool ${showVersion(newest!.version)}?`
                 : 'Install the fsautocomplete dotnet tool and point Ionide at it?') +
@@ -422,8 +419,8 @@ async function checkFsac(context: vscode.ExtensionContext): Promise<void> {
 
 const SDK_WARNED_KEY = 'fsharpRefactor.sdkWarned';
 
-/// Say so, once per FsAutoComplete, when the one Ionide runs can load none
-/// of the bundled builds: the skip is otherwise only a log line.
+/// Say so, once per FsAutoComplete, when the one Ionide runs cannot load
+/// the bundled analyzers: the skip is otherwise only a log line.
 async function warnUnloadable(context: vscode.ExtensionContext): Promise<void> {
     const fsac = await effectiveFsac();
     if (sdkLoads(context, fsac.dll)) {
@@ -437,7 +434,10 @@ async function warnUnloadable(context: vscode.ExtensionContext): Promise<void> {
 
     await context.globalState.update(SDK_WARNED_KEY, seen);
     vscode.window.showWarningMessage(
-        `FSharp.Refactor: no suggestions will show. Ionide runs FsAutoComplete ${showVersion(fsac.version)}: ${noBuildFor(context, fsac.dll)}. Update this extension.`
+        `FSharp.Refactor: no suggestions will show. Ionide runs FsAutoComplete ${showVersion(fsac.version)}: ${noBuildFor(context, fsac.dll)}. ` +
+            (fsac.version !== undefined && !newEnough(fsac.version)
+                ? `Update Ionide, or run "FSharp.Refactor: Use FsAutoComplete ${showVersion(FSAC_NEEDED)}+".`
+                : 'Update this extension.')
     );
 }
 
@@ -522,7 +522,7 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
         fsac.source === 'setting'
             ? `${fsac.dll ?? `${fsac.setting} (NO fsautocomplete.dll there)`} (FSharp.fsac.netCoreDllPath)`
             : `${fsac.dll ?? '(not found)'} (bundled with Ionide)`;
-    const titles = titlesDescriptive(fsac.version);
+    const recent = newEnough(fsac.version);
     const loads = sdkLoads(context, fsac.dll);
     const stale = paths.filter(p => p.includes(PATH_MARKER) && p !== dir);
     const tool = await toolVersion();
@@ -535,11 +535,11 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
         ...(stale.length > 0 ? [`  stale entries from older versions: ${stale.join(', ')}`] : []),
         `Ionide ${ionideVersion ?? '(not installed)'}; FsAutoComplete ${showVersion(fsac.version)}: ${fsacWhere}`,
         loads
-            ? `  analyzer SDK ${fsacSdkOf(fsac.dll) ?? '(unknown)'}; builds bundled for ${bundledSdks(context).join(', ') || '(unknown)'}`
+            ? `  analyzer SDK ${fsacSdkOf(fsac.dll) ?? '(unknown)'}; analyzers built for ${bundledSdks(context).join(', ') || '(unknown)'}`
             : `  NO ANALYZERS LOAD: ${noBuildFor(context, fsac.dll)}`,
-        titles
-            ? '  quick-fix titles say what each fix writes'
-            : `  quick-fix titles say only "Fix FR…" (needs FsAutoComplete ${showVersion(FSAC_TITLES)}+: run "FSharp.Refactor: Use FsAutoComplete ${showVersion(FSAC_TITLES)}+")`,
+        ...(recent
+            ? []
+            : [`  the analyzers need FsAutoComplete ${showVersion(FSAC_NEEDED)}+: update Ionide, or run "FSharp.Refactor: Use FsAutoComplete ${showVersion(FSAC_NEEDED)}+"`]),
         `Apply tool (${TOOL}): ${tool ?? 'not installed — dotnet tool install -g fsharp-refactor'}`,
         `Older copy (${PREVIOUS_ID}): ${vscode.extensions.getExtension(PREVIOUS_ID) ? 'STILL INSTALLED' : 'not installed'}`,
     ];
@@ -555,7 +555,7 @@ async function status(context: vscode.ExtensionContext): Promise<void> {
         ...(paths.includes(dir) && enabled ? [] : ['analyzers not wired']),
         ...(stale.length > 0 ? ['stale entries'] : []),
         ...(loads ? [] : ["FsAutoComplete's analyzer SDK has no matching build"]),
-        ...(titles ? [] : ['fix titles show only the code']),
+        ...(recent ? [] : [`FsAutoComplete older than ${showVersion(FSAC_NEEDED)}`]),
         ...(tool ? [] : ['tool not installed']),
     ];
     vscode.window.showInformationMessage(
@@ -877,7 +877,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
     await wireOnActivation(context);
 
-    // the titles only matter once the analyzers run at all
+    // FsAutoComplete's version matters only once the analyzers are wired
     if (globalAnalyzersPath().includes(analyzersDir(context))) {
         await checkFsac(context);
         await warnUnloadable(context);

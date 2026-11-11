@@ -226,28 +226,10 @@ let isPureAtom (e: SynExpr) =
     | SynExpr.ArrayOrList(exprs = []) -> true
     | _ -> false
 
-/// FCS-version-independent view of a let/use/let!/use! expression. FCS
-/// 43.12 packs the payload into the SynLetOrUse record (`SynExpr.LetOrUse
-/// lou` + properties); 43.10 — the FCS stock Ionide's analyzer SDK 0.35
-/// pairs with — spells the same fields tupled on the case. The anonymous
-/// record keeps the 43.12 property spellings, so rule code written
-/// against it compiles under both.
+/// A let/use/let!/use! expression's fields, from the SynLetOrUse record
+/// FCS 43.12 packs them in.
 [<return: Struct>]
 let (|LetOrUseE|_|) (e: SynExpr) =
-#if ANALYZERS_SDK_0_35
-    match e with
-    | SynExpr.LetOrUse(isRecursive = isRecursive; isUse = isUse; isBang = isBang; bindings = bindings; body = body) ->
-        ValueSome
-            {|
-                IsRecursive = isRecursive
-                IsUse = isUse
-                IsBang = isBang
-                Bindings = bindings
-                Body = body
-                Range = e.Range
-            |}
-    | _ -> ValueNone
-#else
     match e with
     | SynExpr.LetOrUse lou ->
         ValueSome
@@ -260,7 +242,6 @@ let (|LetOrUseE|_|) (e: SynExpr) =
                 Range = lou.Range
             |}
     | _ -> ValueNone
-#endif
 
 /// True when the expression is ordinary expression syntax that can be moved
 /// into a lambda body. Computation-expression-only forms (`return e`,
@@ -729,13 +710,11 @@ let directiveRegionsOf (path: string) : DirectiveRegion list option =
                         match directive with
                         | ConditionalDirectiveTrivia.If(condition, r) ->
                             open'.Push(r.StartLine, namesInCondition condition)
-#if ANALYZERS_SDK_0_41
-                        // FCS 43.12.4 (analyzer SDK 0.41): an `#elif` tests more names in the region it sits in
+                        // an `#elif` tests more names in the region it sits in
                         | ConditionalDirectiveTrivia.Elif(condition, _) ->
                             if open'.Count > 0 then
                                 let start, names = open'.Pop()
                                 open'.Push(start, names @ namesInCondition condition)
-#endif
                         | ConditionalDirectiveTrivia.Else _ -> ()
                         | ConditionalDirectiveTrivia.EndIf r ->
                             if open'.Count > 0 then

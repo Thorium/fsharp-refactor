@@ -19,10 +19,9 @@ delivered through Ionide.
 VS Code has no analyzer concept of its own — F# analyzers load through
 Ionide → FsAutoComplete → FSharp.Analyzers.SDK, from the directories the
 `FSharp.analyzersPath` setting names. This extension bundles the
-FSharp.Refactor analyzer assemblies (one build per supported analyzer SDK:
-0.35, 0.37 and 0.41, which covers FsAutoComplete up to 0.86 and so Ionide
-7 and 8; FsAutoComplete loads the one matching its own SDK and skips the
-rest) and, on first activation, **asks** to append its analyzers directory
+FSharp.Refactor analyzers (built for analyzer SDK 0.41: FsAutoComplete 0.86
+and later, bundled with Ionide 8; the .NET 10 runtime runs them) and, on
+first activation, **asks** to append its analyzers directory
 to that setting, after Ionide's own default folders, and turn
 `FSharp.enableAnalyzers` on. Decline and it stays out of your settings;
 the `FSharp.Refactor: Wire analyzers into Ionide` command re-offers it any
@@ -30,23 +29,21 @@ time, and the `Remove` command undoes it. VS Code runs nothing on
 uninstall, so run `Remove` before uninstalling the extension: the entry
 would otherwise stay in your user settings, pointing at a deleted folder.
 
-When Ionide runs an FsAutoComplete on an analyzer SDK none of the bundled
-builds targets, the extension says so once, the Status command shows it,
-and it never points Ionide at such an FsAutoComplete itself.
+When Ionide runs an FsAutoComplete on another analyzer SDK, the extension
+says so once, the Status command shows it, and it never points Ionide at
+such an FsAutoComplete itself.
 
 After wiring and a window reload, open any F# file: suggestions appear as
 `Hint`-severity squiggles with `FR`-prefixed codes, each carrying a
 light-bulb quick fix (`Ctrl+.`).
 
 The quick fix is titled by what it writes - `Fix FR0136 → Guid.NewGuid()`
-beside `Fix FR0136 → Guid.Empty` - from FsAutoComplete 0.85 on. An older
-FsAutoComplete titles every fix just `Fix FR0136`, so a fix and its
-alternative look the same. Ionide bundles its own FsAutoComplete, which
-can lag behind (Ionide 7.31 bundles 0.83); when it does, the extension
-**asks** once to install or update the `fsautocomplete` dotnet global
-tool and point Ionide at it through the global
+beside `Fix FR0136 → Guid.Empty`. Ionide bundles its own FsAutoComplete;
+Ionide 7 bundles 0.85 or older, which loads none of the analyzers. Then
+the extension **asks** once to install or update the `fsautocomplete`
+dotnet global tool and point Ionide at it through the global
 `FSharp.fsac.netCoreDllPath` setting. Decline and nothing changes;
-`FSharp.Refactor: Use FsAutoComplete 0.85+` re-offers it, and `Use
+`FSharp.Refactor: Use FsAutoComplete 0.86+` re-offers it, and `Use
 Ionide's bundled FsAutoComplete again` undoes it. A path it set follows
 `dotnet tool update` (which deletes the old version's folder), and is
 dropped again once Ionide's own FsAutoComplete is as new. A
@@ -58,7 +55,7 @@ Six more commands:
   analyzers versions, whether the analyzers directory is wired into
   `FSharp.analyzersPath` (and any stale entry from an older version),
   Ionide's version, the FsAutoComplete it runs (where, which version, and
-  so whether fix titles say what the fix writes), and whether the
+  whether it loads the analyzers), and whether the
   `fsharp-refactor` dotnet tool is installed. The first thing to run when
   no hints appear.
 - `FSharp.Refactor: Run the tool on this workspace` — the light bulbs fix

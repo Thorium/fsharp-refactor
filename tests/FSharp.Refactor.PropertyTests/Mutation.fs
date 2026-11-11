@@ -70,15 +70,31 @@ let genMutations: Gen<Mutation list> =
     Gen.choose (1, 5)
     |> Gen.bind (fun n -> List.replicate n genMutation |> Gen.sequenceToList)
 
+/// The position itself, or the start of the surrogate pair it falls inside.
+let private onCharacter (source: string) (i: int) =
+    if
+        i > 0
+        && i < source.Length
+        && System.Char.IsLowSurrogate source.[i]
+        && System.Char.IsHighSurrogate source.[i - 1]
+    then
+        i - 1
+    else
+        i
+
 /// Positions wrap around the text, so a mutation drawn blind still lands.
+/// They never split a surrogate pair: half of one is no text.
 let apply (source: string) (mutation: Mutation) : string =
     if source.Length = 0 then
         source
     else
         match mutation with
-        | DeleteAt i -> source.Remove(i % source.Length, 1)
-        | InsertAt(i, token) -> source.Insert(i % (source.Length + 1), token)
-        | Truncate i -> source.Substring(0, i % source.Length)
+        | DeleteAt i ->
+            let at = onCharacter source (i % source.Length)
+
+            source.Remove(at, (if System.Char.IsSurrogatePair(source, at) then 2 else 1))
+        | InsertAt(i, token) -> source.Insert(onCharacter source (i % (source.Length + 1)), token)
+        | Truncate i -> source.Substring(0, onCharacter source (i % source.Length))
         | DuplicateLine i ->
             let lines = source.Split '\n'
             let line = lines.[i % lines.Length]

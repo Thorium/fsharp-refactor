@@ -87,12 +87,7 @@ let private setChildren (e: SynExpr) : SynExpr list =
 /// Wrap bindings in a one-declaration synthetic file so the SDK walker can
 /// traverse their bodies; only expressions are collected from it.
 let private syntheticTree (bindings: SynBinding list) : ParsedInput =
-#if ANALYZERS_SDK_0_35
-    // FCS 43.10 (analyzer SDK 0.35, stock Ionide): no trivia argument yet
-    let decl = SynModuleDecl.Let(false, bindings, Range.range0)
-#else
     let decl = SynModuleDecl.Let(false, bindings, Range.range0, { InKeyword = None })
-#endif
 
     let modOrNs =
         SynModuleOrNamespace(

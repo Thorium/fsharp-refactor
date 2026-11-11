@@ -121,7 +121,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" />
-    <PackageReference Update="FSharp.Core" Version="10.1.201" />
+    <PackageReference Update="FSharp.Core" Version="10.1.402" />
     <!-- The .NET Framework 4.8 reference assemblies, for the legacy-framework
          compilations in Parsing.fs. Only Windows ships them in Program Files;
          this package carries the same files to every OS. Its assets stay out

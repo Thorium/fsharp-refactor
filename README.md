@@ -112,7 +112,7 @@ then point Ionide at the restored analyzers in `.vscode/settings.json`:
 {
   "FSharp.enableAnalyzers": true,
   "FSharp.analyzersPath": [
-    "~/.nuget/packages/fsharp.refactor.analyzers/<version>/analyzers/dotnet"
+    "~/.nuget/packages/fsharp.refactor.analyzers/<version>/analyzers/dotnet/fs"
   ]
 }
 ```
@@ -123,29 +123,23 @@ with `ls ~/.nuget/packages/fsharp.refactor.analyzers/`). On Windows the
 cache lives under `%USERPROFILE%\.nuget\packages`. Suggestions
 appear as `Hint`-severity diagnostics with a light-bulb one-click fix.
 
-FsAutoComplete 0.85+ titles each fix by what it writes (`Fix FR0136 →
-Guid.NewGuid()`); an older one says only `Fix FR0136`. Ionide bundles its
-own FsAutoComplete; to run another one, `dotnet tool install -g
-fsautocomplete` and set `FSharp.fsac.netCoreDllPath` to its
+Ionide bundles its own FsAutoComplete; to run another one, `dotnet tool
+install -g fsautocomplete` and set `FSharp.fsac.netCoreDllPath` to its
 `fsautocomplete.dll` (the extension above offers to do both).
 
 #### Supported hosts
 
 FSharp.Analyzers.SDK loads an analyzer assembly only when it was built
-against the SDK's own major.minor version, so the package ships one build
-per supported SDK, each in a folder of its own:
+against the SDK's own major.minor version. The package ships one build,
+in `analyzers/dotnet/fs`, for SDK 0.41 on .NET 10:
 
-| Folder in the package | SDK | Hosts |
-|---|---|---|
-| `analyzers/dotnet/fs` | 0.41 | FsAutoComplete 0.86 (Ionide 8), `fsharp-analyzers` 0.41 |
-| `analyzers/dotnet/fs-sdk0.37` | 0.37 | FsAutoComplete 0.84-0.85, `fsharp-analyzers` 0.37 |
-| `analyzers/dotnet/fs-sdk0.35` | 0.35 | FsAutoComplete 0.83 (Ionide 7.31) and earlier |
+| SDK | Hosts |
+|---|---|
+| 0.41 | FsAutoComplete 0.86 and later (Ionide 8), `fsharp-analyzers` 0.41 |
 
-An editor pointed at `analyzers/dotnet` finds all three, loads the one its
-SDK matches and logs a skip line for the others. The `fsharp-analyzers`
-CLI exits non-zero when it skips an assembly, so point it at the one
-folder for its version. A host on an SDK not listed here loads nothing
-until the package gains a build for it.
+An older host (Ionide 7, FsAutoComplete 0.85 and earlier, `fsharp-analyzers`
+0.37 and earlier) loads nothing from this package; FSharp.Refactor.Analyzers
+0.8.51 is the last release with builds for SDK 0.37 and 0.35.
 
 **If no suggestions appear**, open Output -> "F# Language Service": it
 names the analyzer dlls it scanned and how many analyzers loaded, and a
@@ -884,7 +878,7 @@ In an editor, via the target repo's `.vscode/settings.json`:
 ```json
 {
   "FSharp.enableAnalyzers": true,
-  "FSharp.analyzersPath": ["<path-to>/FSharp.Refactor.Analyzers/bin/Debug/net8.0"]
+  "FSharp.analyzersPath": ["<path-to>/FSharp.Refactor.Analyzers/bin/Debug/net10.0"]
 }
 ```
 
@@ -894,15 +888,12 @@ Open an F# file containing e.g. `match x with | true -> 1 | false -> 2`
 Or from the CLI:
 
 ```bash
-fsharp-analyzers --project YourProject.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net8.0 --code-root .
+fsharp-analyzers --project YourProject.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net10.0 --code-root .
 ```
 
 Note: a host loads only analyzers built against its own FSharp.Analyzers.SDK
-major.minor. The main project pins SDK 0.37.2 (FCS 43.12.201), which is what
-the tool and the tests run; `FSharp.Refactor.Analyzers.Sdk41` and
-`FSharp.Refactor.Analyzers.Ionide` compile the same sources against SDK 0.41
-and 0.35 (see [Supported hosts](#supported-hosts)). A new SDK minor needs a
-project of its own beside them.
+major.minor. The project pins SDK 0.41.0 (FCS 43.12.402), which is also what
+the tool and the tests run (see [Supported hosts](#supported-hosts)).
 
 ## Building and testing
 
@@ -927,8 +918,8 @@ Both projects, not just the analyzers - the apply tool is F# we ship too, and
 it went a long time unchecked:
 
 ```bash
-dotnet tool run fsharp-analyzers --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net8.0 --code-root .
-dotnet tool run fsharp-analyzers --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net8.0 --code-root .
+dotnet tool run fsharp-analyzers --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net10.0 --code-root .
+dotnet tool run fsharp-analyzers --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Debug/net10.0 --code-root .
 ```
 
 Test inputs are string literals, so formatting tools never touch the

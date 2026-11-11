@@ -123,7 +123,7 @@ let private isFSharpSource (path: string) =
 /// Paths whose contents are not the author's to fix: vendored sources,
 /// package caches, and build output. Kept in step with the CLI's
 /// defaultIgnoredSegments by hand — this extension targets net48 and
-/// cannot reference the analyzers, which are net8.0.
+/// cannot reference the analyzers, which are net10.0.
 let private ignoredSegments =
     [ "paket-files"; ".paket"; "node_modules"; "packages"; "obj"; "bin" ]
 

@@ -50,8 +50,8 @@ FsAutoComplete is located as the global dotnet tool
 (`%USERPROFILE%\.dotnet\tools\fsautocomplete.exe`, install with
 `dotnet tool install -g fsautocomplete`), or from an `fsac\` folder beside
 the extension dll if you bundle one. The bundled `analyzers\` folder
-carries both SDK builds of the analyzers; FSAC loads the one its
-FSharp.Analyzers.SDK version pairs with and log-skips the other.
+carries the analyzers built for FSharp.Analyzers.SDK 0.41, which
+FsAutoComplete 0.86 and later load.
 
 ## The menu, and why it was invisible for a day
 
@@ -178,8 +178,9 @@ How the V1 shortcuts were closed:
   so FSAC sees every project; failing a solution, the nearest project.
 - Every fix has a preview pane: what it removes and what it inserts.
 - FsAutoComplete is bundled (`CreateVsix.ps1` copies the newest payload
-  from the global tool store, or installs one into `obj\fsac-tool`;
-  `-NoFsac` skips it) and preferred over the global tool.
+  from the global tool store when it runs the analyzers' SDK, else
+  installs the newest into `obj\fsac-tool`; `-NoFsac` skips it) and
+  preferred over the global tool.
 - Settings without an options page: `%APPDATA%\FSharp.Refactor\vsix.json`
   with `fsac` (a `.dll` runs under `dotnet`, anything else as it is),
   `analyzers` (a list of directories) and `root`; the environment

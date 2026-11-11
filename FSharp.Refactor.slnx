@@ -1,8 +1,6 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj" />
-    <Project Path="src/FSharp.Refactor.Analyzers.Ionide/FSharp.Refactor.Analyzers.Ionide.fsproj" />
-    <Project Path="src/FSharp.Refactor.Analyzers.Sdk41/FSharp.Refactor.Analyzers.Sdk41.fsproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/FSharp.Refactor.Tests/FSharp.Refactor.Tests.fsproj" />

@@ -23,11 +23,6 @@ jobs:
           # WSL and an isolated Linux install
           dotnet-version: 10.0.302
 
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 8.0.x
-
       - name: Restore tools
         run: dotnet tool restore
 
@@ -70,12 +65,10 @@ jobs:
 
       # both shipped projects, not just the analyzers: the apply tool is F#
       # we ship too, and it went a long time unchecked
-      # Launched exactly like the linter above, and for the same reason: the
-      # CLI reaches MSBuild through Ionide.ProjInfo, those assemblies want
-      # System.Runtime 10.0.0.0, and the tool ships as net8 so it binds a net8
-      # runtime whenever one is installed - an exact match beats roll-forward.
-      # `"rollForward": true` in dotnet-tools.json does NOT reach this; only
-      # the host flag does.
+      # Launched like the linter above, so a CLI built for an older runtime
+      # cannot bind one while the SDK's MSBuild assemblies want System.Runtime
+      # 10.0.0.0. `"rollForward": true` in dotnet-tools.json does NOT reach
+      # this; only the host flag does.
       - name: Self-analyze (dogfood)
         shell: bash
         run: |
@@ -86,8 +79,8 @@ jobs:
           CLI=$(find ~/.nuget/packages/fsharp-analyzers/$SDK -name FSharp.Analyzers.Cli.dll | head -1)
           echo "analyzing with $CLI (SDK $SDK)"
           test -n "$CLI"
-          dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis.sarif
-          dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net8.0 --code-root . --report self-analysis-apply.sarif
+          dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net10.0 --code-root . --report self-analysis.sarif
+          dotnet exec --roll-forward LatestMajor "$CLI" --project src/FSharp.Refactor.Tool/FSharp.Refactor.Tool.fsproj --analyzers-path src/FSharp.Refactor.Analyzers/bin/Release/net10.0 --code-root . --report self-analysis-apply.sarif
 
       - name: Pack
         run: |
@@ -120,21 +113,20 @@ jobs:
           ! ls bin/Debug/net10.0 | grep -i -E "compiler|analyzers|refactor"
           ! grep -i -E "FSharp.Compiler.Service|FSharp.Analyzers.SDK|FSharp.Refactor" bin/Debug/net10.0/Consumer.deps.json
 
-      # the package as its hosts see it: one build per folder, and the CLI of
-      # that folder's SDK loads it without skipping an assembly (a skip is
+      # the package as its host sees it: one folder, and the CLI of the
+      # analyzers' SDK loads it without skipping an assembly (a skip is
       # exit -3, findings or not). Launched like the linter above.
-      - name: Load the packed analyzers through their hosts
+      - name: Load the packed analyzers through their host
         shell: bash
         run: |
           mkdir -p /tmp/pkg && unzip -q artifacts/FSharp.Refactor.Analyzers.*.nupkg -d /tmp/pkg
+          test "$(ls /tmp/pkg/analyzers/dotnet)" = "fs"
+          SDK=$(grep -oP 'FSharp.Analyzers.SDK" Version="\K[0-9.]+' src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj)
           cd /tmp/consumer
-          for pair in "0.41.0:fs" "0.37.2:fs-sdk0.37"; do
-            version=${pair%%:*}; folder=${pair##*:}
-            dotnet tool install fsharp-analyzers --version $version --tool-path /tmp/host-$version
-            CLI=$(find /tmp/host-$version -name FSharp.Analyzers.Cli.dll | head -1)
-            dotnet exec --roll-forward LatestMajor "$CLI" --project Consumer.fsproj --analyzers-path /tmp/pkg/analyzers/dotnet/$folder --code-root . --report $folder.sarif
-            grep -c '"ruleId": *"FR0010"' $folder.sarif
-          done
+          dotnet tool install fsharp-analyzers --version $SDK --tool-path /tmp/host
+          CLI=$(find /tmp/host -name FSharp.Analyzers.Cli.dll | head -1)
+          dotnet exec --roll-forward LatestMajor "$CLI" --project Consumer.fsproj --analyzers-path /tmp/pkg/analyzers/dotnet/fs --code-root . --report fs.sarif
+          grep -c '"ruleId": *"FR0010"' fs.sarif
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v7

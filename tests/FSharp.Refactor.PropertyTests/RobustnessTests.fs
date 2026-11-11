@@ -76,3 +76,14 @@ let ``every targeted rule fires somewhere in a sample of programs`` () =
 
     let missing = RuleSet.targetedCodes |> List.filter (fired.Contains >> not)
     Assert.True(missing.IsEmpty, $"rules the generated programs never reached: %A{missing}")
+
+/// A damaged program is still text: no mutation leaves half a surrogate
+/// pair, which no encoding can write.
+[<Fact>]
+let ``a mutation keeps surrogate pairs whole`` () =
+    let source = "let tag = \"a\U000E0041b\U0001F600c\"\n"
+    let strict = System.Text.UTF8Encoding(false, true)
+
+    for i in 0 .. source.Length * 2 do
+        for m in [ Mutation.DeleteAt i; Mutation.InsertAt(i, "x"); Mutation.Truncate i ] do
+            strict.GetBytes(Mutation.apply source m) |> ignore

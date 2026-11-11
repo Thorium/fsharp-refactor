@@ -15,7 +15,7 @@ $repo = Resolve-Path (Join-Path $here "..\..")
 dotnet build $here -c $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# the analyzers the sidecar loads: one build per supported analyzer SDK
+# the analyzers the sidecar loads
 dotnet build (Join-Path $repo "src\FSharp.Refactor.Analyzers") -c $Configuration
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -38,28 +38,26 @@ foreach ($dll in "FSharp.Refactor.Vsix.dll", "FSharp.Core.dll", "Newtonsoft.Json
 # what UseManagedResourcesOnly on the package attribute means.
 Copy-Item (Join-Path $here "FSharp.Refactor.Vsix.pkgdef") $staging
 
-# analyzers for the FSAC sidecar (it skips the SDK flavor it cannot load)
+# analyzers for the FSAC sidecar
 $analyzerDir = Join-Path $staging "analyzers"
 New-Item -ItemType Directory -Force $analyzerDir | Out-Null
-Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers\bin\$Configuration\net8.0\FSharp.Refactor.Analyzers.dll") $analyzerDir
-Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers.Ionide\bin\$Configuration\net8.0\FSharp.Refactor.Analyzers.Ionide.dll") $analyzerDir
-Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers.Sdk41\bin\$Configuration\net10.0\FSharp.Refactor.Analyzers.Sdk41.dll") $analyzerDir
+Copy-Item (Join-Path $repo "src\FSharp.Refactor.Analyzers\bin\$Configuration\net10.0\FSharp.Refactor.Analyzers.dll") $analyzerDir
 
-# the analyzer SDK each staged build was compiled against, as major.minor:
-# FsAutoComplete loads a build only when both match its own SDK
-$shippedSdks = Get-ChildItem -Path (Join-Path $repo "src") -Filter "FSharp.Refactor.Analyzers*.fsproj" -Recurse |
-    ForEach-Object {
-        $pin = [regex]::Match([IO.File]::ReadAllText($_.FullName), 'FSharp\.Analyzers\.SDK" Version="(\d+)\.(\d+)')
-        if ($pin.Success) { "$($pin.Groups[1].Value).$($pin.Groups[2].Value)" }
-    } | Sort-Object -Unique
+# the analyzer SDK the build was compiled against, as major.minor:
+# FsAutoComplete loads it only when both match its own SDK
+$sdkPin = [regex]::Match(
+    [IO.File]::ReadAllText((Join-Path $repo "src\FSharp.Refactor.Analyzers\FSharp.Refactor.Analyzers.fsproj")),
+    'FSharp\.Analyzers\.SDK" Version="(\d+)\.(\d+)')
+$shippedSdk = "$($sdkPin.Groups[1].Value).$($sdkPin.Groups[2].Value)"
 
 Copy-Item (Join-Path $repo "LICENSE") $staging
 Copy-Item (Join-Path $repo "icon.png") $staging
 
 # FsAutoComplete itself, so the extension works on a machine without the
-# global tool: the newest payload in the global tool store, or one
-# installed into obj\fsac-tool for the purpose. FsacClient looks for
-# fsac\fsautocomplete.dll beside the extension before the global tool.
+# global tool: the newest payload in the global tool store when it runs the
+# analyzers' SDK, else the newest one installed into obj\fsac-tool for the
+# purpose. FsacClient looks for fsac\fsautocomplete.dll beside the
+# extension before the global tool.
 if (-not $NoFsac) {
     function Find-FsacPayload([string]$storeRoot) {
         if (-not (Test-Path $storeRoot)) { return $null }
@@ -75,26 +73,28 @@ if (-not $NoFsac) {
         if (Test-Path (Join-Path $any "fsautocomplete.dll")) { return $any } else { return $null }
     }
 
+    # the analyzer SDK a payload runs, as major.minor; none when it has no SDK
+    function Get-FsacSdk([string]$payload) {
+        $sdkDll = Join-Path $payload "FSharp.Analyzers.SDK.dll"
+        if (-not (Test-Path $sdkDll)) { return $null }
+        $v = [Reflection.AssemblyName]::GetAssemblyName($sdkDll).Version
+        return "$($v.Major).$($v.Minor)"
+    }
+
     $payload = Find-FsacPayload (Join-Path $env:USERPROFILE ".dotnet\tools\.store\fsautocomplete")
-    if (-not $payload) {
+    if (-not $payload -or (Get-FsacSdk $payload) -ne $shippedSdk) {
         $toolDir = Join-Path $here "obj\fsac-tool"
-        if (-not (Test-Path (Join-Path $toolDir ".store\fsautocomplete"))) {
-            dotnet tool install fsautocomplete --tool-path $toolDir
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-        }
+        # update installs when the tool is missing, and moves an older one on
+        dotnet tool update fsautocomplete --tool-path $toolDir
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         $payload = Find-FsacPayload (Join-Path $toolDir ".store\fsautocomplete")
     }
     if (-not $payload) { throw "fsautocomplete payload not found; pass -NoFsac to package without it" }
-    # before 0.85 FSAC titles every analyzer fix "Fix <code>" only
     $fsacVersion = [version](Split-Path -Leaf (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $payload))))
-    if ($fsacVersion -lt [version]"0.85.0") {
-        throw "fsautocomplete $fsacVersion is older than 0.85.0; run: dotnet tool update -g fsautocomplete"
-    }
-    # a sidecar on an analyzer SDK no staged build matches loads none of them
-    $fsacSdk = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $payload "FSharp.Analyzers.SDK.dll")).Version
-    $fsacSdkText = "$($fsacSdk.Major).$($fsacSdk.Minor)"
-    if ($shippedSdks -notcontains $fsacSdkText) {
-        throw "fsautocomplete $fsacVersion runs FSharp.Analyzers.SDK $fsacSdkText; the analyzers are built for $($shippedSdks -join ', '). Add a build for it or bundle a matching fsautocomplete."
+    # a sidecar on another analyzer SDK loads none of the analyzers
+    $fsacSdkText = Get-FsacSdk $payload
+    if ($fsacSdkText -ne $shippedSdk) {
+        throw "fsautocomplete $fsacVersion runs FSharp.Analyzers.SDK $fsacSdkText; the analyzers are built for $shippedSdk. Bundle a matching fsautocomplete."
     }
 
     Copy-Item -Recurse -LiteralPath $payload (Join-Path $staging "fsac")

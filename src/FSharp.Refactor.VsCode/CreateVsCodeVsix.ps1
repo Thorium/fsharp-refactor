@@ -1,5 +1,5 @@
 # Builds and packages the VS Code companion extension. Cross-platform
-# (pwsh on Linux CI works): stages every analyzer SDK build, stamps the
+# (pwsh on Linux CI works): stages the analyzers, stamps the
 # version from Directory.Build.props, compiles the TypeScript, and runs
 # vsce package.
 #
@@ -17,9 +17,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $analyzerDir = Join-Path $here "analyzers"
 if (Test-Path $analyzerDir) { Remove-Item -Recurse -Force $analyzerDir }
 New-Item -ItemType Directory -Force $analyzerDir | Out-Null
-Copy-Item (Join-Path $repo "src/FSharp.Refactor.Analyzers/bin/$Configuration/net8.0/FSharp.Refactor.Analyzers.dll") $analyzerDir
-Copy-Item (Join-Path $repo "src/FSharp.Refactor.Analyzers.Ionide/bin/$Configuration/net8.0/FSharp.Refactor.Analyzers.Ionide.dll") $analyzerDir
-Copy-Item (Join-Path $repo "src/FSharp.Refactor.Analyzers.Sdk41/bin/$Configuration/net10.0/FSharp.Refactor.Analyzers.Sdk41.dll") $analyzerDir
+Copy-Item (Join-Path $repo "src/FSharp.Refactor.Analyzers/bin/$Configuration/net10.0/FSharp.Refactor.Analyzers.dll") $analyzerDir
 Copy-Item (Join-Path $repo "icon.png") $here -Force
 Copy-Item (Join-Path $repo "LICENSE") $here -Force
 
@@ -35,13 +33,12 @@ $packageJson = $packageJson -replace '("version":\s*")[^"]+(")', "`${1}$repoVers
 $built = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm") + " UTC"
 $packageJson = $packageJson -replace '("analyzers":\s*")[^"]*(")', "`${1}$repoVersion`${2}"
 $packageJson = $packageJson -replace '("built":\s*")[^"]*(")', "`${1}$built`${2}"
-# the analyzer SDK each staged build targets, as major.minor: the extension
-# checks the FsAutoComplete Ionide runs against this list
-$sdks = (Get-ChildItem -Path (Join-Path $repo "src") -Filter "FSharp.Refactor.Analyzers*.fsproj" -Recurse |
-    ForEach-Object {
-        $pin = [regex]::Match([IO.File]::ReadAllText($_.FullName), 'FSharp\.Analyzers\.SDK" Version="(\d+)\.(\d+)')
-        if ($pin.Success) { "$($pin.Groups[1].Value).$($pin.Groups[2].Value)" }
-    } | Sort-Object -Unique) -join ", "
+# the analyzer SDK the staged build targets, as major.minor: the extension
+# checks the FsAutoComplete Ionide runs against it
+$sdkPin = [regex]::Match(
+    [IO.File]::ReadAllText((Join-Path $repo "src/FSharp.Refactor.Analyzers/FSharp.Refactor.Analyzers.fsproj")),
+    'FSharp\.Analyzers\.SDK" Version="(\d+)\.(\d+)')
+$sdks = "$($sdkPin.Groups[1].Value).$($sdkPin.Groups[2].Value)"
 $packageJson = $packageJson -replace '("sdks":\s*")[^"]*(")', "`${1}$sdks`${2}"
 [IO.File]::WriteAllText($packageJsonPath, $packageJson)
 Write-Host "Stamped VS Code extension version $repoVersion (built $built)"
