@@ -43,6 +43,33 @@ let private analyzeRequest (id: int) (target: string) (apply: bool) =
             ]
     )
 
+/// An analyze call that names `excludeCodes` as well as FR0010.
+let private excludingRequest (id: int) (target: string) (excludeCodes: string) =
+    JsonSerializer.Serialize(
+        dict
+            [
+                "jsonrpc", box "2.0"
+                "id", box id
+                "method", box "tools/call"
+                "params",
+                box (
+                    dict
+                        [
+                            "name", box "analyze"
+                            "arguments",
+                            box (
+                                dict
+                                    [
+                                        "target", box target
+                                        "codes", box "FR0010"
+                                        "excludeCodes", box excludeCodes
+                                    ]
+                            )
+                        ]
+                )
+            ]
+    )
+
 /// The server run over `requests` as its stdin; returns its exit code, the
 /// protocol lines it answered with and what it wrote to stderr.
 let private serve (args: string list) (requests: string list) : int * string list * string =
@@ -263,6 +290,10 @@ let ``a flag the server would ignore, or a root that is no directory, is a usage
         Assert.Equal(2, code)
         Assert.Contains("--api-changes", said)
 
+        let code, _, said = serve [ root; "--mcp"; "--exclude-codes"; "FR0010" ] []
+        Assert.Equal(2, code)
+        Assert.Contains("--exclude-codes", said)
+
         let code, _, said = serve [ file; "--mcp" ] []
         Assert.Equal(2, code)
         Assert.Contains("directory", said)
@@ -271,5 +302,31 @@ let ``a flag the server would ignore, or a root that is no directory, is a usage
         let code, answers, _ = serve [ root; "--mcp"; "--define"; "LOCAL" ] []
         Assert.Equal(0, code)
         Assert.Empty answers
+    finally
+        cleanup root
+
+[<Fact>]
+let ``an analyze call's excludeCodes goes through the command line's parser`` () =
+    let root = tempRoot "fsref-mcp-exclude-"
+
+    try
+        let script = Path.Combine(root, "probe.fsx")
+        File.WriteAllText(script, fixable)
+
+        let code, answers, _ =
+            serve [ root; "--mcp" ] [ excludingRequest 1 script "FR001"; excludingRequest 2 script "fr0010" ]
+
+        Assert.Equal(0, code)
+        Assert.Equal(2, answers.Length)
+
+        match read answers.[0] with
+        | Error message -> Assert.Contains("not a rule code: FR001.", message)
+        | Ok body -> failwithf "answered %s" (body.GetRawText())
+
+        match read answers.[1] with
+        | Error message -> Assert.Contains("leave no rule to run", message)
+        | Ok body -> failwithf "answered %s" (body.GetRawText())
+
+        Assert.Equal(fixable, File.ReadAllText script)
     finally
         cleanup root

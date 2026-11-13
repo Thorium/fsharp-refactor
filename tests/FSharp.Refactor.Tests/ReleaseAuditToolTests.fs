@@ -379,3 +379,61 @@ let ``filters that leave no rule to run are refused`` () =
         "leave no rule to run",
         refusal [ "Missing.fsproj"; "--codes"; "FR0010"; "--categories"; "cosmetic" ]
     )
+
+[<Fact>]
+let ``--exclude-codes refuses an unknown or empty code and a filter it leaves empty`` () =
+    let refusal (args: string list) =
+        let code, said = withStderr (fun () -> Program.main (Array.ofList args))
+        Assert.Equal(2, code)
+        said
+
+    Assert.Contains("not a rule code: FR001.", refusal [ "Missing.fsproj"; "--exclude-codes"; "FR0010,fr001" ])
+    Assert.Contains("--exclude-codes names no rule code", refusal [ "Missing.fsproj"; "--exclude-codes"; " , " ])
+    Assert.Contains("needs a value", refusal [ "Missing.fsproj"; "--exclude-codes" ])
+    // exclusion wins over naming the same code in --codes
+    Assert.Contains(
+        "leave no rule to run",
+        refusal [ "Missing.fsproj"; "--exclude-codes"; "fr0010"; "--codes"; "FR0010" ]
+    )
+
+[<Fact>]
+let ``an excluded rule reports nothing while its neighbours still do`` () =
+    let root = tempRoot "fsref-exclude-"
+
+    try
+        Directory.CreateDirectory(Path.Combine(root, ".git")) |> ignore
+        let script = Path.Combine(root, "probe.fsx")
+        // FR0010 on line 1, FR0012 on line 2: both idiom rules
+        File.WriteAllText(
+            script,
+            "let isEmpty (xs: int list) = List.length xs = 0\n"
+            + "let twice (xs: int list) = xs |> List.map (fun x -> x + 1) |> List.map (fun x -> x * 2)\n"
+        )
+
+        let run (args: string list) =
+            let (code, printed), said =
+                withStderr (fun () ->
+                    use captured = new StringWriter()
+                    let oldOut = Console.Out
+                    Console.SetOut captured
+
+                    try
+                        let code =
+                            Program.main (Array.ofList (script :: "--dry-run" :: "--no-color" :: args))
+
+                        code, captured.ToString()
+                    finally
+                        Console.SetOut oldOut)
+
+            Assert.True((code = 0), $"exit {code}:\n{printed}\n{said}")
+            printed
+
+        let full = run []
+        Assert.Contains("FR0010", full)
+        Assert.Contains("FR0012", full)
+
+        let excluded = run [ "--categories"; "idiom"; "--exclude-codes"; "fr0010" ]
+        Assert.DoesNotContain("FR0010", excluded)
+        Assert.Contains("FR0012", excluded)
+    finally
+        cleanup root

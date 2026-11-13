@@ -16,7 +16,9 @@
     <ToolCommandName>fsharp-refactor</ToolCommandName>
     <PackageId>fsharp-refactor</PackageId>
     <Description>Applies the FSharp.Refactor analyzers' quick fixes to F# code from the command line. Point it at a project, a script, a solution, a directory or a glob; --dry-run reports without editing. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.</Description>
-    <PackageReleaseNotes>0.8.53: A compilation that finished keeps its fixes when Ctrl+C or a file error comes before the next framework&apos;s pass. Ctrl+C exits 130, never a stack trace. An empty or comment-only fsharprefactor.json refuses nothing. --mcp answers a refused call with its own reason. A generator&apos;s banner is read at the end of a header line and below an attribute of several lines. A glob ignores case on macOS.
+    <PackageReleaseNotes>0.8.54: --exclude-codes leaves rules out of a run, after --codes and --categories and ahead of fsharprefactor.json; the MCP analyze call takes excludeCodes.
+
+ 0.8.53: A compilation that finished keeps its fixes when Ctrl+C or a file error comes before the next framework&apos;s pass. Ctrl+C exits 130, never a stack trace. An empty or comment-only fsharprefactor.json refuses nothing. --mcp answers a refused call with its own reason. A generator&apos;s banner is read at the end of a header line and below an attribute of several lines. A glob ignores case on macOS.
 
  0.8.52: Reads code with FSharp.Compiler.Service 43.12.402 (FSharp.Analyzers.SDK 0.41), the compiler of FsAutoComplete 0.86.
 
@@ -26,9 +28,7 @@
 
  0.8.49: FR0016 and FR0070 read what takes reference types only (a value, a record literal or a type argument given to it), in the project&apos;s other files and, under --api-changes, the projects referencing the type: [&lt;Struct&gt;] stopped TryAddSingleton compiling.
 
- 0.8.48: New rules FR0183, and FR0184 (off by default): secrets and clients a redirect exposes. New rule FR0185 (off by default): unions with no fields can be structs. FR0016, FR0070, FR0130, FR0131, FR0011, FR0033, FR0026 and FR0132 read past harmless attributes. FR0118 leaves shared and detached work, comparisons and overloads with another return type alone; FR0152 ignores unrelated removals.
-
- 0.8.47: FR0066 resolves a query text&apos;s names to the binding in scope and folds constants (holes, `+`, sprintf and String.Format of constants, `Module.name`), read where the text was built: a per-member `let baseQuery = "..."` is no finding. Loaded code (an analyzer, source generator, MSBuild task or a driver&apos;s finalizer) crashing on a background thread no longer ends the run: reported once, the run goes on and exits 1; out of memory and the tool&apos;s own failures still stop it.</PackageReleaseNotes>
+ 0.8.48: New rules FR0183, and FR0184 (off by default): secrets and clients a redirect exposes. New rule FR0185 (off by default): unions with no fields can be structs. FR0016, FR0070, FR0130, FR0131, FR0011, FR0033, FR0026 and FR0132 read past harmless attributes. FR0118 leaves shared and detached work, comparisons and overloads with another return type alone; FR0152 ignores unrelated removals.</PackageReleaseNotes>
     <Authors>Tuomas Hietanen</Authors>
     <PackageProjectUrl>https://github.com/Thorium/fsharp-refactor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Thorium/fsharp-refactor</RepositoryUrl>

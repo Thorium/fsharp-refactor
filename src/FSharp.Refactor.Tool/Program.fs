@@ -38,6 +38,7 @@
 ///                               from the extension either way
 ///     --codes FR0002,FR0031    only apply these rule codes
 ///     --categories correctness only apply rules of these kinds
+///     --exclude-codes FR0002   leave these rule codes out (wins over both)
 ///     --dry-run                report what would be applied, change nothing
 ///     --api-changes            also apply CROSS-FILE fixes (rules that
 ///                              rewrite call sites of internal and public
@@ -287,6 +288,9 @@ type private Options =
         /// Narrows `Codes` once parsing is done, so the two flags combine the
         /// same way whichever order they were given in.
         Categories: Set<RuleCatalog.Category> option
+        /// `--exclude-codes`: rules left out of the run, after --codes and
+        /// --categories, ahead of the config and of naming them in --codes.
+        ExcludedCodes: Set<string>
         DryRun: bool
         /// Suppress colour even where the terminal supports it. NO_COLOR
         /// and TERM=dumb say the same thing; this is the flag form.
@@ -362,6 +366,10 @@ OPTIONS
                         further. For a repository you do not maintain,
                         "correctness,performance" is the set worth a pull
                         request; nobody welcomes a stranger's punctuation
+  --exclude-codes FR0002,FR0099
+                        leave these rules out: their analyzers do not run.
+                        Applied after --codes and --categories, and wins over
+                        both and over fsharprefactor.json
   --jobs <n>            files typechecked at once (default 4, clamped to 2-4 by
                         core count). --jobs 1 is the sequential sweep
   --framework <tfm>     analyse only this target framework. By default a
@@ -482,6 +490,24 @@ let rec private parseArgsLoop opts args =
         | unknown ->
             let listed = String.concat ", " unknown
             Error $"not a rule code: {listed}. --rules lists every code."
+    | "--exclude-codes" :: codes :: rest ->
+        let parsed =
+            codes.Split ','
+            |> Array.map (fun c -> c.Trim().ToUpperInvariant())
+            |> Array.filter (fun c -> c <> "")
+            |> Set.ofArray
+
+        match parsed |> Set.filter (RuleCatalog.known.Contains >> not) |> Set.toList with
+        | [] when parsed.IsEmpty -> Error "--exclude-codes names no rule code. --rules lists every code."
+        | [] ->
+            parseArgsLoop
+                { opts with
+                    ExcludedCodes = Set.union opts.ExcludedCodes parsed
+                }
+                rest
+        | unknown ->
+            let listed = String.concat ", " unknown
+            Error $"not a rule code: {listed}. --rules lists every code."
     | "--categories" :: names :: rest ->
         let parsed = names.Split(',') |> Array.map RuleCatalog.parse
 
@@ -569,6 +595,7 @@ let rec private parseArgsLoop opts args =
             "--jobs"
             "--max-passes"
             "--codes"
+            "--exclude-codes"
             "--categories"
             "--define"
         ]
@@ -608,6 +635,19 @@ let private applyCategories (opts: Options) =
 
         { opts with Codes = Some combined }
 
+/// Take `--exclude-codes` out of both code filters, last, so an excluded
+/// rule's analyzer never runs whatever --codes, --categories or the config say.
+let private applyExclusions (opts: Options) =
+    if opts.ExcludedCodes.IsEmpty then
+        opts
+    else
+        { opts with
+            Codes = Some(Set.difference (opts.Codes |> Option.defaultValue RuleCatalog.known) opts.ExcludedCodes)
+            ExplicitCodes =
+                opts.ExplicitCodes
+                |> Option.map (fun codes -> Set.difference codes opts.ExcludedCodes)
+        }
+
 let private parseArgs (argv: string[]) =
     parseArgsLoop
         {
@@ -617,6 +657,7 @@ let private parseArgs (argv: string[]) =
             Codes = None
             ExplicitCodes = None
             Categories = None
+            ExcludedCodes = Set.empty
             DryRun = false
             NoColor = false
             ApiChanges = false
@@ -644,11 +685,12 @@ let private parseArgs (argv: string[]) =
             Defines = []
         }
         (List.ofArray argv)
-    |> Result.map applyCategories
+    |> Result.map (applyCategories >> applyExclusions)
     |> Result.bind (fun opts ->
         // a run of no rule reports nothing, which reads as a clean tree
         match opts.Codes with
-        | Some codes when codes.IsEmpty -> Error "--codes and --categories together leave no rule to run."
+        | Some codes when codes.IsEmpty ->
+            Error "--codes, --categories and --exclude-codes together leave no rule to run."
         | _ -> Ok opts)
 
 /// The stderr line runProcessIn writes for a child stopped at its time cap
@@ -10755,6 +10797,7 @@ let private mcpLimits (opts: Options) : Result<McpLimits, string> =
         [
             "--codes", opts.ExplicitCodes.IsSome
             "--categories", opts.Categories.IsSome
+            "--exclude-codes", not opts.ExcludedCodes.IsEmpty
             "--api-changes", opts.ApiChanges
             "--no-if-defs", opts.NoIfDefs
             "--report", opts.Report.IsSome
@@ -10774,7 +10817,7 @@ let private mcpLimits (opts: Options) : Result<McpLimits, string> =
         let listed = String.concat ", " ignored
 
         Error
-            $"--mcp serves many runs, and {listed} would have no effect on them. The server takes a directory, --dry-run (it then applies nothing), --define and --jobs; an analyze call names its own codes, categories and parseOnly."
+            $"--mcp serves many runs, and {listed} would have no effect on them. The server takes a directory, --dry-run (it then applies nothing), --define and --jobs; an analyze call names its own codes, excludeCodes, categories and parseOnly."
     elif opts.Target <> "" && not (Directory.Exists opts.Target) then
         Error
             $"--mcp takes the DIRECTORY the server may work in; '{opts.Target}' is not one. Without one it is the current directory."
@@ -10861,6 +10904,16 @@ let private runMcp (limits: McpLimits) =
                                                                         "type", box "string"
                                                                         "description",
                                                                         box "comma-separated rule codes to restrict to"
+                                                                    ]
+                                                            )
+                                                            "excludeCodes",
+                                                            box (
+                                                                dict
+                                                                    [
+                                                                        "type", box "string"
+                                                                        "description",
+                                                                        box
+                                                                            "comma-separated rule codes to leave out; wins over codes and categories"
                                                                     ]
                                                             )
                                                             "categories",
@@ -10957,11 +11010,15 @@ let private runMcp (limits: McpLimits) =
                 | Some value when String.IsNullOrWhiteSpace value -> Ok []
                 | Some value -> RunDefines.parse value
 
-            // codes and categories go through the command line's own parser:
-            // a mistyped or empty one is an error there, where a filter built
-            // here matched nothing and answered zero findings
+            // codes, excludeCodes and categories go through the command line's
+            // own parser: a mistyped or empty one is an error there, where a
+            // filter built here matched nothing and answered zero findings
             let filterArgs =
-                [ "--codes", getString "codes"; "--categories", getString "categories" ]
+                [
+                    "--codes", getString "codes"
+                    "--exclude-codes", getString "excludeCodes"
+                    "--categories", getString "categories"
+                ]
                 |> List.collect (fun (flag, value) ->
                     match value with
                     | Some value -> [ flag; value ]

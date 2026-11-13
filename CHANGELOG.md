@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.54
+
+- `--exclude-codes FR0002,FR0099` leaves rules out of a run, after `--codes` and `--categories` and ahead of the config; the MCP `analyze` call takes `excludeCodes`.
+
 ## 0.8.53
 
 - A compilation that finished keeps its fixes: Ctrl+C or a file error before the next framework's or configuration's pass put them back.
