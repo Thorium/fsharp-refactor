@@ -113,6 +113,7 @@
     <Compile Include="LogicRulesTests.fs" />
     <Compile Include="HistoryRulesTests.fs" />
     <Compile Include="GuardParityTests.fs" />
+    <Compile Include="CorpusTwinTests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

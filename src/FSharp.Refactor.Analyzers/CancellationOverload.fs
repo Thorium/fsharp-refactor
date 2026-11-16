@@ -47,6 +47,7 @@ open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
+open System.Text.RegularExpressions
 
 [<RequireQualifiedAccess>]
 type TokenGap =
@@ -131,6 +132,13 @@ let private schedulesDelegate (mfv: FSharpMemberOrFunctionOrValue) =
      && (OptionModule.enclosingFullName mfv).StartsWith "System.Threading.Tasks.Task")
     || ((mfv.DisplayName = "Start" || mfv.DisplayName = "StartImmediate")
         && (OptionModule.enclosingFullName mfv).StartsWith "Microsoft.FSharp.Control.FSharpAsync")
+
+/// A callee named for cleanup (`StopCoreAsync`, `RollbackAsync`, `Dispose`):
+/// an explicit `CancellationToken.None` handed to it is the author keeping the
+/// cleanup running after the caller's token has fired.
+let private cleanupNameRegex =
+    Regex
+        "^(Stop|Clean|Dispose|Close|Shut[Dd]own|Roll[Bb]ack|Abort|Kill|Release|Undo|Revert|Cancel|Terminate|Unlock|Unregister|Unsubscribe|Disconnect)(?![a-z])"
 
 /// The CLEANUP zones of a file: every `finally` block, every `with`
 /// handler, and the callbacks handed to a CancellationToken's `Register`
@@ -833,7 +841,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 | _ -> false
                             | None -> false
 
-                        if isArgument && takesToken && typedGate && not schedulesWork && not detached then
+                        // and one on cleanup: `StopAsync`, `RollbackAsync`, `CloseAsync`
+                        // must run whatever the caller cancelled
+                        let cleanup =
+                            calleeSymbol
+                            |> Option.exists (fun (_, mfv) -> cleanupNameRegex.IsMatch mfv.DisplayName)
+
+                        if
+                            isArgument
+                            && takesToken
+                            && typedGate
+                            && not schedulesWork
+                            && not detached
+                            && not cleanup
+                        then
                             {
                                 Range = expr.Range
                                 Original = textOfRange source expr.Range
@@ -950,10 +971,7 @@ let findUnobservedLoopsWith
                         | SynBinding(
                             headPat = SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))); expr = rhs)
                         | SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])); expr = rhs) when
-                            System.Text.RegularExpressions.Regex.IsMatch(
-                                textOfRange source rhs.Range,
-                                identifierPattern token
-                            )
+                            Regex.IsMatch(textOfRange source rhs.Range, identifierPattern token)
                             ->
                             Some id.idText
                         | _ -> None)
@@ -961,8 +979,7 @@ let findUnobservedLoopsWith
                 | _ -> [||])
 
         let mentionsAny (names: string seq) (text: string) =
-            names
-            |> Seq.exists (fun n -> System.Text.RegularExpressions.Regex.IsMatch(text, identifierPattern n))
+            names |> Seq.exists (fun n -> Regex.IsMatch(text, identifierPattern n))
 
         // a loop that `find` already offers a token inside needs no second
         // message: the fix makes the loop observe it
@@ -1040,7 +1057,7 @@ let findUnobservedLoopsWith
                             let text = textOfRange source e.Range
 
                             let observed =
-                                System.Text.RegularExpressions.Regex.IsMatch(text, identifierPattern token)
+                                Regex.IsMatch(text, identifierPattern token)
                                 || (match scopeOf token e.Range with
                                     | Some scope -> mentionsAny (carriers token scope) text
                                     | None -> false)

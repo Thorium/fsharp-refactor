@@ -338,6 +338,105 @@ let private wrapsForeignResource
     | SynExpr.App(isInfix = false; argExpr = args) -> arguments args |> List.exists foreign
     | _ -> false
 
+/// Does the assembly path lie in a package folder (NuGet's cache or fallback
+/// folders, paket's `packages`) or under the SDK's packs and shared frameworks?
+let packagePath (path: string) =
+    let p = path.Replace('\\', '/').ToLowerInvariant()
+
+    [
+        "/packages/"
+        "/nugetpackages/"
+        "/nugetfallbackfolder/"
+        "/dotnet/packs/"
+        "/dotnet/shared/"
+    ]
+    |> List.exists p.Contains
+
+/// The .NET runtime's signing keys: ECMA, the shared framework (also
+/// FSharp.Core's), CoreLib, the newer runtime key.
+let private runtimeKeys =
+    [
+        "b77a5c561934e089"
+        "b03f5f7f11d50a3a"
+        "7cec85d7bea7798e"
+        "cc7b13ffcd2ddd51"
+    ]
+
+/// Is the symbol's assembly signed with one of the runtime's own keys?
+let private runtimeSigned (symbol: FSharpSymbol) =
+    try
+        let name = symbol.Assembly.QualifiedName
+
+        runtimeKeys
+        |> List.exists (fun key -> name.Contains("PublicKeyToken=" + key, System.StringComparison.OrdinalIgnoreCase))
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        false
+
+/// Is the symbol declared in this solution: in the compilation itself, or in
+/// an assembly that came from neither a package folder nor the runtime?
+let private solutionOwned (symbol: FSharpSymbol) =
+    not (runtimeSigned symbol)
+    && (try
+            match symbol.Assembly.FileName with
+            | None -> true
+            | Some path -> not (packagePath path)
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false)
+
+/// An object built half-way on purpose: a `null` or `Unchecked.defaultof<_>`
+/// argument (a test constructing only what it exercises) to a type of the
+/// project's own. Its `Dispose` may dereference what it was never given. A
+/// BCL type takes a null where its documentation says so
+/// (`new Timer(callback, null, 0, 1000)`'s state).
+let private partlyBuilt (check: FSharpCheckFileResults) (source: ISourceText) (rhs: SynExpr) =
+    let typeIdent =
+        match rhs with
+        | SynExpr.New(
+            targetType = (SynType.LongIdent(SynLongIdent(id = ids)) | SynType.App(
+                typeName = SynType.LongIdent(SynLongIdent(id = ids))))) when not ids.IsEmpty -> Some(List.last ids)
+        | SynExpr.App(isInfix = false; funcExpr = (SynExpr.Ident id | SynExpr.TypeApp(expr = SynExpr.Ident id))) ->
+            Some id
+        | SynExpr.App(
+            isInfix = false
+            funcExpr = (SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) | SynExpr.TypeApp(
+                expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))))) when not ids.IsEmpty ->
+            Some(List.last ids)
+        | _ -> None
+
+    let ownType () =
+        match typeIdent |> Option.bind (symbolAt check source) with
+        | Some symbol -> solutionOwned symbol
+        | None -> false
+
+    let arguments (args: SynExpr) =
+        match stripParens args with
+        | SynExpr.Tuple(exprs = elements) -> elements
+        | SynExpr.Const(SynConst.Unit, _) -> []
+        | single -> [ single ]
+
+    let rec nothing (arg: SynExpr) =
+        match unwrapped arg with
+        | SynExpr.Null _ -> true
+        | SynExpr.TypeApp(expr = SynExpr.Ident id)
+        | SynExpr.Ident id -> id.idText = "defaultof"
+        | SynExpr.TypeApp(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)))
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
+            match ids |> List.map (fun i -> i.idText) |> List.rev with
+            | "defaultof" :: "Unchecked" :: _ -> true
+            | _ -> false
+        // a named argument: `new Worker(logger = null)`
+        | SynExpr.App(
+            isInfix = false
+            funcExpr = SynExpr.App(isInfix = true; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ op ])))
+            argExpr = value) when op.idText = "op_Equality" -> nothing value
+        | _ -> false
+
+    (match rhs with
+     | SynExpr.New(expr = args)
+     | SynExpr.App(isInfix = false; argExpr = args) -> arguments args |> List.exists nothing
+     | _ -> false)
+    && ownType ()
+
 /// Does the identifier name a constructor of a disposable type — or, as
 /// the type name of a `new T(...)`, a disposable type T?
 let private constructsDisposable (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) =
@@ -1172,8 +1271,11 @@ let private bclOrCore (check: FSharpCheckFileResults) (source: ISourceText) (cal
         let owner = OptionModule.enclosingFullName value
 
         // an extension member's owner is the BCL type it extends; its
-        // body, and what it does with the token, is the user's
+        // body, and what it does with the token, is the user's. A `System.*`
+        // name alone is no proof: PowerShell's `System.Management.Automation`
+        // lives under it, so the assembly must carry a runtime key
         not value.IsExtensionMember
+        && runtimeSigned value
         && (full.StartsWith "Microsoft.FSharp."
             || full.StartsWith "System."
             || owner.StartsWith "Microsoft.FSharp."
@@ -1592,6 +1694,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                          locallyConstructed check source rhs
                          && not (wrapsForeignResource check source (ownedHere declPath expr.Range rhs.Range) rhs)
+                         && not (partlyBuilt check source rhs)
                          && not (ObjectDesign.ownsNoResource check source rhs))
                         && ObjectDesign.resolvesToDisposable check source binder
                         // HttpClient, a request message and its contents, a

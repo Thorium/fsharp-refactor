@@ -22,7 +22,9 @@
 /// or a nested try, where it runs in another context); the constructor's
 /// arguments read nothing of the caught exception (`ex.Message` in the
 /// message is the author's choice); no argument is named; the trailing
-/// constructor is accessible from the raise site. `failwith`/`failwithf`/
+/// constructor is accessible from the raise site; a try that adds to an
+/// `HttpHeaders` collection keeps it a note (the header exception quotes the
+/// value, a key or a token, that the wrapper's message left out). `failwith`/`failwithf`/
 /// `invalidOp`/`invalidArg` in a handler that never reads what it caught
 /// have no inner-exception overload and are noted: `raise (Exception(msg,
 /// ex))` spells the same failure with its cause.
@@ -46,6 +48,9 @@ type Suggestion =
         /// The edits: the binder in the pattern when it was missing, and
         /// the trailing argument. Empty for a `failwith` note.
         Edits: (range * string * string) list
+        /// The try adds HTTP headers: their exception quotes the value (a key,
+        /// a token) that the wrapper's message left out, so the fix stays a note.
+        HeaderValues: bool
     }
 
 let private failureFunctions =
@@ -85,6 +90,27 @@ let private (|RaiseNew|_|) (e: SynExpr) =
         raise'.idText = "raise"
         ->
         constructed inner
+    | _ -> ValueNone
+
+/// The name of a callee that may take a header's value: a method called
+/// `Add`, `TryAddWithoutValidation`, `Parse` or `ParseAdd`, or what reads as a
+/// header value's constructor (`AuthenticationHeaderValue`). A read
+/// (`GetValues`, `Contains`) or a `Remove` quotes no value.
+[<return: Struct>]
+let private (|HeaderCallee|_|) (callee: SynExpr) =
+    let takesValue (pid: Ident) =
+        match pid.idText with
+        | "Add"
+        | "TryAddWithoutValidation"
+        | "Parse"
+        | "ParseAdd" -> true
+        | name -> name.EndsWith "HeaderValue"
+
+    match callee with
+    | SynExpr.Ident id when takesValue id -> ValueSome id
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
+    | SynExpr.DotGet(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty && takesValue (List.last ids) ->
+        ValueSome(List.last ids)
     | _ -> ValueNone
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
@@ -214,6 +240,65 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
             walk path
 
+        // does the protected body call a member of an HTTP header collection?
+        // `HttpHeaders.Add` throws a FormatException quoting the value - often a
+        // key or a token - which a wrapper naming only the header left out
+        let addsHeaders (path: SyntaxNode list) =
+            let tryBody =
+                path
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynExpr(SynExpr.TryWith(tryExpr = body)) -> Some body.Range
+                    | _ -> None)
+
+            let rec headerType (entity: FSharpEntity option) =
+                match entity with
+                | Some ent ->
+                    (ent.TryFullName
+                     |> Option.exists (fun name -> name.StartsWith "System.Net.Http.Headers."))
+                    || headerType (
+                        ent.BaseType
+                        |> Option.bind (fun t -> if t.HasTypeDefinition then Some t.TypeDefinition else None)
+                    )
+                | None -> false
+
+            match tryBody with
+            | None -> false
+            | Some body ->
+                index.Exprs
+                |> Array.exists (fun (_, x) ->
+                    Range.rangeContainsRange body x.Range
+                    && (match x with
+                        // the calls that take a header's value: a read (`GetValues`,
+                        // `Contains`) or a `Remove` quotes none
+                        // or build one (`AuthenticationHeaderValue(key)`, `.Parse`, `.ParseAdd`)
+                        | SynExpr.App(isInfix = false; funcExpr = HeaderCallee methodId) ->
+                            let lineText = source.GetLineString(methodId.idRange.EndLine - 1)
+
+                            match
+                                OptionModule.symbolUseAt
+                                    check
+                                    (methodId.idRange.EndLine,
+                                     methodId.idRange.EndColumn,
+                                     lineText,
+                                     [ methodId.idText ])
+                            with
+                            | Some symbolUse ->
+                                match symbolUse.Symbol with
+                                | :? FSharpMemberOrFunctionOrValue as m ->
+                                    try
+                                        headerType m.DeclaringEntity
+                                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                        false
+                                | :? FSharpEntity as entity ->
+                                    try
+                                        headerType (Some entity)
+                                    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                                        false
+                                | _ -> false
+                            | None -> false
+                        | _ -> false))
+
         // the enclosing declaration, whose names a fresh binder must not
         // shadow (a parameter called `ex`); outside any binding (a script's
         // or a module's top-level try), the whole try-with, which holds
@@ -289,13 +374,24 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                             // a pattern the fix could not name leaves the
                             // constructor without its argument: note only
+                            let headerValues = addsHeaders path
+
                             match binder, patEdits, argEdit with
+                            | _ when headerValues ->
+                                {
+                                    Range = e.Range
+                                    Raised = typeId.idText
+                                    Binder = name
+                                    Edits = []
+                                    HeaderValues = true
+                                }
                             | None, [], _ ->
                                 {
                                     Range = e.Range
                                     Raised = typeId.idText
                                     Binder = name
                                     Edits = []
+                                    HeaderValues = false
                                 }
                             | _, _, Some edit ->
                                 {
@@ -303,6 +399,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     Raised = typeId.idText
                                     Binder = name
                                     Edits = patEdits @ [ edit ]
+                                    HeaderValues = false
                                 }
                             | _ -> ()
                     | None -> ()
@@ -335,6 +432,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                     Raised = f.idText
                                     Binder = binderOf pat |> Option.defaultValue "ex"
                                     Edits = []
+                                    HeaderValues = false
                                 }
                         | None -> ()
                 | _ -> ()

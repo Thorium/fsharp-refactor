@@ -2,6 +2,19 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.55
+
+- FR0119 leaves `MemoryStream`/`StringWriter`/`StringReader` and `Console.Out`/`Console.Error` calls, EF Core's `Add`/`AddRange` (async only for database value generators, EF's documentation says), and calls inside a member named for its synchronous work (`writeTokenSyncReadingAsync`).
+- FR0119 and FR0049 bind with `.ConfigureAwait(false)` in `task { }` where the body's own binds all do; a bare bind among them resumed on the context the rest refuse. Never in `async { }`, `backgroundTask { }` or a test file.
+- FR0075 leaves an object built with a `null` or `Unchecked.defaultof` argument to a type of the solution's own (from neither a package nor the runtime): its `Dispose` may dereference what it was never given. A BCL type takes `null` where documented (`new Timer(callback, null, 0, 1000)`) and is judged as before. A `System.*` callee counts as the BCL only from an assembly signed with a runtime key (PowerShell's `System.Management.Automation` is not).
+- FR0160 stays a note where the `try` adds an HTTP header or builds a header value (`Add`, `ParseAdd`, `AuthenticationHeaderValue(key)`): the exception quotes the value, which may be a secret.
+- FR0007 keeps `mutable` on a local that code behind an inactive `#if` writes (another target framework compiles it).
+- FR0118 leaves the explicit `CancellationToken.None` of a call named for cleanup (`StopAsync`, `RollbackAsync`, `CloseAsync`): it must run whatever the caller cancelled.
+- FR0124 lets Serilog read a repeated `{0}` once in a template whose holes are all numbers; for Microsoft.Extensions.Logging, which hands every hole the next argument, a count that does not fit is reported before a duplicate name.
+- Multi-targeted projects are swept narrowest API first by version: .NET Framework below 4.6.1 before `netstandard2.0`, `net462` before `net47` (the digits compared as one integer).
+- A solution without an Any CPU platform loads, restores and builds for x64 (or its first platform, never "Mixed Platforms"). A solution that maps an old-format project to Any CPU under that platform keeps its projects' own.
+- Redirected output is UTF-8: `…` and `—` printed as `.` and `-`.
+
 ## 0.8.54
 
 - `--exclude-codes FR0002,FR0099` leaves rules out of a run, after `--codes` and `--categories` and ahead of the config; the MCP `analyze` call takes `excludeCodes`.

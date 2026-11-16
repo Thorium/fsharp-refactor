@@ -536,3 +536,63 @@ let threadBound (source: ISourceText) (body: SynExpr) =
     // entries above where they belong).
     || bThreadsRegex.IsMatch text
     || bThreadRegex.IsMatch text
+
+let private configuredBindRegex = Regex(@"\.ConfigureAwait\s*\(\s*false\s*\)\s*$")
+
+/// Should a bind that FR0049 or FR0119 inserts into this CE body carry
+/// `.ConfigureAwait(false)`? Where the body's own binds (`let!`, `use!`,
+/// `do!`, `return!`, `match!`, `while!`, not those of a lambda or CE inside it) all
+/// await that way and there is at least one: a bare bind among them would
+/// resume on the context the rest refuse. Only `task { }`: `async { }`
+/// bridges with `Async.AwaitTask`, `backgroundTask { }` has no context to
+/// capture. Never in a test file.
+let configureAwaitWanted (index: AstIndex.Index) (source: ISourceText) (builder: string) (ceBody: range) =
+    builder = "task"
+    && not (AstIndex.isTestFile index source)
+    && (let nested =
+            index.Exprs
+            |> Array.choose (fun (_, e) ->
+                match e with
+                | SynExpr.Lambda _
+                | SynExpr.MatchLambda _ -> Some e.Range
+                | SynExpr.ComputationExpr(expr = body) when not (Range.equals body.Range ceBody) -> Some body.Range
+                | _ -> None)
+            |> Array.filter (fun r -> Range.rangeContainsRange ceBody r && not (Range.equals r ceBody))
+
+        let own (r: range) =
+            Range.rangeContainsRange ceBody r
+            && not (nested |> Array.exists (fun n -> Range.rangeContainsRange n r))
+
+        let awaited =
+            index.Exprs
+            |> Array.collect (fun (_, e) ->
+                match e with
+                | LetOrUseE lou when lou.IsBang ->
+                    lou.Bindings |> List.map (fun (SynBinding(expr = rhs)) -> rhs) |> Array.ofList
+                | SynExpr.DoBang(expr = x)
+                | SynExpr.YieldOrReturnFrom(expr = x)
+                | SynExpr.MatchBang(expr = x)
+                | SynExpr.WhileBang(whileExpr = x) -> [| x |]
+                | _ -> [||])
+            |> Array.filter (fun x -> own x.Range)
+
+        awaited.Length > 0
+        && awaited
+           |> Array.forall (fun x -> configuredBindRegex.IsMatch(textOfRange source x.Range)))
+
+let private simpleReceiverRegex = Regex(@"^[A-Za-z_][\w.]*(\([^()]*\))?$")
+
+let private anyConfiguredRegex = Regex(@"\.ConfigureAwait\s*\([^()]*\)\s*$")
+
+/// `text.ConfigureAwait(false)`, the text parenthesised unless it is a name,
+/// a dotted path or one call on one (`reader.ReadLineAsync()`). A text that
+/// ends in a `ConfigureAwait` call already stays as it is.
+let configured (text: string) =
+    let t = text.Trim()
+
+    if anyConfiguredRegex.IsMatch t then
+        t
+    elif simpleReceiverRegex.IsMatch t then
+        t + ".ConfigureAwait(false)"
+    else
+        $"({t}).ConfigureAwait(false)"

@@ -17,7 +17,11 @@
 /// scope of a local):
 ///   - no assignment `x <-` (including `x.Field <-`) and no address-of `&x`,
 ///     checked conservatively on the source text so shadowing or string
-///     contents can only suppress a hint, never produce a wrong one
+///     contents can only suppress a hint, never produce a wrong one; where
+///     the enclosing declaration holds an `#if`, the whole declaration is
+///     read, since code another framework compiles (a write before the
+///     body's first active statement or after its last) is outside the
+///     body's range
 ///   - the binding's type must be a reference type, an enum, or a whitelisted
 ///     immutable value type: on other structs, removing `mutable` introduces
 ///     defensive copies that change the behavior of mutating members
@@ -163,15 +167,64 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
     let collector =
         { new SyntaxCollectorBase() with
-            override _.WalkExpr(_path, expr) =
+            override _.WalkExpr(path, expr) =
                 match expr with
                 | LetOrUseE lou when not (lou.IsBang || lou.IsUse) ->
+                    // the text a write can sit in: the body; and where the declaration
+                    // holds an `#if`, all of it - code another framework compiles is
+                    // not in the body's range (a disabled write before the first active
+                    // statement, or after the last)
+                    let scopeText =
+                        lazy
+                            let outermost =
+                                path
+                                |> List.choose (fun node ->
+                                    match node with
+                                    | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                                    | _ -> None)
+                                |> List.tryLast
+
+                            // the declaration's range ends at its last active token: a
+                            // disabled block that closes the function trails it, up to the
+                            // next line of code outside any `#if`
+                            let trailing (declaration: range) =
+                                let total = source.GetLineCount()
+
+                                let rec scan (line: int) (depth: int) (acc: string list) =
+                                    if line >= total then
+                                        acc
+                                    else
+                                        let text = source.GetLineString line
+                                        let t = text.Trim()
+
+                                        if t.StartsWith "#if" then
+                                            scan (line + 1) (depth + 1) (text :: acc)
+                                        elif t.StartsWith "#endif" then
+                                            scan (line + 1) (max 0 (depth - 1)) (text :: acc)
+                                        elif depth > 0 || t = "" || t.StartsWith "//" || t.StartsWith "#" then
+                                            scan (line + 1) depth (text :: acc)
+                                        else
+                                            acc
+
+                                scan declaration.EndLine 0 [] |> List.rev |> String.concat "\n"
+
+                            match outermost with
+                            | Some declaration ->
+                                let whole = textOfRange source declaration + "\n" + trailing declaration
+
+                                if whole.Contains "#if" then
+                                    whole
+                                else
+                                    textOfRange source lou.Body.Range
+                            | None -> textOfRange source lou.Body.Range
+
+
                     match lou.Bindings with
                     | [ SynBinding(
                             isMutable = true
                             headPat = (SynPat.Named(ident = SynIdent(ident = var)) | SynPat.LongIdent(
                                 longDotId = SynLongIdent(id = [ var ]); argPats = SynArgPats.Pats [])) as pat) ] when
-                        not (mayMutate (textOfRange source lou.Body.Range) var.idText)
+                        not (mayMutate scopeText.Value var.idText)
                         && not (commentSaysDeliberate source expr.Range.StartLine)
                         && resolvesToSafeType var
                         ->

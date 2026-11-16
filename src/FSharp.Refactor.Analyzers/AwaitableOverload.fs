@@ -26,6 +26,13 @@
 ///     exception handler
 ///   - never `Dispose` → `DisposeAsync`: a ValueTask twin with nothing
 ///     to await behind it
+///   - never a `MemoryStream`/`StringWriter`/`StringReader` call or
+///     `Console.Out`/`Console.Error` (nothing behind the twin), EF Core's
+///     `Add`/`AddRange` (async only for database value generators, EF's
+///     documentation says), nor a call inside a member named for its
+///     synchronous work (`writeTokenSyncReadingAsync`)
+///   - in `task { }` the bind carries `.ConfigureAwait(false)` where the
+///     body's own binds all do (`BlockingSites.configureAwaitWanted`)
 module FSharp.Refactor.AwaitableOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -44,6 +51,87 @@ type Suggestion =
     }
 
 let private ceBuilders = set [ "task"; "backgroundTask"; "async" ]
+
+let private inMemoryTypes =
+    set
+        [
+            "System.IO.MemoryStream"
+            "System.IO.StringWriter"
+            "System.IO.StringReader"
+            "System.IO.UnmanagedMemoryStream"
+        ]
+
+/// Twins with nothing behind them, or advised against: an in-memory stream,
+/// reader or writer and the console's writers complete synchronously anyway;
+/// EF Core's `Add`/`AddRange` are async only for value generators that reach
+/// the database (SQL Server HiLo), and EF's documentation says to use the
+/// synchronous ones otherwise.
+let private noTwinWanted (callText: string) (receiverType: FSharpType option) (mfv: FSharpMemberOrFunctionOrValue) =
+    // the receiver's own type: `StringWriter.WriteLine` is declared on TextWriter
+    let rec memoryType (t: FSharpType option) =
+        match t with
+        | Some t when t.HasTypeDefinition ->
+            let entity = t.TypeDefinition
+
+            (entity.TryFullName |> Option.exists inMemoryTypes.Contains)
+            || memoryType entity.BaseType
+        | _ -> false
+
+    let memoryReceiver =
+        try
+            memoryType receiverType
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            false
+
+    let declaring =
+        try
+            mfv.DeclaringEntity
+            |> Option.bind (fun e -> e.TryFullName)
+            |> Option.defaultValue ""
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            ""
+
+    let receiver =
+        let i = callText.LastIndexOf '.'
+
+        if i > 0 then
+            callText.Substring(0, i).Replace("System.", "")
+        else
+            ""
+
+    inMemoryTypes.Contains declaring
+    || memoryReceiver
+    || receiver = "Console.Out"
+    || receiver = "Console.Error"
+    || ((mfv.DisplayName = "Add" || mfv.DisplayName = "AddRange")
+        && declaring.StartsWith "Microsoft.EntityFrameworkCore")
+
+let private syncWordRegex =
+    System.Text.RegularExpressions.Regex
+        "[a-z]Sync(Reading|Writing|Flushing|Copying|Loading|Saving|Sending|Receiving|Waiting|Blocking)(?![a-z])"
+
+/// A member named for its synchronous work (`WriteTokenSyncReadingAsync`):
+/// the sync call inside is the point. `Sync` as an inner word before the I/O
+/// it does (`SyncReading`, `SyncWriting`): not the verb of `SyncContactsAsync`,
+/// not `Resync`/`Synchronize`, and not the noun of `RunSyncJobAsync` or
+/// `GetSyncStatusAsync`.
+let private syncOnPurpose (path: SyntaxNode list) =
+    path
+    |> List.tryPick (fun node ->
+        match node with
+        | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = ids)))) when
+            not ids.IsEmpty
+            ->
+            Some (List.last ids).idText
+        | _ -> None)
+    |> Option.exists (fun name ->
+        let stem =
+            if name.EndsWith "Async" then
+                name.Substring(0, name.Length - 5)
+            else
+                name
+
+        syncWordRegex.IsMatch stem)
 
 [<return: Struct>]
 let private (|CallIdent|_|) (e: SynExpr) =
@@ -280,7 +368,6 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     ))
                 |> Array.sortBy (fun (_, ceRange) -> ceRange.EndLine - ceRange.StartLine, ceRange.EndColumn)
                 |> Array.tryHead
-                |> Option.map fst
 
         // the plain `let` whose entire RHS is `target` — the let! shape
         let bindingKeywordFor (target: range) =
@@ -310,9 +397,9 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | _ -> false)
 
         [
-            for _, expr in index.Exprs do
+            for path, expr in index.Exprs do
                 match expr with
-                | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) when
+                | SynExpr.App(isInfix = false; funcExpr = (CallIdent methodId as callee); argExpr = args) when
                     not (methodId.idText.EndsWith "Async")
                     // `Dispose` → `DisposeAsync` never pays: the twin returns
                     // ValueTask (outside the Task/Task<T> gate the rule
@@ -335,7 +422,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         | _ -> None
 
                     match tupled, directBuilder expr.Range with
-                    | Some arity, Some builder ->
+                    | Some arity, Some(builder, ceBody) ->
                         let lineText = source.GetLineString(methodId.idRange.EndLine - 1)
 
                         let resolved =
@@ -346,7 +433,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         match resolved with
                         | Some symbolUse ->
                             match symbolUse.Symbol with
-                            | :? FSharpMemberOrFunctionOrValue as mfv when mfv.IsMember && not mfv.IsProperty ->
+                            | :? FSharpMemberOrFunctionOrValue as mfv when
+                                mfv.IsMember
+                                && not mfv.IsProperty
+                                && not (
+                                    noTwinWanted
+                                        (textOfRange source callee.Range)
+                                        ((match callee with
+                                          | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                                              Some ids.[ids.Length - 2]
+                                          | SynExpr.DotGet(expr = recv) -> BlockingSites.receiverIdent recv
+                                          | _ -> None)
+                                         |> Option.bind (BlockingSites.valueTypeOf check source))
+                                        mfv
+                                )
+                                && not (syncOnPurpose path)
+                                ->
                                 let ctx = symbolUse.DisplayContext
 
                                 let twin =
@@ -393,11 +495,38 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         else
                                             []
 
+                                    // `.ConfigureAwait(false)` where the body's own binds all
+                                    // have it: on `name(...)` as it stands, around a
+                                    // juxtaposed argument in parentheses
+                                    let atStart = Range.mkRange expr.Range.FileName expr.Range.Start expr.Range.Start
+                                    let atEnd = Range.mkRange expr.Range.FileName expr.Range.End expr.Range.End
+
+                                    let opening, suffixFixes =
+                                        if not (BlockingSites.configureAwaitWanted index source builder ceBody) then
+                                            "", []
+                                        else
+                                            let tight =
+                                                match args with
+                                                | SynExpr.Const(SynConst.Unit, _)
+                                                | SynExpr.Paren _ ->
+                                                    args.Range.StartLine = methodId.idRange.EndLine
+                                                    && args.Range.StartColumn = methodId.idRange.EndColumn
+                                                | _ -> false
+
+                                            if tight then
+                                                "", [ atEnd, "", ".ConfigureAwait(false)" ]
+                                            else
+                                                "(", [ atEnd, "", ").ConfigureAwait(false)" ]
+
                                     match bindingKeywordFor expr.Range with
                                     | Some(kw, letRange) when textOfRange source kw = "let" && onSpine letRange ->
                                         {
                                             Range = expr.Range
-                                            Fixes = [ kw, "let", "let!"; renameFix ] @ bridgeFixes
+                                            Fixes =
+                                                [ kw, "let", "let!"; renameFix ]
+                                                @ (if opening = "" then [] else [ atStart, "", opening ])
+                                                @ suffixFixes
+                                                @ bridgeFixes
                                             MethodName = methodId.idText
                                         }
                                     | Some _ -> ()
@@ -406,11 +535,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         // only a NON-generic Task binds there,
                                         // and only ON the CE's own spine
                                         if isStatement expr.Range && onSpine expr.Range && returnsPlainTask twinM then
-                                            let at = Range.mkRange expr.Range.FileName expr.Range.Start expr.Range.Start
-
                                             {
                                                 Range = expr.Range
-                                                Fixes = [ at, "", "do! "; renameFix ] @ bridgeFixes
+                                                Fixes =
+                                                    [ atStart, "", "do! " + opening; renameFix ]
+                                                    @ suffixFixes
+                                                    @ bridgeFixes
                                                 MethodName = methodId.idText
                                             }
                                 | None -> ()

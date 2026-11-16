@@ -6478,6 +6478,12 @@ let private lostInnerMessages (parseTree: ParsedInput) (source: ISourceText) che
     LostInnerException.find parseTree source checkResults
     |> List.map (fun s ->
         match s.Edits with
+        | [] when s.HeaderValues ->
+            hint
+                "FR0160"
+                $"'{s.Raised}' is raised in place of the exception the handler caught - but the try sets an HTTP header, and its exception quotes the value, which may be a secret: pass '{s.Binder}' as the inner exception only if that value may be logged."
+                s.Range
+                []
         | [] when LostInnerException.isFailureFunction s.Raised ->
             hint
                 "FR0160"

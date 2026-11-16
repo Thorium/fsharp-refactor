@@ -699,6 +699,111 @@ let private parseArgs (argv: string[]) =
 [<Literal>]
 let internal TimeCapMark = "[stopped at the time cap]"
 
+/// The platform a solution without "Any CPU" builds for (Files.slnx lists
+/// only arm64, x64 and x86, and its app sets `RuntimeIdentifier` to
+/// `win-$(Platform)`): x64 where listed, else the first; never the
+/// solution-only "Mixed Platforms". None for a solution that has Any CPU, or
+/// a target that is not a solution.
+let internal solutionPlatform (target: string) : string option =
+    let solution =
+        if Directory.Exists target then
+            match Array.append (Directory.GetFiles(target, "*.sln")) (Directory.GetFiles(target, "*.slnx")) with
+            | [| one |] -> Some one
+            | _ -> None
+        elif
+            File.Exists target
+            && (target.EndsWith(".sln", StringComparison.OrdinalIgnoreCase)
+                || target.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+        then
+            Some target
+        else
+            None
+
+    solution
+    |> Option.bind (fun path ->
+        let text = File.ReadAllText path
+
+        let platforms =
+            if path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) then
+                Regex.Matches(text, @"<Platform\s+Name=""([^""]+)""")
+                |> Seq.map (fun m -> m.Groups.[1].Value)
+                |> List.ofSeq
+            else
+                // SolutionConfigurationPlatforms: `Debug|x64 = Debug|x64`
+                let section = text.IndexOf "SolutionConfigurationPlatforms"
+
+                if section < 0 then
+                    []
+                else
+                    let close = text.IndexOf("EndGlobalSection", section)
+                    let stop = if close > section then close else text.Length
+
+                    Regex.Matches(text.Substring(section, stop - section), @"\|([^=\r\n]+?)\s*=")
+                    |> Seq.map (fun m -> m.Groups.[1].Value.Trim())
+                    |> Seq.distinct
+                    |> List.ofSeq
+
+        let named (name: string) (p: string) =
+            p.Replace(" ", "").Equals(name, StringComparison.OrdinalIgnoreCase)
+
+        let platforms = platforms |> List.filter (named "MixedPlatforms" >> not)
+
+        // a project in the old format that the solution maps to Any CPU under
+        // the platform has no property groups for it ("OutputPath is not set"):
+        // such a solution keeps its projects' own defaults
+        let legacyOnAnyCpu (platform: string) =
+            let directory = Path.GetDirectoryName(Path.GetFullPath path)
+            let wanted = platform.Replace(" ", "")
+
+            let legacy (relative: string) =
+                let file =
+                    Path.Combine(directory, relative.Replace('\\', Path.DirectorySeparatorChar))
+
+                File.Exists file && not ((File.ReadAllText file).Contains "Sdk=")
+
+            if path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) then
+                Regex.Matches(text, @"<Project\s+Path=""([^""]+)""[^>]*>(.*?)</Project>", RegexOptions.Singleline)
+                |> Seq.exists (fun project ->
+                    Regex.Matches(project.Groups.[2].Value, @"<Platform\b([^>]*)>")
+                    |> Seq.exists (fun mapping ->
+                        let attributes = mapping.Groups.[1].Value
+                        let target = Regex.Match(attributes, @"Project=""([^""]+)""")
+                        let from = Regex.Match(attributes, @"Solution=""[^""|]*\|([^""]+)""")
+
+                        target.Success
+                        && named "AnyCPU" target.Groups.[1].Value
+                        && (not from.Success
+                            || from.Groups.[1].Value = "*"
+                            || named wanted from.Groups.[1].Value))
+                    && legacy project.Groups.[1].Value)
+            else
+                // `Project("{type}") = "Name", "src\Name.csproj", "{GUID}"`
+                let paths =
+                    Regex.Matches(text, @"Project\(""[^""]*""\)\s*=\s*""[^""]*"",\s*""([^""]+)"",\s*""(\{[^""]+\})""")
+                    |> Seq.map (fun m -> m.Groups.[2].Value.ToUpperInvariant(), m.Groups.[1].Value)
+                    |> Seq.distinctBy fst
+                    |> dict
+
+                // `{GUID}.Debug|x64.ActiveCfg = Debug|Any CPU`
+                Regex.Matches(text, @"(\{[^}]+\})\.[^|\r\n]+\|([^|.=\r\n]+)\.ActiveCfg\s*=\s*[^|\r\n]+\|([^\r\n]+)")
+                |> Seq.exists (fun m ->
+                    named wanted (m.Groups.[2].Value.Trim())
+                    && named "AnyCPU" (m.Groups.[3].Value.Trim())
+                    && (match paths.TryGetValue(m.Groups.[1].Value.ToUpperInvariant()) with
+                        | true, relative -> legacy relative
+                        | _ -> false))
+
+        if platforms.IsEmpty || platforms |> List.exists (named "AnyCPU") then
+            None
+        else
+            platforms
+            |> List.tryFind (named "x64")
+            |> Option.orElse (List.tryHead platforms)
+            |> Option.filter (legacyOnAnyCpu >> not))
+
+/// This run's `solutionPlatform`, set once the target is known.
+let mutable internal runPlatform: string option = None
+
 /// No child process gets to hang the tool.
 ///
 /// Three ways that happens. Draining one pipe to
@@ -736,6 +841,12 @@ let internal runProcessIn (workingDirectory: string option) (timeout: TimeSpan) 
 
     RunDefines.environmentValue inherited
     |> Option.iter (fun value -> psi.Environment.["DefineConstants"] <- value)
+
+    // the platform a solution without Any CPU builds for: an environment
+    // variable is a property to MSBuild, so every evaluation, restore and
+    // build of the run sees it (the SDK defaults Platform only when empty)
+    runPlatform
+    |> Option.iter (fun platform -> psi.Environment.["Platform"] <- platform)
 
     // A child that cannot START is the fourth way: a blocked or missing
     // executable (a paket bootstrapper under application control, `mono`
@@ -987,28 +1098,63 @@ let private vsMsBuildPath =
          | :? IOException
          | :? UnauthorizedAccessException -> None)
 
-/// How narrow a target framework's API surface is; lower sorts first.
-///
-/// netstandard is the smallest common denominator, then .NET Framework,
-/// then .NET Core, then modern .NET by version. Within a family the lower
-/// version is narrower, so netstandard2.0 sorts ahead of netstandard2.1.
-/// Framework monikers have no dot (net48, net481) where modern ones do
-/// (net8.0, net10.0), which is what separates the two.
-let private tfmRank (tfm: string) =
+/// How narrow a target framework's API surface is, on one scale; lower
+/// sorts first. .NET Framework is its version (`net462` 4.62, `net47` 4.70,
+/// `net481` 4.81 - the digits are major, minor, patch, never one integer:
+/// `net47` is wider than `net462`); netstandard sits just below the first
+/// .NET Framework implementing it (1.0-1.2 below net45, 1.3 below net46,
+/// 1.4-2.0 between net46 and net461, 2.1 just below netcoreapp3.0);
+/// netcoreapp above every .NET Framework; net5.0+ above that by version. An
+/// unknown name ranks last of the frameworks, before a project whose
+/// framework cannot be read and before scripts.
+let internal tfmRank (tfm: string) : float =
     // the OS suffix's digits would swamp the version: net8.0-windows10.0.19041.0
-    // must rank as net8.0, not overflow Int32 and sort before net6.0
-    let t = (tfm.ToLowerInvariant().Split '-').[0]
-    let digits = String(t |> Seq.filter Char.IsDigit |> Seq.toArray)
+    // ranks as net8.0
+    let t = (tfm.Trim().ToLowerInvariant().Split '-').[0]
 
-    let version =
-        match Int32.TryParse digits with
-        | true, v -> v
-        | false, _ -> 0
+    // after the unreadable projects' 98 and the scripts' 99 come no frameworks
+    let unknown = 97.0
 
-    if t.StartsWith "netstandard" then 0, version
-    elif t.StartsWith "netcoreapp" then 2, version
-    elif t.StartsWith "net" && t.Contains '.' then 3, version
-    else 1, version
+    // `net4.8`, `net4.7.2`: a .NET Framework version spelled with dots
+    let dottedFramework (name: string) =
+        name.Length > 4 && name.[3] >= '1' && name.[3] <= '4' && name.[4] = '.'
+
+    let parse (s: string) =
+        match Double.TryParse(s, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+        | true, v -> Some v
+        | _ -> None
+
+    if t.StartsWith "netstandard" then
+        match parse (t.Substring "netstandard".Length) with
+        | Some v when v < 1.3 -> 4.49 + v / 1000.0
+        | Some v when v < 1.4 -> 4.59 + v / 1000.0
+        | Some v when v < 2.1 -> 4.6 + v / 1000.0
+        | Some v -> 5.29 + (v - 2.1) / 1000.0
+        | None -> unknown
+    elif t.StartsWith "netcoreapp" then
+        match parse (t.Substring "netcoreapp".Length) with
+        | Some v -> 5.0 + v / 10.0
+        | None -> unknown
+    elif t.StartsWith "net" && t.Contains '.' && not (dottedFramework t) then
+        match parse (t.Substring 3) with
+        | Some v -> 6.0 + v
+        | None -> unknown
+    elif t.StartsWith "net" then
+        // net20, net35, net403, net462, net481
+        let digits = (t.Substring 3).Replace(".", "")
+
+        if digits.Length >= 2 && digits |> Seq.forall Char.IsDigit then
+            let d (k: int) =
+                if k < digits.Length then
+                    float (int digits.[k] - int '0')
+                else
+                    0.0
+
+            d 0 + d 1 / 10.0 + d 2 / 100.0
+        else
+            unknown
+    else
+        unknown
 
 /// The frameworks a project lists, narrowest first. A plain
 /// `<TargetFrameworks>a;b</TargetFrameworks>` is read off the text. One
@@ -10086,17 +10232,17 @@ let private orderNarrowestFirst (targets: Target list) =
                     |> Array.map tfmRank
                     |> Array.sort
                     |> Array.tryHead
-                    |> Option.defaultValue (98, 0)
+                    |> Option.defaultValue 98.0
                 else
-                    (98, 0)
+                    98.0
             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                (98, 0)
+                98.0
 
         targets
         |> List.sortBy (fun t ->
             match t with
             | Target.Project(path, _) -> projectRank path
-            | Target.Script _ -> (99, 0))
+            | Target.Script _ -> 99.0)
 
 let private fsharpCorePinRegex =
     Regex(
@@ -10187,6 +10333,17 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     // before a refusal below can end the run: a resident host answers with
     // this run's reasons, a refused one included
     lock exitReasons exitReasons.Clear
+
+    // a solution without Any CPU: every MSBuild child of the run builds for its platform
+    runPlatform <-
+        (try
+            solutionPlatform opts.Target
+         with _ ->
+             None) // fsharpanalyzer: ignore-line FR0055
+
+    runPlatform
+    |> Option.iter (fun platform ->
+        Out.dim $"  (the solution has no Any CPU platform: loading and building for {platform})")
 
     // the report is written after a compilation's work: a path that cannot
     // take it is refused before any
@@ -11399,6 +11556,27 @@ let private runMain argv =
 
 [<EntryPoint>]
 let main argv =
+    // a redirected stream gets the OEM code page on Windows, which prints the
+    // messages' `…` and `—` as `.` and `-`: a file, a pipe or an MCP client reads
+    // UTF-8. Each redirected stream gets its own writer: `Console.OutputEncoding`
+    // would change the code page of the console the caller goes on using
+    // only the console's own writer, which speaks the console's code page: a
+    // writer a host process set (a test's StringWriter) stays
+    let consolePage =
+        try
+            Console.OutputEncoding.CodePage
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            -1
+
+    let ownWriter (writer: TextWriter) =
+        consolePage <> Encoding.UTF8.CodePage && writer.Encoding.CodePage = consolePage
+
+    if Console.IsOutputRedirected && ownWriter Console.Out then
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), UTF8Encoding false, AutoFlush = true))
+
+    if Console.IsErrorRedirected && ownWriter Console.Error then
+        Console.SetError(new StreamWriter(Console.OpenStandardError(), UTF8Encoding false, AutoFlush = true))
+
     surviveForeignBackgroundExceptions ()
     putBackOnCtrlC ()
     let code = endingOnInterrupt (fun () -> runMain argv)

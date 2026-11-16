@@ -1391,9 +1391,19 @@ let findWith
                         // the awaitable behind a blocking site, as the
                         // builder's own bind operand: a Task binds directly in
                         // task { }, behind Async.AwaitTask in async { }
+                        // a Task bind in a body whose binds all ConfigureAwait(false) does too
+                        let configuredBind =
+                            lazy (BlockingSites.configureAwaitWanted index source builder ceRange)
+
+                        let taskBind (text: string) =
+                            if configuredBind.Value then
+                                BlockingSites.configured text
+                            else
+                                text
+
                         let bindOperand (text: string) =
                             if taskBuilder then
-                                Some text
+                                Some(taskBind text)
                             elif builder = "async" then
                                 Some $"Async.AwaitTask {asArgument text}"
                             else
@@ -1472,9 +1482,11 @@ let findWith
                                     else
                                         "System.Threading.Tasks.Task.Delay"
 
+                                let delay = $"{waiter} {argumentText source (stripParens arg)}"
+
                                 target
                                 |> Option.map (fun r ->
-                                    r, textOfRange source r, $"do! {waiter} {argumentText source (stripParens arg)}")
+                                    r, textOfRange source r, $"do! {(if taskBuilder then taskBind delay else delay)}")
                                 |> Option.toList
                             | (BlockKind.AwaiterGetResult | BlockKind.TaskResult | BlockKind.RunSynchronously), _ when
                                 insideFixableSpine
@@ -1494,7 +1506,21 @@ let findWith
                                     let text = textOfRange source recvRange
 
                                     if taskBuilder then
-                                        Some text
+                                        // only a Task's own awaiter: a configured awaitable's
+                                        // and `Task.Yield()`'s have no ConfigureAwait to call
+                                        let taskAwaiter =
+                                            match kind with
+                                            | BlockKind.AwaiterGetResult ->
+                                                let awaiter =
+                                                    blockIdent
+                                                    |> Option.map (enclosingEntityOf check source)
+                                                    |> Option.defaultValue ""
+
+                                                awaiter.StartsWith "System.Runtime.CompilerServices.TaskAwaiter"
+                                                || awaiter.StartsWith "System.Runtime.CompilerServices.ValueTaskAwaiter"
+                                            | _ -> true
+
+                                        Some(if taskAwaiter then taskBind text else text)
                                     elif builder = "async" then
                                         let entity =
                                             blockIdent

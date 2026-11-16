@@ -421,25 +421,50 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 let names = placeholdersOf template
                                 let trailing = List.skip (ti + 1) args
 
+                                // Serilog reads a template whose holes are all numbers by position:
+                                // `"{0} and {0}"` reads one argument twice - no duplicate, and the
+                                // arity is the distinct count. A mixed template is read by name
+                                // there, and Microsoft.Extensions.Logging hands every hole the next
+                                // argument, positional or named
+                                let serilog = loggerFamily logId = Some "Serilog"
+
+                                let positional (name: string) =
+                                    name.Length > 0 && System.Char.IsDigit name.[0]
+
+                                let byPosition = serilog && not names.IsEmpty && names |> List.forall positional
+
                                 let duplicate =
                                     names
+                                    |> List.filter (fun _ -> not byPosition)
                                     |> List.groupBy id
                                     |> List.tryPick (fun (name, hits) -> if hits.Length > 1 then Some name else None)
 
-                                match duplicate, trailingCount trailing with
-                                | Some name, _ ->
+                                let names = if byPosition then List.distinct names else names
+
+                                // a count that does not fit first: in Microsoft.Extensions.Logging
+                                // that call throws, whatever the names are
+                                let mismatch =
+                                    match trailingCount trailing with
+                                    | Some argCount when
+                                        names.Length <> argCount && not (isParamsArrayPassThrough trailing)
+                                        ->
+                                        Some argCount
+                                    | _ -> None
+
+                                // Serilog throws for neither, and the duplicate is the plainer finding
+                                match (if serilog && duplicate.IsSome then None else mismatch), duplicate with
+                                | Some argCount, _ ->
+                                    {
+                                        Range = r
+                                        Problem = TemplateProblem.CountMismatch(names.Length, argCount)
+                                        LogMethod = logId.idText
+                                    }
+                                | None, Some name ->
                                     {
                                         Range = r
                                         Problem = TemplateProblem.DuplicateName name
                                         LogMethod = logId.idText
                                     }
-                                | None, Some argCount ->
-                                    if names.Length <> argCount && not (isParamsArrayPassThrough trailing) then
-                                        {
-                                            Range = r
-                                            Problem = TemplateProblem.CountMismatch(names.Length, argCount)
-                                            LogMethod = logId.idText
-                                        }
                                 | None, None -> ()
                             | None -> ()
                     | _ -> ()
