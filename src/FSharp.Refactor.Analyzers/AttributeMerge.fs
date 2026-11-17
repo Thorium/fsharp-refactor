@@ -131,8 +131,8 @@ let find (maxMerged: int) (wrapColumn: int) (parseTree: ParsedInput) (source: IS
                     for SynUnionCase(attributes = caseAttrs) in cases do
                         suggestionFor maxMerged wrapColumn source caseAttrs
                         |> Option.iter suggestions.Add
-                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) ->
-                    for SynField(attributes = fieldAttrs) in fields do
+                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = fields)) ->
+                    for SynField(attributes = fieldAttrs) in recordTypeFields fields do
                         suggestionFor maxMerged wrapColumn source fieldAttrs
                         |> Option.iter suggestions.Add
                 | _ -> ()

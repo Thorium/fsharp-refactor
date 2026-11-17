@@ -10,6 +10,7 @@
     <MoreInfo>https://github.com/Thorium/fsharp-refactor</MoreInfo>
     <License>LICENSE</License>
     <Icon>icon.png</Icon>
+    <Tags>fsharp;F#;refactoring;analyzers;quick fix;code fix;static analysis;code quality;linter;fsautocomplete;functional;functional programming;idiomatic;performance;security;async;cleanup;fsharp-refactor;.NET</Tags>
   </Metadata>
   <Installation>
     <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,19.0)">

@@ -263,8 +263,8 @@ let rec private nanFreeLiteral (e: SynExpr) =
         ->
         nanFreeLiteral inner
     | SynExpr.Tuple(exprs = exprs) -> exprs |> List.forall nanFreeLiteral
-    | SynExpr.Record(baseInfo = None; copyInfo = None; recordFields = fields) ->
-        fields
+    | SynExpr.Record(baseInfo = None; copyInfo = None; recordFields = fields) when not (hasRecordSpread fields) ->
+        recordExprFields fields
         |> List.forall (fun (SynExprRecordField(expr = value)) -> value |> Option.exists nanFreeLiteral)
     | _ -> false
 

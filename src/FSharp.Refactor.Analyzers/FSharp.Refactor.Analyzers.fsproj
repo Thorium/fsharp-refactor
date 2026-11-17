@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- FSharp.Analyzers.SDK 0.41 supports net10.0 only -->
+    <!-- FSharp.Analyzers.SDK 0.43 supports net10.0 only -->
     <TargetFramework>net10.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- NuGet convention for F# analyzers: FSAC/CLI load them from
@@ -13,7 +13,7 @@
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <PackageId>FSharp.Refactor.Analyzers</PackageId>
     <Description>Functional refactoring suggestions (light bulb quick fixes) for F#, built on FSharp.Analyzers.SDK. Over 180 rules covering correctness, performance, idiom and redundancy. Suggestions are Hint severity and never gate a build; the priority rules show as warnings in the editor.</Description>
-    <PackageReleaseNotes>0.8.56: FR0118 leaves Stream&apos;s own calls (WriteAsync, CopyToAsync) on a stream over memory: a MemoryStream, or an immutable binding made from memory streams only.
+    <PackageReleaseNotes>0.8.56: One build, for FSharp.Analyzers.SDK 0.43 (FsAutoComplete 0.87+, fsharp-analyzers 0.43); 0.8.55 is the last release for SDK 0.41. FR0118 leaves Stream&apos;s own calls (WriteAsync, CopyToAsync) on a stream over memory: a MemoryStream, or an immutable binding made from memory streams only.
 
  0.8.55: FR0119 leaves in-memory streams and writers, the console, EF Core Add/AddRange and members named for their synchronous work; FR0119 and FR0049 bind with .ConfigureAwait(false) where the task body&apos;s own binds all do. FR0075 leaves an object of the solution&apos;s own type built with a null argument, and trusts a System.* callee only from an assembly signed with a runtime key. FR0160 stays a note where the try sets an HTTP header. FR0007 keeps mutable on a local an inactive #if branch writes. FR0118 leaves the explicit CancellationToken.None of a call named for cleanup. FR0124 lets Serilog read a repeated {0} once in an all-positional template, and counts every hole for Microsoft.Extensions.Logging.
 
@@ -47,8 +47,8 @@
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="\" />
     <None Include="..\..\icon.png" Pack="true" PackagePath="\" />
-    <!-- One build, for FSharp.Analyzers.SDK 0.41: FsAutoComplete 0.86+
-         (Ionide 8+) and fsharp-analyzers 0.41. The SDK loads only analyzers
+    <!-- One build, for FSharp.Analyzers.SDK 0.43: FsAutoComplete 0.87+
+         and fsharp-analyzers 0.43. The SDK loads only analyzers
          built against its own major.minor. -->
     <None
       Include="bin\$(Configuration)\net10.0\FSharp.Refactor.Analyzers.dll"
@@ -237,8 +237,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.41.0" />
-    <PackageReference Update="FSharp.Core" Version="10.1.402" />
+    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.43.0" />
+    <PackageReference Update="FSharp.Core" Version="10.1.404" />
   </ItemGroup>
 
 </Project>

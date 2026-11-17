@@ -108,12 +108,13 @@ let private argumentsOf (source: ISourceText) (parts: SynInterpolatedStringPart 
                     flushArgument ()
                 else
                     literal.Append c |> ignore
-        | SynInterpolatedStringPart.FillExpr(expr, None) ->
+        | SynInterpolatedStringPart.FillExpr(expr, SynInterpolationFormatting.DotNet(alignment = None; format = None)) ->
             flushLiteral ()
             current.Add(Hole(textOfRange source expr.Range))
-        // a format specifier (`{n:N2}`) would be lost on the way to a bare
-        // hole: not worth following
-        | SynInterpolatedStringPart.FillExpr(_, Some _) -> sound <- false
+        // a format (`{n:N2}`), an alignment (`{n,5}`) or a printf specifier
+        // (`%d{n}`) would be lost on the way to a bare hole: not worth
+        // following
+        | SynInterpolatedStringPart.FillExpr _ -> sound <- false
 
     flushArgument ()
 

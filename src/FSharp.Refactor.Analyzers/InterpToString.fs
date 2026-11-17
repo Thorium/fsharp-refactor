@@ -169,25 +169,25 @@ let find (check: FSharpCheckFileResults option) (parseTree: ParsedInput) (source
                 | SynExpr.InterpolatedString(contents = parts), Some check ->
                     // only consulted when a candidate fill is found
                     let isString = lazy (provenString check source path)
-                    let mutable precededBySpecifier = false
 
                     for part in parts do
                         match part with
-                        | SynInterpolatedStringPart.String(value = lead) ->
-                            precededBySpecifier <- endsWithFormatSpecifier lead
-                        | SynInterpolatedStringPart.FillExpr(fillExpr = fill; qualifiers = format) ->
-                            if not precededBySpecifier && format.IsNone && isSingleLine fill.Range then
-                                match toStringReceiver source fill with
-                                | Some receiverText when isString.Value ->
-                                    suggestions.Add
-                                        {
-                                            Range = fill.Range
-                                            OriginalText = textOfRange source fill.Range
-                                            ReplacementText = receiverText
-                                        }
-                                | _ -> ()
-
-                            precededBySpecifier <- false
+                        // a hole with no printf specifier, alignment or format
+                        | SynInterpolatedStringPart.FillExpr(
+                            fillExpr = fill
+                            formatting = SynInterpolationFormatting.DotNet(alignment = None; format = None)) when
+                            isSingleLine fill.Range
+                            ->
+                            match toStringReceiver source fill with
+                            | Some receiverText when isString.Value ->
+                                suggestions.Add
+                                    {
+                                        Range = fill.Range
+                                        OriginalText = textOfRange source fill.Range
+                                        ReplacementText = receiverText
+                                    }
+                            | _ -> ()
+                        | _ -> ()
                 | _ -> ()
         }
 

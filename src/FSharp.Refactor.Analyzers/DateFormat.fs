@@ -290,7 +290,8 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                          |> List.exists (fun part ->
                              match part with
                              | SynInterpolatedStringPart.String(text, _) -> designator.IsMatch text
-                             | SynInterpolatedStringPart.FillExpr(qualifiers = Some format) ->
+                             | SynInterpolatedStringPart.FillExpr(
+                                 formatting = SynInterpolationFormatting.DotNet(format = Some format)) ->
                                  designator.IsMatch format.idText
                              | _ -> false)
                      | _ -> false))

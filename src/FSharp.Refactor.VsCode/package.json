@@ -23,7 +23,25 @@
         "F#",
         "refactoring",
         "analyzers",
-        "quickfix"
+        "quickfix",
+        "codefix",
+        "code fix",
+        "static analysis",
+        "code quality",
+        "linter",
+        "lint",
+        "ionide",
+        "fsautocomplete",
+        "functional",
+        "functional programming",
+        "idiomatic",
+        "performance",
+        "security",
+        "async",
+        "cleanup",
+        "fsharp-refactor",
+        "dotnet",
+        ".NET"
     ],
     "extensionDependencies": [
         "Ionide.Ionide-fsharp"
@@ -70,7 +88,7 @@
             },
             {
                 "command": "fsharpRefactor.useNewerFsac",
-                "title": "FSharp.Refactor: Use FsAutoComplete 0.86+ (the analyzers need it)"
+                "title": "FSharp.Refactor: Use FsAutoComplete 0.87+ (the analyzers need it)"
             },
             {
                 "command": "fsharpRefactor.useBundledFsac",
@@ -80,8 +98,8 @@
     },
     "fsharpRefactorBuild": {
         "analyzers": "0.8.56",
-        "sdks": "0.41",
-        "built": "2026-11-16 22:06 UTC"
+        "sdks": "0.43",
+        "built": "2026-11-17 11:49 UTC"
     },
     "scripts": {
         "compile": "tsc -p ."

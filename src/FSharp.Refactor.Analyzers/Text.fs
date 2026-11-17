@@ -271,22 +271,56 @@ let (|SingleIdent|_|) (e: SynExpr) =
     | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ ident ])) -> ValueSome ident
     | _ -> ValueNone
 
-let private compiledRegex = Regex @"%[-+0# ]*[0-9]*(\.[0-9]+)?[a-zA-Z]$"
+/// The `field = value` entries of a record expression, without its
+/// `...spread` entries.
+let recordExprFields (entries: SynExprRecordFieldOrSpread list) : SynExprRecordField list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | SynExprRecordFieldOrSpread.Field(field = field) -> Some field
+        | SynExprRecordFieldOrSpread.Spread _ -> None)
 
-/// True when the text ends in a printf format specifier whose leading `%`
-/// is not itself escaped (`%%`) — the shape a typed interpolation hole has
-/// in the literal part preceding its `{`.
-let endsWithFormatSpecifier (text: string) =
-    compiledRegex.IsMatch text
-    && (let idx = text.LastIndexOf '%'
-        let mutable run = 0
-        let mutable i = idx - 1
+/// True when a record expression copies fields in with `...source`.
+let hasRecordSpread (entries: SynExprRecordFieldOrSpread list) =
+    entries
+    |> List.exists (fun entry ->
+        match entry with
+        | SynExprRecordFieldOrSpread.Spread _ -> true
+        | SynExprRecordFieldOrSpread.Field _ -> false)
 
-        while i >= 0 && text.[i] = '%' do
-            run <- run + 1
-            i <- i - 1
+/// The fields of an anonymous record expression as name, `=` and value,
+/// without its `...spread` entries.
+let anonRecordExprFields (entries: SynExprAnonRecordFieldOrSpread list) : (SynLongIdent * range option * SynExpr) list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | SynExprAnonRecordFieldOrSpread.Field(
+            field = SynExprAnonRecordField(fieldName = name; equalsRange = eq; expr = value)) -> Some(name, eq, value)
+        | SynExprAnonRecordFieldOrSpread.Spread _ -> None)
 
-        run % 2 = 0)
+/// The source expressions of the `...spread` entries of an anonymous record.
+let anonRecordSpreads (entries: SynExprAnonRecordFieldOrSpread list) : SynExpr list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | SynExprAnonRecordFieldOrSpread.Spread(spread = SynExprSpread(expr = source)) -> Some source
+        | SynExprAnonRecordFieldOrSpread.Field _ -> None)
+
+/// The fields a record type declares itself, without its `...spread` types.
+let recordTypeFields (entries: SynFieldOrSpread list) : SynField list =
+    entries
+    |> List.choose (fun entry ->
+        match entry with
+        | SynFieldOrSpread.Field(field = field) -> Some field
+        | SynFieldOrSpread.Spread _ -> None)
+
+/// True when a record type takes fields in with `...Other`.
+let hasRecordTypeSpread (entries: SynFieldOrSpread list) =
+    entries
+    |> List.exists (fun entry ->
+        match entry with
+        | SynFieldOrSpread.Spread _ -> true
+        | SynFieldOrSpread.Field _ -> false)
 
 [<return: Struct>]
 let (|BoolConst|_|) (e: SynExpr) =
@@ -595,7 +629,7 @@ let stringLiteralsOf (path: string) : string[] =
 
     let read (p: string) =
         try
-            let tokenizer = FSharpSourceTokenizer([], Some p, None, None)
+            let tokenizer = FSharpSourceTokenizer([], Some p, None)
             let literals = ResizeArray<string>()
             let mutable state = FSharpTokenizerLexState.Initial
 
@@ -813,7 +847,7 @@ let stringLiteralMentions (files: string seq) (identifier: string) =
 /// lexed on its own, so a line inside a multi-line string or comment lexes
 /// as code; the caller edits code, so that is the line it asks about.
 let offsideAnchors (lineText: string) : int list =
-    let tokenizer = FSharpSourceTokenizer([], None, None, None)
+    let tokenizer = FSharpSourceTokenizer([], None, None)
     let lineTokenizer = tokenizer.CreateLineTokenizer lineText
     let tokens = ResizeArray<FSharpTokenInfo>()
     let mutable state = FSharpTokenizerLexState.Initial

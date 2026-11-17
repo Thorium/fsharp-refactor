@@ -19,8 +19,8 @@ delivered through Ionide.
 VS Code has no analyzer concept of its own — F# analyzers load through
 Ionide → FsAutoComplete → FSharp.Analyzers.SDK, from the directories the
 `FSharp.analyzersPath` setting names. This extension bundles the
-FSharp.Refactor analyzers (built for analyzer SDK 0.41: FsAutoComplete 0.86
-and later, bundled with Ionide 8; the .NET 10 runtime runs them) and, on
+FSharp.Refactor analyzers (built for analyzer SDK 0.43: FsAutoComplete 0.87
+and later; the .NET 10 runtime runs them) and, on
 first activation, **asks** to append its analyzers directory
 to that setting, after Ionide's own default folders, and turn
 `FSharp.enableAnalyzers` on. Decline and it stays out of your settings;
@@ -43,7 +43,7 @@ Ionide 7 bundles 0.85 or older, which loads none of the analyzers. Then
 the extension **asks** once to install or update the `fsautocomplete`
 dotnet global tool and point Ionide at it through the global
 `FSharp.fsac.netCoreDllPath` setting. Decline and nothing changes;
-`FSharp.Refactor: Use FsAutoComplete 0.86+` re-offers it, and `Use
+`FSharp.Refactor: Use FsAutoComplete 0.87+` re-offers it, and `Use
 Ionide's bundled FsAutoComplete again` undoes it. A path it set follows
 `dotnet tool update` (which deletes the old version's folder), and is
 dropped again once Ionide's own FsAutoComplete is as new. A

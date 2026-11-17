@@ -131,15 +131,16 @@ install -g fsautocomplete` and set `FSharp.fsac.netCoreDllPath` to its
 
 FSharp.Analyzers.SDK loads an analyzer assembly only when it was built
 against the SDK's own major.minor version. The package ships one build,
-in `analyzers/dotnet/fs`, for SDK 0.41 on .NET 10:
+in `analyzers/dotnet/fs`, for SDK 0.43 on .NET 10:
 
 | SDK | Hosts |
 |---|---|
-| 0.41 | FsAutoComplete 0.86 and later (Ionide 8), `fsharp-analyzers` 0.41 |
+| 0.43 | FsAutoComplete 0.87 and later, `fsharp-analyzers` 0.43 |
 
-An older host (Ionide 7, FsAutoComplete 0.85 and earlier, `fsharp-analyzers`
-0.37 and earlier) loads nothing from this package; FSharp.Refactor.Analyzers
-0.8.51 is the last release with builds for SDK 0.37 and 0.35.
+An older host (FsAutoComplete 0.86 and earlier, `fsharp-analyzers` 0.42 and
+earlier) loads nothing from this package. FSharp.Refactor.Analyzers 0.8.55 is
+the last release for SDK 0.41 (FsAutoComplete 0.86), and 0.8.51 the last with
+builds for SDK 0.37 and 0.35.
 
 **If no suggestions appear**, open Output -> "F# Language Service": it
 names the analyzer dlls it scanned and how many analyzers loaded, and a
@@ -157,7 +158,7 @@ through an FsAutoComplete sidecar the extension bundles.
 ### CLI / CI
 
 ```bash
-dotnet tool install --global fsharp-analyzers --version "0.41.*"
+dotnet tool install --global fsharp-analyzers --version "0.43.*"
 fsharp-analyzers --project src/YourProject.fsproj --analyzers-path ~/.nuget/packages/fsharp.refactor.analyzers/<version>/analyzers/dotnet/fs --code-root . --report analysis.sarif
 ```
 
@@ -893,7 +894,7 @@ fsharp-analyzers --project YourProject.fsproj --analyzers-path src/FSharp.Refact
 ```
 
 Note: a host loads only analyzers built against its own FSharp.Analyzers.SDK
-major.minor. The project pins SDK 0.41.0 (FCS 43.12.402), which is also what
+major.minor. The project pins SDK 0.43.0 (FCS 43.13.404), which is also what
 the tool and the tests run (see [Supported hosts](#supported-hosts)).
 
 ## Building and testing

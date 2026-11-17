@@ -147,7 +147,8 @@ let classifierFor
             for _, e in index.Exprs do
                 match e with
                 | SynExpr.Record(recordFields = fields) ->
-                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
+                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in
+                        recordExprFields fields do
                         if not ids.IsEmpty then
                             yield (List.last ids).idRange, rhs
                 | _ -> ()

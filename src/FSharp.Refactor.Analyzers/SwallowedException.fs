@@ -849,8 +849,9 @@ let rec private isValueFallback (e: SynExpr) =
     | IsDefaultFallback _ -> true
     | SynExpr.Ident _ -> true
     | SynExpr.Tuple(exprs = items) -> items |> List.forall isValueSlot && items |> List.exists carriesDefault
-    | SynExpr.Record(recordFields = fields) ->
-        let values = fields |> List.choose (fun (SynExprRecordField(expr = v)) -> v)
+    | SynExpr.Record(recordFields = fields) when not (hasRecordSpread fields) ->
+        let values =
+            recordExprFields fields |> List.choose (fun (SynExprRecordField(expr = v)) -> v)
 
         values |> List.forall isValueSlot && values |> List.exists carriesDefault
     | _ -> false

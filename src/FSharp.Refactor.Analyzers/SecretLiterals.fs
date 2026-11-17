@@ -356,7 +356,8 @@ let findNamed
                     yield! literal (List.last ids).idText rhs |> Option.toList
                 | _ -> ()
             | SynExpr.Record(recordFields = fields) ->
-                for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = value) in fields do
+                for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = value) in
+                    Text.recordExprFields fields do
                     match List.tryLast ids, value with
                     | Some field, Some rhs -> yield! literal field.idText rhs |> Option.toList
                     | _ -> ()

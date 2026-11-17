@@ -208,7 +208,7 @@ let findWith
                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) ->
                        ids.Length >= 2 && fieldNames.Contains (List.last ids).idText
                    | SynExpr.Record(recordFields = recordFields) ->
-                       recordFields
+                       recordExprFields recordFields
                        |> List.exists (fun (SynExprRecordField(fieldName = (SynLongIdent(id = ids), _))) ->
                            not ids.IsEmpty && fieldNames.Contains (List.last ids).idText)
                    | _ -> false))
@@ -223,9 +223,10 @@ let findWith
                 let typeName = typeIds |> List.map (fun i -> i.idText) |> String.concat "."
 
                 match repr with
-                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) when
+                | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = entries)) when
                     Visibility.isInScopeNamedPath allowApiChanges path [ access ] typeIds
                     ->
+                    let fields = recordTypeFields entries
                     // strictly file-private: its own modifier, or a private
                     // enclosing module — then every use is in this file and
                     // the voption migration can be a single-file fix
@@ -287,6 +288,9 @@ let findWith
 
                     if
                         not alreadyStruct
+                        // a `...Other` spread brings fields the count and
+                        // the size cap cannot see
+                        && not (hasRecordTypeSpread entries)
                         && not fields.IsEmpty
                         && fields.Length <= 4
                         && allStructFields

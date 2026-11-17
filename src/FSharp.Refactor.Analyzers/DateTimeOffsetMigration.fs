@@ -142,7 +142,7 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                 for SynTypeDefn(typeInfo = SynComponentInfo(longId = typeIds; accessibility = access); typeRepr = repr) in
                     defns do
                     match repr with
-                    | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFields = fields)) when
+                    | SynTypeDefnRepr.Simple(simpleRepr = SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = fields)) when
                         Visibility.isInScopeNamedPath allowApiChanges path [ access ] typeIds
                         ->
                         let isFilePrivate =
@@ -157,7 +157,7 @@ let find (allowApiChanges: bool) (parseTree: ParsedInput) (source: ISourceText) 
                                        true
                                    | _ -> false)
 
-                        for SynField(idOpt = idOpt; fieldType = fieldType) in fields do
+                        for SynField(idOpt = idOpt; fieldType = fieldType) in recordTypeFields fields do
                             match fieldType, idOpt with
                             | SynType.LongIdent(SynLongIdent(id = tids)), Some fieldId when
                                 not tids.IsEmpty && (List.last tids).idText = "DateTime"
@@ -196,7 +196,8 @@ let classifierFor
             for _, e in index.Exprs do
                 match e with
                 | SynExpr.Record(recordFields = fields) ->
-                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in fields do
+                    for SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = rhs) in
+                        recordExprFields fields do
                         if not ids.IsEmpty then
                             yield (List.last ids).idRange, rhs
                 | _ -> ()

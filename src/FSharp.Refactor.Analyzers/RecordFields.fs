@@ -90,10 +90,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             [
                 for _, expr in index.Exprs do
                     match expr with
-                    | SynExpr.Record(copyInfo = None; recordFields = fields) when
-                        not fields.IsEmpty
+                    // a spread may supply the fields the compiler names
+                    | SynExpr.Record(copyInfo = None; recordFields = entries) when
+                        not entries.IsEmpty
+                        && not (hasRecordSpread entries)
                         && incomplete |> Array.exists (fun r -> Range.rangeContainsRange expr.Range r)
                         ->
+                        let fields = recordExprFields entries
                         // the first label resolves the record type even while
                         // the expression is incomplete
                         let firstLabel =

@@ -97,13 +97,13 @@ async function unwire(context: vscode.ExtensionContext): Promise<void> {
 
 // ---- FsAutoComplete: the version the analyzers need ----
 //
-// The analyzers are built for FSharp.Analyzers.SDK 0.41, which
-// FsAutoComplete 0.86.0 and later run. Ionide bundles its own
+// The analyzers are built for FSharp.Analyzers.SDK 0.43, which
+// FsAutoComplete 0.87.0 and later run. Ionide bundles its own
 // FsAutoComplete (Ionide 7: 0.85 and earlier); the
 // `FSharp.fsac.netCoreDllPath` setting points it at another one, here the
 // fsautocomplete dotnet global tool.
 
-const FSAC_NEEDED: Version = [0, 86, 0];
+const FSAC_NEEDED: Version = [0, 87, 0];
 // the answer to the offer for FSAC_NEEDED: a "no" to an offer for another
 // version answered another question
 const FSAC_DECLINED_KEY = `fsharpRefactor.fsacDeclined.${FSAC_NEEDED.join('.')}`;

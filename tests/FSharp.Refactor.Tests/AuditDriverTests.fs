@@ -107,6 +107,69 @@ let private build (project: string) =
     proc.WaitForExit()
     proc.ExitCode = 0, output
 
+// ---- a .NET Framework script compiles against a netstandard FSharp.Core ----
+
+[<Fact>]
+let ``withFSharpCoreFor swaps the tool's own FSharp.Core under the Framework reference set only`` () =
+    let own = Path.Combine(Path.GetTempPath(), "tool", "FSharp.Core.dll")
+    let named = Path.Combine(Path.GetTempPath(), "script", "FSharp.Core.dll")
+
+    let bundled =
+        Path.Combine(Path.GetTempPath(), "tool", "netstandard2.0", "FSharp.Core.dll")
+
+    let baseOptions, _ =
+        checker.GetProjectOptionsFromScript("S.fsx", SourceText.ofString "let x = 1", assumeDotNetFramework = false)
+        |> Async.RunSynchronously
+
+    let options =
+        { baseOptions with
+            OtherOptions = [| $"-r:{own}"; $"-r:{named}"; "--noframework" |]
+        }
+
+    Assert.Equal<string array>(
+        [| $"-r:{bundled}"; $"-r:{named}"; "--noframework" |],
+        (Program.withFSharpCoreFor own (Some bundled) true options).OtherOptions
+    )
+
+    Assert.Equal<string array>(
+        options.OtherOptions,
+        (Program.withFSharpCoreFor own (Some bundled) false options).OtherOptions
+    )
+
+    Assert.Equal<string array>(options.OtherOptions, (Program.withFSharpCoreFor own None true options).OtherOptions)
+
+[<Fact>]
+let ``a .NET Framework script typechecks against the FSharp.Core the tool carries`` () =
+    // only Windows has the .NET Framework reference assemblies FCS reads
+    if OperatingSystem.IsWindows() then
+        let bundled =
+            Path.Combine(AppContext.BaseDirectory, "netstandard2.0", "FSharp.Core.dll")
+
+        Assert.True(File.Exists bundled, $"missing {bundled}")
+
+        let source =
+            SourceText.ofString "let items = ResizeArray [ 1; 2 ]\nlet total = Seq.sum items\n"
+
+        let options, _ =
+            checker.GetProjectOptionsFromScript("Framework.fsx", source, assumeDotNetFramework = true)
+            |> Async.RunSynchronously
+
+        let options =
+            Program.withFSharpCoreFor typeof<list<int>>.Assembly.Location (Some bundled) true options
+
+        match
+            checker.ParseAndCheckFileInProject("Framework.fsx", 0, source, options)
+            |> Async.RunSynchronously
+        with
+        | _, FSharpCheckFileAnswer.Succeeded results ->
+            let errors =
+                results.Diagnostics
+                |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.map _.Message
+
+            Assert.Empty errors
+        | _, FSharpCheckFileAnswer.Aborted -> failwith "the check was aborted"
+
 // ---- B14: relative compiler-argument paths become absolute against the project ----
 
 [<Fact>]

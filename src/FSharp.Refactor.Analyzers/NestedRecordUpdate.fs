@@ -72,10 +72,12 @@ let rec private flattenLoop
             let fieldPath = prefix @ (fieldIds |> List.map (fun i -> i.idText))
 
             match value with
+            // a spread among the inner fields has no dotted path to flatten to
+            | SynExpr.Record(copyInfo = Some _; recordFields = innerFields) when hasRecordSpread innerFields -> None
             | SynExpr.Record(copyInfo = Some(innerBase, _); recordFields = innerFields) when
                 identPath innerBase = Some(basePath @ fieldPath) && not innerFields.IsEmpty
                 ->
-                flattenLoop basePath acc ((innerFields |> List.map (fun f -> fieldPath, f)) @ rest)
+                flattenLoop basePath acc ((recordExprFields innerFields |> List.map (fun f -> fieldPath, f)) @ rest)
             | _ when isSingleLine value.Range ->
                 let leaf =
                     {
@@ -196,10 +198,10 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
     [
         for path, expr in index.Exprs do
             match expr with
-            | SynExpr.Record(copyInfo = Some(outerBase, _); recordFields = fields) ->
+            | SynExpr.Record(copyInfo = Some(outerBase, _); recordFields = fields) when not (hasRecordSpread fields) ->
                 match identPath outerBase with
                 | Some basePath ->
-                    for field in fields do
+                    for field in recordExprFields fields do
                         match field with
                         // only fields whose value IS a nested copy-and-update
                         // are rewritten; sibling plain fields stay untouched

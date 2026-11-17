@@ -37,9 +37,6 @@ type Suggestion =
         FillText: string
     }
 
-/// Trailing text that means the NEXT fill already has a specifier.
-let private hasUnescapedSpecifier (text: string) = endsWithFormatSpecifier text
-
 let private integerTypes =
     set
         [
@@ -124,33 +121,30 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         && raw.Substring(raw.Length - dollars) = String.replicate dollars "{"
                         && (raw.Length = dollars || raw.[raw.Length - dollars - 1] <> '{')
 
-                    // the lexer folds a `$$` part's value into printf
-                    // convention (`%%s` → `%s`, a literal `%` stays `%%`), so
-                    // the same parity-aware check reads every dollar count;
-                    // the raw text would misread `%%%s{{x}}` (literal percent
-                    // and then a specifier) as untyped
-                    let typedLead (lead: string) (_: range) = hasUnescapedSpecifier lead
-
-                    // pair every fill with the literal text preceding it
+                    // pair every fill with the literal text preceding it, and
+                    // whether a printf specifier types it; a hole with a .NET
+                    // alignment or format takes none
                     let fillsWithLeadText =
                         parts
                         |> List.pairwise
                         |> List.choose (fun pair ->
                             match pair with
-                            | SynInterpolatedStringPart.String(value = lead; range = leadRange),
-                              SynInterpolatedStringPart.FillExpr(fillExpr = fill; qualifiers = None) when
+                            | SynInterpolatedStringPart.String(range = leadRange),
+                              SynInterpolatedStringPart.FillExpr(fillExpr = fill; formatting = formatting) when
                                 opensHole leadRange
                                 ->
-                                Some(lead, leadRange, fill)
+                                match formatting with
+                                | SynInterpolationFormatting.Printf _ -> Some(true, leadRange, fill)
+                                | SynInterpolationFormatting.DotNet(alignment = None; format = None) ->
+                                    Some(false, leadRange, fill)
+                                | SynInterpolationFormatting.DotNet _ -> None
                             | _ -> None)
 
-                    let anyTyped =
-                        fillsWithLeadText
-                        |> List.exists (fun (lead, leadRange, _) -> typedLead lead leadRange)
+                    let anyTyped = fillsWithLeadText |> List.exists (fun (typed, _, _) -> typed)
 
                     if anyTyped then
-                        for lead, leadRange, fill in fillsWithLeadText do
-                            if not (typedLead lead leadRange) then
+                        for typed, leadRange, fill in fillsWithLeadText do
+                            if not typed then
                                 let fillIdent =
                                     match stripParens fill with
                                     | SynExpr.Ident pid -> Some pid

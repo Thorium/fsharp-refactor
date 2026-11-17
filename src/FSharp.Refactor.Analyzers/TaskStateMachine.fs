@@ -408,10 +408,12 @@ let private cannotThrow
         | SynExpr.InferredUpcast(expr = inner) -> go inner
         | SynExpr.Tuple(exprs = es)
         | SynExpr.ArrayOrList(exprs = es) -> es |> List.forall go
-        | SynExpr.Record(copyInfo = None; recordFields = fields) ->
-            fields
+        | SynExpr.Record(copyInfo = None; recordFields = fields) when not (hasRecordSpread fields) ->
+            recordExprFields fields
             |> List.forall (fun (SynExprRecordField(expr = v)) -> v |> Option.forall go)
-        | SynExpr.AnonRecd(copyInfo = None; recordFields = fields) -> fields |> List.forall (fun (_, _, v) -> go v)
+        | SynExpr.AnonRecd(copyInfo = None; recordFields = fields) ->
+            anonRecordSpreads fields |> List.forall go
+            && anonRecordExprFields fields |> List.forall (fun (_, _, v) -> go v)
         | SynExpr.IfThenElse(ifExpr = c; thenExpr = t; elseExpr = Some el) -> go c && go t && go el
         | SynExpr.TryWith(withCases = clauses) when not clauses.IsEmpty ->
             let catchesAll =

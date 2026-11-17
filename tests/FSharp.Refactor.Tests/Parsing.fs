@@ -127,13 +127,15 @@ let parseAndCheck (source: string) : ParsedInput * ISourceText * FSharpCheckFile
 /// could only pass for the wrong reason.
 let private net48References =
     lazy
-        (let directory =
+        (let metadata key =
             System.Reflection.Assembly
                 .GetExecutingAssembly()
                 .GetCustomAttributes(typeof<System.Reflection.AssemblyMetadataAttribute>, false)
             |> Seq.cast<System.Reflection.AssemblyMetadataAttribute>
-            |> Seq.find (fun a -> a.Key = "Net48ReferenceAssemblies")
+            |> Seq.find (fun a -> a.Key = key)
             |> fun a -> a.Value
+
+         let directory = metadata "Net48ReferenceAssemblies"
 
          [
              "mscorlib"
@@ -146,8 +148,9 @@ let private net48References =
              "Facades/System.Runtime"
          ]
          |> List.map (fun name -> Path.Combine(directory, name + ".dll"))
-         // FSharp.Core targets netstandard, which the facade above bridges
-         |> fun framework -> typeof<list<int>>.Assembly.Location :: framework)
+         // the netstandard2.0 FSharp.Core a .NET Framework project gets, which
+         // the facade above bridges; the one the tests run on is net10.0
+         |> fun framework -> metadata "FSharpCoreNetStandard" :: framework)
 
 /// `parseAndCheck` against the LEGACY .NET Framework reference set
 /// (net48's mscorlib), without requiring a clean typecheck.

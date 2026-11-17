@@ -60,7 +60,8 @@ let trace (source: string) : Result<string, string> =
 
         try
             match fsi.EvalInteractionNonThrowing text with
-            | Choice2Of2 e, _ -> Error $"evaluating: {e.Message}"
+            | Choice2Of2 e, diagnostics ->
+                Error $"""evaluating: {e.Message}: {String.concat "; " (errorsOf diagnostics)}"""
             | Choice1Of2 _, diagnostics ->
                 match errorsOf diagnostics with
                 | [] ->

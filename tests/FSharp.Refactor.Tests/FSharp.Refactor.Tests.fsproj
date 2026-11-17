@@ -122,7 +122,9 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.0" />
-    <PackageReference Update="FSharp.Core" Version="10.1.402" />
+    <!-- its path gives the legacy-framework compilations the netstandard2.0
+         build a .NET Framework project gets; the tests run on the net10.0 one -->
+    <PackageReference Update="FSharp.Core" Version="10.1.404" GeneratePathProperty="true" />
     <!-- The .NET Framework 4.8 reference assemblies, for the legacy-framework
          compilations in Parsing.fs. Only Windows ships them in Program Files;
          this package carries the same files to every OS. Its assets stay out
@@ -134,6 +136,10 @@
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
       <_Parameter1>Net48ReferenceAssemblies</_Parameter1>
       <_Parameter2>$(PkgMicrosoft_NETFramework_ReferenceAssemblies_net48)/build/.NETFramework/v4.8</_Parameter2>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>FSharpCoreNetStandard</_Parameter1>
+      <_Parameter2>$(PkgFSharp_Core)/lib/netstandard2.0/FSharp.Core.dll</_Parameter2>
     </AssemblyAttribute>
   </ItemGroup>
 

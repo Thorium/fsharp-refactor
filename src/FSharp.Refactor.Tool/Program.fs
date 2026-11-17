@@ -2473,6 +2473,43 @@ let private withFsiAuxLib (scriptPath: string) (options: FSharpProjectOptions) =
             }
         | None -> options
 
+/// The netstandard2.0 FSharp.Core the tool carries for .NET Framework
+/// scripts. FCS hands a script the FSharp.Core the tool runs on, the
+/// net10.0 build, and against .NET Framework's mscorlib that one resolves
+/// nothing (its `System.Runtime` has no `Stream` there).
+let private frameworkFSharpCore =
+    lazy
+        (let path =
+            Path.Combine(AppContext.BaseDirectory, "netstandard2.0", "FSharp.Core.dll")
+
+         if File.Exists path then Some path else None)
+
+/// Under the .NET Framework reference set, the script's reference to the
+/// tool's own FSharp.Core (`own`, the path FCS writes it with) swapped for
+/// `bundled`; a FSharp.Core the script names itself stays. A tool without
+/// an assembly location (single-file) has nothing to swap.
+let internal withFSharpCoreFor
+    (own: string)
+    (bundled: string option)
+    (assumeDotNetFramework: bool)
+    (options: FSharpProjectOptions)
+    =
+    match bundled with
+    | Some core when assumeDotNetFramework && own <> "" ->
+        { options with
+            OtherOptions =
+                options.OtherOptions
+                |> Array.map (fun o ->
+                    if String.Equals(o, "-r:" + own, StringComparison.OrdinalIgnoreCase) then
+                        "-r:" + core
+                    else
+                        o)
+        }
+    | _ -> options
+
+let private withScriptFSharpCore (assumeDotNetFramework: bool) (options: FSharpProjectOptions) =
+    withFSharpCoreFor typeof<list<int>>.Assembly.Location frameworkFSharpCore.Value assumeDotNetFramework options
+
 let private checkDirectoryLock = obj ()
 
 /// ParseAndCheckProject from the project's own directory, the way MSBuild
@@ -3178,7 +3215,9 @@ let private readScriptUnguarded (checker: FSharpChecker) (script: string) =
                         )
                         |> Async.RunSynchronously
 
-                    let options = withFsiAuxLib script options
+                    let options =
+                        withFsiAuxLib script options |> withScriptFSharpCore assumeDotNetFramework
+
                     let results = checkWithin checker options
 
                     let errors =
@@ -3490,7 +3529,8 @@ let private readReferencingScript (checker: FSharpChecker) (project: FSharpProje
                         )
                         |> Async.RunSynchronously
 
-                    let scriptOptions = withFsiAuxLib script scriptOptions
+                    let scriptOptions =
+                        withFsiAuxLib script scriptOptions |> withScriptFSharpCore assumeDotNetFramework
 
                     // check the script with its reference to the project's
                     // assembly answered by the project's own compilation;
@@ -7675,7 +7715,7 @@ let private scriptProjectOptions (checker: FSharpChecker) (path: string) (assume
         )
         |> Async.RunSynchronously
 
-    withFsiAuxLib path options, diagnostics
+    (withFsiAuxLib path options |> withScriptFSharpCore assumeDotNetFramework), diagnostics
 
 /// The compiler arguments with every relative path made absolute against
 /// the project directory. MSBuild hands fsc paths as the project spells

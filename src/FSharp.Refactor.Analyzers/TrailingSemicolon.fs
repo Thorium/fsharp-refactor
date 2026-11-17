@@ -246,7 +246,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
         // conditional defines do not matter here: an inactive `#if` branch is
         // tokenized as inactive code, and we only act on real semicolon tokens
-        let tokenizer = FSharpSourceTokenizer([], Some fileName, None, None)
+        let tokenizer = FSharpSourceTokenizer([], Some fileName, None)
         let mutable state = FSharpTokenizerLexState.Initial
         // attribute groups span lines: `[<Foo;` then `Bar>]`
         let mutable attributeDepth = 0

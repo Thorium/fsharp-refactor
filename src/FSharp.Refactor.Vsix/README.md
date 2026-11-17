@@ -50,8 +50,8 @@ FsAutoComplete is located as the global dotnet tool
 (`%USERPROFILE%\.dotnet\tools\fsautocomplete.exe`, install with
 `dotnet tool install -g fsautocomplete`), or from an `fsac\` folder beside
 the extension dll if you bundle one. The bundled `analyzers\` folder
-carries the analyzers built for FSharp.Analyzers.SDK 0.41, which
-FsAutoComplete 0.86 and later load.
+carries the analyzers built for FSharp.Analyzers.SDK 0.43, which
+FsAutoComplete 0.87 and later load.
 
 ## The menu, and why it was invisible for a day
 

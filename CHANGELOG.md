@@ -4,6 +4,7 @@ The analyzers package, the `fsharp-refactor` tool and both editor extensions sha
 
 ## 0.8.56
 
+- One build, for FSharp.Analyzers.SDK 0.43: FsAutoComplete 0.87 and later, `fsharp-analyzers` 0.43. FsAutoComplete 0.86 and earlier load none of it; 0.8.55 is the last release for SDK 0.41. The tool reads code with FSharp.Compiler.Service 43.13.404.
 - FR0118 leaves one of `Stream`'s own calls (`WriteAsync`, `CopyToAsync`) on a stream over memory: a `MemoryStream`, or an immutable binding made from memory streams only, like a `GZipStream` over a buffer. The token changed nothing there; a method an extension or a `MemoryStream` subclass adds keeps it.
 
 ## 0.8.55

@@ -74,7 +74,8 @@ let private setChildren (e: SynExpr) : SynExpr list =
     // `{| message = format r |}` fields in the match arms)
     | SynExpr.AnonRecd(copyInfo = copy; recordFields = fields) ->
         (copy |> Option.map fst |> Option.toList)
-        @ (fields |> List.map (fun (_, _, value) -> value))
+        @ Text.anonRecordSpreads fields
+        @ (Text.anonRecordExprFields fields |> List.map (fun (_, _, value) -> value))
     | SynExpr.MatchBang(expr = scrutinee; clauses = cs) ->
         scrutinee
         :: (cs
@@ -223,8 +224,8 @@ let private build (tree: ParsedInput) : Index =
                     | SynTypeDefnSimpleRepr.Union(unionCases = cases) ->
                         for SynUnionCase(attributes = attrs) in cases do
                             addAttrs declPath attrs
-                    | SynTypeDefnSimpleRepr.Record(recordFields = fields) ->
-                        for SynField(attributes = attrs) in fields do
+                    | SynTypeDefnSimpleRepr.Record(recordFieldsAndSpreads = fields) ->
+                        for SynField(attributes = attrs) in Text.recordTypeFields fields do
                             addAttrs declPath attrs
                     | SynTypeDefnSimpleRepr.Enum(cases = cases) ->
                         for SynEnumCase(attributes = attrs) in cases do

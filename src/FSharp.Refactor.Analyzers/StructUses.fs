@@ -201,14 +201,15 @@ let hostileNamesIn (symbolsAt: Ident -> FSharpSymbol list) (index: AstIndex.Inde
         | SynExpr.Typed(expr = inner) -> typeOfOperand inner
         | SynExpr.Record(copyInfo = Some(copied, _)) -> typeOfOperand copied
         // a record literal names its type through its fields
-        | SynExpr.Record(recordFields = SynExprRecordField(fieldName = (SynLongIdent(id = ids), _)) :: _) when
-            not ids.IsEmpty
-            ->
-            symbolsAt (List.last ids)
-            |> List.tryPick (fun symbol ->
-                match symbol with
-                | :? FSharpField as field -> field.DeclaringEntity |> Option.bind _.TryFullName
-                | _ -> None)
+        | SynExpr.Record(recordFields = entries) ->
+            match recordExprFields entries with
+            | SynExprRecordField(fieldName = (SynLongIdent(id = ids), _)) :: _ when not ids.IsEmpty ->
+                symbolsAt (List.last ids)
+                |> List.tryPick (fun symbol ->
+                    match symbol with
+                    | :? FSharpField as field -> field.DeclaringEntity |> Option.bind _.TryFullName
+                    | _ -> None)
+            | _ -> None
         | plain ->
             match operandIdent plain with
             | ValueSome pid ->

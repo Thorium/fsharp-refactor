@@ -467,7 +467,7 @@ let private namesFieldInRecord (index: AstIndex.Index) (r: range) =
     |> Array.exists (fun (_, e) ->
         match e with
         | SynExpr.Record(recordFields = fields) ->
-            fields
+            recordExprFields fields
             |> List.exists (fun (SynExprRecordField(fieldName = (SynLongIdent(id = ids), _))) -> named ids)
         | _ -> false)
     || index.Pats
@@ -1093,7 +1093,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
         // a record field's value
         | SyntaxNode.SynExpr(SynExpr.Record(recordFields = fields)) :: _ ->
             let field =
-                fields
+                recordExprFields fields
                 |> List.tryPick (fun (SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = value)) ->
                     match value with
                     | Some v when sameSpan v.Range node.Range -> List.tryLast ids
@@ -1130,11 +1130,12 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                 |> List.pairwise
                 |> List.tryPick (fun (before, part) ->
                     match before, part with
-                    | SynInterpolatedStringPart.String(value = lead; range = r),
-                      SynInterpolatedStringPart.FillExpr(fillExpr = fill) when
-                        Range.rangeContainsRange fill.Range node.Range && endsWithFormatSpecifier lead
+                    | SynInterpolatedStringPart.String(range = r),
+                      SynInterpolatedStringPart.FillExpr(
+                          fillExpr = fill; formatting = SynInterpolationFormatting.Printf(specifier = specifier)) when
+                        Range.rangeContainsRange fill.Range node.Range
                         ->
-                        Some(lead, r)
+                        Some(specifier, r)
                     | _ -> None)
 
             match specifierBefore with
@@ -1295,7 +1296,7 @@ type private Analysis(world: World, fileName: string, index: AstIndex.Index, sou
                             |> Array.tryPick (fun (_, e) ->
                                 match e with
                                 | SynExpr.Record(recordFields = fields) ->
-                                    fields
+                                    recordExprFields fields
                                     |> List.tryPick
                                         (fun (SynExprRecordField(fieldName = (SynLongIdent(id = ids), _); expr = v)) ->
                                             match List.tryLast ids, v with
@@ -2914,8 +2915,8 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
                                                                 match repr with
                                                                 | SynTypeDefnRepr.Simple(
                                                                     simpleRepr = SynTypeDefnSimpleRepr.Record(
-                                                                        recordFields = fields)) ->
-                                                                    fields
+                                                                        recordFieldsAndSpreads = fields)) ->
+                                                                    recordTypeFields fields
                                                                     |> List.tryPick
                                                                         (fun (SynField(fieldType = t; idOpt = pid)) ->
                                                                             match pid with
