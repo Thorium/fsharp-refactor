@@ -596,3 +596,163 @@ let configured (text: string) =
         t + ".ConfigureAwait(false)"
     else
         $"({t}).ConfigureAwait(false)"
+
+let private dualFlagNames =
+    set [ "async"; "isasync"; "useasync"; "runasync"; "doasync"; "asynchronous" ]
+
+let private bindKeywordRegex =
+    Regex(@"(\blet!|\bdo!|\breturn!|\bmatch!|\buse!|\byield!|Async\.AwaitTask)")
+
+/// The site is one branch of a dual sync/async body: an `if` whose other
+/// branch binds what `awaited` accepts on a line of its own (`let!`, `do!`,
+/// `return!`, `match!`, `use!`, `Async.AwaitTask`: FR0119 passes the twin's
+/// name, FR0049 the drained task), or whose condition is a flag named for the
+/// choice (`async`, `isAsync`, `useAsync`, `runAsync`):
+/// `if isAsync then do! x.FlushAsync() else x.Flush()`. The synchronous
+/// branch is the point: binding there runs async work under the synchronous
+/// API. An unrelated bind in the other branch is not this.
+let dualPathBranch (source: ISourceText) (path: SyntaxNode list) (site: range) (awaited: string -> bool) =
+    let rec flagCondition (c: SynExpr) =
+        match c with
+        | SynExpr.Paren(expr = e) -> flagCondition e
+        | SynExpr.App(isInfix = false; funcExpr = SynExpr.Ident n; argExpr = e) when n.idText = "not" -> flagCondition e
+        | SynExpr.Ident pid -> dualFlagNames.Contains(pid.idText.TrimStart('_').ToLowerInvariant())
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty ->
+            dualFlagNames.Contains((List.last ids).idText.TrimStart('_').ToLowerInvariant())
+        | _ -> false
+
+    let bindsHere (branch: SynExpr) =
+        (textOfRange source branch.Range).Split '\n'
+        |> Array.exists (fun line -> bindKeywordRegex.IsMatch line && awaited line)
+
+    path
+    |> List.exists (fun node ->
+        match node with
+        | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenE; elseExpr = elseE)) ->
+            let inThen = Range.rangeContainsRange thenE.Range site
+
+            let inElse = elseE |> Option.exists (fun e -> Range.rangeContainsRange e.Range site)
+
+            (inThen || inElse)
+            && (flagCondition cond
+                || (inThen && elseE |> Option.exists bindsHere)
+                || (inElse && bindsHere thenE))
+        | _ -> false)
+
+let private syncCommentRegex =
+    let word = @"(sync|synchronous|synchronously)"
+
+    let decision =
+        @"(on purpose|by design|deliberately|intentionally|purposely|is intended|is fine)"
+
+    Regex($@"^\s*(//+|\(\*+)\s*{word}\b|\b{word}\s+{decision}\b|\b{decision}\s+{word}\b", RegexOptions.IgnoreCase)
+
+// the author wants it changed
+let private syncRequestRegex =
+    Regex(
+        @"\b(todo|fixme|hack|xxx|fix\s+(me|this|it|later)|for now|temporar(y|ily)|(should|must|needs?\s+to|has\s+to)\s+be\s+(made\s+)?(async|asynchronous|awaited)|make\s+(this\s+|it\s+)?(async|asynchronous))\b",
+        RegexOptions.IgnoreCase
+    )
+
+/// A comment on the site's line or the line above it that says the call is
+/// synchronous on purpose: one opening with the word (`// Sync, it's already
+/// buffered`) or pairing it with a decision (`sync on purpose`, `by design`).
+/// `// keep in sync with X` is not one, nor is a comment that asks for the
+/// change (`// sync over async here, fix later`, a `TODO`, `should be async`).
+let syncByComment (source: ISourceText) (site: range) =
+    let comment (line: string) =
+        let i = line.IndexOf "//"
+
+        if i >= 0 then
+            Some(line.Substring i)
+        elif line.TrimStart().StartsWith "(*" then
+            Some(line.TrimStart())
+        else
+            None
+
+    let lineAt (n: int) =
+        if n >= 1 && n <= source.GetLineCount() then
+            source.GetLineString(n - 1)
+        else
+            ""
+
+    let own = comment (lineAt site.StartLine)
+
+    let above =
+        let l = lineAt (site.StartLine - 1)
+
+        if l.TrimStart().StartsWith "//" || l.TrimStart().StartsWith "(*" then
+            Some(l.TrimStart())
+        else
+            None
+
+    [ own; above ]
+    |> List.exists (fun c ->
+        c
+        |> Option.exists (fun text -> syncCommentRegex.IsMatch text && not (syncRequestRegex.IsMatch text)))
+
+let private raisingFunctions =
+    set
+        [
+            "failwith"
+            "failwithf"
+            "raise"
+            "invalidOp"
+            "invalidArg"
+            "nullArg"
+            "reraise"
+        ]
+
+/// The expression ends by raising: its last statement is `failwith …`,
+/// `raise …`, `invalidOp …`, `invalidArg …`, `nullArg …` or `reraise ()`.
+[<TailCall>]
+let rec raisesAtEnd (e: SynExpr) =
+    match e with
+    | SynExpr.Sequential(expr2 = rest) -> raisesAtEnd rest
+    | SynExpr.Paren(expr = inner) -> raisesAtEnd inner
+    | LetOrUseE lou -> raisesAtEnd lou.Body
+    | SynExpr.App(isInfix = false; funcExpr = f) ->
+        let rec head (x: SynExpr) =
+            match x with
+            | SynExpr.App(isInfix = false; funcExpr = g) -> head g
+            | SynExpr.Ident pid -> Some pid.idText
+            | _ -> None
+
+        head f |> Option.exists raisingFunctions.Contains
+    | _ -> false
+
+/// The site sits in a NON-final element of this statement chain. The walker
+/// records only a chain's outermost `Sequential` (`a; b; c` arrives as one
+/// node whose `expr2` holds the rest), so a test of the recorded node's
+/// `expr1` alone sees the first statement and misses every later one.
+let rec inChainBeforeEnd (chain: SynExpr) (site: range) =
+    match chain with
+    | SynExpr.Sequential(expr1 = first; expr2 = rest) ->
+        Range.rangeContainsRange first.Range site || inChainBeforeEnd rest site
+    | _ -> false
+
+/// A statement of this chain with a successor: exactly one of its non-final
+/// elements (the chain's last expression is its value, not a statement).
+let rec isChainStatement (chain: SynExpr) (target: range) =
+    match chain with
+    | SynExpr.Sequential(expr1 = first; expr2 = rest) -> Range.equals first.Range target || isChainStatement rest target
+    | _ -> false
+
+/// The chain's final element: its value, not a statement.
+[<TailCall>]
+let rec isChainFinal (chain: SynExpr) (target: range) =
+    match chain with
+    | SynExpr.Sequential(expr2 = rest) -> isChainFinal rest target
+    | last -> Range.equals last.Range target
+
+/// What follows the statement at `target` in this chain: the rest of the
+/// sequence after it, or None when it is not one of the chain's statements.
+[<TailCall>]
+let rec afterInChain (chain: SynExpr) (target: range) : SynExpr option =
+    match chain with
+    | SynExpr.Sequential(expr1 = first; expr2 = rest) ->
+        if Range.equals first.Range target then
+            Some rest
+        else
+            afterInChain rest target
+    | _ -> None

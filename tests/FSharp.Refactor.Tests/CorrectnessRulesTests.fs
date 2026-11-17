@@ -664,6 +664,8 @@ let ``FR0044: a rethrow-only handler inside a task goes with its try`` () =
 
     match reraiseIn source with
     | [ s ] ->
+        Assert.Equal(None, s.CustomBuilder)
+
         match s.Removal with
         | Some(r, _, replacement) ->
             Assert.Equal(
@@ -690,6 +692,37 @@ let ``FR0044: a rethrow-only handler inside a task goes with its try`` () =
 
             assertTypechecks "Patched source" patched
         | None -> failwith "Expected the removal edit"
+    | other -> failwithf "Expected exactly one suggestion, got %A" other
+
+[<Fact>]
+let ``FR0044: a rethrow-only handler inside a custom builder names the builder and offers no removal`` () =
+    // FsToolkit's "Try With" tests: `option { try .. with e -> return raise e }`
+    // exists to call the builder's TryWith, which removing the try skips
+    let source =
+        fsharp
+            """
+            type OptionBuilder() =
+                member _.Return(x: 'T) = Some x
+                member _.Delay(f: unit -> 'T option) = f
+                member _.Run(f: unit -> 'T option) = f ()
+                member _.TryWith(body: unit -> 'T option, handler: exn -> 'T option) =
+                    try body () with e -> handler e
+            let option = OptionBuilder()
+            let f (data: int) =
+                option {
+                    try
+                        return data
+                    with e ->
+                        return raise e
+                }
+            """
+
+    assertTypechecks "Test input" source
+
+    match reraiseIn source with
+    | [ s ] ->
+        Assert.True(s.Removal.IsSome, "the finding stays")
+        Assert.Equal(Some "option", s.CustomBuilder)
     | other -> failwithf "Expected exactly one suggestion, got %A" other
 
 [<Fact>]

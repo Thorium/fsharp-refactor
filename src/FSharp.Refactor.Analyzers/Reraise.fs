@@ -62,6 +62,11 @@ type Suggestion =
         /// with its body, and an unmatched exception then propagates with
         /// its trace intact. None for the ordinary `reraise ()` rewrite.
         Removal: (range * string * string) option
+        /// The builder of a computation expression that is not
+        /// FSharp.Core's (`option { }`, `jobResult { }`): the try/with is
+        /// a call of ITS TryWith, which may do more than rethrow, so the
+        /// removal is reported and not offered.
+        CustomBuilder: string option
     }
 
 /// Find `raise ex` sites in with-handlers. Requires typed check results.
@@ -141,6 +146,38 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SyntaxNode.SynExpr(SynExpr.ObjExpr _) -> Some false
                 | _ -> None)
             |> Option.defaultValue false
+
+        // the builder of the computation expression a try-with sits in,
+        // when it is not FSharp.Core's: `async`, `task`, `backgroundTask`,
+        // `seq` and list/array comprehensions pass a rethrowing handler
+        // through, while another builder's TryWith is that builder's code
+        // (a test of `option { try .. with e -> return raise e }` exists
+        // to call it). A builder that is not a plain name answers too
+        let customBuilder (path: SyntaxNode list) =
+            let rec walk (nodes: SyntaxNode list) =
+                match nodes with
+                | [] -> None
+                | SyntaxNode.SynExpr(SynExpr.ArrayOrListComputed _) :: _ -> None
+                | SyntaxNode.SynExpr(SynExpr.ComputationExpr _) :: rest ->
+                    match rest with
+                    | SyntaxNode.SynExpr(SynExpr.App(
+                        isInfix = false; funcExpr = SynExpr.Ident builder; argExpr = SynExpr.ComputationExpr _)) :: _ ->
+                        let r = builder.idRange
+                        let lineText = source.GetLineString(r.EndLine - 1)
+
+                        let core =
+                            match
+                                OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ builder.idText ])
+                            with
+                            | Some symbolUse ->
+                                (OptionModule.fullNameOf symbolUse.Symbol).StartsWith "Microsoft.FSharp."
+                            | None -> false
+
+                        if core then None else Some builder.idText
+                    | _ -> Some "the builder"
+                | _ :: rest -> walk rest
+
+            walk path
 
         // a string literal spanning lines inside the try would be
         // re-indented with the body
@@ -223,6 +260,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             OriginalText = textOfRange source expr.Range
                             ExceptionName = exId.idText
                             Removal = Some(expr.Range, textOfRange source expr.Range, replacement)
+                            CustomBuilder = customBuilder path
                         }
                     | None -> ()
                 | SynExpr.TryWith(withCases = clauses) when not (inComputationExpr path) ->
@@ -250,6 +288,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                             OriginalText = textOfRange source e.Range
                                             ExceptionName = exId.idText
                                             Removal = None
+                                            CustomBuilder = None
                                         }
                                     | _ -> ()
                                 | _ -> ()

@@ -31,6 +31,12 @@
 /// (where `do!` would not compile) - with one exception, the fix that
 /// removes the lambda: `Task.Run(fun () -> c |> Async.RunSynchronously)`
 /// becomes `c |> Async.StartAsTask`.
+///
+/// Inside a CE, the synchronous branch of a dual sync/async body (the other
+/// branch binds the same task, or `Task.Delay` for a sleep, or the condition
+/// is an `async`/`isAsync` flag) and a site commented as synchronous on
+/// purpose stay; a task is complete below `if w <> t then failwith …` after
+/// `let! w = Task.WhenAny(t, …)`.
 module FSharp.Refactor.SyncOverAsync
 
 open System.Text.RegularExpressions
@@ -795,6 +801,20 @@ let findWith
                 [ textOfRange source recv.Range ], []
             | _ -> [], []
 
+        // below a statement that raises unless the task is complete:
+        // `let! w = Task.WhenAny(t, d)` / `if w <> t then failwith "timeout"` /
+        // `t.Result` — the read sits after the `if`, not in its else branch
+        let exitsUnlessComplete (path: SyntaxNode list) (recvText: string) (r: range) =
+            path
+            |> List.exists (fun node ->
+                match node with
+                | SyntaxNode.SynExpr(SynExpr.Sequential(
+                    expr1 = SynExpr.IfThenElse(ifExpr = cond; thenExpr = thenE; elseExpr = None); expr2 = rest)) ->
+                    Range.rangeContainsRange rest.Range r
+                    && BlockingSites.raisesAtEnd thenE
+                    && List.contains recvText (snd (completionTests r cond))
+                | _ -> false)
+
         let underCompletionTest (path: SyntaxNode list) (recvText: string) (r: range) =
             path
             |> List.exists (fun node ->
@@ -864,7 +884,9 @@ let findWith
         // the parameter each `.ContinueWith(...)` continuation receives — a
         // lambda's, or a named function's — and the range it is in scope:
         // the antecedent is complete by definition when the continuation
-        // runs, so draining it never waits
+        // runs, so draining it never waits. A named function's FIRST
+        // parameter is the antecedent: `ContinueWith(f, state)` hands the
+        // state object to a second one
         let antecedentScopes: (string list * range) list =
             let namedFunction (name: string) =
                 let ofBindings (bindings: SynBinding list) =
@@ -873,7 +895,7 @@ let findWith
                         match b with
                         | SynBinding(
                             headPat = SynPat.LongIdent(
-                                longDotId = SynLongIdent(id = [ f ]); argPats = SynArgPats.Pats [ p ])) when
+                                longDotId = SynLongIdent(id = [ f ]); argPats = SynArgPats.Pats(p :: _))) when
                             f.idText = name
                             ->
                             Some(patNames p, b.RangeOfBindingWithRhs)
@@ -1077,6 +1099,39 @@ let findWith
                         | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
                         | _ -> None)
 
+                // `awaiter.GetResult()` on a bound awaiter that the code
+                // around it drives by the awaiter protocol: it reads
+                // `awaiter.IsCompleted`, hands `&awaiter` to
+                // `AwaitUnsafeOnCompleted`, registers `awaiter.OnCompleted`,
+                // or passes it on as an `ICriticalNotifyCompletion` (resumable
+                // code's dynamic path). GetResult then runs once the awaiter
+                // completed - the protocol's read, not a block. Scanned over
+                // the OUTERMOST binding: the read sits in a resumption lambda
+                // whose scheduling lives in the member around it
+                let awaiterProtocol () =
+                    match expr with
+                    | SynExpr.App(
+                        isInfix = false; funcExpr = SynExpr.LongIdent(longDotId = SynLongIdent(id = [ awaiter; _ ]))) ->
+                        let outermost =
+                            path
+                            |> List.choose (fun node ->
+                                match node with
+                                | SyntaxNode.SynBinding(SynBinding _ as b) -> Some b.RangeOfBindingWithRhs
+                                | _ -> None)
+                            |> List.tryLast
+
+                        match outermost with
+                        | Some r ->
+                            let text = textOfRange source r
+                            let name = Regex.Escape awaiter.idText
+
+                            Regex.IsMatch(
+                                text,
+                                $@"\b{name}\.IsCompleted\b|&{name}\b|\b{name}\.(Unsafe)?OnCompleted\b|\(\s*{name}\s*:>\s*I(Critical)?NotifyCompletion\s*\)"
+                            )
+                        | None -> false
+                    | _ -> false
+
                 let earlierInBody (e: SynExpr) =
                     match bindingRange with
                     | Some r -> Range.rangeContainsRange r e.Range && e.Range.StartLine < expr.Range.StartLine
@@ -1125,13 +1180,15 @@ let findWith
                     // the task behind the site is complete before it is
                     // drained: under its own completion probe, complete from
                     // birth, the antecedent of a continuation, or already
-                    // waited for above
-                    let knownComplete =
+                    // waited for above, or a bound awaiter driven by the
+                    // awaiter protocol
+                    let receiverComplete =
                         match receiverRange with
                         | ValueSome r ->
                             let recvText = textOfRange source r
 
                             underCompletionTest path recvText expr.Range
+                            || exitsUnlessComplete path recvText expr.Range
                             || completedByConstruction (
                                 match expr with
                                 | SynExpr.DotGet(expr = recv) -> recv
@@ -1142,6 +1199,9 @@ let findWith
                             || isAntecedent recvText expr.Range
                             || (kind <> BlockKind.TaskWait && afterOwnWait recvText)
                         | ValueNone -> false
+
+                    let knownComplete =
+                        receiverComplete || (kind = BlockKind.AwaiterGetResult && awaiterProtocol ())
 
                     let idiomatic =
                         (kind = BlockKind.TaskWait && boundedWait)
@@ -1164,6 +1224,20 @@ let findWith
                         match kind, receiverRange with
                         | BlockKind.TaskResult, ValueSome r -> isAntecedent (textOfRange source r) expr.Range
                         | _ -> false
+
+                    // one branch of a dual sync/async body — the other binds this
+                    // task (`if isAsync then let! r = t … else t.Result`), or the
+                    // condition is an `async` flag — or a site commented as
+                    // synchronous on purpose: the blocking read is the point
+                    let dualOrSyncComment =
+                        let awaited (line: string) =
+                            match kind, receiverRange with
+                            | BlockKind.ThreadSleep, _ -> line.Contains "Task.Delay"
+                            | _, ValueSome r -> Regex.IsMatch(line, identifierPattern (textOfRange source r))
+                            | _ -> false
+
+                        BlockingSites.dualPathBranch source path expr.Range awaited
+                        || BlockingSites.syncByComment source expr.Range
 
                     match innermostCe expr.Range with
                     // without a task builder (FSharp.Core before 6, Fable)
@@ -1323,7 +1397,7 @@ let findWith
                             InLambda = false
                             InFinally = false
                         }
-                    | Some(builder, ceRange) when not knownComplete ->
+                    | Some(builder, ceRange) when not (knownComplete || dualOrSyncComment) ->
                         let taskBuilder = builder = "task" || builder = "backgroundTask"
 
                         // the plain `let` whose entire RHS is `target`
@@ -1378,9 +1452,11 @@ let findWith
                                 | SyntaxNode.SynExpr(SynExpr.Do _) :: rest -> rest
                                 | p -> p
 
+                            // any element of the chain but its last (the index
+                            // records only the chain's outermost Sequential)
                             match afterDo with
-                            | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = first)) :: _ ->
-                                Range.rangeContainsRange first.Range expr.Range
+                            | SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ ->
+                                BlockingSites.inChainBeforeEnd chain expr.Range
                             | _ -> false
 
                         let insideFixableSpine =
@@ -1627,9 +1703,9 @@ let findWith
                                                 |> Array.tryPick (fun (ipath, e) ->
                                                     match e, ipath with
                                                     | BlockingSites.Ignored inner,
-                                                      SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = first)) :: _ when
+                                                      SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ when
                                                         Range.equals inner.Range app.Range
-                                                        && Range.rangeContainsRange first.Range e.Range
+                                                        && BlockingSites.inChainBeforeEnd chain e.Range
                                                         && onSpine e.Range
                                                         ->
                                                         Some

@@ -4581,6 +4581,74 @@ let ``FR0049: the antecedent of a ContinueWith continuation is complete by defin
     )
 
 [<Fact>]
+let ``FR0049: a named continuation taking the state object reads its first parameter as the antecedent`` () =
+    // FsCheck's Runner: `ts.ContinueWith(outcomeSeqFutureCont, state)`,
+    // whose function takes the antecedent and then the state
+    Assert.All(
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let store (results: int[]) =
+                    let cont (xs: Task<int>) (state: obj) =
+                        match state with
+                        | :? int as j -> results.[j] <- xs.Result
+                        | _ -> ()
+                    fun (t: Task<int>) -> t.ContinueWith(cont, box 0)
+                """
+        ),
+        (fun s -> Assert.Equal(SyncOverAsync.BlockKind.AntecedentResult, s.Kind))
+    )
+
+[<Fact>]
+let ``FR0049: a bound awaiter driven by the awaiter protocol is read, not waited on`` () =
+    // resumable code: GetResult runs after IsCompleted held, or in the
+    // resumption the awaiter was handed on to as ICriticalNotifyCompletion
+    Assert.Empty(
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f (t: Task<int>) =
+                    let awaiter = t.GetAwaiter()
+                    let fin = awaiter.IsCompleted
+                    if fin then awaiter.GetResult() else 0
+                """
+        )
+    )
+
+    Assert.Empty(
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Runtime.CompilerServices
+                open System.Threading.Tasks
+                let f (t: Task<int>) (schedule: ICriticalNotifyCompletion -> (unit -> int) -> unit) =
+                    let awaiter = t.GetAwaiter()
+                    let cont () = awaiter.GetResult()
+                    schedule (awaiter :> ICriticalNotifyCompletion) cont
+                """
+        )
+    )
+
+    // a bound awaiter drained with nothing driving it still blocks
+    Assert.NotEmpty(
+        blockingIn (
+            fsharp
+                """
+                module Test
+                open System.Threading.Tasks
+                let f (t: Task<int>) =
+                    let awaiter = t.GetAwaiter()
+                    awaiter.GetResult()
+                """
+        )
+    )
+
+[<Fact>]
 let ``FR0049: a wait in the finally block of an async is named as such and gets no fix`` () =
     // `do!` cannot appear in a
     // finally block, so the bind the plain message asks for cannot compile

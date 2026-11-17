@@ -199,6 +199,28 @@ let ``FR0011: a public active pattern a LATER file invokes as a function keeps i
     Assert.Empty(messages |> List.filter (fun m -> m.Code = "FR0011"))
 
 [<Fact>]
+let ``FR0011: under --api-changes a pattern a LATER file hands on as a function keeps its option`` () =
+    // fvim: `let private _b = (|Bool|_|)` passed where `obj -> 'a option`
+    // is wanted. The flag vouches for callers outside the compilation; this
+    // rule rewrites no later file of it
+    let messages =
+        Scope.under { Scope.editor with ApiChanges = true } (fun () ->
+            structActivePatternOnFirst
+                ""
+                (fsharp
+                    """
+                        module Program
+
+                        open Parsing
+
+                        let private parse = (|Int|_|)
+                        let count (args: string list) = args |> List.choose parse |> List.length
+
+                        """))
+
+    Assert.Empty(messages |> List.filter (fun m -> m.Code = "FR0011"))
+
+[<Fact>]
 let ``FR0011: a public active pattern a later file only MATCHES on still gets its struct return`` () =
     // a match site does not see the representation
     let messages =

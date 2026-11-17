@@ -88,6 +88,10 @@ type private Function =
         Implicit: (Ident * SynExpr) option
     }
 
+/// The closing marks a message drops before `, calling …` is appended:
+/// ASCII and full-width CJK (`资源项。`).
+let private messageMarks = [| '.'; '!'; ':'; ';'; ' '; '。'; '！'; '：'; '；'; '．' |]
+
 /// A parameter that can be reported by name.
 let private paramIdent (p: SynPat) =
     match p with
@@ -419,10 +423,15 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                                 let suffix = $", calling {functionName} with {reported}"
 
+                                // the message's own closing mark goes (`"Rejected."` read
+                                // `"Rejected., calling …"`), full-width CJK marks too
+                                let body = literalText.Substring(1, literalText.Length - 2)
+                                let trimmed = body.TrimEnd messageMarks
+
                                 {
                                     Range = literalRange
                                     OriginalText = literalText
-                                    ReplacementText = "$" + literalText.Insert(literalText.Length - 1, suffix)
+                                    ReplacementText = $"$\"{trimmed}{suffix}\""
                                     FunctionName = functionName
                                     PatternEdit = implicitArm |> Option.map snd
                                 }
@@ -488,7 +497,7 @@ let everyMentionRewritable (text: string) (literal: string) : bool =
 /// punctuation mark: what a test embedding it in a longer text repeats.
 let messageCore (literal: string) : string =
     if literal.Length >= 2 && literal.StartsWith "\"" && literal.EndsWith "\"" then
-        literal.Substring(1, literal.Length - 2).TrimEnd('.', '!', ':', ';', ' ')
+        literal.Substring(1, literal.Length - 2).TrimEnd messageMarks
     else
         ""
 

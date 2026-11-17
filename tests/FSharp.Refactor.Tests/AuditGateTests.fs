@@ -247,8 +247,9 @@ let ``FR0009 withholds the FSharp.Core 9 rewrite when a narrower framework's FSh
         withMinCore "6.0.0.0" (fun () -> Analyzers.resultModuleCliAnalyzer ctx |> Async.RunSynchronously |> fixTexts)
 
     Assert.DoesNotContain("r |> Result.isOk", fixes)
-    // the older rewrite is unaffected by the gate
-    Assert.Contains("r |> Result.map (fun v -> v + 1)", fixes)
+    // FSharp.Core 6's Result.map is no inline function: the lambda becomes
+    // a closure class and a call in place of a match that allocated nothing
+    Assert.DoesNotContain("r |> Result.map (fun v -> v + 1)", fixes)
 
 [<Fact>]
 let ``FR0009 withholds the FSharp.Core 9 rewrite from the restore's own record of an older target`` () =
@@ -268,7 +269,20 @@ let ``FR0009 withholds the FSharp.Core 9 rewrite from the restore's own record o
         withMinCore null (fun () -> Analyzers.resultModuleCliAnalyzer ctx |> Async.RunSynchronously |> fixTexts)
 
     Assert.DoesNotContain("r |> Result.isOk", fixes)
-    Assert.Contains("r |> Result.map (fun v -> v + 1)", fixes)
+    Assert.DoesNotContain("r |> Result.map (fun v -> v + 1)", fixes)
+
+[<Fact>]
+let ``FR0009 keeps a rewrite that passes no lambda on an older FSharp.Core`` () =
+    // the identity match goes whatever FSharp.Core inlines: nothing is called
+    let ctx =
+        scriptContext
+            "let same (r: Result<int, string>) =\n    match r with\n    | Ok v -> Ok v\n    | Error e -> Error e\n"
+
+    let fixes =
+        withMinCore "6.0.0.0" (fun () -> Analyzers.resultModuleCliAnalyzer ctx |> Async.RunSynchronously |> fixTexts)
+
+    Assert.NotEmpty fixes
+    Assert.DoesNotContain(fixes, fun t -> t.Contains "(fun ")
 
 [<Fact>]
 let ``FR0009 withholds Result.iter when a narrower framework's FSharp.Core predates 6.0.6`` () =

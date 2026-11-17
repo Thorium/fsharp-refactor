@@ -1213,7 +1213,8 @@ let private discardedPending
                 | SyntaxNode.SynExpr(SynExpr.Paren(range = pr) | SynExpr.Typed(range = pr) | SynExpr.Tuple(range = pr)) :: rest ->
                     dropped started pr rest
                 // a bare statement: only a running task is work in flight
-                | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a)) :: _ -> started && a.Range = r
+                | SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ ->
+                    started && BlockingSites.isChainStatement chain r
                 | SyntaxNode.SynExpr(SynExpr.App(isInfix = true; funcExpr = op; argExpr = a)) :: SyntaxNode.SynExpr(SynExpr.App(
                     isInfix = false; argExpr = callee; range = outer)) :: rest when
                     operatorName op = "op_PipeRight" && a.Range = r

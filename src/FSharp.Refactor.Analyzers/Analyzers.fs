@@ -264,19 +264,17 @@ let private shapeScopeOpen (fileName: string) (options: AnalyzerProjectOptions) 
 /// can, and consumes the binding at its old type: `Data.names` read as a
 /// list in Program.fs, `List.choose (|Int|_|)` wanting an option. Both
 /// rules check their own file's uses; this answers for the rest of the
-/// compilation, by name. Only when the gate stands open on the leaf
-/// heuristic ALONE: `--api-changes` and an explicit `publicApi` /
-/// `apiChanges` are the caller vouching for the callers, cross-file
-/// included, and a closed gate never asks. Textual and over-eager, like
-/// `Text.signatureMentions` and for the same reason: it has to hold in
-/// the editor, which installs no cross-file parser and reads the sibling
-/// from disk instead. A sibling that cannot be read counts as a use.
+/// compilation, by name. Whatever opened the gate: `--api-changes` and an
+/// explicit `publicApi` / `apiChanges` vouch for callers OUTSIDE the
+/// compilation, and neither rule rewrites a later file's use (fvim's
+/// `let private _b = (|Bool|_|)` handed on as `obj -> 'a option` broke
+/// under `--api-changes`). A closed gate never asks. Textual and
+/// over-eager, like `Text.signatureMentions` and for the same reason: it
+/// has to hold in the editor, which installs no cross-file parser and
+/// reads the sibling from disk instead. A sibling that cannot be read
+/// counts as a use.
 let private seenByLaterFile (fileName: string) (options: AnalyzerProjectOptions) : string -> bool =
-    if
-        Visibility.apiChangesAllowed ()
-        || (Configuration.publicSurfaceSetting fileName).IsSome
-        || not (shapeScopeOpen fileName options)
-    then
+    if not (shapeScopeOpen fileName options) then
         fun _ -> false
     else
         match Visibility.laterSourceFiles fileName options.SourceFiles with
@@ -1476,6 +1474,14 @@ let private needsCore9 (target: string) =
     ]
     |> List.exists target.Contains
 
+/// A rewrite that hands the Result function a lambda (`Result.map (fun x
+/// -> Some x)`) is as fast as the match only where FSharp.Core inlines
+/// the function with InlineIfLambda: 8.0.200 and later. Before that it
+/// compiles to a closure class and a call, in place of a match that
+/// allocated nothing. 8.0.100 shares assembly version 8.0.0.0 with 8.0.200,
+/// so the major-version gate holds it to 9, like `Result.iter`.
+let private passesLambda (replacement: string) = replacement.Contains "(fun "
+
 let private resultModuleMessages
     (allowCore9: bool)
     (parseTree: ParsedInput)
@@ -1483,7 +1489,7 @@ let private resultModuleMessages
     checkResults
     : Message list =
     ResultModule.find parseTree source checkResults
-    |> List.filter (fun s -> allowCore9 || not (needsCore9 s.Target))
+    |> List.filter (fun s -> allowCore9 || not (needsCore9 s.Target || passesLambda s.ReplacementText))
     |> List.map (fun s ->
         let message =
             if s.Target = "" then
@@ -1845,7 +1851,7 @@ let private regexUsageMessages (fileName: string) (parseTree: ParsedInput) (sour
             | RegexUsage.RegexSuggestionKind.HoistFromLoop ->
                 match s.Repeat with
                 | RegexUsage.Repeat.LoopIteration ->
-                    "This Regex call re-parses its pattern on every loop iteration; construct one Regex before the loop and reuse it."
+                    "This Regex call looks its pattern up in the runtime's cache on every loop iteration, and re-parses it once the cache (fifteen patterns) turns over; construct one Regex before the loop and reuse it."
                 | RegexUsage.Repeat.FunctionCall ->
                     "This Regex call looks its pattern up in the runtime's cache on every call, and re-parses it once the cache (fifteen patterns) turns over; the fix hoists one Regex instance to a module-level binding built once."
             | RegexUsage.RegexSuggestionKind.HoistConstruction ->
@@ -3460,8 +3466,17 @@ let typedHolesCliAnalyzer (ctx: CliContext) : Async<Message list> =
 let private reraiseMessages (parseTree: ParsedInput) (source: ISourceText) checkResults : Message list =
     Reraise.find parseTree source checkResults
     |> List.map (fun s ->
-        match s.Removal with
-        | Some(r, original, replacement) ->
+        match s.Removal, s.CustomBuilder with
+        | Some _, Some builder ->
+            hint
+                "FR0044"
+                (sprintf
+                    "raise %s resets the exception's stack trace, and reraise () is not allowed inside a computation expression; this handler only rethrows, but the try/with is a call of %s's TryWith, which may do more - remove it yourself if that builder only rethrows."
+                    s.ExceptionName
+                    builder)
+                s.Range
+                []
+        | Some(r, original, replacement), None ->
             hint
                 "FR0044"
                 (sprintf
@@ -3469,7 +3484,7 @@ let private reraiseMessages (parseTree: ParsedInput) (source: ISourceText) check
                     s.ExceptionName)
                 s.Range
                 [ fix r original replacement ]
-        | None ->
+        | None, _ ->
             hint
                 "FR0044"
                 (sprintf

@@ -157,20 +157,57 @@ let ``a public function is curried together with the call site in the sibling te
         let built, buildOutput = builds solution
         Assert.True(built, $"the rewritten solution should build:\n{buildOutput}\n\ntool output:\n{output}"))
 
-[<Fact>]
-let ``a test project's own public functions reshape without --api-changes; the library's do not`` () : unit =
-    // a test project exports no API: nothing links to it, so its tupled
-    // helper is curried in a plain run, while the library's public `add`
-    // - which the flag exists to protect - keeps its shape
+/// The solution with the second project referencing `packages` and holding a
+/// public tupled helper of its own.
+let private withHelperProject (packages: string) (body: string -> string -> unit) =
     withSolution false (fun solution ->
         let root = Path.GetDirectoryName solution
         let testProject = Path.Combine(root, "tests", "Tests", "Tests.fsproj")
 
         File.WriteAllText(
             testProject,
-            $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Tests.fs\" />\n  </ItemGroup>\n  <ItemGroup>\n    <PackageReference Include=\"xunit\" Version=\"2.9.3\" />\n    <ProjectReference Include=\"../../src/Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
+            $"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>{framework}</TargetFramework>\n  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"Tests.fs\" />\n  </ItemGroup>\n  <ItemGroup>\n{packages}    <ProjectReference Include=\"../../src/Lib/Lib.fsproj\" />\n  </ItemGroup>\n</Project>\n"
         )
 
+        body solution root)
+
+[<Fact>]
+let ``a library that references a test framework is not a test project: its public functions keep their shape``
+    ()
+    : unit =
+    // FsCheck.Xunit, FsUnit.NUnit: a library extending a test framework
+    // references it, and its public declarations are a published API.
+    // Without the test platform's testhost it is not a `dotnet test` project
+    withHelperProject "    <PackageReference Include=\"xunit\" Version=\"2.9.3\" />\n" (fun solution root ->
+        File.WriteAllText(
+            Path.Combine(root, "tests", "Tests", "Tests.fs"),
+            fsharp
+                """
+                module Tests
+
+                let helper (a: int, b: int) = a + b
+
+                let three () = Lib.add (1, 2) + helper (1, 2)
+
+                """
+        )
+
+        let code, output = runTool [| solution; "--codes"; "FR0090"; "--no-color" |]
+        let tests = File.ReadAllText(Path.Combine(root, "tests", "Tests", "Tests.fs"))
+
+        Assert.True((code = 0), $"exit {code}:\n{output}")
+        Assert.DoesNotContain("a test project", output)
+        Assert.Contains("let helper (a: int, b: int) = a + b", tests))
+
+[<Fact>]
+let ``a test project's own public functions reshape without --api-changes; the library's do not`` () : unit =
+    // a test project exports no API: nothing links to it, so its tupled
+    // helper is curried in a plain run, while the library's public `add`
+    // - which the flag exists to protect - keeps its shape
+    let packages =
+        "    <PackageReference Include=\"Microsoft.NET.Test.Sdk\" Version=\"18.9.0\" />\n    <PackageReference Include=\"xunit\" Version=\"2.9.3\" />\n"
+
+    withHelperProject packages (fun solution root ->
         File.WriteAllText(
             Path.Combine(root, "tests", "Tests", "Tests.fs"),
             fsharp

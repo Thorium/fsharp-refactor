@@ -252,7 +252,7 @@ Tupled → curried parameters for `private` functions (definition + all call sit
 
 ### FR0009 — idiom
 
-Manual `Ok/Error` match → `Result.map`/`bind`/`mapError`/`isOk`/`isError`/`defaultValue`/`defaultWith`/`iter`
+Manual `Ok/Error` match → `Result.map`/`bind`/`mapError`/`isOk`/`isError`/`defaultValue`/`defaultWith`/`iter`. A rewrite that passes a lambda waits for FSharp.Core 9 (8.0.200 inlines it, and shares its assembly version with 8.0.100): before that the lambda is a closure class and a call where the match allocated nothing
 
 ### FR0010 — idiom
 
@@ -392,7 +392,7 @@ In an interpolated string that *already* has a typed hole, the remaining plain h
 
 ### FR0044 — correctness
 
-`raise ex` in a `with` handler resets the stack trace → `reraise ()` (CA2200, fix); skipped inside lambdas/nested trys where `reraise` would not compile or would mean a different exception; inside a computation expression, where `reraise ()` is not allowed, a try/with whose only arm rethrows (`with ex -> raise ex`, `return raise ex`) is removed — its body stays and an unmatched exception propagates with its trace intact
+`raise ex` in a `with` handler resets the stack trace → `reraise ()` (CA2200, fix); skipped inside lambdas/nested trys where `reraise` would not compile or would mean a different exception; inside a computation expression, where `reraise ()` is not allowed, a try/with whose only arm rethrows (`with ex -> raise ex`, `return raise ex`) is removed — its body stays and an unmatched exception propagates with its trace intact. Only in FSharp.Core's builders (`async`, `task`, `backgroundTask`, `seq`, comprehensions): in another builder the try/with calls that builder's `TryWith`, and the finding stays a note
 
 ### FR0045 — correctness
 

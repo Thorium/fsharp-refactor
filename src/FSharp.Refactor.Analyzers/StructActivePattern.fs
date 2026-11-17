@@ -93,14 +93,13 @@ let private isPartialActivePatternName (name: string) = compiledRegex.IsMatch na
 /// Find trivial partial active patterns that can get [<return: Struct>].
 /// Requires typed check results for the Some/None gate.
 ///
-/// `seenByLaterFile`: when the opt-in is the host's leaf-compilation
-/// heuristic rather than the caller's own `--api-changes`, a LATER file of
-/// the same executable may invoke the pattern as a function and expect the
-/// option it returns today (`List.choose (|Int|_|)` in Program.fs). This
-/// answers, by name, whether one mentions it; a pattern that is not private
-/// then changes representation only when nothing after it does. `find`
-/// passes the constant "no", the right answer for a real `--api-changes`
-/// and moot for a closed gate.
+/// `seenByLaterFile`: whatever opened the gate (the leaf-compilation
+/// heuristic or `--api-changes`), a LATER file of the same compilation may
+/// invoke the pattern as a function and expect the option it returns today
+/// (`List.choose (|Int|_|)` in Program.fs); this rule does not rewrite it.
+/// This answers, by name, whether one mentions it; a pattern that is not
+/// private then changes representation only when nothing after it does.
+/// `find` passes the constant "no", for a single file with no later ones.
 let findWith
     (seenByLaterFile: string -> bool)
     (allowApiChanges: bool)

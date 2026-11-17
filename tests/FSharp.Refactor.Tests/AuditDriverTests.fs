@@ -170,6 +170,47 @@ let ``a .NET Framework script typechecks against the FSharp.Core the tool carrie
             Assert.Empty errors
         | _, FSharpCheckFileAnswer.Aborted -> failwith "the check was aborted"
 
+// ---- a pass's own errors: the per-file check only where a signature asks for it ----
+
+[<Fact>]
+let ``a pass's file check counts no error the per-file check alone reports in an unsigned file`` () =
+    // FCS 43.13's per-file check rejects `$"n = %i{n}, o = %A{o}"` (FS0001)
+    // where the project check and fsc accept it; FsCheck's whole core pass
+    // was rolled back for it. An unsigned file answers to the project check
+    let root = tempRoot "fsref-perfile-"
+
+    try
+        let plain = Path.Combine(root, "Plain.fs")
+
+        let before =
+            "module Plain\nlet show (n: int) (o: int option) = sprintf \"n = %i, o = %A\" n o\n"
+
+        File.WriteAllText(plain, "module Plain\nlet show (n: int) (o: int option) = $\"n = %i{n}, o = %A{o}\"\n")
+
+        let options = projectOptions (Path.Combine(root, "Lib.fsproj")) [ plain ]
+
+        Assert.Empty(Program.projectErrorsWith checker options [ plain, before ])
+    finally
+        cleanup root
+
+[<Fact>]
+let ``a pass's file check still counts a signed file's new error`` () =
+    let root = tempRoot "fsref-perfile-"
+
+    try
+        let signature = Path.Combine(root, "Sig.fsi")
+        let implementation = Path.Combine(root, "Sig.fs")
+        File.WriteAllText(signature, "module Sig\nval twice: int -> int\n")
+        let before = "module Sig\nlet twice (x: int) = x * 2\n"
+        File.WriteAllText(implementation, "module Sig\nlet twice (x: string) = x + x\n")
+
+        let options =
+            projectOptions (Path.Combine(root, "Lib.fsproj")) [ signature; implementation ]
+
+        Assert.NotEmpty(Program.projectErrorsWith checker options [ implementation, before ])
+    finally
+        cleanup root
+
 // ---- B14: relative compiler-argument paths become absolute against the project ----
 
 [<Fact>]
@@ -874,3 +915,44 @@ let ``an exception from loaded code on a background thread is survived, ours or 
         None,
         Program.foreignBackgroundOrigin mainThread background (TypeInitializationException("T", OutOfMemoryException()))
     )
+
+/// `-r:` arguments of a compilation referencing these assemblies.
+let private referencing (names: string list) (extra: string list) =
+    [|
+        yield! names |> List.map (fun n -> $"-r:C:\packages\{n}.dll")
+        yield! extra
+    |]
+
+[<Theory>]
+// xunit 2.9 + Test.Sdk 18.9 on .NET: testhost
+[<InlineData("xunit.core;xunit.assert;testhost;Microsoft.TestPlatform.CoreUtilities", "")>]
+// the same on .NET Framework: no testhost, the platform's utilities
+[<InlineData("xunit.core;Microsoft.TestPlatform.CoreUtilities;Microsoft.VisualStudio.CodeCoverage.Shim", "")>]
+// xunit 2.4 + Test.Sdk 16.11 on net472: the coverage shim is all of the SDK
+[<InlineData("xunit.core;xunit.execution.desktop;Microsoft.VisualStudio.CodeCoverage.Shim", "")>]
+// xunit.v3: Microsoft Testing Platform
+[<InlineData("xunit.v3.core;Microsoft.Testing.Platform", "--target:exe")>]
+// NUnit and MSTest
+[<InlineData("nunit.framework;testhost", "")>]
+[<InlineData("Microsoft.VisualStudio.TestPlatform.TestFramework;Microsoft.Testing.Platform", "")>]
+// an Expecto console project, run with `dotnet run`: no platform, an executable
+[<InlineData("Expecto", "--target:exe")>]
+let ``a compilation with a test framework and something that runs it is a test project``
+    (references: string, target: string)
+    : unit =
+    let extra = if target = "" then [] else [ target ]
+    Assert.True(Program.isTestCompilation (referencing (List.ofArray (references.Split ';')) extra))
+
+[<Theory>]
+// FsCheck.Xunit, FsUnit.NUnit, Expecto.FsCheck: a library extending a framework
+[<InlineData("xunit.core;xunit.extensibility.execution", "--target:library")>]
+[<InlineData("nunit.framework", "")>]
+[<InlineData("Expecto", "--target:library")>]
+// an executable, or a platform reference, without a framework
+[<InlineData("FSharp.Core", "--target:exe")>]
+[<InlineData("testhost;Microsoft.TestPlatform.CoreUtilities", "")>]
+let ``a compilation without a test framework, or a library with nothing to run it, is not a test project``
+    (references: string, target: string)
+    : unit =
+    let extra = if target = "" then [] else [ target ]
+    Assert.False(Program.isTestCompilation (referencing (List.ofArray (references.Split ';')) extra))

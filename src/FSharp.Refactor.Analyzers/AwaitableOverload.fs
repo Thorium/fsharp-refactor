@@ -33,6 +33,14 @@
 ///     synchronous work (`writeTokenSyncReadingAsync`)
 ///   - in `task { }` the bind carries `.ConfigureAwait(false)` where the
 ///     body's own binds all do (`BlockingSites.configureAwaitWanted`)
+///   - never a twin that is a member the call sits in (`x.Execute s` inside
+///     `member x.ExecuteAsync s` of the twin's type or one derived from it,
+///     around a lambda too: it would bind itself; a wrapper's `ReadAsync`
+///     calling `inner.Read` is another type's member), a member of this file that starts work and drops it without
+///     blocking (a fire-and-forget wrapper), the synchronous branch of a dual
+///     sync/async body (`if isAsync then do! x.FlushAsync() else x.Flush()`),
+///     a call commented as synchronous on purpose, or Microsoft.Data.Sqlite
+///     (its async methods run synchronously)
 module FSharp.Refactor.AwaitableOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -40,6 +48,7 @@ open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
+open System.Text.RegularExpressions
 
 type Suggestion =
     {
@@ -105,10 +114,108 @@ let private noTwinWanted (callText: string) (receiverType: FSharpType option) (m
     || receiver = "Console.Error"
     || ((mfv.DisplayName = "Add" || mfv.DisplayName = "AddRange")
         && declaring.StartsWith "Microsoft.EntityFrameworkCore")
+    // Microsoft.Data.Sqlite's async methods run synchronously (SQLite has no async I/O)
+    || declaring.StartsWith "Microsoft.Data.Sqlite"
+
+/// A member the call sits in — the innermost, or one around the lambda it
+/// sits in — that is the twin: named like it, and declared by the twin's
+/// type or one that derives from or implements it. `let r = x.Execute s`
+/// inside `member x.ExecuteAsync s`, or an override of it, would bind the
+/// method itself. A member of another type that only shares the name is
+/// not that: `member _.ReadAsync buffer = task { let n = inner.Read … }`
+/// wraps `inner`'s twin. A member that does not resolve counts as the twin.
+let private callsItself
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (path: SyntaxNode list)
+    (twin: FSharpMemberOrFunctionOrValue)
+    =
+    let related (own: FSharpEntity) (twinEntity: FSharpEntity) =
+        let rec inherits (e: FSharpEntity) (depth: int) =
+            e.IsEffectivelySameAs twinEntity
+            || (depth < 32
+                && (match e.BaseType with
+                    | Some b when b.HasTypeDefinition -> inherits b.TypeDefinition (depth + 1)
+                    | _ -> false))
+
+        inherits own 0
+        || own.AllInterfaces
+           |> Seq.exists (fun i -> i.HasTypeDefinition && i.TypeDefinition.IsEffectivelySameAs twinEntity)
+
+    path
+    |> List.exists (fun node ->
+        match node with
+        | SyntaxNode.SynBinding(SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = ids)))) when
+            not ids.IsEmpty && (List.last ids).idText = twin.DisplayName
+            ->
+            let name = List.last ids
+
+            try
+                let lineText = source.GetLineString(name.idRange.EndLine - 1)
+
+                match
+                    OptionModule.symbolUseAt
+                        check
+                        (name.idRange.EndLine, name.idRange.EndColumn, lineText, [ name.idText ])
+                with
+                | Some symbolUse ->
+                    match symbolUse.Symbol, twin.DeclaringEntity with
+                    | (:? FSharpMemberOrFunctionOrValue as own), Some twinEntity ->
+                        match own.DeclaringEntity with
+                        | Some ownEntity -> related ownEntity twinEntity
+                        | None -> false
+                    | _ -> true
+                | None -> true
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                true
+        | _ -> false)
+
+// a discard counts only where its line names an `…Async` call: `let _ =
+// d.Remove id` drops a value, not work
+let private launchRegex =
+    Regex
+        @"\bTask\.Run\b|\bStartNew\b|\bAsync\.Start(Immediate)?\b|\bQueueUserWorkItem\b|Async\b[^\n]*\|>\s*ignore\b|\b_\s*=[^\n]*Async\b"
+
+let private blockRegex =
+    Regex @"\.Result\b|\.Wait\s*\(|\bGetResult\s*\(|\bRunSynchronously\b|\bAwaitTask\b"
+
+/// A member declared in this file whose body starts work and drops it
+/// (`Task.Run(fun () -> x.SendAsync p) |> ignore`, `x.SendAsync p |> ignore`,
+/// `Async.Start`) and never blocks on it: a fire-and-forget wrapper, not a
+/// blocking call. Binding its twin makes the caller wait for what the author
+/// chose not to wait for (an analytics ping before a form shows).
+let private firesAndForgets
+    (index: AstIndex.Index)
+    (source: ISourceText)
+    (fileName: string)
+    (mfv: FSharpMemberOrFunctionOrValue)
+    =
+    let declared =
+        try
+            Some mfv.DeclarationLocation
+        with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+            None
+
+    match declared with
+    | Some loc when System.String.Equals(loc.FileName, fileName, System.StringComparison.OrdinalIgnoreCase) ->
+        index.Exprs
+        |> Array.tryPick (fun (path, _) ->
+            path
+            |> List.tryPick (fun node ->
+                match node with
+                | SyntaxNode.SynBinding(SynBinding(
+                    headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = ids)); expr = body)) when
+                    not ids.IsEmpty && Range.equals (List.last ids).idRange loc
+                    ->
+                    Some body
+                | _ -> None))
+        |> Option.exists (fun body ->
+            let text = textOfRange source body.Range
+            launchRegex.IsMatch text && not (blockRegex.IsMatch text))
+    | _ -> false
 
 let private syncWordRegex =
-    System.Text.RegularExpressions.Regex
-        "[a-z]Sync(Reading|Writing|Flushing|Copying|Loading|Saving|Sending|Receiving|Waiting|Blocking)(?![a-z])"
+    Regex "[a-z]Sync(Reading|Writing|Flushing|Copying|Loading|Saving|Sending|Receiving|Waiting|Blocking)(?![a-z])"
 
 /// A member named for its synchronous work (`WriteTokenSyncReadingAsync`):
 /// the sync call inside is the point. `Sync` as an inner word before the I/O
@@ -388,12 +495,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     | _ -> None
                 | _ -> None)
 
-        // statement position: a direct sequential element of the CE chain
+        // statement position: a sequential element of the CE chain with a
+        // successor — any of them, not only the first (the index records
+        // only a chain's outermost Sequential)
         let isStatement (target: range) =
             index.Exprs
             |> Array.exists (fun (_, e) ->
                 match e with
-                | SynExpr.Sequential(expr1 = a) -> Range.equals a.Range target
+                | SynExpr.Sequential _ -> BlockingSites.isChainStatement e target
                 | _ -> false)
 
         [
@@ -482,6 +591,21 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                         ->
                                         None
                                     | _ -> twin
+
+                                // a twin that is the member itself, a fire-and-forget
+                                // wrapper, the sync branch of a dual sync/async body,
+                                // or a call commented as synchronous on purpose
+                                let twin =
+                                    match twin with
+                                    | Some twinM when
+                                        callsItself check source path twinM
+                                        || firesAndForgets index source parseTree.FileName mfv
+                                        || BlockingSites.dualPathBranch source path expr.Range (fun line ->
+                                            Regex.IsMatch(line, @"\b" + Regex.Escape twinM.DisplayName + @"\b"))
+                                        || BlockingSites.syncByComment source expr.Range
+                                        ->
+                                        None
+                                    | t -> t
 
                                 match twin with
                                 | Some twinM ->

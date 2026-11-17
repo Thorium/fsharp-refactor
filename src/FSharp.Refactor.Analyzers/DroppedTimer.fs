@@ -76,15 +76,22 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         isInfix = false
                         funcExpr = SynExpr.App(isInfix = true; funcExpr = SingleIdent op; argExpr = left)
                         argExpr = SingleIdent ignore') when op.idText = "op_PipeRight" && ignore'.idText = "ignore" ->
-                        construction left |> Option.map (fun t -> t, left)
+                        construction left |> Option.map (fun t -> t, left) |> Option.toList
                     // `ignore (new Timer(...))`
                     | SynExpr.App(isInfix = false; funcExpr = SingleIdent ignore'; argExpr = arg) when
                         ignore'.idText = "ignore"
                         ->
-                        construction arg |> Option.map (fun t -> t, arg)
-                    // a statement of its own
-                    | SynExpr.Sequential(expr1 = statement) ->
-                        construction statement |> Option.map (fun t -> t, statement)
+                        construction arg |> Option.map (fun t -> t, arg) |> Option.toList
+                    // a statement of its own — every one of the chain's, not only its
+                    // first (the index records only a chain's outermost Sequential)
+                    | SynExpr.Sequential _ ->
+                        let rec statements (x: SynExpr) =
+                            match x with
+                            | SynExpr.Sequential(expr1 = s; expr2 = rest) -> s :: statements rest
+                            | _ -> []
+
+                        statements e
+                        |> List.choose (fun statement -> construction statement |> Option.map (fun t -> t, statement))
                     // a local `let` (not `use`) the rest of the scope never
                     // mentions: nothing stores, returns, passes or disposes it,
                     // so the reference dies with the scope — the CR0162 shape.
@@ -109,11 +116,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 ->
                                 construction rhs |> Option.map (fun t -> t, rhs)
                             | _ -> None)
-                    | _ -> None
+                        |> Option.toList
+                    | _ -> []
 
-                match dropped with
-                // the spelling first: every statement-position application
-                // reaches here, and a symbol lookup per statement is not free
-                | Some(typeId, timer) when typeId.idText = "Timer" && isThreadingTimer typeId -> { Range = timer.Range }
-                | _ -> ()
+                for typeId, timer in dropped do
+                    // the spelling first: every statement-position application
+                    // reaches here, and a symbol lookup per statement is not free
+                    if typeId.idText = "Timer" && isThreadingTimer typeId then
+                        { Range = timer.Range }
         ]

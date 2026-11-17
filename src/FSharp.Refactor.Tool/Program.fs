@@ -699,6 +699,74 @@ let private parseArgs (argv: string[]) =
 [<Literal>]
 let internal TimeCapMark = "[stopped at the time cap]"
 
+/// The platform a project target builds for where its nearest `<Platforms>`
+/// (the project file, then each `Directory.Build.props` up to the repository
+/// root) does not list AnyCPU (`x64;ARM64`): x64 where listed, else the
+/// first. None for a solution target, a project that lists AnyCPU or none.
+let internal projectPlatform (target: string) : string option =
+    let project =
+        if Directory.Exists target then
+            let solutions =
+                Array.append (Directory.GetFiles(target, "*.sln")) (Directory.GetFiles(target, "*.slnx"))
+
+            match solutions, Directory.GetFiles(target, "*.fsproj") with
+            | [||], [| one |] -> Some one
+            | _ -> None
+        elif
+            File.Exists target
+            && target.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase)
+        then
+            Some target
+        else
+            None
+
+    let platformsIn (file: string) =
+        if File.Exists file then
+            let m =
+                Regex.Match(File.ReadAllText file, @"<Platforms>\s*([^<$]+?)\s*</Platforms>")
+
+            if m.Success then Some m.Groups.[1].Value else None
+        else
+            None
+
+    let rec upward (dir: DirectoryInfo) =
+        if isNull dir then
+            None
+        else
+            match platformsIn (Path.Combine(dir.FullName, "Directory.Build.props")) with
+            | Some p -> Some p
+            | None when
+                Directory.Exists(Path.Combine(dir.FullName, ".git"))
+                || File.Exists(Path.Combine(dir.FullName, ".git"))
+                ->
+                None
+            | None -> upward dir.Parent
+
+    try
+        project
+        |> Option.bind (fun p ->
+            let full = Path.GetFullPath p
+
+            platformsIn full
+            |> Option.orElse (upward (DirectoryInfo(Path.GetDirectoryName full))))
+        |> Option.bind (fun value ->
+            let platforms =
+                value.Split([| ';' |], StringSplitOptions.RemoveEmptyEntries)
+                |> Array.map (fun p -> p.Trim())
+                |> List.ofArray
+
+            let named (name: string) (p: string) =
+                p.Replace(" ", "").Equals(name, StringComparison.OrdinalIgnoreCase)
+
+            if platforms.IsEmpty || platforms |> List.exists (named "AnyCPU") then
+                None
+            else
+                platforms
+                |> List.tryFind (named "x64")
+                |> Option.orElse (List.tryHead platforms))
+    with _ -> // fsharpanalyzer: ignore-line FR0055
+        None
+
 /// The platform a solution without "Any CPU" builds for (Files.slnx lists
 /// only arm64, x64 and x86, and its app sets `RuntimeIdentifier` to
 /// `win-$(Platform)`): x64 where listed, else the first; never the
@@ -1213,20 +1281,25 @@ let internal targetFrameworksOf (projectPath: string) : string list =
             if m.Success && not conditioned && not (m.Groups.[1].Value.Contains "$(") then
                 split m.Groups.[1].Value
             elif text.Contains "<TargetFrameworks" && text.Contains "Sdk=" then
-                let _, out, _ =
+                let exit, out, _ =
                     runForProject
                         path
                         (TimeSpan.FromMinutes 2.)
                         "dotnet"
                         $"msbuild \"{path}\" --getProperty:TargetFrameworks"
 
-                // the value is the LAST line; anything before it is chatter
-                out.Split '\n'
-                |> Array.map _.Trim()
-                |> Array.filter (fun l -> l <> "")
-                |> Array.tryLast
-                |> Option.map split
-                |> Option.defaultValue []
+                // the value is the LAST line; anything before it is chatter.
+                // An MSBuild before 17.8 (SDK 6, 7) knows no --getProperty
+                // and its last line is the error
+                if exit <> 0 then
+                    []
+                else
+                    out.Split '\n'
+                    |> Array.map _.Trim()
+                    |> Array.filter (fun l -> l <> "")
+                    |> Array.tryLast
+                    |> Option.map split
+                    |> Option.defaultValue []
             else
                 []
     )
@@ -2045,17 +2118,95 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
             // `#r "../../src/X/bin/Debug/net9.0/X.dll"` or an old-style
             // project's path reference. BuildProjectReferences=false keeps the referenced
             // outputs intact. Judge by the JSON, not the exit code.
-            let exit, stdout, stderr =
-                run
-                    $"msbuild \"{projectPath}\" -t:Build -p:BuildProjectReferences=false -p:ProvideCommandLineArgs=true -p:SkipCompilerExecution=true{forceCoreCompile} --getItem:FscCommandLineArgs --getProperty:DotnetFscCompilerPath{tfmArg}"
+            let queryArgs =
+                $"msbuild \"{projectPath}\" -t:Build -p:BuildProjectReferences=false -p:ProvideCommandLineArgs=true -p:SkipCompilerExecution=true{forceCoreCompile}"
 
-            try
+            let exit, stdout, stderr =
+                run $"{queryArgs} --getItem:FscCommandLineArgs --getProperty:DotnetFscCompilerPath{tfmArg}"
+
+            // (arguments, fsc's path when MSBuild reported it)
+            let fromJson () =
                 use doc = JsonDocument.Parse stdout
 
                 let args =
                     doc.RootElement.GetProperty("Items").GetProperty("FscCommandLineArgs").EnumerateArray()
                     |> Seq.map (fun item -> item.GetProperty("Identity").GetString())
                     |> Array.ofSeq
+
+                let fscPath =
+                    let mutable properties = Unchecked.defaultof<JsonElement>
+                    let mutable fsc = Unchecked.defaultof<JsonElement>
+
+                    if
+                        doc.RootElement.TryGetProperty("Properties", &properties)
+                        && properties.TryGetProperty("DotnetFscCompilerPath", &fsc)
+                    then
+                        Some(fsc.GetString())
+                    else
+                        None
+
+                args, fscPath
+
+            // An MSBuild before 17.8 (a global.json pinning SDK 6 or 7) has
+            // no --getItem: "MSB1001: Unknown switch". The same arguments come
+            // out of a target imported after the common targets, which writes
+            // them to a file once CoreCompile computed them. Only on that
+            // path: it overrides a CustomAfterMicrosoftCommonTargets the
+            // project sets for the length of this query
+            let fromTargetsFile () =
+                let stem =
+                    Path.Combine(Path.GetTempPath(), "fsref-args-" + Guid.NewGuid().ToString "N")
+
+                let targets = stem + ".targets"
+                let argsFile = stem + ".args"
+                let fscFile = stem + ".fsc"
+
+                try
+                    File.WriteAllText(
+                        targets,
+                        "<Project>\n  <Target Name=\"FsrefWriteArgs\" AfterTargets=\"CoreCompile\">\n"
+                        + $"    <WriteLinesToFile File=\"{argsFile}\" Lines=\"@(FscCommandLineArgs)\" Overwrite=\"true\" />\n"
+                        + $"    <WriteLinesToFile File=\"{fscFile}\" Lines=\"$(DotnetFscCompilerPath)\" Overwrite=\"true\" />\n"
+                        + "  </Target>\n</Project>\n"
+                    )
+
+                    let exit2, out2, err2 =
+                        run $"{queryArgs} \"-p:CustomAfterMicrosoftCommonTargets={targets}\"{tfmArg}"
+
+                    if File.Exists argsFile then
+                        let args =
+                            File.ReadAllLines argsFile
+                            |> Array.filter (fun l -> not (String.IsNullOrWhiteSpace l))
+
+                        let fscPath =
+                            if File.Exists fscFile then
+                                File.ReadAllLines fscFile
+                                |> Array.tryFind (fun l -> not (String.IsNullOrWhiteSpace l))
+                            else
+                                None
+
+                        Ok(args, fscPath)
+                    else
+                        Error $"dotnet msbuild (exit {exit2}) produced no readable args:\n{out2}\n{err2}"
+                finally
+                    for f in [ targets; argsFile; fscFile ] do
+                        try
+                            File.Delete f
+                        with _ -> // a temp file left behind costs nothing; fsharpanalyzer: ignore-line FR0055
+                            ()
+
+            let queried =
+                try
+                    Ok(fromJson ())
+                with :? JsonException ->
+                    if ($"{stdout}\n{stderr}").Contains "MSB1001" then
+                        fromTargetsFile ()
+                    else
+                        Error $"dotnet msbuild (exit {exit}) produced no readable args:\n{stdout}\n{stderr}"
+
+            match queried with
+            | Error e -> Error e
+            | Ok(args, fscPath) ->
 
                 // The FSharp.Core fsc would use when the project names none.
                 //
@@ -2074,19 +2225,12 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                 // is added: the same assembly fsc resolves, and nothing else.
                 let bundledFSharpCore =
                     try
-                        let mutable properties = Unchecked.defaultof<JsonElement>
-
-                        if doc.RootElement.TryGetProperty("Properties", &properties) then
-                            let mutable fsc = Unchecked.defaultof<JsonElement>
-
-                            if properties.TryGetProperty("DotnetFscCompilerPath", &fsc) then
-                                let fscPath = (fsc.GetString()).Trim().Trim '"'
-                                let core = Path.Combine(Path.GetDirectoryName fscPath, "FSharp.Core.dll")
-                                if File.Exists core then Some core else None
-                            else
-                                None
-                        else
-                            None
+                        match fscPath with
+                        | Some reported when not (String.IsNullOrWhiteSpace reported) ->
+                            let fsc = reported.Trim().Trim '"'
+                            let core = Path.Combine(Path.GetDirectoryName fsc, "FSharp.Core.dll")
+                            if File.Exists core then Some core else None
+                        | _ -> None
                     with _ -> // an SDK that does not report the path simply gets no addition; fsharpanalyzer: ignore-line FR0055
                         None
 
@@ -2107,8 +2251,6 @@ let private fscArgs (chosenFramework: string) (projectPath: string) =
                     Error "MSBuild produced no FscCommandLineArgs (is this an SDK-style F# project?)"
                 else
                     Ok args
-            with :? JsonException ->
-                Error $"dotnet msbuild (exit {exit}) produced no readable args:\n{stdout}\n{stderr}"
 
 /// All [<CliAnalyzer>]-attributed functions of the analyzers assembly.
 let private cliAnalyzers () =
@@ -2650,9 +2792,21 @@ let private errorCount (checker: FSharpChecker) (options: FSharpProjectOptions) 
 /// has a signature, a member pulled out of a `let rec` group can generalise
 /// a parameter, and the signature's concrete type then fails FS0034 in fsc
 /// — while ParseAndCheckProject reports nothing, and only a per-file check
-/// of that file does. A pass that touched a file checks that
-/// file the second way too.
-let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOptions) (files: string list) =
+/// of that file does. A pass that touched a file with a signature checks
+/// that file the second way too.
+///
+/// Only a file with a signature, and only for errors its text before the
+/// pass did not have. The per-file check is not the whole truth either:
+/// FCS 43.13 rejects a typed interpolated string that pairs `%A` with
+/// another hole (`$"n = %i{n}, o = %A{o}"`, FS0001) in a per-file check
+/// while the project check and fsc accept it, and every pass that touched
+/// such a file was rolled back. The errors are compared by number and
+/// message, not position: the pass moves lines.
+let internal projectErrorsWith
+    (checker: FSharpChecker)
+    (options: FSharpProjectOptions)
+    (files: (string * string) list)
+    =
     let project = projectErrors checker options
 
     // A pass can change a file this compilation does not contain: a
@@ -2674,29 +2828,63 @@ let private projectErrorsWith (checker: FSharpChecker) (options: FSharpProjectOp
         |> Array.map (fun f -> Path.GetFullPath(f).ToLowerInvariant(), f)
         |> Map.ofArray
 
+    // `X.fs` is signed when the compilation also lists `X.fsi`
+    let signed =
+        options.SourceFiles
+        |> Array.filter (fun f -> f.EndsWith(".fsi", StringComparison.OrdinalIgnoreCase))
+        |> Array.map (fun f -> Path.GetFullPath(f.Substring(0, f.Length - 1)).ToLowerInvariant())
+        |> Set.ofArray
+
+    let errorsOf (path: string) (text: string) =
+        let _, answer =
+            checker.ParseAndCheckFileInProject(path, 0, SourceText.ofString text, options)
+            |> Async.RunSynchronously
+
+        match answer with
+        | FSharpCheckFileAnswer.Succeeded results ->
+            results.Diagnostics
+            |> Array.filter (fun d ->
+                d.Severity = FSharpDiagnosticSeverity.Error
+                && (not parseOnlyRun || d.Subcategory = "parse"))
+        | FSharpCheckFileAnswer.Aborted -> [||]
+
     let perFile =
         files
-        |> List.choose (fun path ->
+        |> List.choose (fun (path, before) ->
             try
-                inProject.TryFind(Path.GetFullPath(path).ToLowerInvariant())
+                let key = Path.GetFullPath(path).ToLowerInvariant()
+
+                if signed.Contains key then
+                    inProject.TryFind key |> Option.map (fun p -> p, before)
+                else
+                    None
             with _ -> // an unopenable path is not this project's; fsharpanalyzer: ignore-line FR0055
                 None)
         |> List.toArray
-        |> Array.collect (fun path ->
+        |> Array.collect (fun (path, before) ->
             try
-                let text = SourceText.ofString (readSource path)
+                match errorsOf path (readSource path) with
+                | [||] -> [||]
+                | after ->
+                    // each error the old text had cancels one alike
+                    let had = Collections.Generic.Dictionary<int * string, int>()
 
-                let _, answer =
-                    checker.ParseAndCheckFileInProject(path, 0, text, options)
-                    |> Async.RunSynchronously
+                    for d in errorsOf path before do
+                        let k = d.ErrorNumber, d.Message
 
-                match answer with
-                | FSharpCheckFileAnswer.Succeeded results ->
-                    results.Diagnostics
+                        match had.TryGetValue k with
+                        | true, n -> had[k] <- n + 1
+                        | false, _ -> had[k] <- 1
+
+                    after
                     |> Array.filter (fun d ->
-                        d.Severity = FSharpDiagnosticSeverity.Error
-                        && (not parseOnlyRun || d.Subcategory = "parse"))
-                | FSharpCheckFileAnswer.Aborted -> [||]
+                        let k = d.ErrorNumber, d.Message
+
+                        match had.TryGetValue k with
+                        | true, n when n > 0 ->
+                            had[k] <- n - 1
+                            false
+                        | _ -> true)
             with
             | :? IOException
             | :? UnauthorizedAccessException -> [||])
@@ -6115,6 +6303,13 @@ let private reportedFindings = ResizeArray<ReportedFinding>()
 
 let private reportedKeys = HashSet<string>()
 
+/// The notes recorded in the current framework's pass loop, by file: a later
+/// pass that analyses the file again replaces them — its edits moved them (a
+/// line added above shifts every note) or removed them; kept, the report
+/// carried each note twice, once at a stale line.
+let private loopNotes =
+    Dictionary<string, ResizeArray<string * ReportedFinding>>(StringComparer.OrdinalIgnoreCase)
+
 /// Console notes already shown this run — later passes recompute the same
 /// fix-less findings, and printing them once is enough.
 let private printedNotes = HashSet<string>()
@@ -6774,7 +6969,49 @@ let private recordForReport (finding: ReportedFinding) =
             $"{finding.Code}|{file}|{finding.StartLine}|{finding.StartColumn}|{finding.Message}"
 
         if reportedKeys.Add key then
-            reportedFindings.Add finding)
+            reportedFindings.Add finding
+
+            if not finding.Fixable then
+                match loopNotes.TryGetValue file with
+                | true, notes -> notes.Add((key, finding))
+                | _ -> loopNotes.[file] <- ResizeArray [ key, finding ])
+
+/// A framework's pass loop begins: notes from here on are this loop's.
+let private startNoteLoop () = lock reportedFindings loopNotes.Clear
+
+/// A file is analysed again in this loop: the notes the loop recorded for
+/// it before go, the new analysis records the current ones.
+let private forgetLoopNotes (file: string) =
+    lock reportedFindings (fun () ->
+        let file =
+            try
+                Path.GetFullPath(file).ToLowerInvariant()
+            with _ -> // fsharpanalyzer: ignore-line FR0055
+                file.ToLowerInvariant()
+
+        match loopNotes.TryGetValue file with
+        | true, notes ->
+            for key, finding in notes do
+                reportedKeys.Remove key |> ignore
+                reportedFindings.Remove finding |> ignore
+
+            loopNotes.Remove file |> ignore
+        | _ -> ())
+
+/// What a console note is keyed by in place of its line number: the text
+/// around it, three lines above to one below (as the report's fingerprint
+/// reads), trimmed. A later pass finds the same note at a shifted line and
+/// must not print it again; the note's own line alone is not enough —
+/// `t.Result` in two functions is two notes.
+let internal noteContext (lines: string[]) (startLine: int) =
+    let i = startLine - 1
+
+    if i >= 0 && i < lines.Length then
+        lines.[max 0 (i - 3) .. min (lines.Length - 1) (i + 1)]
+        |> Array.map _.Trim()
+        |> String.concat "\n"
+    else
+        string startLine
 
 /// The conditional-compilation identity of a compilation: its sorted
 /// --define set. Same file, same defines — same tree.
@@ -7128,6 +7365,8 @@ let private runPass
                     else
                         reportable
 
+                forgetLoopNotes file
+
                 for _, finding in reportable do
                     recordForReport finding
 
@@ -7285,9 +7524,20 @@ let private runPass
         // of advice is opt-in: the fixes are the product, and a screen of
         // structural homework after them is an anticlimax nobody reads.
         // --notes lists them, --report/--format json always carry them
+        // keyed by the text around the note and its column, not the line
+        // number (noteContext)
+        let noteLines =
+            lazy
+                (try
+                    File.ReadAllLines outcome.File
+                 with _ -> // fsharpanalyzer: ignore-line FR0055
+                     [||])
+
         for note in outcome.Notes do
+            let lineText = noteContext (noteLines.Force()) note.Range.StartLine
+
             let key =
-                $"{note.Code}|{outcome.File}|{note.Range.StartLine}|{note.Range.StartColumn}|{note.Message}"
+                $"{note.Code}|{outcome.File}|{lineText}|{note.Range.StartColumn}|{note.Message}"
 
             if printedNotes.Add key then
                 if
@@ -8511,7 +8761,7 @@ let private verifyPassChecked
     // the files this pass changed are checked one by one as well: see
     // projectErrorsWith
     let recount () =
-        projectErrorsWith checker options (changedFiles |> List.map (fun cf -> cf.Path))
+        projectErrorsWith checker options (changedFiles |> List.map (fun cf -> cf.Path, cf.Before))
 
     let errors =
         let first = recount ()
@@ -9040,6 +9290,51 @@ let private releaseFrameworkCheckers () =
             with _ -> // fsharpanalyzer: ignore-line FR0055
                 ())
 
+/// Is a compilation a test project, by its compiler arguments? It
+/// references a test framework AND is run as one: a library that extends
+/// a framework (FsCheck.Xunit, FsUnit.NUnit) references the framework too,
+/// and its public types are its API. What runs it is one of
+/// - the test platform: Microsoft.NET.Test.Sdk's testhost and
+///   Microsoft.TestPlatform assemblies, or Microsoft Testing Platform;
+/// - Microsoft.NET.Test.Sdk's coverage shim, the only assembly of it a
+///   .NET Framework project on Test.Sdk 16 references;
+/// - nothing at all, for an executable: an Expecto console project is
+///   started with `dotnet run`, and nothing links to an executable.
+let internal isTestCompilation (otherOptions: string[]) =
+    let referenced =
+        otherOptions
+        |> Array.choose (fun o ->
+            if o.StartsWith("-r:", StringComparison.OrdinalIgnoreCase) then
+                Some(Path.GetFileName(o.Substring 3).ToLowerInvariant())
+            else
+                None)
+
+    let framework =
+        referenced
+        |> Array.exists (fun name ->
+            name.StartsWith "xunit."
+            || name = "nunit.framework.dll"
+            || name = "microsoft.visualstudio.testplatform.testframework.dll"
+            || name = "expecto.dll")
+
+    let platform =
+        referenced
+        |> Array.exists (fun name ->
+            name = "testhost.dll"
+            || name = "microsoft.testing.platform.dll"
+            || name = "microsoft.visualstudio.codecoverage.shim.dll"
+            || name.StartsWith "microsoft.testplatform.")
+
+    let executable =
+        otherOptions
+        |> Array.exists (fun o ->
+            let o = o.Trim().TrimStart '-'
+
+            o.Equals("target:exe", StringComparison.OrdinalIgnoreCase)
+            || o.Equals("target:winexe", StringComparison.OrdinalIgnoreCase))
+
+    framework && (platform || executable)
+
 let private runTargetRegex = Regex @"\[([^\[\]]+\.fsproj)(?:::|\])"
 let private runTargetRegex2 = Regex "Include=\"([^\"]+\\.fsi?)\""
 
@@ -9133,20 +9428,10 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
         // a test project exports no API: nothing links to its declarations,
         // so the cross-file reshapes --api-changes gates (FR0090, FR0091,
         // FR0069, FR0093, FR0049) are as safe there as in a private module
-        // and run without the flag. Known by the test framework it
-        // references; a `dotnet test` project always does
+        // and run without the flag
         let testProject =
             match target with
-            | Target.Project _ ->
-                options.OtherOptions
-                |> Array.exists (fun o ->
-                    o.StartsWith("-r:", StringComparison.OrdinalIgnoreCase)
-                    && (let name = Path.GetFileName(o.Substring 3).ToLowerInvariant()
-
-                        name.StartsWith "xunit."
-                        || name = "nunit.framework.dll"
-                        || name = "microsoft.visualstudio.testplatform.testframework.dll"
-                        || name = "expecto.dll"))
+            | Target.Project _ -> isTestCompilation options.OtherOptions
             | Target.Script _ -> false
 
         let opts =
@@ -9544,6 +9829,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             // cost and are skipped — on a large solution that is one full
             // `dotnet build` per framework pass of every clean project.
             let mutable totalApplied = 0
+
+            // this framework's passes: a file analysed again replaces its notes
+            startNoteLoop ()
 
             if opts.ApiChanges && onlyFile.IsNone then
                 // iterated: a suggestion held back because its edits
@@ -10385,6 +10673,14 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     |> Option.iter (fun platform ->
         Out.dim $"  (the solution has no Any CPU platform: loading and building for {platform})")
 
+    // a project target: its own `<Platforms>` (PowerToys-style `x64;ARM64`)
+    if runPlatform.IsNone then
+        runPlatform <- projectPlatform opts.Target
+
+        runPlatform
+        |> Option.iter (fun platform ->
+            Out.dim $"  (the project declares no Any CPU platform: loading and building for {platform})")
+
     // the report is written after a compilation's work: a path that cannot
     // take it is refused before any
     let resolved =
@@ -10520,7 +10816,8 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
         // must not leak findings across invocations
         lock reportedFindings (fun () ->
             reportedFindings.Clear()
-            reportedKeys.Clear())
+            reportedKeys.Clear()
+            loopNotes.Clear())
 
         printedNotes.Clear()
 
@@ -11237,6 +11534,7 @@ let private runMcp (limits: McpLimits) =
                 lock reportedFindings (fun () ->
                     reportedFindings.Clear()
                     reportedKeys.Clear()
+                    loopNotes.Clear()
                     baselineSuppressed <- 0
                     commentSuppressed <- 0
                     suppressionOverridden <- 0)

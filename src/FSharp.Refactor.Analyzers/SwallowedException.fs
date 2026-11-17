@@ -991,8 +991,12 @@ let private continuationRaises (path: SyntaxNode list) (tryRange: range) =
         | _ -> false
 
     match path with
-    | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = e1; expr2 = e2)) :: _ when Range.equals e1.Range tryRange ->
-        raises e2
+    // the try as any statement of the chain, not only its first (the index
+    // records only a chain's outermost Sequential)
+    | SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ ->
+        match BlockingSites.afterInChain chain tryRange with
+        | Some next -> raises next
+        | None -> false
     | _ -> false
 
 [<return: Struct>]

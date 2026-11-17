@@ -23,7 +23,8 @@
 /// is not guarded by it (the lambda runs later), and a store of the empty
 /// value anywhere is a RESET - an in-flight task dropped once it settles,
 /// so the next call retries - where `Lazy`, which never runs twice, is the
-/// wrong tool: no note. Note only: the reads move too. A Fable project
+/// wrong tool: no note. Neither for a mutable whose address is taken
+/// (`Array.Resize(&cache, n)`): that write is not classified. Note only: the reads move too. A Fable project
 /// bound to JavaScript (one thread) gets no note at all; its Rust and
 /// Python targets have threads that race like .NET's.
 module FSharp.Refactor.LazyInit
@@ -189,7 +190,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
 
             let assignments = stores |> Array.map (fun (path, r, _) -> path, r)
 
-            if not (Array.isEmpty assignments || resets) then
+            // its address taken (`Array.Resize(&cache, n)`, `Interlocked.Exchange(&cache, v)`):
+            // a write through the byref the store scan cannot classify
+            let byrefTaken =
+                index.Exprs
+                |> Array.exists (fun (_, e) ->
+                    match e with
+                    | SynExpr.AddressOf(expr = SynExpr.Ident pid) -> pid.idText = name
+                    | SynExpr.AddressOf(expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))) when
+                        not ids.IsEmpty
+                        ->
+                        (List.last ids).idText = name
+                    | _ -> false)
+
+            if not (Array.isEmpty assignments || resets || byrefTaken) then
                 let classified = assignments |> Array.map (fun (path, r) -> r, classify name path r)
 
                 let anyLocked = classified |> Array.exists (fun (_, (locked, _)) -> locked)

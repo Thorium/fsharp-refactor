@@ -37,15 +37,20 @@
 ///
 /// A `CancellationToken.None` argument is replaced under the same gates,
 /// and only where the work it starts is waited for: `|> ignore`, a bare
-/// statement or a store detaches that work from the caller on purpose.
+/// statement or a store detaches that work from the caller on purpose; nor
+/// in a compensation before a raise (`do! DeleteAsync(copy,
+/// CancellationToken.None)` then `failwith …`), which must run.
 ///
 /// The loop note (findUnobservedLoops): a loop awaiting inside, under the
 /// token's binding, that never mentions the token — nor a local built
-/// with it (`let enumerator = source.GetAsyncEnumerator ct`) — cannot be
-/// cancelled. Outside `async { }` only, which observes the token at every
-/// bind by itself; quiet where the fix above already hands the token to a
-/// call in the loop, inside cleanup (finally, with handlers, Register
-/// callbacks) or shared work, and under a rebinding of the token's name.
+/// with it (`let enumerator = source.GetAsyncEnumerator ct`), or from such a
+/// local; an awaited result (`let! items = repo.GetAllAsync ct`) carries it
+/// only when its type holds a token — cannot be cancelled. Outside
+/// `async { }` only, which observes the token at every bind by itself; quiet
+/// where the fix above already hands the token to a call in the loop, where
+/// the loop passes `CancellationToken.None` on purpose, inside cleanup
+/// (finally, with handlers, Register callbacks) or shared work, and under a
+/// rebinding of the token's name.
 module FSharp.Refactor.CancellationOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -364,7 +369,9 @@ let rec private leftRunning (r: range) (path: SyntaxNode list) =
         Range.rangeContainsRange a.Range r
         ->
         consumer (calleeName f) outer rest
-    | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a)) :: _ -> a.Range = r
+    // a statement of the chain — any of them: the index records only a chain's
+    // outermost Sequential, whose own `expr1` is the first statement alone
+    | SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ -> BlockingSites.isChainStatement chain r
     | SyntaxNode.SynExpr(SynExpr.Set _ | SynExpr.DotSet _ | SynExpr.LongIdentSet _) :: _ -> true
     | _ -> false
 
@@ -452,7 +459,7 @@ let rec private waitedFor (index: AstIndex.Index) (depth: int) (r: range) (path:
     // a lambda returning it: what happens to the lambda decides (a `List.map`)
     | SyntaxNode.SynExpr(SynExpr.Lambda(range = lr)) :: rest -> waitedFor index depth lr rest
     // a statement drops it; the last expression is the sequence's value
-    | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = a; expr2 = b; range = sr)) :: rest ->
+    | SyntaxNode.SynExpr(SynExpr.Sequential(range = sr) as chain) :: rest ->
         // `[| a; b |]` spells its elements as a sequence: an element, not a statement
         let rec listElement (p: SyntaxNode list) =
             match p with
@@ -462,7 +469,8 @@ let rec private waitedFor (index: AstIndex.Index) (depth: int) (r: range) (path:
 
         match listElement rest with
         | Some(lr, more) -> waitedFor index depth lr more
-        | None -> a.Range <> r && b.Range = r && waitedFor index depth sr rest
+        // the chain's final element, however many statements precede it
+        | None -> BlockingSites.isChainFinal chain r && waitedFor index depth sr rest
     | SyntaxNode.SynExpr(SynExpr.IfThenElse(ifExpr = c; range = ir)) :: rest when c.Range <> r ->
         waitedFor index depth ir rest
     | SyntaxNode.SynMatchClause _ :: SyntaxNode.SynExpr m :: rest -> waitedFor index depth m.Range rest
@@ -1029,6 +1037,23 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             calleeSymbol
                             |> Option.exists (fun (_, mfv) -> cleanupNameRegex.IsMatch mfv.DisplayName)
 
+                        // and one in a compensation before a raise: `do! DeleteAsync(copy,
+                        // CancellationToken.None)` then `failwith …` undoes half-done
+                        // work whatever the caller's token says
+                        let compensation =
+                            path
+                            |> List.exists (fun node ->
+                                match node with
+                                | SyntaxNode.SynExpr(SynExpr.Sequential _ as s) ->
+                                    BlockingSites.inChainBeforeEnd s expr.Range && BlockingSites.raisesAtEnd s
+                                // `let! _ = DeleteAsync(copy, CancellationToken.None)` then `failwith …`
+                                | SyntaxNode.SynExpr(LetOrUseE lou) ->
+                                    lou.Bindings
+                                    |> List.exists (fun (SynBinding(expr = rhs)) ->
+                                        Range.rangeContainsRange rhs.Range expr.Range)
+                                    && BlockingSites.raisesAtEnd lou.Body
+                                | _ -> false)
+
                         if
                             isArgument
                             && takesToken
@@ -1036,6 +1061,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                             && not schedulesWork
                             && not detached
                             && not cleanup
+                            && not compensation
                         then
                             {
                                 Range = expr.Range
@@ -1066,6 +1092,8 @@ type LoopSuggestion =
         /// below the loop header; a one-line body stays a note.
         Fix: (range * string * string) option
     }
+
+let private findUnobservedLoopsWithRegex = Regex @"\bCancellationToken\.None\b"
 
 /// `findUnobservedLoops` over call suggestions `find` already produced for
 /// this file: the analyzer reports both, so it runs `find` once.
@@ -1136,29 +1164,86 @@ let findUnobservedLoopsWith
                 else
                     None)
 
+        // a type that holds a token: the token, a source, or one with a token
+        // member (a context object handed along)
+        let holdsToken (t: FSharpType) =
+            try
+                let isTokenish (x: FSharpType) =
+                    let n = typeFullName x
+
+                    n = "System.Threading.CancellationToken"
+                    || n = "System.Threading.CancellationTokenSource"
+
+                isTokenish t
+                || (let s = t.StripAbbreviations()
+
+                    s.HasTypeDefinition
+                    && (s.TypeDefinition.MembersFunctionsAndValues
+                        |> Seq.exists (fun m -> m.IsProperty && isTokenish m.ReturnParameter.Type)
+                        || s.TypeDefinition.FSharpFields |> Seq.exists (fun f -> isTokenish f.FieldType)))
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                false
+
         // locals of that binding built WITH the token — `let enumerator =
-        // source.GetAsyncEnumerator ct`, `let reader = open ct`: a
-        // loop stepping one of them observes the token through it
+        // source.GetAsyncEnumerator ct`, `let reader = open ct`: a loop
+        // stepping one of them observes the token through it. An AWAITED
+        // result (`let! items = repo.GetAllAsync ct`) is data the operation
+        // produced, not a carrier, unless its type holds a token. A local
+        // built from a carrier, not from the token, carries it only as
+        // another name for it (`let stepper = e`), a token holder (`let token
+        // = linked.Token`) or a local function that reads the carrier: `let
+        // ys = xs |> List.filter f` is data
         let carriers (token: string) (scope: range) =
-            AstIndex.exprsWithin index scope
-            |> Array.collect (fun (_, e) ->
-                match e with
-                | LetOrUseE lou when Range.rangeContainsRange scope e.Range ->
-                    // a value, or a local function whose body reads the
-                    // token (`let step () = task { do! Task.Delay(10, ct) }`)
-                    lou.Bindings
-                    |> List.choose (fun b ->
-                        match b with
-                        | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs)
-                        | SynBinding(
-                            headPat = SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id))); expr = rhs)
-                        | SynBinding(headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])); expr = rhs) when
-                            Regex.IsMatch(textOfRange source rhs.Range, identifierPattern token)
-                            ->
-                            Some id.idText
-                        | _ -> None)
-                    |> Array.ofList
-                | _ -> [||])
+            let candidates =
+                AstIndex.exprsWithin index scope
+                |> Array.collect (fun (_, e) ->
+                    match e with
+                    | LetOrUseE lou when Range.rangeContainsRange scope e.Range ->
+                        // a value, or a local function whose body reads the
+                        // token (`let step () = task { do! Task.Delay(10, ct) }`)
+                        lou.Bindings
+                        |> List.choose (fun b ->
+                            let named =
+                                match b with
+                                | SynBinding(headPat = SynPat.Named(ident = SynIdent(ident = id)); expr = rhs)
+                                | SynBinding(
+                                    headPat = SynPat.Typed(pat = SynPat.Named(ident = SynIdent(ident = id)))
+                                    expr = rhs) -> Some(id, rhs, false)
+                                | SynBinding(
+                                    headPat = SynPat.LongIdent(longDotId = SynLongIdent(id = [ pid ])); expr = rhs) ->
+                                    Some(pid, rhs, true)
+                                | _ -> None
+
+                            match named with
+                            | Some(id, rhs, isFunction) ->
+                                let tokenHolder =
+                                    lazy (BlockingSites.valueTypeOf check source id |> Option.exists holdsToken)
+
+                                if lou.IsBang && not (tokenHolder.Force()) then
+                                    None
+                                else
+                                    Some(id.idText, textOfRange source rhs.Range, isFunction, tokenHolder)
+                            | None -> None)
+                        |> Array.ofList
+                    | _ -> [||])
+
+            let rec grow (names: Set<string>) =
+                let more =
+                    candidates
+                    |> Array.filter (fun (name, rhs, isFunction, tokenHolder) ->
+                        not (names.Contains name)
+                        && (Regex.IsMatch(rhs, identifierPattern token)
+                            || names.Contains(rhs.Trim())
+                            || (names |> Set.exists (fun n -> Regex.IsMatch(rhs, identifierPattern n))
+                                && (isFunction || tokenHolder.Force()))))
+                    |> Array.map (fun (name, _, _, _) -> name)
+
+                if more.Length = 0 then
+                    names
+                else
+                    grow (Set.union names (set more))
+
+            grow (set [ token ]) |> Set.remove token |> Set.toArray
 
         let mentionsAny (names: string seq) (text: string) =
             names |> Seq.exists (fun n -> Regex.IsMatch(text, identifierPattern n))
@@ -1244,8 +1329,12 @@ let findUnobservedLoopsWith
                                     | Some scope -> mentionsAny (carriers token scope) text
                                     | None -> false)
 
+                            // the author passes no token on purpose inside the loop
+                            let explicitlyUncancelled = findUnobservedLoopsWithRegex.IsMatch text
+
                             if
                                 not observed
+                                && not explicitlyUncancelled
                                 && not (offeredInside |> List.exists (fun r -> Range.rangeContainsRange e.Range r))
                             then
                                 {

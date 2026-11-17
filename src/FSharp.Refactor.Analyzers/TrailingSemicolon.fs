@@ -232,15 +232,20 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
             lazy
                 (let starts = System.Collections.Generic.Dictionary<int, int>()
 
+                 // every statement of a chain, not only its first: the index
+                 // records only a chain's outermost Sequential
+                 let rec statements (x: SynExpr) =
+                     match x with
+                     | SynExpr.Sequential(expr1 = s; expr2 = rest) -> s :: statements rest
+                     | _ -> []
+
                  for _, expr in (AstIndex.ofTree parseTree).Exprs do
-                     match expr with
-                     | SynExpr.Sequential(expr1 = first) ->
+                     for first in statements expr do
                          let line = first.Range.EndLine
 
                          match starts.TryGetValue line with
                          | true, column when column <= first.Range.StartColumn -> ()
                          | _ -> starts.[line] <- first.Range.StartColumn
-                     | _ -> ()
 
                  starts)
 

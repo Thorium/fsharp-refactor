@@ -1884,7 +1884,7 @@ let ``a function's wildcard arm is named so its argument can be quoted`` () =
                 let toOpcode = function
                     | 0uy -> Text
                     | 1uy -> Binary
-                    | value -> failwith $"Invalid opcode., calling toOpcode with value: {value}"
+                    | value -> failwith $"Invalid opcode, calling toOpcode with value: {value}"
                 """,
             patched
         )

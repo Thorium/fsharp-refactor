@@ -240,10 +240,12 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     Range.equals f.Range r || Range.equals a.Range r
                     ->
                     headOf rest app.Range
-                | SyntaxNode.SynExpr(SynExpr.Sequential(expr1 = first; expr2 = next)) :: _ when
-                    Range.equals first.Range r
-                    ->
-                    leaves next
+                // any statement of the chain, not only its first (the index
+                // records only a chain's outermost Sequential)
+                | SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ ->
+                    match BlockingSites.afterInChain chain r with
+                    | Some next -> leaves next
+                    | None -> false
                 | _ -> false
 
             headOf path mutation.Range
