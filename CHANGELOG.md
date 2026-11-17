@@ -2,6 +2,10 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.56
+
+- FR0118 leaves one of `Stream`'s own calls (`WriteAsync`, `CopyToAsync`) on a stream over memory: a `MemoryStream`, or an immutable binding made from memory streams only, like a `GZipStream` over a buffer. The token changed nothing there; a method an extension or a `MemoryStream` subclass adds keeps it.
+
 ## 0.8.55
 
 - FR0119 leaves `MemoryStream`/`StringWriter`/`StringReader` and `Console.Out`/`Console.Error` calls, EF Core's `Add`/`AddRange` (async only for database value generators, EF's documentation says), and calls inside a member named for its synchronous work (`writeTokenSyncReadingAsync`).

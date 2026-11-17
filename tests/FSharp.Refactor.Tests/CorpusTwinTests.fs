@@ -558,3 +558,77 @@ let ``FR0118 leaves the explicit None of a cleanup call, and replaces another`` 
     with
     | [ s ] -> Assert.Equal(8, s.Range.StartLine)
     | other -> failwithf "Expected the one None in LoadAsync, got %A" other
+
+[<Fact>]
+let ``FR0118 leaves a stream over memory and an async iterator handed its token by WithCancellation`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            open System.Collections.Generic
+            open System.IO
+            open System.IO.Compression
+            open System.Threading
+            open System.Threading.Tasks
+            type Pages() =
+                member _.PageAsync() : IAsyncEnumerable<int> = Unchecked.defaultof<_>
+                member _.PageAsync(ct: CancellationToken) : IAsyncEnumerable<int> = Unchecked.defaultof<_>
+            let buffer = new MemoryStream()
+            let zip = new GZipStream(buffer, CompressionMode.Compress, true)
+            let pages (p: Pages) (ct: CancellationToken) = p.PageAsync().WithCancellation(ct)
+            let pagesBare (p: Pages) (ct: CancellationToken) = p.PageAsync()
+            let streams (source: Stream) (b: byte[]) (ct: CancellationToken) = task {
+                let! n = source.ReadAsync(b, 0, b.Length)
+                do! zip.WriteAsync(b, 0, n)
+                do! buffer.FlushAsync()
+                do! zip.CopyToAsync(source)
+                let file = new GZipStream(File.OpenWrite "x", CompressionMode.Compress) :> Stream
+                do! file.WriteAsync(b, 0, n)
+            }
+            """
+
+    let tree, sourceText, checkResults = parseAndCheck source
+
+    Assert.Equal<(string * int) list>(
+        [ "PageAsync", 13; "ReadAsync", 15; "CopyToAsync", 18; "WriteAsync", 20 ],
+        CancellationOverload.find tree sourceText checkResults
+        |> List.filter (fun s -> s.Kind = CancellationOverload.TokenGap.Omitted)
+        |> List.map (fun s -> s.MethodName, s.Range.StartLine)
+    )
+
+[<Fact>]
+let ``FR0118 memory-stream guard keeps to Stream's own calls`` () =
+    let source =
+        fsharp
+            """
+            module Test
+            open System.IO
+            open System.IO.Compression
+            open System.Threading
+            open System.Threading.Tasks
+            type Upload() =
+                inherit MemoryStream()
+                member _.SendAsync() : Task = Task.CompletedTask
+                member _.SendAsync(ct: CancellationToken) : Task = Task.CompletedTask
+            type Sink() =
+                member _.Push(s: Stream) : Task = Task.CompletedTask
+                member _.Push(s: Stream, ct: CancellationToken) : Task = Task.CompletedTask
+            let buffer = new MemoryStream()
+            let upload = new Upload()
+            let run (sink: Sink) (b: byte[]) (ct: CancellationToken) = task {
+                do! upload.SendAsync()
+                do! upload.WriteAsync(b, 0, 1)
+                do! sink.Push(buffer)
+                let wrapped = new BufferedStream(buffer)
+                do! wrapped.FlushAsync()
+            }
+            """
+
+    let tree, sourceText, checkResults = parseAndCheck source
+
+    Assert.Equal<(string * int) list>(
+        [ "SendAsync", 16; "Push", 18 ],
+        CancellationOverload.find tree sourceText checkResults
+        |> List.filter (fun s -> s.Kind = CancellationOverload.TokenGap.Omitted)
+        |> List.map (fun s -> s.MethodName, s.Range.StartLine)
+    )

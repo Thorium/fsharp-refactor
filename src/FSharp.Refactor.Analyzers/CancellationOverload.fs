@@ -28,6 +28,12 @@
 ///   - the call does not SCHEDULE work: not `Task.Run`, `StartNew`,
 ///     `ContinueWith`, `ContinueWhenAll` or `ContinueWhenAny`, waited for or
 ///     not, whose token decides whether the work runs at all
+///   - the call is not one of `Stream`'s own on a stream over memory, handed
+///     no other stream: a
+///     `MemoryStream`, or an immutable binding made from memory streams
+///     alone (`new GZipStream(buffer, …)`); nothing there waits. An
+///     `IAsyncEnumerable` followed by `.WithCancellation ct` is not waited
+///     for by the call itself, so it keeps its token from there
 ///
 /// A `CancellationToken.None` argument is replaced under the same gates,
 /// and only where the work it starts is waited for: `|> ignore`, a bare
@@ -483,6 +489,181 @@ let rec private waitedFor (index: AstIndex.Index) (depth: int) (r: range) (path:
         | _ -> true
     | _ -> false
 
+let rec private derivesFromAny (names: Set<string>) (t: FSharpType) =
+    try
+        let t = OptionModule.stripAbbreviations t
+
+        t.HasTypeDefinition
+        && ((t.TypeDefinition.TryFullName |> Option.exists names.Contains)
+            || (t.TypeDefinition.BaseType |> Option.exists (derivesFromAny names)))
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        false
+
+let private memoryStreamTypes =
+    set [ "System.IO.MemoryStream"; "System.IO.UnmanagedMemoryStream" ]
+
+let private streamTypes = set [ "System.IO.Stream" ]
+
+[<RequireQualifiedAccess>]
+type private StreamArg =
+    | NoStream
+    | Memory
+    | Other
+    | Unknown
+
+/// What an argument is, as far as streams go: a constant or a named value of
+/// a known type; anything else is unknown.
+let private streamArg (check: FSharpCheckFileResults) (source: ISourceText) (e: SynExpr) =
+    let ofType (t: FSharpType) =
+        if derivesFromAny memoryStreamTypes t then StreamArg.Memory
+        elif derivesFromAny streamTypes t then StreamArg.Other
+        else StreamArg.NoStream
+
+    let named (pid: Ident) =
+        match BlockingSites.symbolAt check source pid with
+        | Some(:? FSharpMemberOrFunctionOrValue as v) ->
+            (try
+                ofType (
+                    if v.IsMember || v.IsFunction then
+                        v.ReturnParameter.Type
+                    else
+                        v.FullType
+                )
+             with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                 StreamArg.Unknown)
+        | Some(:? FSharpField as f) -> ofType f.FieldType
+        | Some(:? FSharpUnionCase) -> StreamArg.NoStream
+        | _ -> StreamArg.Unknown
+
+    // `leaveOpen = true`: the value is what counts
+    let value =
+        match stripParens e with
+        | SynExpr.App(funcExpr = SynExpr.App(argExpr = SynExpr.Ident _); argExpr = v) as a when isNamedArg a -> v
+        | a -> a
+
+    match stripParens value with
+    | SynExpr.Const _ -> StreamArg.NoStream
+    | SynExpr.Ident pid -> named pid
+    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when not ids.IsEmpty -> named (List.last ids)
+    | _ -> StreamArg.Unknown
+
+let private argumentsOf (a: SynExpr) =
+    match a with
+    | SynExpr.Const(SynConst.Unit, _) -> []
+    | SynExpr.Paren(expr = SynExpr.Tuple(exprs = es)) -> es
+    | SynExpr.Paren(expr = inner) -> [ inner ]
+    | e -> [ e ]
+
+/// `Stream`'s own method - `WriteAsync`, `CopyToAsync` - on `Stream` or a
+/// subclass: not an extension, not what a subclass adds.
+let private streamsOwn (mfv: FSharpMemberOrFunctionOrValue) =
+    let rec stream (e: FSharpEntity) =
+        if e.TryFullName = Some "System.IO.Stream" then
+            Some e
+        else
+            e.BaseType
+            |> Option.bind (fun t ->
+                if t.HasTypeDefinition then
+                    stream t.TypeDefinition
+                else
+                    None)
+
+    try
+        not mfv.IsExtensionMember
+        && (mfv.DeclaringEntity
+            |> Option.bind stream
+            |> Option.exists (fun s ->
+                s.MembersFunctionsAndValues
+                |> Seq.exists (fun m -> m.LogicalName = mfv.LogicalName)))
+    with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+        false
+
+/// A `Stream` call on a stream whose bytes stay in memory, handed no other
+/// stream: a `MemoryStream`, or an immutable binding made from memory
+/// streams alone (`new GZipStream(buffer, CompressionMode.Compress)`,
+/// `algorithm.GetCompressionStream buffer`). Nothing there waits.
+let private onMemoryStream
+    (index: AstIndex.Index)
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (mfv: FSharpMemberOrFunctionOrValue)
+    (callee: SynExpr)
+    (args: SynExpr)
+    =
+    let kind = streamArg check source
+
+    let callArgumentsInMemory () =
+        argumentsOf args
+        |> List.forall (fun a ->
+            match kind a with
+            | StreamArg.NoStream
+            | StreamArg.Memory -> true
+            | StreamArg.Other
+            | StreamArg.Unknown -> false)
+
+    let receiver =
+        match callee with
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 -> Some ids.[ids.Length - 2]
+        | SynExpr.DotGet(expr = recv) -> BlockingSites.receiverIdent recv
+        | _ -> None
+
+    // the right-hand side's constructor or call arguments
+    let rec madeFrom (e: SynExpr) =
+        match e with
+        | SynExpr.Typed(expr = inner)
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.Upcast(expr = inner) -> madeFrom inner
+        | SynExpr.New(expr = a) -> Some(argumentsOf a)
+        | SynExpr.App(
+            isInfix = false
+            funcExpr = (SynExpr.Ident _ | SynExpr.LongIdent _ | SynExpr.DotGet _ | SynExpr.TypeApp _)
+            argExpr = a) -> Some(argumentsOf a)
+        | _ -> None
+
+    let rec headNamed (p: SynPat) =
+        match p with
+        | SynPat.Typed(pat = inner)
+        | SynPat.Paren(pat = inner) -> headNamed inner
+        | p -> p
+
+    let boundToMemory (id: Ident) =
+        match BlockingSites.valueAt check source id with
+        | Some v when not (v.IsMutable || v.IsFunction || v.IsProperty) ->
+            let declared =
+                try
+                    Some v.DeclarationLocation
+                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                    None
+
+            index.Pats
+            |> Array.tryPick (fun (path, pat) ->
+                match pat, declared with
+                | SynPat.Named(ident = SynIdent(ident = pid)), Some at when Range.equals pid.idRange at ->
+                    path
+                    |> List.tryPick (fun node ->
+                        match node with
+                        | SyntaxNode.SynBinding(SynBinding(headPat = hp; expr = rhs)) -> Some(hp, rhs)
+                        | _ -> None)
+                    |> Option.filter (fun (hp, _) -> Range.equals (headNamed hp).Range pat.Range)
+                    |> Option.bind (fun (_, rhs) -> madeFrom rhs)
+                | _ -> None)
+            |> Option.exists (fun made ->
+                let kinds = made |> List.map kind
+
+                kinds |> List.contains StreamArg.Memory
+                && kinds |> List.forall (fun k -> k = StreamArg.Memory || k = StreamArg.NoStream))
+        | _ -> false
+
+    match receiver with
+    | Some id when streamsOwn mfv ->
+        (match kind (SynExpr.Ident id) with
+         | StreamArg.Memory -> true
+         | StreamArg.Other -> boundToMemory id
+         | StreamArg.NoStream
+         | StreamArg.Unknown -> false)
+        && callArgumentsInMemory ()
+    | _ -> false
+
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
     if OptionModule.hasErrors check then
         []
@@ -566,7 +747,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         [
             for path, expr in index.Exprs do
                 match expr with
-                | SynExpr.App(isInfix = false; funcExpr = CallIdent methodId; argExpr = args) ->
+                | SynExpr.App(isInfix = false; funcExpr = (CallIdent methodId as callee); argExpr = args) ->
                     // .NET tupled call shapes only — the edit appends inside
                     // the parentheses
                     let callArity =
@@ -602,6 +783,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 mfv.IsMember
                                 && not mfv.IsProperty
                                 && not (schedulesDelegate mfv)
+                                && not (onMemoryStream index check source mfv callee args)
                                 // work started and not waited for is the author's to detach
                                 && (not (returnsPending mfv) || waitedFor index 0 expr.Range path)
                                 ->
