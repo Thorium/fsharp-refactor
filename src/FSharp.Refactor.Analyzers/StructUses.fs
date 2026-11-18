@@ -17,7 +17,8 @@
 ///     name or a dotted path, and follows the implicit boxing too: a value
 ///     handed to a parameter typed `obj` (`Console.WriteLine p`), to
 ///     `string`/`hash`, or to a `%A`/`%O` hole of the printf family. A
-///     `Unchecked.defaultof<T>` names the type. So does anything that takes
+///     `Unchecked.defaultof<T>` names the type, and so does a `typeof<T>`
+///     (its `Type` goes to reflection). So does anything that takes
 ///     reference types only (`where T : class`, F#'s `not struct`), as
 ///     `AddSingleton`, `IOptions<T>` and `Volatile.Write` do, whether it is
 ///     given a value or named a type argument: the call stops compiling.
@@ -167,7 +168,9 @@ let private calleeIdent (head: SynExpr) =
 
 /// The type names a `Unchecked.defaultof<T>` spells anywhere in the file:
 /// null for the class, a zeroed value for the struct - a sentinel the code
-/// compares against.
+/// compares against. A `typeof<T>`/`typedefof<T>` too: the `Type` goes to
+/// reflection, where `IsValueType`, the constructors and a record class's
+/// own handling (model binding, serializers) answer differently.
 let private defaultofNames (index: AstIndex.Index) : Set<string> =
     index.Exprs
     |> Array.choose (fun (_, e) ->
@@ -176,6 +179,10 @@ let private defaultofNames (index: AstIndex.Index) : Set<string> =
             expr = SynExpr.LongIdent(longDotId = SynLongIdent(id = ids))
             typeArgs = [ SynType.LongIdent(SynLongIdent(id = tids)) ]) when
             not ids.IsEmpty && (List.last ids).idText = "defaultof" && not tids.IsEmpty
+            ->
+            Some (List.last tids).idText
+        | SynExpr.TypeApp(expr = SynExpr.Ident f; typeArgs = [ SynType.LongIdent(SynLongIdent(id = tids)) ]) when
+            (f.idText = "typeof" || f.idText = "typedefof") && not tids.IsEmpty
             ->
             Some (List.last tids).idText
         | _ -> None)

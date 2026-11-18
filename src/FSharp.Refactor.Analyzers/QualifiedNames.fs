@@ -44,10 +44,16 @@ open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
 open FSharp.Refactor.Text
 open System.Collections.Generic
+open System.Text.RegularExpressions
 
 /// The identifier a shortened spelling starts with once its prefix is gone.
-let private identifierHead =
-    System.Text.RegularExpressions.Regex(@"^[A-Za-z_][\w']*")
+let private identifierHead = Regex(@"^[A-Za-z_][\w']*")
+
+/// A name as the source spells it: a run of letters, digits, `_` and `'`.
+let private nameToken = Regex(@"[\p{L}\p{Nd}_']+", RegexOptions.Compiled)
+
+/// A name `nameToken` reads whole.
+let private plainName = Regex(@"^[A-Za-z_][A-Za-z0-9_']*$")
 
 type Suggestion =
     {
@@ -539,11 +545,111 @@ let find
             elif ~~~i > 0 then starts.[~~~i - 1]
             else 0
 
+        // what a top-level declaration sees of module-level items named X
+        // is what the declaration above it saw, plus what that one defined:
+        // it changes only at a declaration that can define X - one spelling
+        // X other than after a `.` - or at an `open` or `#` directive. So
+        // the answer is asked once per such stretch, not per declaration.
+        // A declaration that can define X asks on its own: a non-recursive
+        // `let X` is not in scope inside itself, but is below it
+        let topDeclarations =
+            lazy
+                (index.Decls
+                 |> Array.filter (fun (path, _) ->
+                     not (
+                         path
+                         |> List.exists (fun n ->
+                             match n with
+                             | SyntaxNode.SynModule _ -> true
+                             | _ -> false)
+                     ))
+                 |> Array.map snd)
+
+        let startsWhere (predicate: SynModuleDecl -> bool) =
+            topDeclarations.Value
+            |> Array.filter predicate
+            |> Array.map (fun d -> d.Range.StartLine)
+            |> Array.distinct
+            |> Array.sort
+
+        let environmentChanges =
+            lazy
+                (startsWhere (fun d ->
+                    match d with
+                    | SynModuleDecl.Open _
+                    | SynModuleDecl.HashDirective _ -> true
+                    | _ -> false))
+
+        // a nested module's lines see its own opens: it asks on its own
+        let nestedModules =
+            lazy
+                (HashSet(
+                    startsWhere (fun d ->
+                        match d with
+                        | SynModuleDecl.NestedModule _ -> true
+                        | _ -> false)
+                ))
+
+        // per name, the sorted starts of the top-level declarations spelling
+        // it anywhere but after a `.`
+        let mayDefine =
+            lazy
+                (let byName = Dictionary<string, HashSet<int>>()
+
+                 for d in topDeclarations.Value do
+                     let start = d.Range.StartLine
+                     let text = textOfRange source d.Range
+
+                     for m in nameToken.Matches text do
+                         let rec before (i: int) =
+                             if i < 0 then ' '
+                             elif System.Char.IsWhiteSpace text.[i] then before (i - 1)
+                             else text.[i]
+
+                         if before (m.Index - 1) <> '.' then
+                             match byName.TryGetValue m.Value with
+                             | true, starts -> starts.Add start |> ignore
+                             | false, _ -> byName.[m.Value] <- HashSet [ start ]
+
+                 byName
+                 |> Seq.map (fun (KeyValue(name, starts)) -> name, starts |> Array.ofSeq |> Array.sort)
+                 |> dict)
+
+        // the greatest of the sorted starts at or above the line, or -1
+        let latestAtOrAbove (starts: int[]) (line: int) =
+            match System.Array.BinarySearch(starts, line) with
+            | i when i >= 0 -> starts.[i]
+            | i when ~~~i > 0 -> starts.[~~~i - 1]
+            | _ -> -1
+
+        let stretchOf (name: string) (declarationStart: int) =
+            let defining =
+                match mayDefine.Value.TryGetValue name with
+                | true, starts -> starts
+                | false, _ -> [||]
+
+            if
+                nestedModules.Value.Contains declarationStart
+                || System.Array.BinarySearch(defining, declarationStart) >= 0
+            then
+                declarationStart, true
+            else
+                max
+                    (latestAtOrAbove defining declarationStart)
+                    (latestAtOrAbove environmentChanges.Value declarationStart),
+                false
+
         let shadowedByItem =
-            let memo = Dictionary<string * int, bool>()
+            let memo = Dictionary<string * int * (int * bool), bool>()
 
             fun (head: Ident) ->
-                let key = head.idText, declarationOf head.idRange.StartLine
+                let declarationStart = declarationOf head.idRange.StartLine
+
+                let key =
+                    if plainName.IsMatch head.idText then
+                        head.idText, blockOf head.idRange, stretchOf head.idText declarationStart
+                    else
+                        head.idText, blockOf head.idRange, (declarationStart, true)
 
                 match memo.TryGetValue key with
                 | true, known -> known

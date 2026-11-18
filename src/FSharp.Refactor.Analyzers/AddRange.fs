@@ -138,12 +138,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                             patNames pat
                             |> List.forall (fun name ->
-                                not (
-                                    System.Text.RegularExpressions.Regex.IsMatch(
-                                        receiver,
-                                        $@"\b{System.Text.RegularExpressions.Regex.Escape name}\b"
-                                    )
-                                )))
+                                not (System.Text.RegularExpressions.Regex.IsMatch(receiver, identifierPattern name))))
                         ->
                         let receiverText = textOfRange source receiverRange
                         let element = stripParens arg

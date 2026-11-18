@@ -117,11 +117,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
         let index = AstIndex.ofTree parseTree
 
         let symbolOf (id: Ident) =
-            let r = id.idRange
-            let lineText = source.GetLineString(r.EndLine - 1)
-
-            OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
-            |> Option.map (fun u -> u.Symbol)
+            OptionModule.identUseAt check source id |> Option.map (fun u -> u.Symbol)
 
         // a parameter the typechecker reads as IEnumerable<T> itself
         let isSeqSymbol (symbol: FSharpSymbol) =

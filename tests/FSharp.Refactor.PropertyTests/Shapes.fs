@@ -77,12 +77,16 @@ let withFree (name: string) (codes: string list) (gen: Gen<'a>) (text: 'a -> int
             Text = text a
         })
 
-/// Lowercase letters only, one to eight of them: safe in a string literal,
-/// an interpolated string, an identifier tail and a comment.
+/// Lowercase letters only, one to eight of them, never an F# keyword
+/// (`of`, `in`, `do` and the reserved ones): safe in a string literal, an
+/// interpolated string, a whole identifier, an identifier tail and a comment.
 let genWord: Gen<string> =
+    let keywords = set FSharp.Compiler.Tokenization.FSharpKeywords.KeywordNames
+
     Gen.choose (1, 8)
     |> Gen.bind (fun n -> Gen.elements [ 'a' .. 'z' ] |> List.replicate n |> Gen.sequenceToList)
     |> Gen.map (Array.ofList >> System.String)
+    |> Gen.filter (keywords.Contains >> not)
 
 /// A small non-negative integer literal.
 let genSmall: Gen<int> = Gen.choose (0, 99)

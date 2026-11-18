@@ -323,7 +323,7 @@ let private callbackMayWrite (source: ISourceText) (path: SyntaxNode list) (sour
     let text = textOfRange source arg.Range
 
     let mentions (name: string) =
-        Regex.IsMatch(text, $@"\b{Regex.Escape name}\b")
+        Regex.IsMatch(text, identifierPattern name)
 
     // local bindings on the path whose body assigns: the closures that can
     // reach a collection this function owns

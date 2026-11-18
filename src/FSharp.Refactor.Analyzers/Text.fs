@@ -794,14 +794,15 @@ let hasConfigurationConditional (path: string) =
     | Some regions -> regions |> List.exists branchesOnConfiguration
     | None -> true
 
-/// Does any of `files` name `identifier` on a line inside an `#if` region
-/// that branches on the build configuration? Such a line is in the parse
-/// tree under one set of defines only, so a rewrite of the definition and
-/// "every call site" reaches the calls of one branch and leaves the
-/// other's behind — found by building the other configuration, which is
-/// late. The regions come from the parser; the lines inside them are text
-/// by nature (the untaken branch is in no parse tree), so the name is
-/// matched as a word there, over-eagerly within that.
+/// Does any of `files` name `identifier` on a line inside an `#if` region,
+/// on the build configuration or a framework alike? Such a line is in the
+/// parse tree under one set of defines only, so a rewrite of the definition
+/// and "every call site" reaches the calls of one branch and leaves the
+/// other's behind — found by building the other configuration or framework,
+/// which is late, and whose failure puts back every file the pass changed.
+/// The regions come from the parser; the lines inside them are text by
+/// nature (the untaken branch is in no parse tree), so the name is matched
+/// as a word there, over-eagerly within that.
 let namedInDirectiveRegion (files: string seq) (identifier: string) =
     let word = Regex($@"(?<![\w'`]){Regex.Escape identifier}(?![\w'`])")
 
@@ -810,16 +811,16 @@ let namedInDirectiveRegion (files: string seq) (identifier: string) =
         match directiveRegionsOf f with
         | None -> true // unreadable: assume the worst, the migration waits
         | Some regions ->
-            match regions |> List.filter branchesOnConfiguration with
+            match regions with
             | [] -> false
-            | configured ->
+            | _ ->
                 try
                     File.ReadLines f
                     |> Seq.indexed
                     |> Seq.exists (fun (i, line) ->
                         let lineNumber = i + 1
 
-                        configured
+                        regions
                         |> List.exists (fun r -> r.StartLine < lineNumber && lineNumber < r.EndLine)
                         && not (line.TrimStart().StartsWith '#')
                         && line.Contains identifier

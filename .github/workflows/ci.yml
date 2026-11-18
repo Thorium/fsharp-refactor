@@ -39,9 +39,15 @@ jobs:
       # every run takes a fresh seed, so coverage accumulates over pushes
       # rather than within one.
       - name: Test
-        run: dotnet test -c Release --no-build
+        run: dotnet test -c Release --no-build --filter "Category!=Timing"
         env:
           FSREF_EXECUTION_RUNS: 60
+
+      # The tests that time an analyzer (`Category=Timing`) run after the
+      # rest, in a process of their own: beside a few thousand other tests a
+      # clock measures the machine's load, not the rule.
+      - name: Timing tests
+        run: dotnet test tests/FSharp.Refactor.Tests -c Release --no-build --filter "Category=Timing"
 
       # fsharplint evaluates projects through Ionide.ProjInfo, which loads
       # MSBuild assemblies FROM THE SDK — those want System.Runtime

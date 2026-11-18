@@ -246,6 +246,8 @@ Remove `mutable` from never-mutated local bindings and type-level `let mutable` 
 
 Where the enclosing declaration holds an `#if`, the whole declaration is read for a write: code another target framework compiles (a write before the body's first active statement or after its last) keeps `mutable`.
 
+An address taken with `&` counts as a write whatever the name ends with: `&v1'` keeps the `mutable` of `v1'` (the name is bounded by identifier characters, the prime included).
+
 ### FR0008 — idiom
 
 Tupled → curried parameters for `private` functions (definition + all call sites). A function carrying any attribute keeps its tuple: a compiler plugin (`[<ReactComponent>]`) may derive its props from the parameter shape
@@ -386,6 +388,8 @@ Redundant membership guards (CA1853/1868, fix): `if d.ContainsKey k then d.Remov
 
 Fully applied `sprintf` → typed interpolated string (`sprintf "asdf %s" x` → `$"asdf %s{x}"`); specifiers are kept verbatim so the output is byte-identical; guards: regular literal with no `{`/`}`, simple arguments only, no `%a`/`%t`/`*`-widths, partial applications never match
 
+FSharp.Compiler.Service 43.13's per-file check rejects a typed interpolated string of two or more holes unless every one is `%s`, `%d`, `%i`, `%c` or `%M` (`$"%u{a} %u{b}"`, `$"(%A{n}/%A{d})"`, FS0001); its project check and fsc accept it. The tool's verification does not take that error from the per-file check, so the fix stays; an editor on that compiler service may underline the string, as it does one written by hand.
+
 ### FR0043 — idiom
 
 In an interpolated string that *already* has a typed hole, the remaining plain holes gain specifiers (`$"%s{name} is {age}"` → `$"%s{name} is %d{age}"`) — free compile-time type pinning since the string is on the printf path anyway; specifier-free strings are left on the F# 8 `String.Concat` fast path, and only ToString-identical specifiers are used (`%s`/`%d`/`%c`; never `%b` or `%f`)
@@ -495,6 +499,8 @@ A private/internal record field `X: int option` / `DateTime option` / `Guid opti
 ### FR0070 — performance
 
 A private/internal record of at most four small struct fields gains `[<Struct>]` (fix), removing a heap allocation per instance — every field is an immutable small struct, so copies are semantically invisible. Stands down where the struct would cost more than the class (CR0081's line): fields over 32 bytes inline (four decimals copy slower than they allocate), an interface the record implements (every call through it boxes), or a value of the record the file boxes — `box`, `:> obj`, `lock`, `ReferenceEquals`, `Unchecked.defaultof`, a parameter typed `obj`, `string`/`hash`, a `%A`/`%O` hole — where the allocation comes straight back (typed; parse-only runs apply the size and interface checks alone). The fix needs the definition to head its decl (`type`, not `and`) with no other attributes (`[<CLIMutable>]` would conflict outright); a PUBLIC record under `--api-changes` stays a note, since `[<Struct>]` there is an ABI and serialization change
+
+A `typeof<R>` or `typedefof<R>` in the file stands the rule down as `Unchecked.defaultof` does: the `Type` goes to reflection, where `IsValueType`, the constructors and a record class's own handling answer differently.
 
 ### FR0071 — performance
 
@@ -696,6 +702,8 @@ A blocking call inside `task { }`/`async { }` where the typed tree proves a `<Na
 
 Never a call on a `MemoryStream`/`StringWriter`/`StringReader` (the receiver's own type) or `Console.Out`/`Console.Error` (nothing behind the twin), EF Core's `Add`/`AddRange` (async only for database value generators), nor a call inside a member named for its synchronous I/O (`writeTokenSyncReadingAsync`; `Sync` as a noun, `runSyncJobAsync`, is not that). In `task { }` the bind carries `.ConfigureAwait(false)` where the body's own binds all do.
 
+Never a call the body also makes through the twin on the same receiver (`writer.WriteLine()` beside `do! writer.WriteLineAsync()`: both paths are exercised on purpose), nor one on a stream, reader or writer bound to memory streams alone (`use writer = new StreamWriter(buffer)` over a `MemoryStream`, as FR0118 reads the binding).
+
 ### FR0120 — correctness
 
 A LogError/LogCritical/LogWarning inside an exception handler that never mentions the caught exception gains it as the first argument (fix) — the ILogger exception-first overload lets the SINK decide rendering; the editor also offers `ex.GetBaseException()` for wrapped/aggregate root causes. ANY existing mention of the exception in the arguments counts as handled, `ex.Message` included: message-only logging is a legitimate GDPR/PII choice this rule must not escalate. Typed-gated to Microsoft.Extensions.Logging
@@ -778,9 +786,13 @@ Hand-rolled string emptiness tests become the BCL predicate that says what they 
 
 A `Seq.` function applied to something the typed tree proves is an **array** (fix): `arr |> Seq.head` → `arr |> Array.head`. Measured on **.NET 10** (the runtime the benchmarks target, because the answers differ from .NET 8): head 17.1→2.6ns, tryFind 583→233ns, find 707→237ns, fold 567→239ns, forall 572→237ns, length 3.1→2.2ns. Arrays ONLY: a `Seq.` call on a list or a lazy source can be the author's point, and on an `IQueryable` the `Seq` functions are what the provider translates. Excluded by measurement rather than by taste — `iter`/`iteri` (236.6 vs 235.4ns, a wash), collection-returning functions (`Seq.map` is `seq<'b>` where `Array.map` is `'b[]`, which ripples into the consumer), `item` (`Array.item` throws `IndexOutOfRangeException` where `Seq.item` throws `ArgumentException`), the numeric aggregates (FR0041 sends those to vectorised LINQ), and `contains` on REFERENCE arrays (`Seq.contains` 938ns actually beats `Array.contains` at 1024ns). `contains` on `int[]`/`int64[]` has TWO better answers, so it offers two: the CLI applies the FASTER one — vectorised `Enumerable.Contains` (**587→109ns**), spelled `System.Linq.`-qualified unless the file opens it — and an editor offers the idiomatic `Array.contains` (587→464ns) beside it for anyone who would rather not bring System.Linq in
 
+The collection is the application's last argument only when every argument is given: in `items |> Seq.fold f s` the state `s` is no collection, whatever its type.
+
 ### FR0140 — idiom
 
 A construction immediately followed by property assignments on the new object folds into F#'s named-property construction (fix): `let h = Henkilo()` + `h.Id <- 1L` + `h.Etunimi <- "x"` becomes `let h = Henkilo(Id = 1L, Etunimi = "x")`. Not a constructor overload and not faster — the same calls in the same order — but the object reads as constructed rather than assembled, and the half-built value stops being nameable. Only the UNINTERRUPTED run of assignments straight after the binding folds in; anything in between could observe the half-built object, so the fold stops there. Each property must be distinct and typed-settable, and no assigned value may mention the object itself
+
+A one-line `let x = C() in x.P <- v; body` is left as it is: the edit would span the `in`, and the body after it would lose its binding.
 
 ### FR0141 — idiom
 
@@ -788,7 +800,7 @@ A `while` loop that carries STATE forward by mutation and leaves through a boole
 
 ### FR0142 — performance
 
-A test (Fact, Theory, Test, TestCase, TestMethod) whose body blocks on async work - Async.RunSynchronously, .Result, .Wait(), GetAwaiter().GetResult() on a Task - returns the work instead: the body becomes a task block cast to System.Threading.Tasks.Task and each blocking statement a let!/do! bind (fix); `Task.WaitAll(...)` becomes `do! Task.WhenAll(...)` and `Assert.Throws<E>(fun () -> <blocking>)` the framework's async assert with the lambda returning the awaitable (bound with `let!` for xUnit and MSTest, replaced in place for NUnit). The shapes are shared with FR0049. xUnit, NUnit 3+ and MSTest await a Task-returning test, so the thread is free while the work is in flight; a test method shape is the framework business, not a consumer, so no API change. Only spine-level blocking sites move; FsCheck Property and Expecto builders stay out
+A test (Fact, Theory, Test, TestCase, TestMethod) whose body blocks on async work - Async.RunSynchronously, .Result, .Wait(), GetAwaiter().GetResult() on a Task - returns the work instead: the body becomes a task block cast to System.Threading.Tasks.Task and each blocking statement a let!/do! bind (fix); `Task.WaitAll(...)` becomes `do! Task.WhenAll(...)` and `Assert.Throws<E>(fun () -> <blocking>)` the framework's async assert with the lambda returning the awaitable (bound with `let!` for xUnit and MSTest, replaced in place for NUnit). The shapes are shared with FR0049. xUnit, NUnit 3+ and MSTest await a Task-returning test, so the thread is free while the work is in flight; a test method shape is the framework business, not a consumer, so no API change. Only spine-level blocking sites move; FsCheck Property and Expecto builders stay out. A file that binds `task` itself in a module or a class (`let task = Do_not_use_task_here.Nope`), or opens a module of another file that does, is left alone: the fix spells FSharp.Core's builder by name
 
 ### FR0143 — correctness
 
@@ -880,6 +892,8 @@ A `System.Threading.Timer` nothing will reference — `new Timer(tick, null, 0, 
 ### FR0164 — correctness
 
 A collection edited inside a `for` loop over itself — `for x in items do if stale x then items.Remove x |> ignore` — throws `InvalidOperationException: Collection was modified` at the next step, and only on the runs where the branch is taken. F# lists are immutable, so the shape is rarer than in C#; a `ResizeArray`, `Dictionary`, `HashSet`, `Queue`, `Stack`, `LinkedList` or `Sorted*` walked by `for` (directly, or through `.Keys`/`.Values`, whose enumerators check the owner's version) and edited in the body throws the same. The fix walks a SNAPSHOT — `for x in Array.ofSeq items do` — so the body may add and remove freely and every element present at the start is visited once, which is what the loop meant. The gates CR0171 draws: the receiver is the enumerated collection by SYMBOL, not a namesake a `let` in the body shadows it with; the edit is one of the body's own statements — inside a lambda, an object expression or a local function it runs later, or not at all, and is not reported; an edit followed at once by `raise`, `failwith`, `return` or `return!` never reaches the next `MoveNext` and is the mutate-and-leave idiom (a `yield` resumes the loop and still counts). Typed-gated to System.Collections.Generic's concrete classes — an `IList<_>`/`IDictionary<_, _>` parameter may be a concurrent collection at run time, and the concurrent collections enumerate a snapshot or tolerate edits by design. A `Dictionary` or `HashSet` allows `Remove`, `Clear` and an overwrite through the indexer mid-enumeration since .NET Core 3.0 (measured on the runtime the tool runs on), so only their additions count — a .NET Framework target would see more; a `List<T>` throws on every edit, an indexer store (`xs.[0] <- v` and `xs[0] <- v` alike) included. A `List<T>` loop that is only `if cond then items.Remove x |> ignore` becomes `items.RemoveAll(fun x -> cond) |> ignore` (CR0171's first fix), unless the condition reads a `let mutable` or a Span, which a closure cannot capture, or the loop holds a comment the whole-loop rewrite would drop: the snapshot then
+
+Leaving counts at the end of the statements after the edit too: `items.Remove x |> ignore; items.Add y; raise e` never reaches the next `MoveNext` (F# has no `continue` between).
 
 ### FR0165 — correctness
 

@@ -1995,8 +1995,33 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
     let analysis = Analysis(world, fileName, index, source)
 
     // components already reported from this file: a second match on the
-    // same slots says nothing new
-    let reported = ResizeArray<Slot list>()
+    // same slots says nothing new. Bucketed by name and declaration: a slot
+    // is effectively the same only as a symbol of its own name declared in
+    // the same place, so a lookup compares within one bucket
+    let reported =
+        Dictionary<struct (string * range option), ResizeArray<FSharpSymbol>>()
+
+    let bucketOf (symbol: FSharpSymbol) =
+        let declared =
+            try
+                symbol.DeclarationLocation
+            with _ -> // fsharpanalyzer: ignore-line FR0055
+                None
+
+        struct (symbol.DisplayName, declared)
+
+    let alreadyReported (symbol: FSharpSymbol) =
+        match reported.TryGetValue(bucketOf symbol) with
+        | true, symbols -> symbols |> Seq.exists (fun s -> sameSymbol s symbol)
+        | false, _ -> false
+
+    let report (slots: Slot list) =
+        for s in slots do
+            let bucket = bucketOf s.Symbol
+
+            match reported.TryGetValue bucket with
+            | true, symbols -> symbols.Add s.Symbol
+            | false, _ -> reported.[bucket] <- ResizeArray [ s.Symbol ]
 
     // union names this file's earlier suggestions introduce: two records with a
     // `domain` field each would get a `Domain`, a duplicate definition
@@ -2050,10 +2075,10 @@ let find (world: World) (parseTree: ParsedInput) (source: ISourceText) : Suggest
 
         match start with
         | None -> None
-        | Some start when reported |> Seq.exists (List.exists (fun s -> sameSymbol s.Symbol start.Symbol)) -> None
+        | Some start when alreadyReported start.Symbol -> None
         | Some start ->
             let c = closure analysis start
-            reported.Add c.Slots
+            report c.Slots
 
             match c.Failure with
             | Some _ -> None

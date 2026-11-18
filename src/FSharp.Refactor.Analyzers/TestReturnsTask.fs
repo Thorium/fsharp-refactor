@@ -48,6 +48,7 @@ module FSharp.Refactor.TestReturnsTask
 open System
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
+open FSharp.Compiler.EditorServices
 open FSharp.Compiler.Symbols
 open FSharp.Compiler.Syntax
 open FSharp.Compiler.Text
@@ -157,6 +158,59 @@ let private installsGlobalStateByReflection (source: ISourceText) =
     let text = source.GetSubTextString(0, source.Length)
     text.Contains "BindingFlags"
 
+/// Does the file bind `task` itself, in a module or a class? The rewrite
+/// spells FSharp.Core's builder by name, and a binding of the same name
+/// (`let task = Do_not_use_task_here.Nope`) makes `task { }` mean that value
+/// in every test after it. A local inside a function body scopes to that
+/// body and does not count.
+let private bindsTask (index: AstIndex.Index) =
+    let isTask (SynBinding(headPat = p)) =
+        match p with
+        | SynPat.Named(ident = SynIdent(id, _))
+        | SynPat.LongIdent(longDotId = SynLongIdent(id = [ id ])) -> id.idText = "task"
+        | _ -> false
+
+    index.Decls
+    |> Array.exists (fun (_, decl) ->
+        match decl with
+        | SynModuleDecl.Let(bindings = bindings) -> List.exists isTask bindings
+        | SynModuleDecl.Types(typeDefns = defns) ->
+            defns
+            |> List.exists (fun (SynTypeDefn(typeRepr = repr; members = extra)) ->
+                let members =
+                    match repr with
+                    | SynTypeDefnRepr.ObjectModel(members = ms) -> ms @ extra
+                    | _ -> extra
+
+                members
+                |> List.exists (function
+                    | SynMemberDefn.LetBindings(bindings = bindings) -> List.exists isTask bindings
+                    | _ -> false))
+        | _ -> false)
+
+/// Is `task` FSharp.Core's builder where this position stands? A module
+/// another file declares and this one opens (or that is `[<AutoOpen>]`) can
+/// bind the name too, which the file's own declarations do not show: the
+/// typed scope answers, and every `task` it lists must be FSharp.Core's.
+/// A scope that cannot be read holds the rewrite.
+let private taskIsCores (check: FSharpCheckFileResults) (source: ISourceText) (at: pos) =
+    try
+        let named =
+            check.GetDeclarationListSymbols(
+                None,
+                at.Line,
+                source.GetLineString(at.Line - 1),
+                PartialLongName.Empty at.Column,
+                (fun () -> [])
+            )
+            |> List.concat
+            |> List.filter (fun u -> u.Symbol.DisplayName = "task")
+
+        not named.IsEmpty
+        && named |> List.forall (fun u -> u.Symbol.Assembly.SimpleName = "FSharp.Core")
+    with _ -> // fsharpanalyzer: ignore-line FR0055
+        false
+
 /// Everything this test ASSIGNS to that is not one of its own locals.
 ///
 /// The shared setting is often not in the test file at all — it is a
@@ -177,20 +231,15 @@ let private assignsBeyondItself
     (ownType: range option)
     (body: SynExpr)
     =
-    index.Exprs
+    AstIndex.exprsWithin index body.Range
     |> Array.exists (fun (_, e) ->
         match e with
         | SynExpr.LongIdentSet(longDotId = SynLongIdent(id = ids)) when
             not ids.IsEmpty && Range.rangeContainsRange body.Range e.Range
             ->
             let target = List.last ids
-            let lineText = source.GetLineString(target.idRange.EndLine - 1)
 
-            match
-                OptionModule.symbolUseAt
-                    check
-                    (target.idRange.EndLine, target.idRange.EndColumn, lineText, [ target.idText ])
-            with
+            match OptionModule.identUseAt check source target with
             | Some symbolUse ->
                 match symbolUse.Symbol with
                 | :? FSharpMemberOrFunctionOrValue as v ->
@@ -248,6 +297,14 @@ let private awaitingFrameworks =
         "TUnit."
     ]
 
+/// What an identifier resolves to, from the file's uses read once
+/// (`BlockingSites.symbolAt`'s answer, without a lookup per test).
+let private symbolOfIdent (check: FSharpCheckFileResults) (source: ISourceText) (ident: Ident) =
+    try
+        OptionModule.identUseAt check source ident |> Option.map (fun u -> u.Symbol)
+    with _ -> // fsharpanalyzer: ignore-line FR0055
+        None
+
 let private hasTestAttribute (check: FSharpCheckFileResults) (source: ISourceText) (attributes: SynAttributes) =
     attributes
     |> List.collect (fun l -> l.Attributes)
@@ -258,12 +315,32 @@ let private hasTestAttribute (check: FSharpCheckFileResults) (source: ISourceTex
             let n = last.idText
 
             (testAttributes.Contains n || testAttributes.Contains(n.Replace("Attribute", "")))
-            && (let declared =
-                    match symbolAt check source last with
+            && (let declaredBy (symbol: FSharpSymbol option) =
+                    match symbol with
                     | Some(:? FSharpEntity as e) -> e.TryFullName
                     | Some(:? FSharpMemberOrFunctionOrValue as v) ->
                         v.DeclaringEntity |> Option.bind (fun e -> e.TryFullName)
                     | _ -> None
+
+                // the attribute's name holds the type and its constructor;
+                // when every use there names the same type, that is the
+                // answer whichever the lookup would pick
+                let declared =
+                    let fromUses =
+                        try
+                            match OptionModule.usesEndingWith check last with
+                            | [] -> None
+                            | uses when uses |> List.forall (OptionModule.spans last) ->
+                                match uses |> List.map (fun u -> declaredBy (Some u.Symbol)) |> List.distinct with
+                                | [ Some full ] -> Some(Some full)
+                                | _ -> None
+                            | _ -> None
+                        with _ -> // fsharpanalyzer: ignore-line FR0055
+                            None
+
+                    match fromUses with
+                    | Some known -> known
+                    | None -> declaredBy (symbolOfIdent check source last)
 
                 declared
                 |> Option.exists (fun full -> awaitingFrameworks |> List.exists full.StartsWith))
@@ -272,13 +349,13 @@ let private hasTestAttribute (check: FSharpCheckFileResults) (source: ISourceTex
 /// Does this test's body evaluate to unit? The final expression of a
 /// unit-typed body may become a `do!`; a value-typed one has no bind shape.
 let private returnsUnit (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) =
-    match valueAt check source id with
-    | Some v ->
+    match symbolOfIdent check source id with
+    | Some(:? FSharpMemberOrFunctionOrValue as v) ->
         (try
             isUnitType v.ReturnParameter.Type
          with _ -> // fsharpanalyzer: ignore-line FR0055
              false)
-    | None -> false
+    | _ -> false
 
 /// One edit inside the body: (range, replacement).
 type private Edit = range * string
@@ -505,13 +582,26 @@ let private testBindings (index: AstIndex.Index) =
     ]
 
 let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileResults) : Suggestion list =
-    if OptionModule.hasErrors check then
+    let index = AstIndex.ofTree parseTree
+
+    if OptionModule.hasErrors check || bindsTask index then
         []
     else
-        let index = AstIndex.ofTree parseTree
         let shared = sharedMutableNames index
         let parallelClasses = classesRunInParallel source
         let reflectionHarness = installsGlobalStateByReflection source
+
+        // asked once, where the file's first test stands: the scope's list is
+        // a walk of every name in it, and a file's tests share its opens
+        let coreTask: bool voption ref = ref ValueNone
+
+        let taskIsCoresAt (at: pos) =
+            match coreTask.Value with
+            | ValueSome known -> known
+            | ValueNone ->
+                let known = taskIsCores check source at
+                coreTask.Value <- ValueSome known
+                known
 
         [
             for binding, ownType in testBindings index do
@@ -521,6 +611,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     && not (alreadyComputation body)
                     && not (threadBound source body)
                     && not reflectionHarness
+                    && taskIsCoresAt body.Range.Start
                     && not (
                         touchesSharedState
                             index
@@ -594,14 +685,14 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                                 r.StartLine <> r.EndLine && Range.rangeContainsRange body.Range r
 
                             let multiLineString =
-                                (index.Exprs
+                                (AstIndex.exprsWithin index body.Range
                                  |> Seq.exists (fun (_, e) ->
                                      match e with
                                      | SynExpr.Const(SynConst.String _, r)
                                      | SynExpr.Const(SynConst.Bytes _, r)
                                      | SynExpr.InterpolatedString(range = r) -> spansLinesInBody r
                                      | _ -> false))
-                                || (index.Pats
+                                || (AstIndex.patsWithin index body.Range
                                     |> Seq.exists (fun (_, p) ->
                                         match p with
                                         | SynPat.Const(SynConst.String _, r)

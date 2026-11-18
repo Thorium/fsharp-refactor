@@ -23,6 +23,8 @@
 /// editors still fumble backtick-name intellisense and debugging.
 module FSharp.Refactor.NameQuoting
 
+open System
+open System.IO
 open System.Text.RegularExpressions
 open FSharp.Compiler.CodeAnalysis
 open FSharp.Compiler.Syntax
@@ -69,6 +71,60 @@ let quotedForm (name: string) : string option =
         else
             None
 
+/// A run of identifier characters: a plain name (`[A-Za-z][A-Za-z0-9_]*`)
+/// written anywhere lies inside one such run.
+let private identifierRun = Regex(@"[A-Za-z0-9_]+", RegexOptions.Compiled)
+
+/// The identifier runs of a file on disk, cached by its write time and length.
+let private fileRuns =
+    System.Collections.Concurrent.ConcurrentDictionary<
+        string,
+        struct (DateTime * int64 * System.Collections.Generic.HashSet<string>)
+     >(
+        StringComparer.OrdinalIgnoreCase
+    )
+
+/// Does this file spell the name as a whole identifier run? `None` when it
+/// cannot be read.
+let private fileSpells (path: string) (name: string) : bool option =
+    try
+        let info = FileInfo path
+
+        let runs =
+            match fileRuns.TryGetValue path with
+            | true, struct (stamp, length, runs) when stamp = info.LastWriteTimeUtc && length = info.Length -> runs
+            | _ ->
+                let runs =
+                    System.Collections.Generic.HashSet<string>(
+                        identifierRun.Matches(File.ReadAllText path) |> Seq.map (fun m -> m.Value),
+                        StringComparer.Ordinal
+                    )
+
+                fileRuns.[path] <- struct (info.LastWriteTimeUtc, info.Length, runs)
+                runs
+
+        Some(runs.Contains name)
+    with _ -> // an unreadable file answers nothing; fsharpanalyzer: ignore-line FR0055
+        None
+
+/// Every `` ``text`` `` of a source: the text between a double backtick and
+/// the next backtick, when a second one follows it.
+let private doubleBacktickTexts (text: string) =
+    let found = System.Collections.Generic.HashSet<string>()
+
+    let rec scan (from: int) =
+        match text.IndexOf("``", from, StringComparison.Ordinal) with
+        | -1 -> ()
+        | i ->
+            match text.IndexOf('`', i + 2) with
+            | j when j > i + 2 && j + 1 < text.Length && text.[j + 1] = '`' ->
+                found.Add(text.Substring(i + 2, j - i - 2)) |> ignore
+                scan (i + 1)
+            | _ -> scan (i + 1)
+
+    scan 0
+    found
+
 let find
     (includeLocals: bool)
     (parseTree: ParsedInput)
@@ -104,8 +160,52 @@ let find
                     // [<TestCaseSource("...")>] — and they are not in Exprs
                     (index.Attributes |> Array.map (fun (_, a) -> textOfRange source a.ArgExpr.Range)))
 
+        // a name sits inside one identifier run of a string, so the distinct
+        // runs answer for every string at once
+        let stringRuns =
+            lazy
+                (stringMentions.Value
+                 |> Seq.collect (fun t -> identifierRun.Matches t |> Seq.map (fun m -> m.Value))
+                 |> Seq.distinct
+                 |> Array.ofSeq)
+
         let mentionedInString (name: string) =
-            stringMentions.Value |> Array.exists (fun t -> t.Contains name)
+            stringRuns.Value
+            |> Array.exists (fun r -> r.Length >= name.Length && r.Contains name)
+
+        // this file's typed uses by display name, read once: a symbol's uses
+        // are the ones of its name that are effectively the same symbol
+        let usesByName =
+            lazy
+                (check.GetAllUsesOfAllSymbolsInFile()
+                 |> Seq.groupBy (fun u -> u.Symbol.DisplayName)
+                 |> dict)
+
+        let usesInFile (symbol: FSharp.Compiler.Symbols.FSharpSymbol) =
+            match usesByName.Value.TryGetValue symbol.DisplayName with
+            | true, uses ->
+                uses
+                |> Seq.filter (fun u -> u.Symbol.IsEffectivelySameAs symbol)
+                |> Seq.distinctBy (fun u -> u.IsFromDefinition, u.Range)
+                |> Array.ofSeq
+            | _ -> check.GetUsesOfSymbolInFile symbol
+
+        // the project's other files, for the "is it spelled elsewhere" question
+        let otherFiles (thisFile: string) =
+            try
+                (OptionModule.projectContext check).ProjectOptions.SourceFiles
+                |> Array.filter (fun f ->
+                    not (String.Equals(Path.GetFullPath f, thisFile, StringComparison.OrdinalIgnoreCase)))
+                |> Some
+            with _ -> // no file list: every rename asks the project; fsharpanalyzer: ignore-line FR0055
+                None
+
+        let otherFilesOf = lazy (otherFiles (Path.GetFullPath parseTree.FileName))
+
+        let spelledElsewhere (name: string) =
+            match otherFilesOf.Value with
+            | Some files -> files |> Array.exists (fun f -> fileSpells f name <> Some false)
+            | None -> true
 
         let binderOf (p: SynPat) =
             match p with
@@ -176,7 +276,8 @@ let find
         // a quoted form is free only when no candidate of another name quotes
         // to it and the file spells no such name already: two names renamed
         // to one, or one onto an existing name, rebind each other's uses
-        let fileText = lazy (source.GetSubTextString(0, source.Length))
+        let quotedInFile =
+            lazy (doubleBacktickTexts (source.GetSubTextString(0, source.Length)))
 
         let quotedFree =
             candidates
@@ -187,20 +288,16 @@ let find
                  |> List.length)
                     =
                     1
-                && not (fileText.Value.Contains $"``{quoted}``"))
+                && not (quotedInFile.Value.Contains quoted))
             |> List.map fst
             |> Set.ofList
 
         [
             for id, quoted, mustProveInFile, declaredPrivately in
                 candidates |> List.filter (fun (_, quoted, _, _) -> quotedFree.Contains quoted) do
-                let lineText = source.GetLineString(id.idRange.EndLine - 1)
-
-                match
-                    OptionModule.symbolUseAt check (id.idRange.EndLine, id.idRange.EndColumn, lineText, [ id.idText ])
-                with
+                match OptionModule.identUseAt check source id with
                 | Some symbolUse ->
-                    let thisFile = System.IO.Path.GetFullPath(id.idRange.FileName).ToLowerInvariant()
+                    let thisFile = Path.GetFullPath(id.idRange.FileName).ToLowerInvariant()
 
                     let confinedToFile =
                         not (mentionedInString id.idText)
@@ -218,19 +315,28 @@ let find
                                     // The script is not rewritten; the rename
                                     // simply stands down, which is this rule's own
                                     // answer to a use it cannot reach.
-                                    Array.append
-                                        (pc.GetUsesOfSymbol symbolUse.Symbol)
-                                        (ProjectSources.outsideUsesOf symbolUse.Symbol)
+                                    // a use spells the name, so a project
+                                    // whose other files never do has none
+                                    // there: the project-wide query, a walk
+                                    // of every file's uses, is asked only
+                                    // when one does
+                                    let projectUses =
+                                        if spelledElsewhere id.idText then
+                                            pc.GetUsesOfSymbol symbolUse.Symbol
+                                        else
+                                            [||]
+
+                                    Array.append projectUses (ProjectSources.outsideUsesOf symbolUse.Symbol)
                                     |> Array.forall (fun u ->
-                                        System.String.Equals(
-                                            System.IO.Path.GetFullPath u.Range.FileName,
+                                        String.Equals(
+                                            Path.GetFullPath u.Range.FileName,
                                             thisFile,
-                                            System.StringComparison.OrdinalIgnoreCase
+                                            StringComparison.OrdinalIgnoreCase
                                         ))
                                 | None -> false))
 
                     if confinedToFile then
-                        let uses = check.GetUsesOfSymbolInFile symbolUse.Symbol
+                        let uses = usesInFile symbolUse.Symbol
 
                         // every occurrence must be exactly the bare ident —
                         // a use range wider or narrower than the name means

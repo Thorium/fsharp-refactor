@@ -397,7 +397,12 @@ let private builds (solution: string) =
     proc.ExitCode = 0, output
 
 [<Fact>]
-let ``a definition the all-frameworks arbiter puts back takes the sibling's rewritten call site with it`` () : unit =
+let ``a definition named inside a framework #if region keeps its migration and the sibling's call site back``
+    ()
+    : unit =
+    // dotnet-fsharp ProjectAnalysisTests.fs: a call under `#if NETCOREAPP` the
+    // narrowest framework's parse tree never held broke the all-frameworks
+    // build, and the put-back took every file of the pass with it
     let root = tempRoot "fsref-audit-siblings-"
 
     try
@@ -411,17 +416,15 @@ let ``a definition the all-frameworks arbiter puts back takes the sibling's rewr
         let other = File.ReadAllText(Path.Combine(dir, "src", "Lib", "Other.fs"))
         let tests = File.ReadAllText(Path.Combine(dir, "tests", "Tests", "Tests.fs"))
 
-        // the run reports the put-back (exit 1); what matters is the tree
-        // it leaves behind
         ignore code
 
         Assert.True(
-            output.Contains "rewritten by the same suggestion",
-            $"expected the bisection to put the sibling's file back with the definition:\n{output}"
+            output.Contains "kept back: the function is named inside an #if region",
+            $"expected the migration of `add` to be kept back before it is applied:\n{output}"
         )
-        // the definition went back...
+        // the definition stays...
         Assert.Contains("let add (a: int, b: int) = a + b", library)
-        // ...and so did the sibling's call site, rewritten by the same suggestion
+        // ...and so does the sibling's call site
         Assert.Contains("Lib.add (1, 2)", tests)
         Assert.DoesNotContain("Lib.add 1 2", tests)
         // while the innocent suggestion in the other file was kept

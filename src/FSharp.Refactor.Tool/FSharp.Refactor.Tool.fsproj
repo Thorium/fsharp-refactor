@@ -16,7 +16,9 @@
     <ToolCommandName>fsharp-refactor</ToolCommandName>
     <PackageId>fsharp-refactor</PackageId>
     <Description>Applies the FSharp.Refactor analyzers' quick fixes to F# code from the command line. Point it at a project, a script, a solution, a directory or a glob; --dry-run reports without editing. The tool clarifies the (agent-generated or old) code's intent, reduces non-alphanumeric noise, and uses built-in .NET libraries more efficiently.</Description>
-    <PackageReleaseNotes>0.8.57: Edit-mode reports keep each note once across a framework&apos;s passes; console notes key on the surrounding text and column, not the line number. A project whose &lt;Platforms&gt; lacks AnyCPU builds for x64 or its first platform. Errors only FCS&apos;s per-file check reports no longer roll a pass back. A test project is one something runs (test platform or an executable). Repositories pinned to SDK 6 or 7 load. Analyzer fixes as in the analyzers package.
+    <PackageReleaseNotes>0.8.58: An api migration waits while its function is named inside any #if region, a framework&apos;s too; a fix a rollback rejected stays rejected for the rest of the run instead of being retried in every framework and configuration; a pass that writes a typed interpolated string of two or more holes into a file with a signature is no longer rolled back (FCS 43.13&apos;s per-file check alone rejects it).
+
+ 0.8.57: Edit-mode reports keep each note once across a framework&apos;s passes; console notes key on the surrounding text and column, not the line number. A project whose &lt;Platforms&gt; lacks AnyCPU builds for x64 or its first platform. Errors only FCS&apos;s per-file check reports no longer roll a pass back. A test project is one something runs (test platform or an executable). Repositories pinned to SDK 6 or 7 load. Analyzer fixes as in the analyzers package.
 
  0.8.56: Reads code with FSharp.Compiler.Service 43.13.404 (FSharp.Analyzers.SDK 0.43), the compiler of FsAutoComplete 0.87.
 
@@ -24,9 +26,7 @@
 
  0.8.54: --exclude-codes leaves rules out of a run, after --codes and --categories and ahead of fsharprefactor.json; the MCP analyze call takes excludeCodes.
 
- 0.8.53: A compilation that finished keeps its fixes when Ctrl+C or a file error comes before the next framework&apos;s pass. Ctrl+C exits 130, never a stack trace. An empty or comment-only fsharprefactor.json refuses nothing. --mcp answers a refused call with its own reason. A generator&apos;s banner is read at the end of a header line and below an attribute of several lines. A glob ignores case on macOS.
-
- 0.8.52: Reads code with FSharp.Compiler.Service 43.12.402 (FSharp.Analyzers.SDK 0.41), the compiler of FsAutoComplete 0.86.</PackageReleaseNotes>
+ 0.8.53: A compilation that finished keeps its fixes when Ctrl+C or a file error comes before the next framework&apos;s pass. Ctrl+C exits 130, never a stack trace. An empty or comment-only fsharprefactor.json refuses nothing. --mcp answers a refused call with its own reason. A generator&apos;s banner is read at the end of a header line and below an attribute of several lines. A glob ignores case on macOS.</PackageReleaseNotes>
     <Authors>Tuomas Hietanen</Authors>
     <PackageProjectUrl>https://github.com/Thorium/fsharp-refactor</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Thorium/fsharp-refactor</RepositoryUrl>

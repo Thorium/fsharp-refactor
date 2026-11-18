@@ -94,14 +94,33 @@ let private (|Path|_|) (e: SynExpr) =
         ValueSome(List.last ids, identText ids) // the LAST segment carries the type: `s.Buffer` is the field
     | _ -> ValueNone
 
-/// The head of a (possibly curried) application: `Seq.exists p` leads to
-/// the `Seq`/`exists` identifier pair.
-[<TailCall>]
-let rec private seqHead (e: SynExpr) =
-    match e with
-    | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when m.idText = "Seq" -> ValueSome(m, f)
-    | SynExpr.App(isInfix = false; funcExpr = inner) -> seqHead inner
-    | _ -> ValueNone
+/// The head of a (possibly curried) application and its argument count:
+/// `Seq.exists p` leads to the `Seq`/`exists` identifier pair and 1.
+let private seqHead (e: SynExpr) =
+    let rec go (e: SynExpr) (args: int) =
+        match e with
+        | SynExpr.LongIdent(longDotId = SynLongIdent(id = [ m; f ])) when m.idText = "Seq" -> ValueSome(m, f, args)
+        | SynExpr.App(isInfix = false; funcExpr = inner) -> go inner (args + 1)
+        | _ -> ValueNone
+
+    go e 0
+
+/// The arguments a `Seq` function of `sameResultShape` or `contains` takes,
+/// the collection last: the collection is the application's final argument
+/// only when every one is given (`Seq.fold f s xs`, never the `s` of a
+/// piped `xs |> Seq.fold f s`).
+let private arity (name: string) =
+    match name with
+    | "fold" -> 3
+    | "length"
+    | "isEmpty"
+    | "head"
+    | "tryHead"
+    | "last"
+    | "tryLast"
+    | "exactlyOne"
+    | "tryExactlyOne" -> 1
+    | _ -> 2
 
 /// `contains` has TWO better answers on these element types, not one, so
 /// it is handled apart from the list above. Measured on .NET 10 over 1000
@@ -183,13 +202,13 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     // arr |> Seq.length   /   arr |> Seq.exists p
                     | PipeApp(Path(root, text), rhs) ->
                         match seqHead rhs with
-                        | ValueSome(m, f) -> Some(m, f, root, text)
-                        | ValueNone -> None
+                        | ValueSome(m, f, args) when args = arity f.idText - 1 -> Some(m, f, root, text)
+                        | _ -> None
                     // Seq.length arr   /   Seq.exists p arr
                     | SynExpr.App(isInfix = false; funcExpr = fn; argExpr = Path(root, text)) ->
                         match seqHead fn with
-                        | ValueSome(m, f) -> Some(m, f, root, text)
-                        | ValueNone -> None
+                        | ValueSome(m, f, args) when args = arity f.idText - 1 -> Some(m, f, root, text)
+                        | _ -> None
                     | _ -> None
 
                 match candidate with

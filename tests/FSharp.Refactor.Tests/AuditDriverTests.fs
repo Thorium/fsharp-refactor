@@ -211,6 +211,49 @@ let ``a pass's file check still counts a signed file's new error`` () =
     finally
         cleanup root
 
+[<Fact; Trait("Category", "Sweep1118")>]
+let ``a pass that writes a typed interpolated string of several holes into a signed file is no error`` () =
+    // dotnet-fsharp 2026-11-18: FCS 43.13's per-file check alone rejects
+    // `$"(%A{n}/%A{d})"` (FS0001), and a file with a signature answers to
+    // that check too - every FR0042 fix of such a `sprintf` was rolled back
+    // there, and the file's other fixes with it
+    let root = tempRoot "fsref-perfile-"
+
+    try
+        let signature = Path.Combine(root, "Sig.fsi")
+        let implementation = Path.Combine(root, "Sig.fs")
+
+        File.WriteAllText(
+            signature,
+            "module Sig\nval ratio: bigint -> bigint -> string\nval version: uint16 -> uint16 -> string\n"
+        )
+
+        let before =
+            "module Sig\nlet ratio (n: bigint) (d: bigint) = sprintf \"(%A/%A)\" n d\n"
+            + "let version (major: uint16) (minor: uint16) = sprintf \"%u.%u\" major minor\n"
+
+        File.WriteAllText(
+            implementation,
+            "module Sig\nlet ratio (n: bigint) (d: bigint) = $\"(%A{n}/%A{d})\"\n"
+            + "let version (major: uint16) (minor: uint16) = $\"%u{major}.%u{minor}\"\n"
+        )
+
+        let options =
+            projectOptions (Path.Combine(root, "Lib.fsproj")) [ signature; implementation ]
+
+        Assert.Empty(Program.projectErrorsWith checker options [ implementation, before ])
+
+        // a hole of the wrong type is an error still: the project check reports it
+        File.WriteAllText(
+            implementation,
+            "module Sig\nlet ratio (n: bigint) (d: bigint) = $\"(%d{n}/%s{d})\"\n"
+            + "let version (major: uint16) (minor: uint16) = $\"%u{major}.%u{minor}\"\n"
+        )
+
+        Assert.NotEmpty(Program.projectErrorsWith checker options [ implementation, before ])
+    finally
+        cleanup root
+
 // ---- B14: relative compiler-argument paths become absolute against the project ----
 
 [<Fact>]

@@ -195,26 +195,28 @@ let find (parseTree: ParsedInput) (source: ISourceText) : Suggestion list =
                     seqBodies
                     |> Array.filter (fun (_, seqRange, _) -> Range.rangeContainsRange bodyRange seqRange)
 
-                // only a self-call whose RESULT is enumerated nests an
-                // enumerator: the target of a `yield!` (directly, or through
-                // Seq.collect and friends) or the source of a `for ... in`.
-                // `yield innerText' elem` calls itself for a plain value
-                let enumerated =
-                    index.Exprs
-                    |> Array.choose (fun (_, e) ->
-                        match e with
-                        | SynExpr.YieldOrReturnFrom(expr = target) when
-                            ownSeqs
-                            |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s target.Range)
-                            ->
-                            Some target.Range
-                        | SynExpr.ForEach(enumExpr = src) when
-                            ownSeqs |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s src.Range)
-                            ->
-                            Some src.Range
-                        | _ -> None)
-
                 if not (Array.isEmpty ownSeqs) then
+                    // only a self-call whose RESULT is enumerated nests an
+                    // enumerator: the target of a `yield!` (directly, or through
+                    // Seq.collect and friends) or the source of a `for ... in`.
+                    // `yield innerText' elem` calls itself for a plain value.
+                    // Every own seq lies in the binding's body, so its
+                    // expressions are the only candidates
+                    let enumerated =
+                        AstIndex.exprsWithin index bodyRange
+                        |> Array.choose (fun (_, e) ->
+                            match e with
+                            | SynExpr.YieldOrReturnFrom(expr = target) when
+                                ownSeqs
+                                |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s target.Range)
+                                ->
+                                Some target.Range
+                            | SynExpr.ForEach(enumExpr = src) when
+                                ownSeqs |> Array.exists (fun (_, s, _) -> Range.rangeContainsRange s src.Range)
+                                ->
+                                Some src.Range
+                            | _ -> None)
+
                     // a self-call inside a tail-position `yield!` is not a
                     // nested enumerator: the compiler turns it into a jump
                     // (`yield! readLines (n + 1)` as the body's last step is a

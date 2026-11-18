@@ -57,7 +57,7 @@ let ``a condition names everything it tests`` () =
             | other -> failwithf "Expected one region, got %A" other)
 
 [<Fact>]
-let ``a framework region is no configuration conditional`` () =
+let ``a framework region is no configuration conditional, and a name in it holds a migration back`` () =
     withFile
         (fsharp
             """
@@ -70,7 +70,8 @@ let ``a framework region is no configuration conditional`` () =
             """)
         (fun path ->
             Assert.False(Text.hasConfigurationConditional path)
-            Assert.False(Text.namedInDirectiveRegion [ path ] "f"))
+            // the other framework's branch is in no parse tree either
+            Assert.True(Text.namedInDirectiveRegion [ path ] "f"))
 
 [<Fact>]
 let ``a directive quoted in a comment or a string is text`` () =

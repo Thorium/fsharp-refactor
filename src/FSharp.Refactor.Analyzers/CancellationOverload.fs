@@ -586,10 +586,62 @@ let private streamsOwn (mfv: FSharpMemberOrFunctionOrValue) =
     with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
         false
 
+/// An immutable binding made from memory streams alone: `new
+/// GZipStream(buffer, CompressionMode.Compress)`, `new StreamWriter(buffer)`,
+/// `algorithm.GetCompressionStream buffer` — at least one argument a
+/// `MemoryStream`, none another stream.
+let boundToMemoryStreams (index: AstIndex.Index) (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) =
+    let kind = streamArg check source
+
+    // the right-hand side's constructor or call arguments
+    let rec madeFrom (e: SynExpr) =
+        match e with
+        | SynExpr.Typed(expr = inner)
+        | SynExpr.Paren(expr = inner)
+        | SynExpr.Upcast(expr = inner) -> madeFrom inner
+        | SynExpr.New(expr = a) -> Some(argumentsOf a)
+        | SynExpr.App(
+            isInfix = false
+            funcExpr = (SynExpr.Ident _ | SynExpr.LongIdent _ | SynExpr.DotGet _ | SynExpr.TypeApp _)
+            argExpr = a) -> Some(argumentsOf a)
+        | _ -> None
+
+    let rec headNamed (p: SynPat) =
+        match p with
+        | SynPat.Typed(pat = inner)
+        | SynPat.Paren(pat = inner) -> headNamed inner
+        | p -> p
+
+    match BlockingSites.valueAt check source id with
+    | Some v when not (v.IsMutable || v.IsFunction || v.IsProperty) ->
+        let declared =
+            try
+                Some v.DeclarationLocation
+            with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+                None
+
+        index.Pats
+        |> Array.tryPick (fun (path, pat) ->
+            match pat, declared with
+            | SynPat.Named(ident = SynIdent(ident = pid)), Some at when Range.equals pid.idRange at ->
+                path
+                |> List.tryPick (fun node ->
+                    match node with
+                    | SyntaxNode.SynBinding(SynBinding(headPat = hp; expr = rhs)) -> Some(hp, rhs)
+                    | _ -> None)
+                |> Option.filter (fun (hp, _) -> Range.equals (headNamed hp).Range pat.Range)
+                |> Option.bind (fun (_, rhs) -> madeFrom rhs)
+            | _ -> None)
+        |> Option.exists (fun made ->
+            let kinds = made |> List.map kind
+
+            kinds |> List.contains StreamArg.Memory
+            && kinds |> List.forall (fun k -> k = StreamArg.Memory || k = StreamArg.NoStream))
+    | _ -> false
+
 /// A `Stream` call on a stream whose bytes stay in memory, handed no other
 /// stream: a `MemoryStream`, or an immutable binding made from memory
-/// streams alone (`new GZipStream(buffer, CompressionMode.Compress)`,
-/// `algorithm.GetCompressionStream buffer`). Nothing there waits.
+/// streams alone (`boundToMemoryStreams`). Nothing there waits.
 let private onMemoryStream
     (index: AstIndex.Index)
     (check: FSharpCheckFileResults)
@@ -615,58 +667,11 @@ let private onMemoryStream
         | SynExpr.DotGet(expr = recv) -> BlockingSites.receiverIdent recv
         | _ -> None
 
-    // the right-hand side's constructor or call arguments
-    let rec madeFrom (e: SynExpr) =
-        match e with
-        | SynExpr.Typed(expr = inner)
-        | SynExpr.Paren(expr = inner)
-        | SynExpr.Upcast(expr = inner) -> madeFrom inner
-        | SynExpr.New(expr = a) -> Some(argumentsOf a)
-        | SynExpr.App(
-            isInfix = false
-            funcExpr = (SynExpr.Ident _ | SynExpr.LongIdent _ | SynExpr.DotGet _ | SynExpr.TypeApp _)
-            argExpr = a) -> Some(argumentsOf a)
-        | _ -> None
-
-    let rec headNamed (p: SynPat) =
-        match p with
-        | SynPat.Typed(pat = inner)
-        | SynPat.Paren(pat = inner) -> headNamed inner
-        | p -> p
-
-    let boundToMemory (id: Ident) =
-        match BlockingSites.valueAt check source id with
-        | Some v when not (v.IsMutable || v.IsFunction || v.IsProperty) ->
-            let declared =
-                try
-                    Some v.DeclarationLocation
-                with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
-                    None
-
-            index.Pats
-            |> Array.tryPick (fun (path, pat) ->
-                match pat, declared with
-                | SynPat.Named(ident = SynIdent(ident = pid)), Some at when Range.equals pid.idRange at ->
-                    path
-                    |> List.tryPick (fun node ->
-                        match node with
-                        | SyntaxNode.SynBinding(SynBinding(headPat = hp; expr = rhs)) -> Some(hp, rhs)
-                        | _ -> None)
-                    |> Option.filter (fun (hp, _) -> Range.equals (headNamed hp).Range pat.Range)
-                    |> Option.bind (fun (_, rhs) -> madeFrom rhs)
-                | _ -> None)
-            |> Option.exists (fun made ->
-                let kinds = made |> List.map kind
-
-                kinds |> List.contains StreamArg.Memory
-                && kinds |> List.forall (fun k -> k = StreamArg.Memory || k = StreamArg.NoStream))
-        | _ -> false
-
     match receiver with
     | Some id when streamsOwn mfv ->
         (match kind (SynExpr.Ident id) with
          | StreamArg.Memory -> true
-         | StreamArg.Other -> boundToMemory id
+         | StreamArg.Other -> boundToMemoryStreams index check source id
          | StreamArg.NoStream
          | StreamArg.Unknown -> false)
         && callArgumentsInMemory ()

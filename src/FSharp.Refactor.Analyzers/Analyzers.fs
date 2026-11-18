@@ -2630,9 +2630,7 @@ let private stringUnionWorld
         SymbolAt =
             (fun file id ->
                 if sameFile file fileName then
-                    let r = id.idRange
-                    let lineText = source.GetLineString(r.EndLine - 1)
-                    OptionModule.symbolUseAt check (r.EndLine, r.EndColumn, lineText, [ id.idText ])
+                    OptionModule.identUseAt check source id
                 else
                     StringUnion.symbolIn indexes.Value file id)
         FileOrder =

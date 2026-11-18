@@ -92,12 +92,14 @@ let private typeAllowsRemoval (t: FSharpType) =
             td.TryFullName |> Option.exists immutableValueTypes.Contains
 
 /// True when `body` may mutate `name`: an assignment (`name <-`,
-/// `name.Field <-`, `name.[i] <-`) or an address-of (`&name`).
+/// `name.Field <-`, `name.[i] <-`) or an address-of (`&name`). The name is
+/// bounded by identifier characters, the prime included: `\b` finds no
+/// boundary between `v1'` and the `)` after it.
 let private mayMutate (bodyText: string) (name: string) =
     let n = Regex.Escape name
 
-    Regex.IsMatch(bodyText, $@"\b{n}(\.[^\n<]*|\[[^\n]*\]\s*)?\s*<-")
-    || Regex.IsMatch(bodyText, $@"&\s*{n}\b")
+    Regex.IsMatch(bodyText, $@"(?<![\w']){n}(\.[^\n<]*|\[[^\n]*\]\s*)?\s*<-")
+    || Regex.IsMatch(bodyText, $@"&\s*{n}(?![\w'])")
 
 /// A comment saying the mutability is deliberate: `// Use a non-constant
 /// capture so the compiler cannot inline it away.` above a never-assigned

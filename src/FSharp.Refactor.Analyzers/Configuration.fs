@@ -891,12 +891,54 @@ let private repositoryRoot (analyzedFile: string) =
     with _ -> // fsharpanalyzer: ignore-line FR0055
         None
 
+/// The repository's test sources and, per token, the indexes of the files
+/// holding it as a whole token.
+type private TestCorpus =
+    {
+        Files: (string * string)[]
+        Tokens: Collections.Generic.Dictionary<string, int[]>
+    }
+
+/// A token: a maximal run of letters, digits and `_`.
+let private token =
+    Text.RegularExpressions.Regex(@"[\p{L}\p{Nd}_]+", Text.RegularExpressions.RegexOptions.Compiled)
+
+let private indexTokens (files: (string * string)[]) =
+    let byToken =
+        files
+        |> Seq.mapi (fun fileIndex (_, text) ->
+            token.Matches text
+            |> Seq.map (fun m -> m.Value)
+            |> Seq.distinct
+            |> Seq.map (fun t -> t, fileIndex))
+        |> Seq.concat
+        |> Seq.groupBy fst
+
+    let index = Collections.Generic.Dictionary<string, int[]>(StringComparer.Ordinal)
+
+    for t, uses in byToken do
+        index.[t] <- uses |> Seq.map snd |> Array.ofSeq
+
+    index
+
+/// The tokens of a needle with a non-token character of the needle on BOTH
+/// sides: wherever a text contains the needle, each is a whole token of that
+/// text too. One touching the needle's start or end may be part of a longer
+/// token there.
+let private anchoredTokens (needle: string) =
+    token.Matches needle
+    |> Seq.filter (fun m -> m.Index > 0 && m.Index + m.Length < needle.Length)
+    |> Seq.map (fun m -> m.Value)
+    |> Seq.distinct
+    |> List.ofSeq
+
 /// Every test source of the repository, read once: (path, text) for each
 /// `.fs`/`.fsx` whose path names a test (`isTestSourcePath`), and each `.cs`
 /// one, since a C# test project can pin an F# library's text; build output
-/// excluded.
+/// excluded. Indexed by token, so a mention is looked for only in the files
+/// that hold every anchored token of it.
 let private testSources =
-    ConcurrentDictionary<string, (string * string)[]>(StringComparer.OrdinalIgnoreCase)
+    ConcurrentDictionary<string, TestCorpus>(StringComparer.OrdinalIgnoreCase)
 
 /// A path below the root, forward-slashed and in its own case, for the "is
 /// this a test file" question. Asked of the ABSOLUTE path, a repository
@@ -959,26 +1001,32 @@ let private readTestSources (root: string) =
     testSources.GetOrAdd(
         root,
         fun root ->
-            try
-                Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
-                |> Seq.filter (fun p ->
-                    let lower = relativeLower root p
+            let files =
+                try
+                    Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+                    |> Seq.filter (fun p ->
+                        let lower = relativeLower root p
 
-                    (lower.EndsWith ".fs" || lower.EndsWith ".fsx" || lower.EndsWith ".cs")
-                    && isTestSourcePath (relativeTo root p)
-                    && not (
-                        lower.Contains "/obj/"
-                        || lower.Contains "/bin/"
-                        || lower.Contains "/node_modules/"
-                    ))
-                |> Seq.choose (fun p ->
-                    try
-                        Some(p, File.ReadAllText p)
-                    with _ -> // fsharpanalyzer: ignore-line FR0055
-                        None)
-                |> Array.ofSeq
-            with _ -> // fsharpanalyzer: ignore-line FR0055
-                [||]
+                        (lower.EndsWith ".fs" || lower.EndsWith ".fsx" || lower.EndsWith ".cs")
+                        && isTestSourcePath (relativeTo root p)
+                        && not (
+                            lower.Contains "/obj/"
+                            || lower.Contains "/bin/"
+                            || lower.Contains "/node_modules/"
+                        ))
+                    |> Seq.choose (fun p ->
+                        try
+                            Some(p, File.ReadAllText p)
+                        with _ -> // fsharpanalyzer: ignore-line FR0055
+                            None)
+                    |> Array.ofSeq
+                with _ -> // fsharpanalyzer: ignore-line FR0055
+                    [||]
+
+            {
+                Files = files
+                Tokens = indexTokens files
+            }
     )
 
 /// Every test source in this file's repository that carries the literal
@@ -999,7 +1047,32 @@ let testFilesMentioning (analyzedFile: string) (literal: string) : (string * str
             with _ -> // fsharpanalyzer: ignore-line FR0055
                 analyzedFile
 
-        readTestSources root
+        let corpus = readTestSources root
+
+        // the files holding every anchored token, in corpus order; all of
+        // them when the literal has none
+        let candidates =
+            match anchoredTokens literal with
+            | [] -> corpus.Files
+            | tokens ->
+                let ids =
+                    tokens
+                    |> List.map (fun t ->
+                        match corpus.Tokens.TryGetValue t with
+                        | true, ids -> ids
+                        | _ -> [||])
+                    |> List.sortBy Array.length
+
+                match ids with
+                | rarest :: rest ->
+                    let others = rest |> List.map Collections.Generic.HashSet
+
+                    rarest
+                    |> Array.filter (fun i -> others |> List.forall (fun s -> s.Contains i))
+                    |> Array.map (fun i -> corpus.Files.[i])
+                | [] -> corpus.Files
+
+        candidates
         |> Array.filter (fun (path, text) ->
             text.Contains literal
             && not (String.Equals(Path.GetFullPath path, self, StringComparison.OrdinalIgnoreCase)))

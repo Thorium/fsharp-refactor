@@ -699,6 +699,8 @@ let private parseArgs (argv: string[]) =
 [<Literal>]
 let internal TimeCapMark = "[stopped at the time cap]"
 
+let private projectPlatformRegex = Regex @"<Platforms>\s*([^<$]+?)\s*</Platforms>"
+
 /// The platform a project target builds for where its nearest `<Platforms>`
 /// (the project file, then each `Directory.Build.props` up to the repository
 /// root) does not list AnyCPU (`x64;ARM64`): x64 where listed, else the
@@ -722,8 +724,7 @@ let internal projectPlatform (target: string) : string option =
 
     let platformsIn (file: string) =
         if File.Exists file then
-            let m =
-                Regex.Match(File.ReadAllText file, @"<Platforms>\s*([^<$]+?)\s*</Platforms>")
+            let m = projectPlatformRegex.Match(File.ReadAllText file)
 
             if m.Success then Some m.Groups.[1].Value else None
         else
@@ -767,6 +768,18 @@ let internal projectPlatform (target: string) : string option =
     with _ -> // fsharpanalyzer: ignore-line FR0055
         None
 
+let private slnxPlatformNameRegex = Regex @"<Platform\s+Name=""([^""]+)"""
+let private slnConfigurationPlatformRegex = Regex @"\|([^=\r\n]+?)\s*="
+let private slnxPlatformMappingRegex = Regex @"<Platform\b([^>]*)>"
+let private mappingProjectPlatformRegex = Regex @"Project=""([^""]+)"""
+let private mappingSolutionPlatformRegex = Regex @"Solution=""[^""|]*\|([^""]+)"""
+
+let private slnProjectEntryRegex =
+    Regex @"Project\(""[^""]*""\)\s*=\s*""[^""]*"",\s*""([^""]+)"",\s*""(\{[^""]+\})"""
+
+let private slnActiveConfigurationRegex =
+    Regex @"(\{[^}]+\})\.[^|\r\n]+\|([^|.=\r\n]+)\.ActiveCfg\s*=\s*[^|\r\n]+\|([^\r\n]+)"
+
 /// The platform a solution without "Any CPU" builds for (Files.slnx lists
 /// only arm64, x64 and x86, and its app sets `RuntimeIdentifier` to
 /// `win-$(Platform)`): x64 where listed, else the first; never the
@@ -793,7 +806,7 @@ let internal solutionPlatform (target: string) : string option =
 
         let platforms =
             if path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) then
-                Regex.Matches(text, @"<Platform\s+Name=""([^""]+)""")
+                slnxPlatformNameRegex.Matches text
                 |> Seq.map (fun m -> m.Groups.[1].Value)
                 |> List.ofSeq
             else
@@ -806,7 +819,7 @@ let internal solutionPlatform (target: string) : string option =
                     let close = text.IndexOf("EndGlobalSection", section)
                     let stop = if close > section then close else text.Length
 
-                    Regex.Matches(text.Substring(section, stop - section), @"\|([^=\r\n]+?)\s*=")
+                    slnConfigurationPlatformRegex.Matches(text.Substring(section, stop - section))
                     |> Seq.map (fun m -> m.Groups.[1].Value.Trim())
                     |> Seq.distinct
                     |> List.ofSeq
@@ -832,11 +845,11 @@ let internal solutionPlatform (target: string) : string option =
             if path.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase) then
                 Regex.Matches(text, @"<Project\s+Path=""([^""]+)""[^>]*>(.*?)</Project>", RegexOptions.Singleline)
                 |> Seq.exists (fun project ->
-                    Regex.Matches(project.Groups.[2].Value, @"<Platform\b([^>]*)>")
+                    slnxPlatformMappingRegex.Matches(project.Groups.[2].Value)
                     |> Seq.exists (fun mapping ->
                         let attributes = mapping.Groups.[1].Value
-                        let target = Regex.Match(attributes, @"Project=""([^""]+)""")
-                        let from = Regex.Match(attributes, @"Solution=""[^""|]*\|([^""]+)""")
+                        let target = mappingProjectPlatformRegex.Match attributes
+                        let from = mappingSolutionPlatformRegex.Match attributes
 
                         target.Success
                         && named "AnyCPU" target.Groups.[1].Value
@@ -847,13 +860,13 @@ let internal solutionPlatform (target: string) : string option =
             else
                 // `Project("{type}") = "Name", "src\Name.csproj", "{GUID}"`
                 let paths =
-                    Regex.Matches(text, @"Project\(""[^""]*""\)\s*=\s*""[^""]*"",\s*""([^""]+)"",\s*""(\{[^""]+\})""")
+                    slnProjectEntryRegex.Matches text
                     |> Seq.map (fun m -> m.Groups.[2].Value.ToUpperInvariant(), m.Groups.[1].Value)
                     |> Seq.distinctBy fst
                     |> dict
 
                 // `{GUID}.Debug|x64.ActiveCfg = Debug|Any CPU`
-                Regex.Matches(text, @"(\{[^}]+\})\.[^|\r\n]+\|([^|.=\r\n]+)\.ActiveCfg\s*=\s*[^|\r\n]+\|([^\r\n]+)")
+                slnActiveConfigurationRegex.Matches text
                 |> Seq.exists (fun m ->
                     named wanted (m.Groups.[2].Value.Trim())
                     && named "AnyCPU" (m.Groups.[3].Value.Trim())
@@ -2801,7 +2814,11 @@ let private errorCount (checker: FSharpChecker) (options: FSharpProjectOptions) 
 /// another hole (`$"n = %i{n}, o = %A{o}"`, FS0001) in a per-file check
 /// while the project check and fsc accept it, and every pass that touched
 /// such a file was rolled back. The errors are compared by number and
-/// message, not position: the pass moves lines.
+/// message, not position: the pass moves lines. And an FS0001 inside an
+/// interpolated string of two or more holes is never taken from the
+/// per-file check: a pass that writes such a string (FR0042) adds that
+/// error to a signed file's per-file check and to nothing else, and a real
+/// mismatch in a hole is in the project check's answer.
 let internal projectErrorsWith
     (checker: FSharpChecker)
     (options: FSharpProjectOptions)
@@ -2836,16 +2853,39 @@ let internal projectErrorsWith
         |> Set.ofArray
 
     let errorsOf (path: string) (text: string) =
-        let _, answer =
+        let parsed, answer =
             checker.ParseAndCheckFileInProject(path, 0, SourceText.ofString text, options)
             |> Async.RunSynchronously
+
+        // the interpolated strings of two or more holes: where the per-file
+        // check's FS0001 is its own
+        let manyHoles =
+            lazy
+                ((AstIndex.ofTree parsed.ParseTree).Exprs
+                 |> Array.choose (fun (_, e) ->
+                     match e with
+                     | SynExpr.InterpolatedString(contents = parts; range = r) when
+                         parts
+                         |> List.filter (fun part ->
+                             match part with
+                             | SynInterpolatedStringPart.FillExpr _ -> true
+                             | SynInterpolatedStringPart.String _ -> false)
+                         |> List.length
+                         >= 2
+                         ->
+                         Some r
+                     | _ -> None))
 
         match answer with
         | FSharpCheckFileAnswer.Succeeded results ->
             results.Diagnostics
             |> Array.filter (fun d ->
                 d.Severity = FSharpDiagnosticSeverity.Error
-                && (not parseOnlyRun || d.Subcategory = "parse"))
+                && (not parseOnlyRun || d.Subcategory = "parse")
+                && not (
+                    d.ErrorNumber = 1
+                    && manyHoles.Value |> Array.exists (fun r -> Range.rangeContainsRange r d.Range)
+                ))
         | FSharpCheckFileAnswer.Aborted -> [||]
 
     let perFile =
@@ -2929,6 +2969,12 @@ let private fixKey (code: string) (file: string) (f: Fix) =
 /// framework, for the rest of the run: the next framework round would
 /// otherwise apply the same fixes again and bisect again.
 let private putBackFiles = HashSet<string>(StringComparer.OrdinalIgnoreCase)
+
+/// Fixes a verification rollback rejected (by `fixKey`), for the rest of
+/// the run: a file every framework and configuration compiles, or one a
+/// sibling project links, gets the same text in each compilation, so a fix
+/// one of them refused would be applied and rolled back again in the next.
+let private rejectedFixes = HashSet<string * string * string * string>()
 
 /// The files the compilation's snapshot covers — its own sources — and
 /// the ORIGINAL text of every file written OUTSIDE it: a sibling project's
@@ -5482,7 +5528,8 @@ let private runApiPass
 
         // ...and one named inside an `#if` region has call sites in a
         // branch the parse tree does not hold: the migration would reach
-        // one configuration's calls and leave the other's tupled
+        // one configuration's or framework's calls and leave the other's
+        // tupled
         let notTemplated (functionName: string) =
             let short = functionName.Split('.') |> Array.last
 
@@ -9702,8 +9749,9 @@ let private runTarget (checker: FSharpChecker) (opts: Options) (showHeader: bool
             let all = Set.union files more
             if all = files then files else tiedTo all
 
-        // fixes a verification rollback rejected; never re-applied this run
-        let suppressed = HashSet<string * string * string * string>()
+        // fixes a verification rollback rejected, in this compilation or an
+        // earlier one of the run; never re-applied
+        let suppressed = rejectedFixes
 
         let baselineErrorList =
             if skipCompilationCheck then
@@ -10657,6 +10705,7 @@ let private executeRun (initialChecker: FSharpChecker) (opts: Options) : int =
     // listed them: a resident host runs again on a tree edited since
     restoresDone.Clear()
     putBackFiles.Clear()
+    rejectedFixes.Clear()
     listedFrameworks.Clear()
     // before a refusal below can end the run: a resident host answers with
     // this run's reasons, a refused one included
@@ -11572,7 +11621,7 @@ let private runMcp (limits: McpLimits) =
                     use doc = JsonDocument.Parse line
                     let root = doc.RootElement
 
-                    let id =
+                    let pid =
                         match root.TryGetProperty "id" with
                         | true, v -> v.GetRawText()
                         | _ -> "null"
@@ -11587,7 +11636,7 @@ let private runMcp (limits: McpLimits) =
                         | true, v -> Some(v.Clone())
                         | _ -> None
 
-                    id, m, p
+                    pid, m, p
                 // a line that is not JSON, or whose "method" is not a string: answered
                 // as an unknown request below. Anything else is not this parser's
                 with

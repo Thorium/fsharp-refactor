@@ -423,7 +423,7 @@ let find
 
                                             System.Text.RegularExpressions.Regex.IsMatch(
                                                 textOfRange source ctorArgs.Range,
-                                                $@"\b{System.Text.RegularExpressions.Regex.Escape self}\b"
+                                                identifierPattern self
                                             )
                                         )
                                         ->

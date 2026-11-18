@@ -205,9 +205,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                     true
                 | _ -> false)
 
-        // the statement right after the mutation leaves the loop for good —
-        // `raise`, `failwith`, a computation's `return`/`return!` — so the
-        // next MoveNext never runs: the mutate-and-leave idiom
+        // the statements after the mutation end by leaving the loop for good —
+        // `raise`, `failwith`, a computation's `return`/`return!`, at once or
+        // after more statements (`xs.Remove x; xs.Add y; raise e`; F# has no
+        // `continue` to resume the loop between) — so the next MoveNext never
+        // runs: the mutate-and-leave idiom
         let leavesAfter (path: SyntaxNode list) (mutation: SynExpr) =
             let rec leaves (e: SynExpr) =
                 match e with
@@ -230,6 +232,11 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 | SynExpr.Sequential(expr1 = first) -> leaves first
                 | _ -> false
 
+            let rec finalOf (e: SynExpr) =
+                match e with
+                | SynExpr.Sequential(expr2 = rest) -> finalOf rest
+                | last -> last
+
             // the mutation, or the pipe it heads (`xs.Remove x |> ignore`),
             // as the first half of a sequence whose second half leaves
             // climbing the application the mutation heads (`|> ignore` is
@@ -244,7 +251,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                 // records only a chain's outermost Sequential)
                 | SyntaxNode.SynExpr(SynExpr.Sequential _ as chain) :: _ ->
                     match BlockingSites.afterInChain chain r with
-                    | Some next -> leaves next
+                    | Some next -> leaves next || leaves (finalOf next)
                     | None -> false
                 | _ -> false
 

@@ -142,7 +142,7 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
             | _ -> ValueNone
 
         let word (name: string) =
-            System.Text.RegularExpressions.Regex(@"\b" + System.Text.RegularExpressions.Regex.Escape name + @"\b")
+            System.Text.RegularExpressions.Regex(identifierPattern name)
 
         [
             for _, e in index.Exprs do

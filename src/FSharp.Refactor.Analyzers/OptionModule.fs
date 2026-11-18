@@ -68,6 +68,58 @@ let symbolUseAt
     let key = struct (line, column, lineText, String.concat "\n" names)
     memo.GetOrAdd(key, fun _ -> check.GetSymbolUseAtLocation(line, column, lineText, names))
 
+/// Every typed use of the file by its end position, read once per check
+/// result: one walk of FCS's uses instead of one per lookup.
+let private usesByEnd =
+    ConditionalWeakTable<FSharpCheckFileResults, Lazy<Dictionary<struct (int * int), FSharpSymbolUse list>>>()
+
+/// The file's typed uses ending where this identifier ends, from one walk of
+/// the file's uses per check result: an attribute's name holds two (the
+/// attribute type and its constructor), a qualified path's last name may
+/// share its end with a use of the whole path.
+let usesEndingWith (check: FSharpCheckFileResults) (id: Ident) : FSharpSymbolUse list =
+    let r = id.idRange
+
+    let byEnd =
+        usesByEnd
+            .GetValue(
+                check,
+                fun c ->
+                    lazy
+                        (let d = Dictionary<struct (int * int), FSharpSymbolUse list>()
+
+                         for u in c.GetAllUsesOfAllSymbolsInFile() do
+                             let key = struct (u.Range.EndLine, u.Range.EndColumn)
+
+                             match d.TryGetValue key with
+                             | true, l -> d.[key] <- u :: l
+                             | false, _ -> d.[key] <- [ u ]
+
+                         d)
+            )
+            .Value
+
+    match byEnd.TryGetValue(struct (r.EndLine, r.EndColumn)) with
+    | true, uses -> uses
+    | false, _ -> []
+
+/// Does this use span exactly the identifier?
+let spans (id: Ident) (u: FSharpSymbolUse) =
+    u.Range.StartLine = id.idRange.StartLine
+    && u.Range.StartColumn = id.idRange.StartColumn
+
+/// `symbolUseAt` for a plain identifier, answered from the file's uses when
+/// exactly one use ends there and spans exactly that identifier; otherwise
+/// the FCS lookup decides. For rules asking about many identifiers of one
+/// file, where a lookup per identifier walks the file's name resolutions
+/// each time.
+let identUseAt (check: FSharpCheckFileResults) (source: ISourceText) (id: Ident) : FSharpSymbolUse option =
+    match usesEndingWith check id with
+    | [ u ] when spans id u -> Some u
+    | _ ->
+        let r = id.idRange
+        symbolUseAt check (r.EndLine, r.EndColumn, source.GetLineString(r.EndLine - 1), [ id.idText ])
+
 /// The file's project context, built once per check result. FCS builds a
 /// new one - a symbol environment over every reference - on each read of
 /// `ProjectContext`, and half a dozen rules ask per file.

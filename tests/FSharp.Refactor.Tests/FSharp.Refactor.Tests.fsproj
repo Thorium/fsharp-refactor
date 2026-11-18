@@ -115,6 +115,9 @@
     <Compile Include="GuardParityTests.fs" />
     <Compile Include="CorpusTwinTests.fs" />
     <Compile Include="CorpusTwin1117Tests.fs" />
+    <Compile Include="DotnetSweep1118Tests.fs" />
+    <Compile Include="DotnetSweepPerf1118Tests.fs" />
+    <Compile Include="DotnetTwin1118Tests.fs" />
     <Compile Include="CorpusValidation.fs" />
 
   </ItemGroup>

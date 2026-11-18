@@ -41,6 +41,10 @@
 ///     sync/async body (`if isAsync then do! x.FlushAsync() else x.Flush()`),
 ///     a call commented as synchronous on purpose, or Microsoft.Data.Sqlite
 ///     (its async methods run synchronously)
+///   - never a call the CE body also makes through the twin on the same
+///     receiver (`writer.WriteLine()` beside `do! writer.WriteLineAsync()`:
+///     both paths on purpose), nor one on a stream, reader or writer bound to
+///     memory streams alone (`new StreamWriter(buffer)` over a MemoryStream)
 module FSharp.Refactor.AwaitableOverload
 
 open FSharp.Compiler.CodeAnalysis
@@ -116,6 +120,57 @@ let private noTwinWanted (callText: string) (receiverType: FSharpType option) (m
         && declaring.StartsWith "Microsoft.EntityFrameworkCore")
     // Microsoft.Data.Sqlite's async methods run synchronously (SQLite has no async I/O)
     || declaring.StartsWith "Microsoft.Data.Sqlite"
+
+let private ioWrapperTypes =
+    set
+        [
+            "System.IO.Stream"
+            "System.IO.TextWriter"
+            "System.IO.TextReader"
+            "System.IO.BinaryWriter"
+            "System.IO.BinaryReader"
+        ]
+
+/// A stream, reader or writer bound to memory streams alone (`use writer =
+/// new StreamWriter(buffer)` over a `MemoryStream`): its twin completes
+/// synchronously, as FR0118 reads the same binding.
+let private overMemoryOnly
+    (index: AstIndex.Index)
+    (check: FSharpCheckFileResults)
+    (source: ISourceText)
+    (receiver: Ident option)
+    =
+    let rec wraps (t: FSharpType option) (depth: int) =
+        match t with
+        | Some t when depth < 32 && t.HasTypeDefinition ->
+            let entity = t.TypeDefinition
+
+            (entity.TryFullName |> Option.exists ioWrapperTypes.Contains)
+            || wraps entity.BaseType (depth + 1)
+        | _ -> false
+
+    match receiver with
+    | Some id ->
+        (try
+            wraps (BlockingSites.valueTypeOf check source id) 0
+         with _ -> // deliberate fail-safe probe; fsharpanalyzer: ignore-line FR0055
+             false)
+        && CancellationOverload.boundToMemoryStreams index check source id
+    | None -> false
+
+/// The CE body also calls the twin on the same receiver (`writer.WriteLine()`
+/// beside `do! writer.WriteLineAsync()`): both paths are exercised on
+/// purpose, as a test of a writer does.
+let private twinBeside (source: ISourceText) (ceBody: range) (callee: SynExpr) (twinName: string) =
+    let calleeText = textOfRange source callee.Range
+    let dot = calleeText.LastIndexOf '.'
+
+    dot > 0
+    && (let receiver = calleeText.Substring(0, dot)
+        let bodyText = textOfRange source ceBody
+
+        bodyText.Contains twinName
+        && Regex.IsMatch(bodyText, $@"(?<![\w'.]){Regex.Escape receiver}\s*\.\s*{Regex.Escape twinName}(?![\w'])"))
 
 /// A member the call sits in — the innermost, or one around the lambda it
 /// sits in — that is the twin: named like it, and declared by the twin's
@@ -594,14 +649,25 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
 
                                 // a twin that is the member itself, a fire-and-forget
                                 // wrapper, the sync branch of a dual sync/async body,
-                                // or a call commented as synchronous on purpose
+                                // a call commented as synchronous on purpose, one the
+                                // body also makes through the twin, or a writer over
+                                // memory streams
+                                let receiverIdent =
+                                    match callee with
+                                    | SynExpr.LongIdent(longDotId = SynLongIdent(id = ids)) when ids.Length >= 2 ->
+                                        Some ids.[ids.Length - 2]
+                                    | SynExpr.DotGet(expr = recv) -> BlockingSites.receiverIdent recv
+                                    | _ -> None
+
                                 let twin =
                                     match twin with
                                     | Some twinM when
                                         callsItself check source path twinM
+                                        || twinBeside source ceBody callee twinM.DisplayName
+                                        || overMemoryOnly index check source receiverIdent
                                         || firesAndForgets index source parseTree.FileName mfv
                                         || BlockingSites.dualPathBranch source path expr.Range (fun line ->
-                                            Regex.IsMatch(line, @"\b" + Regex.Escape twinM.DisplayName + @"\b"))
+                                            Regex.IsMatch(line, identifierPattern twinM.DisplayName))
                                         || BlockingSites.syncByComment source expr.Range
                                         ->
                                         None

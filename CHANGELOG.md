@@ -2,6 +2,27 @@
 
 The analyzers package, the `fsharp-refactor` tool and both editor extensions share one version. The NuGet packages carry the notes of the last six versions; this file keeps every one.
 
+## 0.8.58
+
+- FR0139 reads the collection only from a fully applied call: in `items |> Seq.fold f s` the state `s` (an array) is no collection, and `Array.fold` on a seq no longer compiles in (dotnet-fsharp Hashing.fs).
+- A pass that writes a typed interpolated string of two or more holes into a file with a signature is no longer rolled back: FSharp.Compiler.Service 43.13's per-file check alone rejects it unless every hole is `%s`, `%d`, `%i`, `%c` or `%M` (FS0001; its project check and fsc accept it), and each FR0042 fix of such a `sprintf` took the file's other fixes with it (dotnet-fsharp il.fs, rational.fs).
+- FR0140 leaves a one-line `let x = C() in x.P <- v; body`: the fold dropped the `in` and the body lost `x` (FS0588).
+- FR0007 reads `&v1'` as a write to `v1'`: the prime defeated the address-of check and `mutable` was removed from a byref argument.
+- FR0009, FR0030, FR0004, FR0181, FR0119 and the undisposed-field check read a primed name as a mention too: `| Error e' -> e'` became `Result.defaultValue e'`, and `for tile' in tiles do columns.[tile' % 2].Add tile'` an `AddRange` that no longer knew `tile'`.
+- An api migration waits while the function is named inside any `#if` region, a framework's too (`#if NETCOREAPP`): the narrowest framework's parse tree missed that call, and the all-frameworks build put back every file of the pass.
+- FR0164 leaves an edit whose following statements end in `raise`, `failwith` or `return` (`tags.Remove t |> ignore; tags.Add n; raise e`), not only one followed at once by the exit.
+- FR0119 leaves a call the body also makes through its twin on the same receiver (`writer.WriteLine()` beside `do! writer.WriteLineAsync()`), and one on a stream, reader or writer bound to memory streams alone (`new StreamWriter(buffer)` over a MemoryStream).
+- FR0070 and FR0016 stand down where the file spells `typeof<R>` or `typedefof<R>`: the `Type` goes to reflection, where a struct answers differently.
+- A fix a rollback rejected stays rejected for the rest of the run: each framework and configuration re-applied and rolled it back again (ilread.fs, Caches.fs 3× each).
+- FR0133 asks the project for a test name's uses only when another file of the project spells it, and reads the file's uses once: linear in the names it renames.
+- FR0142, FR0157 and FR0169 resolve identifiers from one read of the file's typed uses where a single use covers them; FCS's per-identifier lookup grew with the file.
+- FR0147 asks whether a module-level value shadows a shortened name once per stretch of declarations that cannot change the answer, not once per declaration.
+- FR0157 finds an already-reported slot by name and declaration, not by a walk of every slot reported before it.
+- FR0092 looks for a pinned failure message only in the test files that hold its words, from a token index of the test corpus built once per repository.
+- FR0142 narrows its shared-state and multi-line-string checks to the test's own body.
+- FR0142 leaves a file that binds `task` itself in a module or a class (`let task = Do_no_use_task_in_this_file_use_taskDynamic_instead.Nope`): `task { }` would mean that value (dotnet-fsharp TasksDynamic.fs, 26 tests rolled back per framework). A `task` an opened module of another file binds holds the fix as well: the typed scope is asked once per file.
+- FR0058 looks for enumerated self-calls only in members that hold a `seq { }`, and only inside their own bodies: every member scanned the whole file (64 s on a 58,000-line test file).
+
 ## 0.8.57
 
 - Statement chains are read whole: the index records only a chain's outermost sequence, and several rules looked at its first statement alone. FR0119 now rewrites a statement after another statement or a `do!` (only a body's first statement became `do!`); FR0118 takes the third and later statement's result as the chain's value (the returned task's `None` was missed) and a later bare statement as left running; FR0049 binds a middle statement with `let! _ =`; FR0163 notes a timer dropped as a later statement; FR0055's raise-after-try, FR0164's leave-after-mutation and FR0099's statement starts see every statement.

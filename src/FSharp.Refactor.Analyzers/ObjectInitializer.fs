@@ -330,8 +330,16 @@ let find (parseTree: ParsedInput) (source: ISourceText) (check: FSharpCheckFileR
                         let distinct =
                             sets |> List.map (fun (p, _) -> p.idText) |> List.distinct |> List.length
 
+                        // `let x = C() in x.P <- 1; x.P`: the edit would span
+                        // the `in`, and the body after it loses its binding
+                        let hasIn =
+                            match expr with
+                            | SynExpr.LetOrUse l -> l.Trivia.InKeyword.IsSome
+                            | _ -> false
+
                         if
                             rest.IsSome
+                            && not hasIn
                             && not sets.IsEmpty
                             && distinct = sets.Length
                             // the object cannot be mentioned in its own

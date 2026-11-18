@@ -74,10 +74,7 @@ let private defaultCall (source: ISourceText) (errorVar: string option) (default
     let mentionsError =
         match errorVar with
         | Some v ->
-            System.Text.RegularExpressions.Regex.IsMatch(
-                textOfRange source defaultBody.Range,
-                @"\b" + System.Text.RegularExpressions.Regex.Escape v + @"\b"
-            )
+            System.Text.RegularExpressions.Regex.IsMatch(textOfRange source defaultBody.Range, identifierPattern v)
         | None -> false
 
     if isPureAtom defaultBody && not mentionsError then
