@@ -5,6 +5,12 @@
 /// `return! inner { return v }` only inside a builder known to pass the
 /// result through (A12); FR0007 keeps a `mutable` whose comment says it
 /// defeats inlining or folding (A13).
+///
+/// In the "ProcessState" collection: `withMinCore` sets the
+/// FSREF_MIN_FSHARP_CORE environment variable, which every rule gated on
+/// the FSharp.Core version reads. Beside other tests, one of theirs read
+/// `6.0.4` in the middle of its own run and found no fix to offer.
+[<Xunit.Collection("ProcessState")>]
 module FSharp.Refactor.Tests.AuditGateTests
 
 open System

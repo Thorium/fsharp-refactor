@@ -959,10 +959,14 @@ let ``an exception from loaded code on a background thread is survived, ours or 
         Program.foreignBackgroundOrigin mainThread background (TypeInitializationException("T", OutOfMemoryException()))
     )
 
-/// `-r:` arguments of a compilation referencing these assemblies.
+/// `-r:` arguments of a compilation referencing these assemblies, as the
+/// platform spells a path: `C:\packages\x.dll` is one file name on Linux,
+/// where a backslash separates nothing.
 let private referencing (names: string list) (extra: string list) =
     [|
-        yield! names |> List.map (fun n -> $"-r:C:\packages\{n}.dll")
+        yield!
+            names
+            |> List.map (fun n -> "-r:" + Path.Combine(Path.GetTempPath(), "packages", n + ".dll"))
         yield! extra
     |]
 

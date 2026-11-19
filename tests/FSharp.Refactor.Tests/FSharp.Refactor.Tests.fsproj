@@ -8,6 +8,7 @@
   <ItemGroup>
     <Compile Include="TestSource.fs" />
     <Compile Include="Parsing.fs" />
+    <Compile Include="Collections.fs" />
     <Compile Include="ConfigurationTests.fs" />
     <Compile Include="RuleCatalogTests.fs" />
     <Compile Include="ConfigKnobTests.fs" />
